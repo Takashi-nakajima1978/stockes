@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Stock Signal</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="rail" aria-label="メニュー">
+      <div class="brand-block">
+        <div class="mark" aria-hidden="true">S</div>
+        <div>
+          <p class="eyebrow">Local</p>
+          <h1>Stock Signal</h1>
+        </div>
+      </div>
+
+      <nav class="side-nav" aria-label="画面切り替え">
+        <button type="button" data-view-target="analysis" class="active">損益を見る</button>
+        <button type="button" data-view-target="stocks">保有を入力</button>
+        <button type="button" data-view-target="ideas">候補を探す</button>
+        <button type="button" data-view-target="settings">接続設定</button>
+      </nav>
+
+      <div class="status-stack">
+        <div class="status-row">
+          <span>検索エンジン</span>
+          <strong id="googleStatus">確認中</strong>
+        </div>
+        <div class="status-row">
+          <span>LM Studio</span>
+          <strong id="lmStatus">確認中</strong>
+        </div>
+      </div>
+
+      <div class="limit-meter" aria-live="polite">
+        <div>
+          <span>管理銘柄</span>
+          <strong><span id="stockCount">0</span>/20</strong>
+        </div>
+        <progress id="stockProgress" value="0" max="20"></progress>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <section class="view-panel active" data-view="analysis">
+        <section class="command-band">
+          <div>
+            <p class="eyebrow">Analysis</p>
+            <h2>損益と判断</h2>
+          </div>
+          <div class="actions">
+            <button type="button" class="secondary" data-view-target="ideas">候補を探す</button>
+            <button id="analyzeButton" type="button">分析を更新</button>
+          </div>
+        </section>
+
+        <section class="profit-summary" aria-live="polite">
+          <article class="profit-card primary">
+            <span>今の儲け</span>
+            <strong id="profitAmount">-</strong>
+            <small id="profitPct">分析待ち</small>
+          </article>
+          <article class="profit-card">
+            <span>配当込み損益</span>
+            <strong id="totalReturnAmount">-</strong>
+            <small id="totalReturnPct">購入日以降の配当込み</small>
+          </article>
+          <article class="profit-card">
+            <span>投下額</span>
+            <strong id="investedTotal">-</strong>
+            <small>買った金額</small>
+          </article>
+          <article class="profit-card">
+            <span>評価額</span>
+            <strong id="marketTotal">-</strong>
+            <small>今売った場合の目安</small>
+          </article>
+          <article class="profit-card">
+            <span>年間配当目安</span>
+            <strong id="dividendIncomeTotal">-</strong>
+            <small>今の株数ベース</small>
+          </article>
+          <article class="profit-card">
+            <span>勝ち / 負け</span>
+            <strong><span id="profitableCount">0</span> / <span id="lossCount">0</span></strong>
+            <small>損益が出ている保有分</small>
+          </article>
+        </section>
+
+        <section class="summary-grid decision-counts" aria-live="polite">
+          <article>
+            <span>買い候補</span>
+            <strong id="buyCount">0</strong>
+          </article>
+          <article>
+            <span>保有継続</span>
+            <strong id="holdCount">0</strong>
+          </article>
+          <article>
+            <span>見直し候補</span>
+            <strong id="sellCount">0</strong>
+          </article>
+          <article>
+            <span>要確認</span>
+            <strong id="watchCount">0</strong>
+          </article>
+        </section>
+
+        <section class="content-grid">
+          <div class="table-panel watchlist-panel">
+            <div class="panel-title">
+              <h3>Watchlist</h3>
+              <span id="lastRun">未分析</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>銘柄</th>
+                    <th>業種</th>
+                    <th>現在</th>
+                    <th>損益</th>
+                    <th>配当</th>
+                    <th>判定</th>
+                  </tr>
+                </thead>
+                <tbody id="stockTable"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="insight-panel">
+            <div class="panel-title">
+              <h3>Decision</h3>
+              <span id="selectedSymbol">未選択</span>
+            </div>
+            <div class="chart-frame">
+              <canvas id="priceChart" width="760" height="260" aria-label="3年価格チャート"></canvas>
+              <div id="chartTooltip" class="chart-tooltip" hidden></div>
+            </div>
+            <div id="chartTiming" class="chart-timing" hidden></div>
+            <div id="decisionDetail" class="decision-detail">
+              <p>保存済み分析がある場合は自動で表示します。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="research-panel">
+          <div class="panel-title">
+            <h3>Evidence要約</h3>
+            <span id="researchProgress">待機中</span>
+          </div>
+          <div id="evidenceList" class="evidence-list"></div>
+        </section>
+      </section>
+
+      <section class="view-panel" data-view="stocks">
+        <section class="command-band">
+          <div>
+            <p class="eyebrow">Input</p>
+            <h2>保有・買値入力</h2>
+          </div>
+        </section>
+
+        <section class="content-grid manage-grid">
+          <form id="stockForm" class="stock-form">
+            <div class="panel-title compact-title">
+              <h3>新規追加</h3>
+            </div>
+            <label>
+              <span>銘柄名</span>
+              <input id="stockName" name="name" autocomplete="off" placeholder="例: KDDI" required>
+            </label>
+            <label>
+              <span>コード</span>
+              <input id="stockSymbol" name="symbol" autocomplete="off" placeholder="例: 9433.T" required>
+            </label>
+            <label>
+              <span>業種</span>
+              <input id="stockSector" name="sector" autocomplete="off" placeholder="例: 通信、航空、銀行">
+            </label>
+            <label>
+              <span>購入日</span>
+              <input id="stockPurchaseDate" name="purchaseDate" type="date">
+            </label>
+            <label>
+              <span>購入単価</span>
+              <input id="stockPurchasePrice" name="purchasePrice" type="number" min="0" step="0.1" placeholder="例: 1580">
+            </label>
+            <label>
+              <span>株数</span>
+              <input id="stockQuantity" name="quantity" type="number" min="0" step="1" placeholder="例: 100">
+            </label>
+            <label>
+              <span>必ず残す株数</span>
+              <input id="stockMinimumHoldQuantity" name="minimumHoldQuantity" type="number" min="0" step="1" placeholder="例: 100">
+            </label>
+            <label>
+              <span>買いたい価格</span>
+              <input id="stockTargetBuyPrice" name="targetBuyPrice" type="number" min="0" step="0.1" placeholder="例: 2500">
+            </label>
+            <button type="submit">管理銘柄に追加</button>
+          </form>
+
+          <div class="table-panel">
+            <div class="panel-title">
+              <h3>入力済みの銘柄</h3>
+              <span>クリックすると損益画面へ</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>銘柄</th>
+                    <th>業種</th>
+                    <th>価格</th>
+                    <th>取得</th>
+                    <th>損益</th>
+                    <th>配当</th>
+                    <th>1年</th>
+                    <th>3年</th>
+                    <th>判定</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="manageStockTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view-panel" data-view="ideas">
+        <section class="command-band">
+          <div>
+            <p class="eyebrow">Discovery</p>
+            <h2>買う候補を探す</h2>
+          </div>
+          <div class="actions">
+            <button id="discoverButton" type="button">候補を検索</button>
+          </div>
+        </section>
+
+        <section class="source-panel">
+          <div>
+            <strong>提案元</strong>
+            <p id="suggestionSource">候補検索を押すと、好業績の材料、3年の目安価格、1単元30万円くらいの条件で採点します。</p>
+            <small id="candidateSavedAt">前回候補は自動保存されます。</small>
+          </div>
+          <span id="candidateProgress">未検索</span>
+        </section>
+
+        <section class="research-panel">
+          <div class="panel-title">
+            <h3>候補リスト</h3>
+            <span>最大100件</span>
+          </div>
+          <div class="excluded-panel">
+            <div>
+              <strong>出さない銘柄</strong>
+              <span id="excludedCandidateCount">0件</span>
+            </div>
+            <div id="excludedCandidateList" class="excluded-candidates">
+              <p>まだありません。</p>
+            </div>
+          </div>
+          <div id="candidateList" class="suggestion-list empty-state">
+            <p>まだ候補はありません。</p>
+          </div>
+        </section>
+      </section>
+
+      <section class="view-panel" data-view="settings">
+        <section class="command-band">
+          <div>
+            <p class="eyebrow">Settings</p>
+            <h2>接続設定</h2>
+          </div>
+        </section>
+
+        <form id="settingsForm" class="settings-form">
+          <div class="settings-card">
+            <div class="panel-title compact-title">
+              <h3>検索エンジン</h3>
+              <span id="settingsSearchStatus">確認中</span>
+            </div>
+            <label>
+              <span>検索元</span>
+              <select id="settingsSearchProvider" name="searchProvider">
+                <option value="searxng">SearXNG</option>
+                <option value="google">Google Custom Search</option>
+              </select>
+            </label>
+            <label>
+              <span>SearXNG URL</span>
+              <input id="settingsSearxngUrl" name="searxngUrl" placeholder="http://127.0.0.1:8081/search">
+            </label>
+            <label>
+              <span>Google APIキー</span>
+              <input id="settingsGoogleApiKey" name="googleApiKey" type="password" autocomplete="off" placeholder="保存済みの場合は空欄で維持">
+            </label>
+            <label>
+              <span>Google検索エンジンID</span>
+              <input id="settingsGoogleCseId" name="googleCseId" autocomplete="off">
+            </label>
+            <label>
+              <span>Google検索URL</span>
+              <input id="settingsGoogleSearchUrl" name="googleSearchUrl" placeholder="https://www.googleapis.com/customsearch/v1">
+            </label>
+          </div>
+
+          <div class="settings-card">
+            <div class="panel-title compact-title">
+              <h3>検索診断</h3>
+              <span id="diagnosticsStatus">未確認</span>
+            </div>
+            <div class="diagnostics-actions">
+              <button id="diagnosticsButton" type="button" class="secondary">検索状態を確認</button>
+            </div>
+            <div id="diagnosticsList" class="diagnostics-list">
+              <p>検索結果が少ないときは、ここで原因を確認できます。</p>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <div class="panel-title compact-title">
+              <h3>LM Studio</h3>
+              <span id="settingsLmStatus">確認中</span>
+            </div>
+            <label>
+              <span>LM Studio URL</span>
+              <input id="settingsLmStudioUrl" name="lmStudioUrl" placeholder="http://127.0.0.1:1234/v1">
+            </label>
+            <label>
+              <span>待ち時間 ms</span>
+              <input id="settingsLmStudioTimeoutMs" name="lmStudioTimeoutMs" type="number" min="5000" max="300000" step="1000">
+            </label>
+          </div>
+
+          <div class="settings-card">
+            <div class="panel-title compact-title">
+              <h3>調査条件</h3>
+              <span>分析と候補検索で使用</span>
+            </div>
+            <section class="control-strip" aria-label="調査条件">
+              <label>
+                <span>1単元</span>
+                <input id="settingsUnitSize" type="number" min="1" max="1000" step="1" value="100">
+              </label>
+              <label>
+                <span>1単元予算</span>
+                <input id="settingsUnitBudget" type="number" min="10000" max="10000000" step="10000" value="300000">
+              </label>
+              <label>
+                <span>Website</span>
+                <input id="websiteLimit" type="number" min="1" max="20" value="10">
+              </label>
+              <label>
+                <span>階層</span>
+                <input id="depthLimit" type="number" min="1" max="20" value="2">
+              </label>
+              <label>
+                <span>1サイト上限</span>
+                <input id="pagesPerSite" type="number" min="1" max="20" value="2">
+              </label>
+            </section>
+          </div>
+
+          <div class="settings-card">
+            <div class="panel-title compact-title">
+              <h3>日次運用</h3>
+              <span>起動中だけ実行</span>
+            </div>
+            <section class="control-strip" aria-label="日次運用">
+              <label class="checkbox-line setting-check">
+                <input id="settingsDailyDiscoveryEnabled" type="checkbox">
+                <span>毎日候補を裏で更新</span>
+              </label>
+              <label>
+                <span>開始時刻</span>
+                <input id="settingsDailyDiscoveryHour" type="number" min="0" max="23" step="1" value="7">
+              </label>
+            </section>
+          </div>
+
+          <div class="settings-card">
+            <div class="panel-title compact-title">
+              <h3>Teams通知</h3>
+              <span>強い判断だけ送信</span>
+            </div>
+            <section class="control-strip" aria-label="Teams通知">
+              <label class="checkbox-line setting-check">
+                <input id="settingsNotificationsEnabled" type="checkbox">
+                <span>Teamsに通知する</span>
+              </label>
+              <label>
+                <span>手数料</span>
+                <input id="settingsTradeFeeYen" type="number" min="0" max="100000" step="10" value="0">
+              </label>
+              <label>
+                <span>最低メリット</span>
+                <input id="settingsNotificationMinNetEdgeYen" type="number" min="0" max="1000000" step="1000" value="5000">
+              </label>
+              <label>
+                <span>最低信頼度</span>
+                <input id="settingsNotificationMinConfidence" type="number" min="50" max="100" step="1" value="78">
+              </label>
+            </section>
+            <label>
+              <span>Teams Webhook URL</span>
+              <input id="settingsTeamsWebhookUrl" name="teamsWebhookUrl" type="password" autocomplete="off" placeholder="Workflowsで作ったWebhook URL">
+            </label>
+            <label>
+              <span>Graph Chat ID</span>
+              <input id="settingsGraphChatId" name="graphChatId" autocomplete="off" placeholder="Graph APIを使う場合だけ">
+            </label>
+            <label>
+              <span>Graph Tenant ID</span>
+              <input id="settingsGraphTenantId" name="graphTenantId" autocomplete="off" placeholder="必要な場合だけ">
+            </label>
+            <label>
+              <span>Graph Client ID</span>
+              <input id="settingsGraphClientId" name="graphClientId" autocomplete="off" placeholder="必要な場合だけ">
+            </label>
+            <label>
+              <span>Graph Client Secret</span>
+              <input id="settingsGraphClientSecret" name="graphClientSecret" type="password" autocomplete="off" placeholder="必要な場合だけ">
+            </label>
+            <label>
+              <span>Graph Access Token</span>
+              <input id="settingsGraphAccessToken" name="graphAccessToken" type="password" autocomplete="off" placeholder="Graph APIを使う場合だけ">
+            </label>
+            <div class="diagnostics-actions">
+              <button id="testNotificationButton" type="button" class="secondary">Teamsへテスト送信</button>
+            </div>
+            <small class="settings-help">通常はTeams Webhook URLだけで使えます。Graph APIは職場アカウントのChatMessage.Send権限がある場合だけ設定します。</small>
+          </div>
+
+          <button type="submit">設定を保存</button>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
