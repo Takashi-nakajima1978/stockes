@@ -41,6 +41,11 @@ const chartState = {
   hoverIndex: null,
 };
 
+const reorderState = {
+  symbol: "",
+  moved: false,
+};
+
 const els = {
   viewButtons: [...document.querySelectorAll("[data-view-target]")],
   viewPanels: [...document.querySelectorAll("[data-view]")],
@@ -382,9 +387,12 @@ function stockRow(stock, compact) {
   const selected = state.selected === stock.symbol ? "selected" : "";
   const nameCell = `
     <td>
-      <div class="stock-name">
-        <strong>${escapeHtml(stock.name)}</strong>
-        <span>${escapeHtml(stock.symbol)}${stock.holding ? " / 保有" : ""}</span>
+      <div class="stock-name-row">
+        <button type="button" class="drag-handle" draggable="true" data-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>
+        <div class="stock-name">
+          <strong>${escapeHtml(stock.name)}</strong>
+          <span>${escapeHtml(stock.symbol)}${stock.holding ? " / 保有" : ""}</span>
+        </div>
       </div>
     </td>
   `;
@@ -431,9 +439,11 @@ function dividendCell(position, price = {}) {
 }
 
 function attachTableEvents(table) {
+  attachReorderEvents(table);
   table.querySelectorAll("tr[data-symbol]").forEach((row) => {
     row.addEventListener("click", (event) => {
       if (event.target.closest("[data-remove]")) return;
+      if (reorderState.moved) return;
       state.selected = row.dataset.symbol;
       state.view = "analysis";
       render();
@@ -452,6 +462,84 @@ function attachTableEvents(table) {
         toast(error.message);
       }
     });
+  });
+}
+
+function attachReorderEvents(table) {
+  table.querySelectorAll("[data-drag-handle]").forEach((handle) => {
+    handle.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+    handle.addEventListener("dragstart", (event) => {
+      const row = event.target.closest("tr[data-symbol]");
+      if (!row) return;
+      reorderState.symbol = row.dataset.symbol;
+      reorderState.moved = false;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", reorderState.symbol);
+      row.classList.add("dragging");
+    });
+  });
+
+  table.querySelectorAll("tr[data-symbol]").forEach((row) => {
+    row.addEventListener("dragover", (event) => {
+      if (!reorderState.symbol || reorderState.symbol === row.dataset.symbol) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      row.classList.add("drag-over");
+    });
+    row.addEventListener("dragleave", () => {
+      row.classList.remove("drag-over");
+    });
+    row.addEventListener("drop", async (event) => {
+      if (!reorderState.symbol || reorderState.symbol === row.dataset.symbol) return;
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const insertAfter = event.clientY > rect.top + rect.height / 2;
+      const moved = moveStock(reorderState.symbol, row.dataset.symbol, insertAfter);
+      reorderState.moved = moved;
+      clearDragClasses();
+      if (!moved) return;
+      render();
+      try {
+        const result = await request("/api/stocks/reorder", {
+          method: "POST",
+          body: JSON.stringify({ symbols: state.stocks.map((stock) => stock.symbol) }),
+        });
+        state.stocks = result.stocks || state.stocks;
+        toast("表示順を保存しました。");
+        render();
+      } catch (error) {
+        toast(error.message);
+        await loadStocks();
+      } finally {
+        reorderState.symbol = "";
+        setTimeout(() => { reorderState.moved = false; }, 100);
+      }
+    });
+    row.addEventListener("dragend", () => {
+      clearDragClasses();
+      reorderState.symbol = "";
+      setTimeout(() => { reorderState.moved = false; }, 100);
+    });
+  });
+}
+
+function moveStock(sourceSymbol, targetSymbol, insertAfter = false) {
+  const from = state.stocks.findIndex((stock) => stock.symbol === sourceSymbol);
+  const to = state.stocks.findIndex((stock) => stock.symbol === targetSymbol);
+  if (from < 0 || to < 0 || from === to) return false;
+  const [item] = state.stocks.splice(from, 1);
+  let nextIndex = state.stocks.findIndex((stock) => stock.symbol === targetSymbol);
+  if (nextIndex < 0) return false;
+  if (insertAfter) nextIndex += 1;
+  state.stocks.splice(nextIndex, 0, item);
+  return true;
+}
+
+function clearDragClasses() {
+  document.querySelectorAll(".dragging, .drag-over").forEach((node) => {
+    node.classList.remove("dragging", "drag-over");
   });
 }
 

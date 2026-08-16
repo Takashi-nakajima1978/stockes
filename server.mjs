@@ -282,6 +282,29 @@ async function handleApi(req, res, url) {
     return json(res, 201, { stocks });
   }
 
+  if (url.pathname === "/api/stocks/reorder" && req.method === "POST") {
+    const body = await readJson(req);
+    const stocks = await readWatchlist();
+    const requested = Array.isArray(body.symbols)
+      ? body.symbols.map(normalizeSymbol).filter(Boolean)
+      : [];
+    if (!requested.length) return json(res, 400, { error: "並び替える銘柄がありません。" });
+    const bySymbol = new Map(stocks.map((stock) => [stock.symbol, stock]));
+    const seen = new Set();
+    const ordered = [];
+    for (const symbol of requested) {
+      const stock = bySymbol.get(symbol);
+      if (!stock || seen.has(symbol)) continue;
+      ordered.push(stock);
+      seen.add(symbol);
+    }
+    for (const stock of stocks) {
+      if (!seen.has(stock.symbol)) ordered.push(stock);
+    }
+    await saveWatchlist(ordered);
+    return json(res, 200, { stocks: ordered.map(normalizeStock) });
+  }
+
   if (url.pathname === "/api/us-stocks" && req.method === "POST") {
     const body = await readJson(req);
     const stocks = await readUsWatchlist();
@@ -4308,7 +4331,10 @@ async function serveFile(res, filePath) {
   if (!existsSync(normalized)) return json(res, 404, { error: "Not found" });
   const extension = path.extname(normalized) || ".html";
   const content = await readFile(normalized);
-  res.writeHead(200, { "content-type": mime[extension] || "application/octet-stream" });
+  res.writeHead(200, {
+    "content-type": mime[extension] || "application/octet-stream",
+    "cache-control": "no-store",
+  });
   res.end(content);
 }
 

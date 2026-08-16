@@ -526,6 +526,41 @@ tr.selected {
   background: #eef8f4;
 }
 
+.dragging {
+  opacity: 0.45;
+}
+
+.drag-over {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.stock-name-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.drag-handle {
+  width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-color: var(--line);
+  background: #fff;
+  color: var(--muted);
+  cursor: grab;
+  opacity: 0;
+}
+
+tr:hover .drag-handle,
+.drag-handle:focus-visible {
+  opacity: 1;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
 .stock-name {
   display: grid;
   gap: 3px;
