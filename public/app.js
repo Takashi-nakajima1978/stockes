@@ -494,11 +494,16 @@ function renderUs() {
 }
 
 function renderUsSummary() {
-  const summary = state.usSummary || usSummaryFromState();
-  setMoneySummary(els.usProfitAmount, summary.pnlAmount, "profit-big", usd);
+  const computed = usSummaryFromState();
+  const summary = Number.isFinite(state.usSummary?.totalReturnAmount) || Number.isFinite(state.usSummary?.dividendReceived)
+    ? state.usSummary
+    : computed;
+  const totalAmount = Number.isFinite(summary.totalReturnAmount) ? summary.totalReturnAmount : summary.pnlAmount;
+  const totalPct = Number.isFinite(summary.totalReturnPct) ? summary.totalReturnPct : summary.pnlPct;
+  setMoneySummary(els.usProfitAmount, totalAmount, "profit-big", usd);
   if (els.usProfitPct) {
-    els.usProfitPct.innerHTML = Number.isFinite(summary.pnlPct)
-      ? `<span class="${summary.pnlPct >= 0 ? "metric-pos" : "metric-neg"}">${signedPct(summary.pnlPct)}</span>`
+    els.usProfitPct.innerHTML = Number.isFinite(totalPct)
+      ? `<span class="${totalPct >= 0 ? "metric-pos" : "metric-neg"}">${signedPct(totalPct)}</span> / 配当 ${usd(summary.dividendReceived)}`
       : "更新待ち";
   }
   setMoneySummary(els.usInvestedTotal, summary.invested, "profit-big", usd);
@@ -584,7 +589,7 @@ function renderUsDetail() {
     </article>
   `).join("");
   els.usDetail.innerHTML = `
-    ${usPositionEditor(stock, position)}
+    ${usPositionEditor(stock, position, analysis?.price)}
     <section class="decision-card">
       <div>
         <h4>AI確認</h4>
@@ -594,6 +599,8 @@ function renderUsDetail() {
       <div class="metrics-row">
         <span><strong>現在値</strong>${usd(analysis?.price?.current)}</span>
         <span><strong>損益</strong>${positionPnlUsd(position)}</span>
+        <span><strong>受取配当</strong>${usd(position.dividendReceived)}</span>
+        <span><strong>配当利回り</strong>${Number.isFinite(analysis?.price?.dividendYield) ? `${analysis.price.dividendYield.toFixed(1)}%` : "-"}</span>
         <span><strong>1か月</strong>${pct(analysis?.price?.return1m)}</span>
         <span><strong>1年</strong>${pct(analysis?.price?.return1y)}</span>
       </div>
@@ -677,9 +684,18 @@ function usSummaryFromState() {
       : 0;
     summary.marketValue += Number.isFinite(position.marketValue) ? position.marketValue : 0;
     summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
-    summary.winCount += Number.isFinite(position.pnlAmount) && position.pnlAmount >= 0 ? 1 : 0;
-    summary.lossCount += Number.isFinite(position.pnlAmount) && position.pnlAmount < 0 ? 1 : 0;
+    summary.dividendReceived += Number.isFinite(position.dividendReceived) ? position.dividendReceived : 0;
+    summary.annualDividendEstimate += Number.isFinite(position.annualDividendEstimate) ? position.annualDividendEstimate : 0;
+    summary.totalReturnAmount += Number.isFinite(position.totalReturnAmount)
+      ? position.totalReturnAmount
+      : Number.isFinite(position.pnlAmount)
+      ? position.pnlAmount
+      : 0;
+    const resultAmount = Number.isFinite(position.totalReturnAmount) ? position.totalReturnAmount : position.pnlAmount;
+    summary.winCount += Number.isFinite(resultAmount) && resultAmount >= 0 ? 1 : 0;
+    summary.lossCount += Number.isFinite(resultAmount) && resultAmount < 0 ? 1 : 0;
     summary.pnlPct = summary.grossInvested > 0 ? (summary.pnlAmount / summary.grossInvested) * 100 : null;
+    summary.totalReturnPct = summary.grossInvested > 0 ? (summary.totalReturnAmount / summary.grossInvested) * 100 : null;
     return summary;
   }, {
     invested: 0,
@@ -687,19 +703,23 @@ function usSummaryFromState() {
     marketValue: 0,
     pnlAmount: 0,
     pnlPct: null,
+    dividendReceived: 0,
+    annualDividendEstimate: 0,
+    totalReturnAmount: 0,
+    totalReturnPct: null,
     winCount: 0,
     lossCount: 0,
   });
 }
 
 function positionPnlUsd(position = {}) {
-  const amount = position.pnlAmount;
-  const ratio = position.pnlPct;
+  const amount = Number.isFinite(position.totalReturnAmount) ? position.totalReturnAmount : position.pnlAmount;
+  const ratio = Number.isFinite(position.totalReturnPct) ? position.totalReturnPct : position.pnlPct;
   if (!Number.isFinite(ratio) && !Number.isFinite(amount)) return "-";
   const main = Number.isFinite(amount)
     ? `<span class="pnl-main ${amount >= 0 ? "metric-pos" : "metric-neg"}">${usd(amount)}</span>`
     : pct(ratio);
-  const sub = Number.isFinite(ratio) ? `<small>${signedPct(ratio)}</small>` : "";
+  const sub = `${Number.isFinite(ratio) ? `<small>${signedPct(ratio)}</small>` : ""}${position.dividendReceived > 0 ? `<small>配当 ${usd(position.dividendReceived)}</small>` : ""}`;
   return `<span class="pnl-cell">${main}${sub}</span>`;
 }
 
@@ -715,7 +735,7 @@ function usStanceBadge(ai = null) {
   return `<span class="badge ${cls}">${label}</span>`;
 }
 
-function usPositionEditor(stock, position) {
+function usPositionEditor(stock, position, price = {}) {
   const metrics = position || positionMetrics(stock);
   const lots = metrics.lots?.length ? metrics.lots : positionLots(stock);
   const displayLots = lots.length ? lots : [{ purchaseDate: "", purchasePrice: null, quantity: null }];
@@ -760,9 +780,13 @@ function usPositionEditor(stock, position) {
         <span><strong>平均取得</strong>${usd(metrics.purchasePrice)}</span>
         <span><strong>残株数</strong>${shareCount(metrics.quantity)}</span>
         <span><strong>売却済み</strong>${shareCount(metrics.soldQuantity)}</span>
-        <span><strong>合計損益</strong>${positionPnlUsd(metrics)}</span>
+        <span><strong>配当込み損益</strong>${positionPnlUsd(metrics)}</span>
+        <span><strong>株価損益</strong>${usd(metrics.pnlAmount)}</span>
         <span><strong>確定損益</strong>${usd(metrics.realizedPnlAmount)}</span>
         <span><strong>含み損益</strong>${usd(metrics.unrealizedPnlAmount)}</span>
+        <span><strong>受取配当</strong>${usd(metrics.dividendReceived)}</span>
+        <span><strong>年間配当目安</strong>${usd(metrics.annualDividendEstimate)}</span>
+        <span><strong>配当利回り</strong>${Number.isFinite(price?.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
         <span><strong>残り元本</strong>${usd(metrics.invested)}</span>
         <span><strong>評価額</strong>${usd(metrics.marketValue)}</span>
       </div>

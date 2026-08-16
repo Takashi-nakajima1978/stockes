@@ -649,6 +649,10 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       realizedPnlAmount: row.position.realizedPnlAmount,
       unrealizedPnlAmount: row.position.unrealizedPnlAmount,
       unrealizedPnlPct: row.position.unrealizedPnlPct,
+      dividendReceived: row.position.dividendReceived,
+      annualDividendEstimate: row.position.annualDividendEstimate,
+      totalReturnAmount: row.position.totalReturnAmount,
+      totalReturnPct: row.position.totalReturnPct,
       holdingDays: row.position.holdingDays,
     },
     evidence: row.evidence.slice(0, 5).map((item) => ({
@@ -659,7 +663,7 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
   }));
   const prompt = [
     "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
-    "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益を分けて読み、利益保証をせず、保有継続の確認材料と注意点を分けてください。",
+    "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益、受取配当、年間配当目安、配当込み損益を分けて読み、利益保証をせず、保有継続の確認材料と注意点を分けてください。",
     "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\"}]}。",
     "stanceは HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED のいずれか。changeLevelは normal, watch, important のいずれか。",
     "summaryJaは90字以内、goodとrisksは各3件まで、evidenceJaのsummaryは各80字以内にしてください。",
@@ -799,6 +803,12 @@ function compactUsPrice(price = {}) {
     distanceFromHigh52: price.distanceFromHigh52,
     distanceFromLow52: price.distanceFromLow52,
     trend3y: price.trend3y,
+    dividendPerShareTtm: price.dividendPerShareTtm,
+    dividendYield: price.dividendYield,
+    dividendChangePct: price.dividendChangePct,
+    dividendLastDate: price.dividendLastDate,
+    dividendLastAmount: price.dividendLastAmount,
+    dividendEvents: price.dividendEvents,
     shortName: price.shortName,
     longName: price.longName,
     yahooSymbol: price.yahooSymbol,
@@ -820,11 +830,19 @@ function usPortfolioSummary(rows = []) {
       : 0;
     summary.marketValue += Number.isFinite(position.marketValue) ? position.marketValue : 0;
     summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
+    summary.dividendReceived += Number.isFinite(position.dividendReceived) ? position.dividendReceived : 0;
+    summary.annualDividendEstimate += Number.isFinite(position.annualDividendEstimate) ? position.annualDividendEstimate : 0;
+    summary.totalReturnAmount += Number.isFinite(position.totalReturnAmount)
+      ? position.totalReturnAmount
+      : Number.isFinite(position.pnlAmount)
+      ? position.pnlAmount
+      : 0;
     if (Number.isFinite(position.pnlAmount)) {
       if (position.pnlAmount >= 0) summary.winCount += 1;
       else summary.lossCount += 1;
     }
     summary.pnlPct = summary.grossInvested ? (summary.pnlAmount / summary.grossInvested) * 100 : null;
+    summary.totalReturnPct = summary.grossInvested ? (summary.totalReturnAmount / summary.grossInvested) * 100 : null;
     return summary;
   }, {
     invested: 0,
@@ -832,6 +850,10 @@ function usPortfolioSummary(rows = []) {
     marketValue: 0,
     pnlAmount: 0,
     pnlPct: null,
+    dividendReceived: 0,
+    annualDividendEstimate: 0,
+    totalReturnAmount: 0,
+    totalReturnPct: null,
     winCount: 0,
     lossCount: 0,
   });
