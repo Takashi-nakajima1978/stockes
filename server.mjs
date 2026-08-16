@@ -269,11 +269,12 @@ async function handleApi(req, res, url) {
       market: body.market || "東証",
       sector: body.sector,
       notes: body.notes,
-      holding: Boolean(body.holding || body.purchaseDate || body.purchasePrice || body.quantity || body.positions?.length),
+      holding: Boolean(body.holding || body.purchaseDate || body.purchasePrice || body.quantity || body.positions?.length || body.sales?.length),
       purchaseDate: body.purchaseDate,
       purchasePrice: body.purchasePrice,
       quantity: body.quantity,
       positions: body.positions,
+      sales: body.sales,
       minimumHoldQuantity: body.minimumHoldQuantity,
       targetBuyPrice: body.targetBuyPrice,
     }));
@@ -294,11 +295,12 @@ async function handleApi(req, res, url) {
       name,
       market: body.market || "NYSE",
       notes: body.notes,
-      holding: Boolean(body.holding || body.purchaseDate || body.purchasePrice || body.quantity || body.positions?.length),
+      holding: Boolean(body.holding || body.purchaseDate || body.purchasePrice || body.quantity || body.positions?.length || body.sales?.length),
       purchaseDate: body.purchaseDate,
       purchasePrice: body.purchasePrice,
       quantity: body.quantity,
       positions: body.positions,
+      sales: body.sales,
     }));
     await saveUsWatchlist(stocks);
     return json(res, 201, { stocks });
@@ -317,6 +319,7 @@ async function handleApi(req, res, url) {
       purchasePrice: body.purchasePrice,
       quantity: body.quantity,
       positions: body.positions,
+      sales: body.sales,
       minimumHoldQuantity: body.minimumHoldQuantity,
       targetBuyPrice: body.targetBuyPrice,
     });
@@ -334,6 +337,7 @@ async function handleApi(req, res, url) {
       ...stocks[index],
       holding: Boolean(body.holding),
       positions: body.positions,
+      sales: body.sales,
     });
     await saveUsWatchlist(stocks);
     return json(res, 200, { stock: stocks[index], stocks });
@@ -635,10 +639,16 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     position: {
       purchasePrice: row.position.purchasePrice,
       quantity: row.position.quantity,
+      grossQuantity: row.position.grossQuantity,
+      soldQuantity: row.position.soldQuantity,
       invested: row.position.invested,
+      grossInvested: row.position.grossInvested,
       marketValue: row.position.marketValue,
       pnlAmount: row.position.pnlAmount,
       pnlPct: row.position.pnlPct,
+      realizedPnlAmount: row.position.realizedPnlAmount,
+      unrealizedPnlAmount: row.position.unrealizedPnlAmount,
+      unrealizedPnlPct: row.position.unrealizedPnlPct,
       holdingDays: row.position.holdingDays,
     },
     evidence: row.evidence.slice(0, 5).map((item) => ({
@@ -649,7 +659,7 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
   }));
   const prompt = [
     "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
-    "英語記事のsnippetは日本語に要約してください。利益保証をせず、保有継続の確認材料と注意点を分けてください。",
+    "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益を分けて読み、利益保証をせず、保有継続の確認材料と注意点を分けてください。",
     "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\"}]}。",
     "stanceは HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED のいずれか。changeLevelは normal, watch, important のいずれか。",
     "summaryJaは90字以内、goodとrisksは各3件まで、evidenceJaのsummaryは各80字以内にしてください。",
@@ -798,18 +808,27 @@ function compactUsPrice(price = {}) {
 function usPortfolioSummary(rows = []) {
   return rows.reduce((summary, row) => {
     const position = row.position || {};
-    if (!Number.isFinite(position.invested) || !Number.isFinite(position.marketValue)) return summary;
-    summary.invested += position.invested;
-    summary.marketValue += position.marketValue;
+    const hasPositionResult = Number.isFinite(position.grossInvested)
+      || Number.isFinite(position.invested)
+      || Number.isFinite(position.pnlAmount);
+    if (!hasPositionResult) return summary;
+    summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
+    summary.grossInvested += Number.isFinite(position.grossInvested)
+      ? position.grossInvested
+      : Number.isFinite(position.invested)
+      ? position.invested
+      : 0;
+    summary.marketValue += Number.isFinite(position.marketValue) ? position.marketValue : 0;
     summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
     if (Number.isFinite(position.pnlAmount)) {
       if (position.pnlAmount >= 0) summary.winCount += 1;
       else summary.lossCount += 1;
     }
-    summary.pnlPct = summary.invested ? (summary.pnlAmount / summary.invested) * 100 : null;
+    summary.pnlPct = summary.grossInvested ? (summary.pnlAmount / summary.grossInvested) * 100 : null;
     return summary;
   }, {
     invested: 0,
+    grossInvested: 0,
     marketValue: 0,
     pnlAmount: 0,
     pnlPct: null,
@@ -2633,28 +2652,29 @@ function ruleBasedDecision(stock, price, research) {
     risks.push("保有中だが購入単価が未入力のため、売却判断の精度が落ちる");
   }
 
-  if (Number.isFinite(position.pnlPct)) {
-    if (position.pnlPct >= 30) {
+  const openPnlPct = Number.isFinite(position.unrealizedPnlPct) ? position.unrealizedPnlPct : position.pnlPct;
+  if (Number.isFinite(openPnlPct)) {
+    if (openPnlPct >= 30) {
       score += 3;
-      reasons.push(`取得単価比で${position.pnlPct.toFixed(1)}%の含み益がある`);
+      reasons.push(`残っている株は取得単価比で${openPnlPct.toFixed(1)}%の含み益がある`);
       if (Number.isFinite(price.return3m) && price.return3m < -5) {
         score -= 6;
         risks.push("含み益はあるが直近モメンタムが弱く、利益確定ラインの確認が必要");
       }
-    } else if (position.pnlPct <= -20) {
+    } else if (openPnlPct <= -20) {
       score -= 12;
-      risks.push(`取得単価比で${Math.abs(position.pnlPct).toFixed(1)}%の含み損がある`);
+      risks.push(`残っている株は取得単価比で${Math.abs(openPnlPct).toFixed(1)}%の含み損がある`);
       if (price.trend3y === "DOWN") {
         score -= 8;
         risks.push("含み損に加えて3年トレンドも下向き");
       }
-    } else if (position.pnlPct <= -10) {
+    } else if (openPnlPct <= -10) {
       score -= 6;
-      risks.push(`取得単価比で${Math.abs(position.pnlPct).toFixed(1)}%の含み損がある`);
+      risks.push(`残っている株は取得単価比で${Math.abs(openPnlPct).toFixed(1)}%の含み損がある`);
     }
   }
 
-  if (Number.isFinite(position.holdingDays) && position.holdingDays < 30 && Number.isFinite(position.pnlPct) && position.pnlPct < 0) {
+  if (Number.isFinite(position.holdingDays) && position.holdingDays < 30 && Number.isFinite(openPnlPct) && openPnlPct < 0) {
     risks.push("購入から日が浅く、短期ノイズと損切り基準を分けて確認する必要がある");
   }
 
@@ -3001,7 +3021,7 @@ async function aiDecisionChunk(model, items) {
     "ユーザーはデイトレーダーではありません。短期ノイズだけで売買を促さず、根拠不足、材料が古い、検索結果が薄い場合はWATCHを優先してください。",
     "3年で大きく上がった後、現在値が3年の流れや安値から見て高い位置にある場合はBUYにせず、WATCHかHOLDにしてください。",
     "配当利回り、配当の増減、購入日以降の配当込み損益を見てください。高配当だけでBUYにせず、株価下落で利回りが高く見える可能性をリスクに入れてください。",
-    "短期売買ではなく、3年の価格傾向、1年買い場ライン、購入日、購入単価、株数、配当込み損益、直近モメンタム、出来高、悪材料、過熱感、業種環境、保有継続可否を総合評価してください。",
+    "短期売買ではなく、3年の価格傾向、1年買い場ライン、購入日、購入単価、残株数、売却済み株数、確定損益、含み損益、配当込み損益、直近モメンタム、出来高、悪材料、過熱感、業種環境、保有継続可否を総合評価してください。",
     "",
     JSON.stringify({ stocks: items }),
   ].join("\n");
@@ -3370,12 +3390,14 @@ async function checkLmStudio(settings = null) {
 
 function normalizeStock(stock) {
   const positions = normalizePositions(stock);
+  const sales = normalizeSales(stock);
   const aggregate = aggregatePositions(positions);
   const purchaseDate = aggregate.purchaseDate || normalizeDate(stock.purchaseDate);
   const purchasePrice = aggregate.purchasePrice || nullablePositiveNumber(stock.purchasePrice);
-  const quantity = aggregate.quantity || nullablePositiveNumber(stock.quantity);
-  const minimumHoldQuantity = resolveMinimumHoldQuantity(stock, quantity);
-  const hasPosition = positions.length > 0 || Boolean(purchaseDate || purchasePrice || quantity);
+  const soldQuantity = aggregateSales(sales).quantity || 0;
+  const quantity = aggregate.quantity ? Math.max(0, aggregate.quantity - soldQuantity) || null : nullablePositiveNumber(stock.quantity);
+  const minimumHoldQuantity = resolveMinimumHoldQuantity(stock, quantity || aggregate.quantity);
+  const hasPosition = positions.length > 0 || sales.length > 0 || Boolean(purchaseDate || purchasePrice || quantity);
   return {
     symbol: normalizeSymbol(stock.symbol),
     name: String(stock.name || "").trim(),
@@ -3387,6 +3409,7 @@ function normalizeStock(stock) {
     purchasePrice,
     quantity,
     positions,
+    sales,
     minimumHoldQuantity,
     targetBuyPrice: nullablePositiveNumber(stock.targetBuyPrice),
   };
@@ -3394,11 +3417,13 @@ function normalizeStock(stock) {
 
 function normalizeUsStock(stock) {
   const positions = normalizePositions(stock);
+  const sales = normalizeSales(stock);
   const aggregate = aggregatePositions(positions);
   const purchaseDate = aggregate.purchaseDate || normalizeDate(stock.purchaseDate);
   const purchasePrice = aggregate.purchasePrice || nullablePositiveNumber(stock.purchasePrice);
-  const quantity = aggregate.quantity || nullablePositiveNumber(stock.quantity);
-  const hasPosition = positions.length > 0 || Boolean(purchaseDate || purchasePrice || quantity);
+  const soldQuantity = aggregateSales(sales).quantity || 0;
+  const quantity = aggregate.quantity ? Math.max(0, aggregate.quantity - soldQuantity) || null : nullablePositiveNumber(stock.quantity);
+  const hasPosition = positions.length > 0 || sales.length > 0 || Boolean(purchaseDate || purchasePrice || quantity);
   return {
     symbol: normalizeUsSymbol(stock.symbol),
     name: String(stock.name || "").trim(),
@@ -3409,6 +3434,7 @@ function normalizeUsStock(stock) {
     purchasePrice,
     quantity,
     positions,
+    sales,
   };
 }
 
@@ -3423,38 +3449,61 @@ function resolveMinimumHoldQuantity(stock, quantity) {
 
 function positionMetrics(stock, price = {}) {
   const positions = normalizePositions(stock);
+  const sales = normalizeSales(stock);
   const aggregate = aggregatePositions(positions);
-  const quantity = aggregate.quantity;
-  const invested = aggregate.invested;
+  const saleAggregate = aggregateSales(sales);
+  const grossQuantity = aggregate.quantity || 0;
+  const grossInvested = aggregate.invested || 0;
   const purchasePrice = aggregate.purchasePrice;
+  const soldQuantity = Math.min(saleAggregate.quantity || 0, grossQuantity);
+  const remainingQuantity = Math.max(0, grossQuantity - soldQuantity);
+  const remainingInvested = purchasePrice && remainingQuantity ? purchasePrice * remainingQuantity : null;
+  const realizedProceeds = saleAggregate.quantity > 0 && soldQuantity < saleAggregate.quantity
+    ? saleAggregate.proceeds * (soldQuantity / saleAggregate.quantity)
+    : saleAggregate.proceeds;
+  const realizedCost = purchasePrice && soldQuantity ? purchasePrice * soldQuantity : 0;
+  const realizedPnlAmount = Number.isFinite(realizedProceeds) && realizedProceeds
+    ? realizedProceeds - realizedCost
+    : soldQuantity && purchasePrice ? -realizedCost : null;
   const current = nullablePositiveNumber(price.current);
   const firstPurchaseDate = aggregate.purchaseDate;
   const holdingDays = firstPurchaseDate ? daysSince(firstPurchaseDate) : null;
-  const pnlPct = purchasePrice && current ? ((current - purchasePrice) / purchasePrice) * 100 : null;
-  const pnlAmount = purchasePrice && current && quantity ? (current - purchasePrice) * quantity : null;
-  const marketValue = current && quantity ? current * quantity : null;
-  const dividendReceived = dividendsForPositions(positions, price.dividendEvents || []);
-  const annualDividendEstimate = Number.isFinite(price.dividendPerShareTtm) && quantity
-    ? price.dividendPerShareTtm * quantity
+  const unrealizedPnlAmount = purchasePrice && current && remainingQuantity ? (current - purchasePrice) * remainingQuantity : null;
+  const unrealizedPnlPct = purchasePrice && current && remainingQuantity ? ((current - purchasePrice) / purchasePrice) * 100 : null;
+  const pnlParts = [realizedPnlAmount, unrealizedPnlAmount].filter(Number.isFinite);
+  const pnlAmount = pnlParts.length ? pnlParts.reduce((sum, value) => sum + value, 0) : null;
+  const pnlPct = grossInvested && Number.isFinite(pnlAmount) ? (pnlAmount / grossInvested) * 100 : null;
+  const marketValue = current && remainingQuantity ? current * remainingQuantity : null;
+  const dividendReceived = dividendsForPositionHistory(positions, sales, price.dividendEvents || []);
+  const annualDividendEstimate = Number.isFinite(price.dividendPerShareTtm) && remainingQuantity
+    ? price.dividendPerShareTtm * remainingQuantity
     : null;
   const totalReturnAmount = Number.isFinite(pnlAmount)
     ? pnlAmount + (Number.isFinite(dividendReceived) ? dividendReceived : 0)
     : null;
-  const totalReturnPct = invested && Number.isFinite(totalReturnAmount)
-    ? (totalReturnAmount / invested) * 100
+  const totalReturnPct = grossInvested && Number.isFinite(totalReturnAmount)
+    ? (totalReturnAmount / grossInvested) * 100
     : null;
   const minimumHoldQuantity = nullableNonNegativeNumber(stock.minimumHoldQuantity) || 0;
-  const sellableQuantity = Math.max(0, (quantity || 0) - minimumHoldQuantity);
+  const sellableQuantity = Math.max(0, remainingQuantity - minimumHoldQuantity);
   return {
     positions,
+    sales,
     purchaseDate: firstPurchaseDate,
     purchasePrice,
-    quantity: quantity || null,
+    quantity: remainingQuantity || null,
+    grossQuantity: grossQuantity || null,
+    soldQuantity: soldQuantity || null,
     holdingDays,
-    invested: invested || null,
+    invested: remainingInvested || null,
+    grossInvested: grossInvested || null,
     marketValue,
-    pnlAmount,
+    pnlAmount: Number.isFinite(pnlAmount) ? pnlAmount : null,
     pnlPct,
+    realizedPnlAmount,
+    unrealizedPnlAmount,
+    unrealizedPnlPct,
+    realizedProceeds: realizedProceeds || null,
     dividendReceived,
     annualDividendEstimate,
     totalReturnAmount,
@@ -3464,15 +3513,20 @@ function positionMetrics(stock, price = {}) {
   };
 }
 
-function dividendsForPositions(positions, dividendEvents = []) {
-  return positions.reduce((sum, lot) => {
-    const purchaseTime = lot.purchaseDate ? new Date(`${lot.purchaseDate}T00:00:00`).getTime() : null;
-    if (!Number.isFinite(purchaseTime) || !lot.quantity) return sum;
-    return sum + dividendEvents.reduce((eventSum, event) => {
-      const time = event.date ? new Date(`${event.date}T00:00:00`).getTime() : null;
-      if (!Number.isFinite(time) || time < purchaseTime || !Number.isFinite(event.amount)) return eventSum;
-      return eventSum + (event.amount * lot.quantity);
+function dividendsForPositionHistory(positions, sales, dividendEvents = []) {
+  return dividendEvents.reduce((sum, event) => {
+    const eventTime = event.date ? new Date(`${event.date}T00:00:00`).getTime() : null;
+    const amount = Number(event.amount);
+    if (!Number.isFinite(eventTime) || !Number.isFinite(amount)) return sum;
+    const bought = positions.reduce((qty, lot) => {
+      const time = lot.purchaseDate ? new Date(`${lot.purchaseDate}T00:00:00`).getTime() : -Infinity;
+      return Number.isFinite(time) && time <= eventTime ? qty + lot.quantity : qty;
     }, 0);
+    const sold = sales.reduce((qty, lot) => {
+      const time = lot.sellDate ? new Date(`${lot.sellDate}T00:00:00`).getTime() : Infinity;
+      return Number.isFinite(time) && time <= eventTime ? qty + lot.quantity : qty;
+    }, 0);
+    return sum + (Math.max(0, bought - sold) * amount);
   }, 0);
 }
 
@@ -3619,6 +3673,17 @@ function aggregatePositions(positions) {
     purchasePrice: quantity > 0 ? invested / quantity : null,
     quantity: quantity || null,
     invested: invested || null,
+  };
+}
+
+function aggregateSales(sales) {
+  const quantity = sales.reduce((sum, lot) => sum + lot.quantity, 0);
+  const proceeds = sales.reduce((sum, lot) => sum + (lot.sellPrice * lot.quantity), 0);
+  return {
+    sellDate: sales.map((lot) => lot.sellDate).filter(Boolean).sort().at(-1) || "",
+    sellPrice: quantity > 0 ? proceeds / quantity : null,
+    quantity: quantity || null,
+    proceeds: proceeds || null,
   };
 }
 
@@ -3882,7 +3947,9 @@ function estimateBuyEdgeYen(price = {}, unitSize = 100) {
 function estimateSellEdgeYen(position = {}, sellableQuantity = 0) {
   const quantity = nullablePositiveNumber(position.quantity);
   if (!quantity || !sellableQuantity) return 0;
-  const total = Number.isFinite(position.totalReturnAmount) ? position.totalReturnAmount : position.pnlAmount;
+  const total = Number.isFinite(position.unrealizedPnlAmount)
+    ? position.unrealizedPnlAmount
+    : position.pnlAmount;
   if (!Number.isFinite(total)) return 0;
   return Math.abs((total / quantity) * sellableQuantity);
 }
@@ -4417,6 +4484,18 @@ function normalizePositions(stock) {
       quantity: nullablePositiveNumber(lot.quantity),
     }))
     .filter((lot) => lot.purchasePrice && lot.quantity)
+    .slice(0, 50);
+}
+
+function normalizeSales(stock) {
+  const raw = Array.isArray(stock.sales) ? stock.sales : [];
+  return raw
+    .map((lot) => ({
+      sellDate: normalizeDate(lot.sellDate || lot.saleDate),
+      sellPrice: nullablePositiveNumber(lot.sellPrice || lot.salePrice),
+      quantity: nullablePositiveNumber(lot.quantity),
+    }))
+    .filter((lot) => lot.sellPrice && lot.quantity)
     .slice(0, 50);
 }
 

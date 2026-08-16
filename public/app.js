@@ -527,7 +527,7 @@ function renderUsTable() {
         </td>
         <td>${usd(analysis?.price?.current)}</td>
         <td>${usd(position.purchasePrice)}</td>
-        <td>${Number.isFinite(position.quantity) ? position.quantity.toLocaleString("ja-JP") : "-"}</td>
+        <td>${shareCount(position.quantity)}</td>
         <td>${positionPnlUsd(position)}</td>
         <td>${usStanceBadge(analysis?.ai)}</td>
         <td><button type="button" class="icon" data-remove-us="${escapeAttr(stock.symbol)}" aria-label="${escapeAttr(stock.name)}を削除">×</button></td>
@@ -619,9 +619,17 @@ function portfolioSummary() {
   return state.stocks.reduce((summary, stock) => {
     const analysis = state.analyses[stock.symbol];
     const position = positionMetrics(stock, analysis?.price);
-    if (!stock.holding || !Number.isFinite(position.invested) || !Number.isFinite(position.marketValue)) return summary;
-    summary.invested += position.invested;
-    summary.marketValue += position.marketValue;
+    const hasPositionResult = Number.isFinite(position.grossInvested)
+      || Number.isFinite(position.invested)
+      || Number.isFinite(position.pnlAmount);
+    if (!stock.holding || !hasPositionResult) return summary;
+    summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
+    summary.grossInvested += Number.isFinite(position.grossInvested)
+      ? position.grossInvested
+      : Number.isFinite(position.invested)
+      ? position.invested
+      : 0;
+    summary.marketValue += Number.isFinite(position.marketValue) ? position.marketValue : 0;
     summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
     summary.dividendReceived += Number.isFinite(position.dividendReceived) ? position.dividendReceived : 0;
     summary.annualDividendEstimate += Number.isFinite(position.annualDividendEstimate) ? position.annualDividendEstimate : 0;
@@ -634,11 +642,12 @@ function portfolioSummary() {
     const resultAmount = Number.isFinite(position.totalReturnAmount) ? position.totalReturnAmount : position.pnlAmount;
     if (Number.isFinite(resultAmount) && resultAmount > 0) summary.winCount += 1;
     if (Number.isFinite(resultAmount) && resultAmount < 0) summary.lossCount += 1;
-    summary.pnlPct = summary.invested > 0 ? (summary.pnlAmount / summary.invested) * 100 : null;
-    summary.totalReturnPct = summary.invested > 0 ? (summary.totalReturnAmount / summary.invested) * 100 : null;
+    summary.pnlPct = summary.grossInvested > 0 ? (summary.pnlAmount / summary.grossInvested) * 100 : null;
+    summary.totalReturnPct = summary.grossInvested > 0 ? (summary.totalReturnAmount / summary.grossInvested) * 100 : null;
     return summary;
   }, {
     invested: 0,
+    grossInvested: 0,
     marketValue: 0,
     pnlAmount: 0,
     pnlPct: null,
@@ -656,16 +665,25 @@ function usSummaryFromState() {
   return state.usStocks.reduce((summary, stock) => {
     const analysis = state.usAnalyses[stock.symbol];
     const position = analysis?.position || positionMetrics(stock, analysis?.price);
-    if (!stock.holding || !Number.isFinite(position.invested) || !Number.isFinite(position.marketValue)) return summary;
-    summary.invested += position.invested;
-    summary.marketValue += position.marketValue;
+    const hasPositionResult = Number.isFinite(position.grossInvested)
+      || Number.isFinite(position.invested)
+      || Number.isFinite(position.pnlAmount);
+    if (!stock.holding || !hasPositionResult) return summary;
+    summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
+    summary.grossInvested += Number.isFinite(position.grossInvested)
+      ? position.grossInvested
+      : Number.isFinite(position.invested)
+      ? position.invested
+      : 0;
+    summary.marketValue += Number.isFinite(position.marketValue) ? position.marketValue : 0;
     summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
     summary.winCount += Number.isFinite(position.pnlAmount) && position.pnlAmount >= 0 ? 1 : 0;
     summary.lossCount += Number.isFinite(position.pnlAmount) && position.pnlAmount < 0 ? 1 : 0;
-    summary.pnlPct = summary.invested > 0 ? (summary.pnlAmount / summary.invested) * 100 : null;
+    summary.pnlPct = summary.grossInvested > 0 ? (summary.pnlAmount / summary.grossInvested) * 100 : null;
     return summary;
   }, {
     invested: 0,
+    grossInvested: 0,
     marketValue: 0,
     pnlAmount: 0,
     pnlPct: null,
@@ -701,16 +719,19 @@ function usPositionEditor(stock, position) {
   const metrics = position || positionMetrics(stock);
   const lots = metrics.lots?.length ? metrics.lots : positionLots(stock);
   const displayLots = lots.length ? lots : [{ purchaseDate: "", purchasePrice: null, quantity: null }];
+  const sales = metrics.sales?.length ? metrics.sales : saleLots(stock);
+  const displaySales = sales.length ? sales : [{ sellDate: "", sellPrice: null, quantity: null }];
   return `
     <form id="usPositionForm" class="position-form">
       <div class="position-form-title">
-        <strong>保有情報 USD</strong>
+        <strong>保有・売却情報 USD</strong>
         <label class="checkbox-line">
           <input name="holding" type="checkbox" ${stock.holding ? "checked" : ""}>
           <span>保有中</span>
         </label>
       </div>
       <div class="position-lots" aria-label="米国株購入明細">
+        <div class="lot-section-title buy">購入明細</div>
         <div class="lot-head">
           <span>購入日</span>
           <span>購入単価 USD</span>
@@ -722,11 +743,27 @@ function usPositionEditor(stock, position) {
         </div>
         <button type="button" class="secondary add-lot" data-add-lot>明細を追加</button>
       </div>
+      <div class="position-lots sale-lots" aria-label="米国株売却明細">
+        <div class="lot-section-title">売却明細</div>
+        <div class="lot-head">
+          <span>売却日</span>
+          <span>売却単価 USD</span>
+          <span>株数</span>
+          <span></span>
+        </div>
+        <div class="sale-list">
+          ${displaySales.map((lot) => saleRow(lot)).join("")}
+        </div>
+        <button type="button" class="secondary add-lot" data-add-sale>売却明細を追加</button>
+      </div>
       <div class="position-stats">
         <span><strong>平均取得</strong>${usd(metrics.purchasePrice)}</span>
-        <span><strong>合計株数</strong>${Number.isFinite(metrics.quantity) && metrics.quantity > 0 ? metrics.quantity.toLocaleString("ja-JP") : "-"}</span>
-        <span><strong>損益</strong>${positionPnlUsd(metrics)}</span>
-        <span><strong>投下額</strong>${usd(metrics.invested)}</span>
+        <span><strong>残株数</strong>${shareCount(metrics.quantity)}</span>
+        <span><strong>売却済み</strong>${shareCount(metrics.soldQuantity)}</span>
+        <span><strong>合計損益</strong>${positionPnlUsd(metrics)}</span>
+        <span><strong>確定損益</strong>${usd(metrics.realizedPnlAmount)}</span>
+        <span><strong>含み損益</strong>${usd(metrics.unrealizedPnlAmount)}</span>
+        <span><strong>残り元本</strong>${usd(metrics.invested)}</span>
         <span><strong>評価額</strong>${usd(metrics.marketValue)}</span>
       </div>
       <button type="submit">保存</button>
@@ -741,10 +778,19 @@ function attachUsPositionForm(symbol) {
     const list = form.querySelector(".lot-list");
     list.insertAdjacentHTML("beforeend", lotRow({ purchaseDate: "", purchasePrice: null, quantity: null }));
   });
+  form.querySelector("[data-add-sale]")?.addEventListener("click", () => {
+    const list = form.querySelector(".sale-list");
+    list.insertAdjacentHTML("beforeend", saleRow({ sellDate: "", sellPrice: null, quantity: null }));
+  });
   form.addEventListener("click", (event) => {
+    const saleButton = event.target.closest("[data-remove-sale]");
+    if (saleButton) {
+      clearOrRemoveSaleRow(form, saleButton);
+      return;
+    }
     const button = event.target.closest("[data-remove-lot]");
     if (!button) return;
-    const rows = [...form.querySelectorAll(".lot-row")];
+    const rows = [...form.querySelectorAll(".lot-list .lot-row")];
     if (rows.length <= 1) {
       rows[0].querySelector('[name="purchaseDate"]').value = "";
       rows[0].querySelector('[name="purchasePrice"]').value = "";
@@ -759,6 +805,7 @@ function attachUsPositionForm(symbol) {
       const payload = {
         holding: form.elements.holding.checked,
         positions: readLotRows(form),
+        sales: readSaleRows(form),
       };
       const result = await request(`/api/us-stocks/${encodeURIComponent(symbol)}`, {
         method: "PATCH",
@@ -1595,6 +1642,11 @@ function trendGapBadge(value) {
   return "同じ";
 }
 
+function shareCount(value) {
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  return `${value.toLocaleString("ja-JP", { maximumFractionDigits: 4 })}株`;
+}
+
 function buyTimingBadge(price = {}) {
   const gap = Number(price.distanceFromBuyLine1y);
   if (!Number.isFinite(gap)) return "-";
@@ -1643,34 +1695,58 @@ function isNoUpsideChart(price = {}) {
 
 function positionMetrics(stock, price = {}) {
   const lots = positionLots(stock);
-  const quantity = lots.reduce((sum, lot) => sum + lot.quantity, 0);
-  const invested = lots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
-  const purchasePrice = quantity > 0 ? invested / quantity : null;
+  const sales = saleLots(stock);
+  const grossQuantity = lots.reduce((sum, lot) => sum + lot.quantity, 0);
+  const grossInvested = lots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
+  const purchasePrice = grossQuantity > 0 ? grossInvested / grossQuantity : null;
+  const soldInputQuantity = sales.reduce((sum, lot) => sum + lot.quantity, 0);
+  const soldQuantity = Math.min(soldInputQuantity, grossQuantity);
+  const remainingQuantity = Math.max(0, grossQuantity - soldQuantity);
+  const remainingInvested = purchasePrice && remainingQuantity ? purchasePrice * remainingQuantity : null;
+  const saleProceeds = sales.reduce((sum, lot) => sum + (lot.sellPrice * lot.quantity), 0);
+  const realizedProceeds = soldInputQuantity > 0 && soldQuantity < soldInputQuantity
+    ? saleProceeds * (soldQuantity / soldInputQuantity)
+    : saleProceeds;
+  const realizedCost = purchasePrice && soldQuantity ? purchasePrice * soldQuantity : 0;
+  const realizedPnlAmount = Number.isFinite(realizedProceeds) && realizedProceeds
+    ? realizedProceeds - realizedCost
+    : soldQuantity && purchasePrice ? -realizedCost : null;
   const current = finiteOrNull(price?.current);
   const firstPurchaseDate = lots.map((lot) => lot.purchaseDate).filter(Boolean).sort()[0] || "";
   const holdingDays = firstPurchaseDate ? daysSince(firstPurchaseDate) : null;
-  const pnlPct = purchasePrice && current ? ((current - purchasePrice) / purchasePrice) * 100 : null;
-  const pnlAmount = purchasePrice && current && quantity ? (current - purchasePrice) * quantity : null;
-  const marketValue = current && quantity ? current * quantity : null;
-  const dividendReceived = dividendsForLots(lots, price?.dividendEvents || []);
-  const annualDividendEstimate = Number.isFinite(price?.dividendPerShareTtm) && quantity
-    ? price.dividendPerShareTtm * quantity
+  const unrealizedPnlAmount = purchasePrice && current && remainingQuantity ? (current - purchasePrice) * remainingQuantity : null;
+  const unrealizedPnlPct = purchasePrice && current && remainingQuantity ? ((current - purchasePrice) / purchasePrice) * 100 : null;
+  const pnlParts = [realizedPnlAmount, unrealizedPnlAmount].filter(Number.isFinite);
+  const pnlAmount = pnlParts.length ? pnlParts.reduce((sum, value) => sum + value, 0) : null;
+  const pnlPct = grossInvested && Number.isFinite(pnlAmount) ? (pnlAmount / grossInvested) * 100 : null;
+  const marketValue = current && remainingQuantity ? current * remainingQuantity : null;
+  const dividendReceived = dividendsForPositionHistory(lots, sales, price?.dividendEvents || []);
+  const annualDividendEstimate = Number.isFinite(price?.dividendPerShareTtm) && remainingQuantity
+    ? price.dividendPerShareTtm * remainingQuantity
     : null;
   const totalReturnAmount = Number.isFinite(pnlAmount)
     ? pnlAmount + (Number.isFinite(dividendReceived) ? dividendReceived : 0)
     : null;
-  const totalReturnPct = invested && Number.isFinite(totalReturnAmount) ? (totalReturnAmount / invested) * 100 : null;
+  const totalReturnPct = grossInvested && Number.isFinite(totalReturnAmount) ? (totalReturnAmount / grossInvested) * 100 : null;
   const minimumHoldQuantity = finiteOrZero(stock.minimumHoldQuantity);
-  const sellableQuantity = Math.max(0, (quantity || 0) - minimumHoldQuantity);
+  const sellableQuantity = Math.max(0, remainingQuantity - minimumHoldQuantity);
   return {
     lots,
+    sales,
     purchasePrice,
-    quantity,
+    quantity: remainingQuantity || null,
+    grossQuantity: grossQuantity || null,
+    soldQuantity: soldQuantity || null,
     current,
     holdingDays,
     pnlPct,
     pnlAmount,
-    invested: invested || null,
+    realizedPnlAmount,
+    unrealizedPnlAmount,
+    unrealizedPnlPct,
+    realizedProceeds: realizedProceeds || null,
+    invested: remainingInvested || null,
+    grossInvested: grossInvested || null,
     marketValue,
     firstPurchaseDate,
     dividendReceived,
@@ -1682,15 +1758,20 @@ function positionMetrics(stock, price = {}) {
   };
 }
 
-function dividendsForLots(lots, dividendEvents = []) {
-  return lots.reduce((sum, lot) => {
-    const purchaseTime = lot.purchaseDate ? new Date(`${lot.purchaseDate}T00:00:00`).getTime() : null;
-    if (!Number.isFinite(purchaseTime) || !lot.quantity) return sum;
-    return sum + dividendEvents.reduce((eventSum, event) => {
-      const time = event.date ? new Date(`${event.date}T00:00:00`).getTime() : null;
-      if (!Number.isFinite(time) || time < purchaseTime || !Number.isFinite(Number(event.amount))) return eventSum;
-      return eventSum + (Number(event.amount) * lot.quantity);
+function dividendsForPositionHistory(lots, sales, dividendEvents = []) {
+  return dividendEvents.reduce((sum, event) => {
+    const eventTime = event.date ? new Date(`${event.date}T00:00:00`).getTime() : null;
+    const amount = Number(event.amount);
+    if (!Number.isFinite(eventTime) || !Number.isFinite(amount)) return sum;
+    const bought = lots.reduce((qty, lot) => {
+      const time = lot.purchaseDate ? new Date(`${lot.purchaseDate}T00:00:00`).getTime() : -Infinity;
+      return Number.isFinite(time) && time <= eventTime ? qty + lot.quantity : qty;
     }, 0);
+    const sold = sales.reduce((qty, lot) => {
+      const time = lot.sellDate ? new Date(`${lot.sellDate}T00:00:00`).getTime() : Infinity;
+      return Number.isFinite(time) && time <= eventTime ? qty + lot.quantity : qty;
+    }, 0);
+    return sum + (Math.max(0, bought - sold) * amount);
   }, 0);
 }
 
@@ -1710,17 +1791,20 @@ function positionPnl(position, compact = false) {
 function positionEditor(stock, position, analysis) {
   const metrics = position || positionMetrics(stock);
   const lots = metrics.lots.length ? metrics.lots : [{ purchaseDate: "", purchasePrice: null, quantity: null }];
+  const sales = metrics.sales?.length ? metrics.sales : saleLots(stock);
+  const displaySales = sales.length ? sales : [{ sellDate: "", sellPrice: null, quantity: null }];
   const entry = effectiveEntryValue(stock, analysis?.price || {}, analysis?.entryValue);
   return `
     <form id="positionForm" class="position-form">
       <div class="position-form-title">
-        <strong>保有情報</strong>
+        <strong>保有・売却情報</strong>
         <label class="checkbox-line">
           <input name="holding" type="checkbox" ${stock.holding ? "checked" : ""}>
           <span>保有中</span>
         </label>
       </div>
       <div class="position-lots" aria-label="購入明細">
+        <div class="lot-section-title buy">購入明細</div>
         <div class="lot-head">
           <span>購入日</span>
           <span>購入単価</span>
@@ -1731,6 +1815,19 @@ function positionEditor(stock, position, analysis) {
         ${lots.map((lot) => lotRow(lot)).join("")}
         </div>
         <button type="button" class="secondary add-lot" data-add-lot>明細を追加</button>
+      </div>
+      <div class="position-lots sale-lots" aria-label="売却明細">
+        <div class="lot-section-title">売却明細</div>
+        <div class="lot-head">
+          <span>売却日</span>
+          <span>売却単価</span>
+          <span>株数</span>
+          <span></span>
+        </div>
+        <div class="sale-list">
+        ${displaySales.map((lot) => saleRow(lot)).join("")}
+        </div>
+        <button type="button" class="secondary add-lot" data-add-sale>売却明細を追加</button>
       </div>
       <div class="entry-value">
         <label>
@@ -1745,9 +1842,12 @@ function positionEditor(stock, position, analysis) {
       </div>
       <div class="position-stats">
         <span><strong>平均取得</strong>${yen(metrics.purchasePrice)}</span>
-        <span><strong>合計株数</strong>${Number.isFinite(metrics.quantity) && metrics.quantity > 0 ? metrics.quantity.toLocaleString("ja-JP") : "-"}</span>
+        <span><strong>残株数</strong>${shareCount(metrics.quantity)}</span>
+        <span><strong>売却済み</strong>${shareCount(metrics.soldQuantity)}</span>
         <span><strong>配当込み損益</strong>${positionPnl(metrics)}</span>
-        <span><strong>投下額</strong>${yen(metrics.invested)}</span>
+        <span><strong>確定損益</strong>${yen(metrics.realizedPnlAmount)}</span>
+        <span><strong>含み損益</strong>${yen(metrics.unrealizedPnlAmount)}</span>
+        <span><strong>残り元本</strong>${yen(metrics.invested)}</span>
         <span><strong>評価額</strong>${yen(metrics.marketValue)}</span>
         <span><strong>年間配当目安</strong>${yen(metrics.annualDividendEstimate)}</span>
         <span><strong>残す株数</strong>${metrics.minimumHoldQuantity ? `${metrics.minimumHoldQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
@@ -1765,11 +1865,20 @@ function attachPositionForm(symbol) {
     const list = form.querySelector(".lot-list");
     list.insertAdjacentHTML("beforeend", lotRow({ purchaseDate: "", purchasePrice: null, quantity: null }));
   });
+  form.querySelector("[data-add-sale]")?.addEventListener("click", () => {
+    const list = form.querySelector(".sale-list");
+    list.insertAdjacentHTML("beforeend", saleRow({ sellDate: "", sellPrice: null, quantity: null }));
+  });
 
   form.addEventListener("click", (event) => {
+    const saleButton = event.target.closest("[data-remove-sale]");
+    if (saleButton) {
+      clearOrRemoveSaleRow(form, saleButton);
+      return;
+    }
     const button = event.target.closest("[data-remove-lot]");
     if (!button) return;
-    const rows = [...form.querySelectorAll(".lot-row")];
+    const rows = [...form.querySelectorAll(".lot-list .lot-row")];
     if (rows.length <= 1) {
       rows[0].querySelector('[name="purchaseDate"]').value = "";
       rows[0].querySelector('[name="purchasePrice"]').value = "";
@@ -1785,6 +1894,7 @@ function attachPositionForm(symbol) {
       const payload = {
         holding: form.elements.holding.checked,
         positions: readLotRows(form),
+        sales: readSaleRows(form),
         targetBuyPrice: valueOrNull(form.elements.targetBuyPrice.value),
         minimumHoldQuantity: valueOrZero(form.elements.minimumHoldQuantity.value),
       };
@@ -2212,6 +2322,17 @@ function positionLots(stock) {
     .filter((lot) => lot.purchasePrice && lot.quantity);
 }
 
+function saleLots(stock) {
+  const source = Array.isArray(stock.sales) ? stock.sales : [];
+  return source
+    .map((lot) => ({
+      sellDate: String(lot.sellDate || lot.saleDate || ""),
+      sellPrice: finiteOrNull(lot.sellPrice || lot.salePrice),
+      quantity: finiteOrNull(lot.quantity),
+    }))
+    .filter((lot) => lot.sellPrice && lot.quantity);
+}
+
 function lotRow(lot) {
   return `
     <div class="lot-row">
@@ -2232,14 +2353,56 @@ function lotRow(lot) {
   `;
 }
 
+function saleRow(lot) {
+  return `
+    <div class="lot-row sale-row">
+      <label>
+        <span>売却日</span>
+        <input name="sellDate" type="date" value="${escapeAttr(lot.sellDate || "")}">
+      </label>
+      <label>
+        <span>売却単価</span>
+        <input name="sellPrice" type="number" min="0" step="0.01" value="${numberValue(lot.sellPrice)}">
+      </label>
+      <label>
+        <span>株数</span>
+        <input name="sellQuantity" type="number" min="0" step="0.0001" value="${numberValue(lot.quantity)}">
+      </label>
+      <button type="button" class="icon lot-remove" data-remove-sale aria-label="売却明細を削除">×</button>
+    </div>
+  `;
+}
+
 function readLotRows(form) {
   return [...form.querySelectorAll(".lot-row")]
+    .filter((row) => !row.classList.contains("sale-row"))
     .map((row) => ({
       purchaseDate: row.querySelector('[name="purchaseDate"]').value,
       purchasePrice: valueOrNull(row.querySelector('[name="purchasePrice"]').value),
       quantity: valueOrNull(row.querySelector('[name="quantity"]').value),
     }))
     .filter((lot) => lot.purchasePrice && lot.quantity);
+}
+
+function readSaleRows(form) {
+  return [...form.querySelectorAll(".sale-row")]
+    .map((row) => ({
+      sellDate: row.querySelector('[name="sellDate"]').value,
+      sellPrice: valueOrNull(row.querySelector('[name="sellPrice"]').value),
+      quantity: valueOrNull(row.querySelector('[name="sellQuantity"]').value),
+    }))
+    .filter((lot) => lot.sellPrice && lot.quantity);
+}
+
+function clearOrRemoveSaleRow(form, button) {
+  const rows = [...form.querySelectorAll(".sale-row")];
+  if (rows.length <= 1) {
+    rows[0].querySelector('[name="sellDate"]').value = "";
+    rows[0].querySelector('[name="sellPrice"]').value = "";
+    rows[0].querySelector('[name="sellQuantity"]').value = "";
+    return;
+  }
+  button.closest(".sale-row").remove();
 }
 
 function finiteOrNull(value) {

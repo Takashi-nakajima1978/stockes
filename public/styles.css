@@ -878,6 +878,21 @@ tr.selected {
   gap: 8px;
 }
 
+.sale-lots {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.lot-section-title {
+  color: var(--sell);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.lot-section-title.buy {
+  color: var(--accent);
+}
+
 .lot-head,
 .lot-row {
   display: grid;
@@ -910,6 +925,10 @@ tr.selected {
   align-self: end;
   border-color: var(--line);
   background: #fff;
+}
+
+.sale-row input {
+  border-color: #e7c9cb;
 }
 
 .add-lot {
