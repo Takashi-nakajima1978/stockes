@@ -21,6 +21,7 @@
       <nav class="side-nav" aria-label="画面切り替え">
         <button type="button" data-view-target="analysis" class="active">損益を見る</button>
         <button type="button" data-view-target="stocks">保有を入力</button>
+        <button type="button" data-view-target="us">米国株</button>
         <button type="button" data-view-target="ideas">候補を探す</button>
         <button type="button" data-view-target="settings">接続設定</button>
       </nav>
@@ -234,6 +235,111 @@
         </section>
       </section>
 
+      <section class="view-panel" data-view="us">
+        <section class="command-band">
+          <div>
+            <p class="eyebrow">US Holdings</p>
+            <h2>米国株 損益</h2>
+          </div>
+          <div class="actions">
+            <button id="usAnalyzeButton" type="button">米国株を更新</button>
+          </div>
+        </section>
+
+        <section class="profit-summary us-profit-summary" aria-live="polite">
+          <article class="profit-card primary">
+            <span>ドル損益</span>
+            <strong id="usProfitAmount">-</strong>
+            <small id="usProfitPct">更新待ち</small>
+          </article>
+          <article class="profit-card">
+            <span>投下額</span>
+            <strong id="usInvestedTotal">-</strong>
+            <small>買った金額</small>
+          </article>
+          <article class="profit-card">
+            <span>評価額</span>
+            <strong id="usMarketTotal">-</strong>
+            <small>今の株価ベース</small>
+          </article>
+          <article class="profit-card">
+            <span>勝ち / 負け</span>
+            <strong><span id="usWinCount">0</span> / <span id="usLossCount">0</span></strong>
+            <small>米国株だけ</small>
+          </article>
+        </section>
+
+        <section class="content-grid manage-grid">
+          <form id="usStockForm" class="stock-form">
+            <div class="panel-title compact-title">
+              <h3>米国株を追加</h3>
+            </div>
+            <label>
+              <span>銘柄名</span>
+              <input id="usStockName" name="name" autocomplete="off" placeholder="例: Coca-Cola" required>
+            </label>
+            <label>
+              <span>ティッカー</span>
+              <input id="usStockSymbol" name="symbol" autocomplete="off" placeholder="例: KO" required>
+            </label>
+            <label>
+              <span>市場</span>
+              <select id="usStockMarket" name="market">
+                <option value="NYSE">NYSE</option>
+                <option value="NASDAQ">NASDAQ</option>
+                <option value="AMEX">AMEX</option>
+              </select>
+            </label>
+            <label>
+              <span>購入日</span>
+              <input id="usStockPurchaseDate" name="purchaseDate" type="date">
+            </label>
+            <label>
+              <span>購入単価 USD</span>
+              <input id="usStockPurchasePrice" name="purchasePrice" type="number" min="0" step="0.01" placeholder="例: 120.50">
+            </label>
+            <label>
+              <span>株数</span>
+              <input id="usStockQuantity" name="quantity" type="number" min="0" step="0.0001" placeholder="例: 10">
+            </label>
+            <button type="submit">米国株に追加</button>
+          </form>
+
+          <div class="table-panel">
+            <div class="panel-title">
+              <h3>米国株リスト</h3>
+              <span id="usLastRun">未更新</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>銘柄</th>
+                    <th>現在</th>
+                    <th>取得</th>
+                    <th>株数</th>
+                    <th>損益</th>
+                    <th>AI確認</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="usStockTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="research-panel">
+          <div class="panel-title">
+            <h3>米国株 Detail</h3>
+            <span id="usSelectedSymbol">未選択</span>
+          </div>
+          <div id="usDetail" class="decision-detail">
+            <p>Accenture、NVIDIA、Intelを初期表示します。保有明細を入れて更新するとドル損益とAI要約を表示します。</p>
+          </div>
+        </section>
+      </section>
+
       <section class="view-panel" data-view="ideas">
         <section class="command-band">
           <div>
@@ -383,16 +489,20 @@
 
           <div class="settings-card">
             <div class="panel-title compact-title">
-              <h3>日次運用</h3>
+              <h3>自動更新</h3>
               <span>起動中だけ実行</span>
             </div>
-            <section class="control-strip" aria-label="日次運用">
+            <section class="control-strip" aria-label="自動更新">
+              <label class="checkbox-line setting-check">
+                <input id="settingsHourlyRefreshEnabled" type="checkbox">
+                <span>1時間ごとに保有を更新</span>
+              </label>
               <label class="checkbox-line setting-check">
                 <input id="settingsDailyDiscoveryEnabled" type="checkbox">
-                <span>毎日候補を裏で更新</span>
+                <span>候補は1日1回だけ更新</span>
               </label>
               <label>
-                <span>開始時刻</span>
+                <span>候補開始時刻</span>
                 <input id="settingsDailyDiscoveryHour" type="number" min="0" max="23" step="1" value="7">
               </label>
             </section>

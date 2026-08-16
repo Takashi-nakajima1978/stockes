@@ -1,6 +1,9 @@
 const state = {
   stocks: [],
   analyses: {},
+  usStocks: [],
+  usAnalyses: {},
+  usSummary: null,
   suggestions: [],
   excludedCandidates: [],
   sectorEvidence: [],
@@ -11,6 +14,7 @@ const state = {
   diagnostics: null,
   settings: null,
   selected: null,
+  usSelected: null,
   view: "analysis",
   ideaView: "candidates",
   running: false,
@@ -56,6 +60,24 @@ const els = {
   stockCount: document.getElementById("stockCount"),
   stockProgress: document.getElementById("stockProgress"),
   analyzeButton: document.getElementById("analyzeButton"),
+  usAnalyzeButton: document.getElementById("usAnalyzeButton"),
+  usStockForm: document.getElementById("usStockForm"),
+  usStockName: document.getElementById("usStockName"),
+  usStockSymbol: document.getElementById("usStockSymbol"),
+  usStockMarket: document.getElementById("usStockMarket"),
+  usStockPurchaseDate: document.getElementById("usStockPurchaseDate"),
+  usStockPurchasePrice: document.getElementById("usStockPurchasePrice"),
+  usStockQuantity: document.getElementById("usStockQuantity"),
+  usProfitAmount: document.getElementById("usProfitAmount"),
+  usProfitPct: document.getElementById("usProfitPct"),
+  usInvestedTotal: document.getElementById("usInvestedTotal"),
+  usMarketTotal: document.getElementById("usMarketTotal"),
+  usWinCount: document.getElementById("usWinCount"),
+  usLossCount: document.getElementById("usLossCount"),
+  usLastRun: document.getElementById("usLastRun"),
+  usStockTable: document.getElementById("usStockTable"),
+  usSelectedSymbol: document.getElementById("usSelectedSymbol"),
+  usDetail: document.getElementById("usDetail"),
   discoverButton: document.getElementById("discoverButton"),
   websiteLimit: document.getElementById("websiteLimit"),
   depthLimit: document.getElementById("depthLimit"),
@@ -99,6 +121,7 @@ const els = {
   settingsUnitBudget: document.getElementById("settingsUnitBudget"),
   settingsDailyDiscoveryEnabled: document.getElementById("settingsDailyDiscoveryEnabled"),
   settingsDailyDiscoveryHour: document.getElementById("settingsDailyDiscoveryHour"),
+  settingsHourlyRefreshEnabled: document.getElementById("settingsHourlyRefreshEnabled"),
   settingsNotificationsEnabled: document.getElementById("settingsNotificationsEnabled"),
   settingsTradeFeeYen: document.getElementById("settingsTradeFeeYen"),
   settingsNotificationMinNetEdgeYen: document.getElementById("settingsNotificationMinNetEdgeYen"),
@@ -138,6 +161,15 @@ function yen(value) {
     style: "currency",
     currency: "JPY",
     maximumFractionDigits: value >= 1000 ? 0 : 1,
+  }).format(value);
+}
+
+function usd(value) {
+  if (!Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: Math.abs(value) >= 1000 ? 0 : 2,
   }).format(value);
 }
 
@@ -206,6 +238,7 @@ function applySettings(settings = {}) {
   if (els.settingsUnitBudget) els.settingsUnitBudget.value = settings.unitBudget || 300000;
   if (els.settingsDailyDiscoveryEnabled) els.settingsDailyDiscoveryEnabled.checked = settings.dailyDiscoveryEnabled !== false;
   if (els.settingsDailyDiscoveryHour) els.settingsDailyDiscoveryHour.value = Number.isFinite(settings.dailyDiscoveryHour) ? settings.dailyDiscoveryHour : 7;
+  if (els.settingsHourlyRefreshEnabled) els.settingsHourlyRefreshEnabled.checked = settings.hourlyRefreshEnabled !== false;
   if (els.settingsNotificationsEnabled) els.settingsNotificationsEnabled.checked = settings.notificationsEnabled === true;
   if (els.settingsTradeFeeYen) els.settingsTradeFeeYen.value = settings.tradeFeeYen || 0;
   if (els.settingsNotificationMinNetEdgeYen) els.settingsNotificationMinNetEdgeYen.value = settings.notificationMinNetEdgeYen || 5000;
@@ -226,6 +259,13 @@ async function loadStocks() {
   render();
 }
 
+async function loadUsStocks() {
+  const payload = await request("/api/us-stocks");
+  state.usStocks = payload.stocks || [];
+  if (!state.usSelected && state.usStocks.length) state.usSelected = state.usStocks[0].symbol;
+  render();
+}
+
 async function loadAnalysisCache() {
   const payload = await request("/api/analysis");
   const currentSymbols = new Set(state.stocks.map((stock) => stock.symbol));
@@ -238,6 +278,16 @@ async function loadAnalysisCache() {
     els.researchProgress.textContent = payload.usedLmStudio ? "保存済み LM Studio分析" : "保存済みルール分析";
   }
   render();
+}
+
+async function loadUsAnalysisCache() {
+  const payload = await request("/api/us-analysis");
+  state.usAnalyses = Object.fromEntries((payload.analyses || []).map((item) => [item.symbol, item]));
+  state.usSummary = payload.summary || null;
+  if (payload.generatedAt && els.usLastRun) {
+    els.usLastRun.textContent = `保存済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
+  }
+  renderUs();
 }
 
 async function loadAnalysisJob() {
@@ -280,6 +330,7 @@ function render() {
   renderSectorEvidence();
   renderDiscoveryJob();
   renderAnalysisJob();
+  renderUs();
 }
 
 function setView(view) {
@@ -287,6 +338,7 @@ function setView(view) {
   renderNavigation();
   renderIdeaTabs();
   if (view === "analysis") renderSelection();
+  if (view === "us") renderUs();
 }
 
 function renderIdeaTabs() {
@@ -435,6 +487,134 @@ function renderProfitSummary() {
   if (els.lossCount) els.lossCount.textContent = String(summary.lossCount);
 }
 
+function renderUs() {
+  renderUsSummary();
+  renderUsTable();
+  renderUsDetail();
+}
+
+function renderUsSummary() {
+  const summary = state.usSummary || usSummaryFromState();
+  setMoneySummary(els.usProfitAmount, summary.pnlAmount, "profit-big", usd);
+  if (els.usProfitPct) {
+    els.usProfitPct.innerHTML = Number.isFinite(summary.pnlPct)
+      ? `<span class="${summary.pnlPct >= 0 ? "metric-pos" : "metric-neg"}">${signedPct(summary.pnlPct)}</span>`
+      : "更新待ち";
+  }
+  setMoneySummary(els.usInvestedTotal, summary.invested, "profit-big", usd);
+  setMoneySummary(els.usMarketTotal, summary.marketValue, "profit-big", usd);
+  if (els.usWinCount) els.usWinCount.textContent = String(summary.winCount || 0);
+  if (els.usLossCount) els.usLossCount.textContent = String(summary.lossCount || 0);
+}
+
+function renderUsTable() {
+  if (!els.usStockTable) return;
+  if (!state.usStocks.length) {
+    els.usStockTable.innerHTML = "<tr><td colspan=\"7\">米国株はまだありません。</td></tr>";
+    return;
+  }
+  els.usStockTable.innerHTML = state.usStocks.map((stock) => {
+    const analysis = state.usAnalyses[stock.symbol];
+    const position = analysis?.position || positionMetrics(stock, analysis?.price);
+    const selected = state.usSelected === stock.symbol ? "selected" : "";
+    return `
+      <tr class="${selected}" data-us-symbol="${escapeAttr(stock.symbol)}">
+        <td>
+          <span class="stock-name">
+            <strong>${escapeHtml(stock.name)}</strong>
+            <span>${escapeHtml(stock.symbol)} / ${escapeHtml(stock.market || "NYSE")}</span>
+          </span>
+        </td>
+        <td>${usd(analysis?.price?.current)}</td>
+        <td>${usd(position.purchasePrice)}</td>
+        <td>${Number.isFinite(position.quantity) ? position.quantity.toLocaleString("ja-JP") : "-"}</td>
+        <td>${positionPnlUsd(position)}</td>
+        <td>${usStanceBadge(analysis?.ai)}</td>
+        <td><button type="button" class="icon" data-remove-us="${escapeAttr(stock.symbol)}" aria-label="${escapeAttr(stock.name)}を削除">×</button></td>
+      </tr>
+    `;
+  }).join("");
+  els.usStockTable.querySelectorAll("[data-us-symbol]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      state.usSelected = row.dataset.usSymbol;
+      renderUs();
+    });
+  });
+  els.usStockTable.querySelectorAll("[data-remove-us]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        const payload = await request(`/api/us-stocks/${encodeURIComponent(button.dataset.removeUs)}`, { method: "DELETE" });
+        state.usStocks = payload.stocks || [];
+        state.usSummary = null;
+        if (!state.usStocks.some((stock) => stock.symbol === state.usSelected)) {
+          state.usSelected = state.usStocks[0]?.symbol || null;
+        }
+        toast("米国株から削除しました。");
+        renderUs();
+      } catch (error) {
+        toast(error.message);
+      }
+    });
+  });
+}
+
+function renderUsDetail() {
+  if (!els.usDetail) return;
+  const stock = state.usStocks.find((item) => item.symbol === state.usSelected);
+  if (!stock) {
+    if (els.usSelectedSymbol) els.usSelectedSymbol.textContent = "未選択";
+    els.usDetail.innerHTML = "<p>米国株を追加すると、ここに保有入力と損益が出ます。</p>";
+    return;
+  }
+  const analysis = state.usAnalyses[stock.symbol];
+  const position = analysis?.position || positionMetrics(stock, analysis?.price);
+  const ai = analysis?.ai || null;
+  if (els.usSelectedSymbol) els.usSelectedSymbol.textContent = stock.symbol;
+  const good = (ai?.good || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const risks = (ai?.risks || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const evidence = (analysis?.evidence || []).map((item) => `
+    <article class="evidence-item">
+      <div>
+        <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title || item.source || "source")}</a>
+        <p>${escapeHtml(item.source || "")}</p>
+      </div>
+      <p>${escapeHtml(item.summaryJa || item.snippet || "")}</p>
+      <span>日本語要約</span>
+    </article>
+  `).join("");
+  els.usDetail.innerHTML = `
+    ${usPositionEditor(stock, position)}
+    <section class="decision-card">
+      <div>
+        <h4>AI確認</h4>
+        ${usStanceBadge(ai)}
+      </div>
+      <p>${escapeHtml(ai?.summaryJa || "米国株を更新すると、英語記事を日本語要約して保有確認を表示します。")}</p>
+      <div class="metrics-row">
+        <span><strong>現在値</strong>${usd(analysis?.price?.current)}</span>
+        <span><strong>損益</strong>${positionPnlUsd(position)}</span>
+        <span><strong>1か月</strong>${pct(analysis?.price?.return1m)}</span>
+        <span><strong>1年</strong>${pct(analysis?.price?.return1y)}</span>
+      </div>
+      <div class="reason-columns">
+        <section>
+          <h4>良い材料</h4>
+          <ul class="reason-list">${good || "<li>更新後に表示します</li>"}</ul>
+        </section>
+        <section>
+          <h4>注意点</h4>
+          <ul class="risk-list">${risks || "<li>更新後に表示します</li>"}</ul>
+        </section>
+      </div>
+    </section>
+    <section class="evidence-list us-evidence-list">
+      ${evidence || "<article class=\"evidence-item\"><p>英語記事の日本語要約は、更新後に表示します。</p></article>"}
+    </section>
+  `;
+  attachUsPositionForm(stock.symbol);
+}
+
 function portfolioSummary() {
   return state.stocks.reduce((summary, stock) => {
     const analysis = state.analyses[stock.symbol];
@@ -472,14 +652,136 @@ function portfolioSummary() {
   });
 }
 
-function setMoneySummary(element, value, className = "") {
+function usSummaryFromState() {
+  return state.usStocks.reduce((summary, stock) => {
+    const analysis = state.usAnalyses[stock.symbol];
+    const position = analysis?.position || positionMetrics(stock, analysis?.price);
+    if (!stock.holding || !Number.isFinite(position.invested) || !Number.isFinite(position.marketValue)) return summary;
+    summary.invested += position.invested;
+    summary.marketValue += position.marketValue;
+    summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
+    summary.winCount += Number.isFinite(position.pnlAmount) && position.pnlAmount >= 0 ? 1 : 0;
+    summary.lossCount += Number.isFinite(position.pnlAmount) && position.pnlAmount < 0 ? 1 : 0;
+    summary.pnlPct = summary.invested > 0 ? (summary.pnlAmount / summary.invested) * 100 : null;
+    return summary;
+  }, {
+    invested: 0,
+    marketValue: 0,
+    pnlAmount: 0,
+    pnlPct: null,
+    winCount: 0,
+    lossCount: 0,
+  });
+}
+
+function positionPnlUsd(position = {}) {
+  const amount = position.pnlAmount;
+  const ratio = position.pnlPct;
+  if (!Number.isFinite(ratio) && !Number.isFinite(amount)) return "-";
+  const main = Number.isFinite(amount)
+    ? `<span class="pnl-main ${amount >= 0 ? "metric-pos" : "metric-neg"}">${usd(amount)}</span>`
+    : pct(ratio);
+  const sub = Number.isFinite(ratio) ? `<small>${signedPct(ratio)}</small>` : "";
+  return `<span class="pnl-cell">${main}${sub}</span>`;
+}
+
+function usStanceBadge(ai = null) {
+  const stance = ai?.stance || "DATA_NEEDED";
+  const label = {
+    HOLD: "保有確認",
+    REVIEW: "確認",
+    EXIT_WATCH: "強め注意",
+    DATA_NEEDED: "未確認",
+  }[stance] || "確認";
+  const cls = stance === "EXIT_WATCH" ? "sell" : stance === "HOLD" ? "hold" : stance === "REVIEW" ? "watch" : "watch";
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+
+function usPositionEditor(stock, position) {
+  const metrics = position || positionMetrics(stock);
+  const lots = metrics.lots?.length ? metrics.lots : positionLots(stock);
+  const displayLots = lots.length ? lots : [{ purchaseDate: "", purchasePrice: null, quantity: null }];
+  return `
+    <form id="usPositionForm" class="position-form">
+      <div class="position-form-title">
+        <strong>保有情報 USD</strong>
+        <label class="checkbox-line">
+          <input name="holding" type="checkbox" ${stock.holding ? "checked" : ""}>
+          <span>保有中</span>
+        </label>
+      </div>
+      <div class="position-lots" aria-label="米国株購入明細">
+        <div class="lot-head">
+          <span>購入日</span>
+          <span>購入単価 USD</span>
+          <span>株数</span>
+          <span></span>
+        </div>
+        <div class="lot-list">
+          ${displayLots.map((lot) => lotRow(lot)).join("")}
+        </div>
+        <button type="button" class="secondary add-lot" data-add-lot>明細を追加</button>
+      </div>
+      <div class="position-stats">
+        <span><strong>平均取得</strong>${usd(metrics.purchasePrice)}</span>
+        <span><strong>合計株数</strong>${Number.isFinite(metrics.quantity) && metrics.quantity > 0 ? metrics.quantity.toLocaleString("ja-JP") : "-"}</span>
+        <span><strong>損益</strong>${positionPnlUsd(metrics)}</span>
+        <span><strong>投下額</strong>${usd(metrics.invested)}</span>
+        <span><strong>評価額</strong>${usd(metrics.marketValue)}</span>
+      </div>
+      <button type="submit">保存</button>
+    </form>
+  `;
+}
+
+function attachUsPositionForm(symbol) {
+  const form = document.getElementById("usPositionForm");
+  if (!form) return;
+  form.querySelector("[data-add-lot]")?.addEventListener("click", () => {
+    const list = form.querySelector(".lot-list");
+    list.insertAdjacentHTML("beforeend", lotRow({ purchaseDate: "", purchasePrice: null, quantity: null }));
+  });
+  form.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-lot]");
+    if (!button) return;
+    const rows = [...form.querySelectorAll(".lot-row")];
+    if (rows.length <= 1) {
+      rows[0].querySelector('[name="purchaseDate"]').value = "";
+      rows[0].querySelector('[name="purchasePrice"]').value = "";
+      rows[0].querySelector('[name="quantity"]').value = "";
+      return;
+    }
+    button.closest(".lot-row").remove();
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const payload = {
+        holding: form.elements.holding.checked,
+        positions: readLotRows(form),
+      };
+      const result = await request(`/api/us-stocks/${encodeURIComponent(symbol)}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      state.usStocks = result.stocks || [];
+      state.usSummary = null;
+      toast("米国株の保有情報を保存しました。");
+      renderUs();
+    } catch (error) {
+      toast(error.message);
+    }
+  });
+}
+
+function setMoneySummary(element, value, className = "", formatter = yen) {
   if (!element) return;
   element.classList.remove("metric-pos", "metric-neg", className);
   if (!Number.isFinite(value)) {
     element.textContent = "-";
     return;
   }
-  element.textContent = yen(value);
+  element.textContent = formatter(value);
   element.classList.add(value >= 0 ? "metric-pos" : "metric-neg");
   if (className) element.classList.add(className);
 }
@@ -1019,6 +1321,35 @@ async function analyze() {
     els.analyzeButton.disabled = false;
     els.discoverButton.disabled = false;
     els.analyzeButton.textContent = originalText;
+  }
+}
+
+async function analyzeUs() {
+  if (!els.usAnalyzeButton) return;
+  els.usAnalyzeButton.disabled = true;
+  const originalText = els.usAnalyzeButton.textContent;
+  els.usAnalyzeButton.textContent = "更新中";
+  if (els.usLastRun) els.usLastRun.textContent = "米国株を確認中";
+  try {
+    const payload = await request("/api/us-analyze", {
+      method: "POST",
+      body: JSON.stringify({ websiteLimit: 5 }),
+    });
+    state.usAnalyses = Object.fromEntries((payload.analyses || []).map((item) => [item.symbol, item]));
+    state.usSummary = payload.summary || null;
+    if (els.usLastRun) {
+      els.usLastRun.textContent = payload.usedLmStudio
+        ? `更新済み AI ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`
+        : `更新済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
+    }
+    if (payload.warnings?.length) toast(payload.warnings.join(" / "));
+    renderUs();
+  } catch (error) {
+    toast(error.message);
+    if (els.usLastRun) els.usLastRun.textContent = "更新失敗";
+  } finally {
+    els.usAnalyzeButton.disabled = false;
+    els.usAnalyzeButton.textContent = originalText;
   }
 }
 
@@ -1890,11 +2221,11 @@ function lotRow(lot) {
       </label>
       <label>
         <span>購入単価</span>
-        <input name="purchasePrice" type="number" min="0" step="0.1" value="${numberValue(lot.purchasePrice)}">
+        <input name="purchasePrice" type="number" min="0" step="0.01" value="${numberValue(lot.purchasePrice)}">
       </label>
       <label>
         <span>株数</span>
-        <input name="quantity" type="number" min="0" step="1" value="${numberValue(lot.quantity)}">
+        <input name="quantity" type="number" min="0" step="0.0001" value="${numberValue(lot.quantity)}">
       </label>
       <button type="button" class="icon lot-remove" data-remove-lot aria-label="明細を削除">×</button>
     </div>
@@ -1981,6 +2312,39 @@ function readNewStockLot() {
   return purchasePrice && quantity ? [{ purchaseDate, purchasePrice, quantity }] : [];
 }
 
+els.usStockForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const payload = await request("/api/us-stocks", {
+      method: "POST",
+      body: JSON.stringify({
+        name: els.usStockName.value.trim(),
+        symbol: els.usStockSymbol.value.trim().toUpperCase(),
+        market: els.usStockMarket.value,
+        purchaseDate: els.usStockPurchaseDate.value,
+        purchasePrice: valueOrNull(els.usStockPurchasePrice.value),
+        quantity: valueOrNull(els.usStockQuantity.value),
+        positions: readNewUsStockLot(),
+      }),
+    });
+    state.usStocks = payload.stocks || [];
+    state.usSummary = null;
+    state.usSelected = els.usStockSymbol?.value?.trim()?.toUpperCase() || state.usStocks[0]?.symbol || null;
+    els.usStockForm.reset();
+    toast("米国株を追加しました。");
+    renderUs();
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+function readNewUsStockLot() {
+  const purchaseDate = els.usStockPurchaseDate.value;
+  const purchasePrice = valueOrNull(els.usStockPurchasePrice.value);
+  const quantity = valueOrNull(els.usStockQuantity.value);
+  return purchasePrice && quantity ? [{ purchaseDate, purchasePrice, quantity }] : [];
+}
+
 els.settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -1998,6 +2362,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
         unitBudget: valueOrNull(els.settingsUnitBudget.value),
         dailyDiscoveryEnabled: els.settingsDailyDiscoveryEnabled?.checked === true,
         dailyDiscoveryHour: valueOrZero(els.settingsDailyDiscoveryHour?.value),
+        hourlyRefreshEnabled: els.settingsHourlyRefreshEnabled?.checked === true,
         notificationsEnabled: els.settingsNotificationsEnabled?.checked === true,
         tradeFeeYen: valueOrZero(els.settingsTradeFeeYen?.value),
         notificationMinNetEdgeYen: valueOrZero(els.settingsNotificationMinNetEdgeYen?.value),
@@ -2042,6 +2407,7 @@ els.ideaTabButtons.forEach((button) => {
 });
 
 els.analyzeButton.addEventListener("click", analyze);
+els.usAnalyzeButton?.addEventListener("click", analyzeUs);
 els.discoverButton.addEventListener("click", discover);
 els.diagnosticsButton?.addEventListener("click", runDiagnostics);
 els.testNotificationButton?.addEventListener("click", testNotification);
@@ -2052,7 +2418,9 @@ window.addEventListener("resize", () => renderSelection());
 await loadSettings();
 await loadStatus();
 await loadStocks();
+await loadUsStocks();
 await loadAnalysisCache();
 await loadAnalysisJob();
+await loadUsAnalysisCache();
 await loadDiscoveryCache();
 setInterval(loadStatus, 15000);

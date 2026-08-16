@@ -9,7 +9,9 @@ loadLocalEnv(path.join(__dirname, ".env"));
 const PORT = Number(process.env.PORT || 5173);
 const HOST = process.env.HOST || "127.0.0.1";
 const WATCHLIST_PATH = path.join(__dirname, "data", "watchlist.json");
+const US_WATCHLIST_PATH = path.join(__dirname, "data", "us-watchlist.json");
 const ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "analysis-cache.json");
+const US_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "us-analysis-cache.json");
 const DISCOVERY_CACHE_PATH = path.join(__dirname, "data", "discovery-cache.json");
 const PRIME_UNIVERSE_PATH = path.join(__dirname, "data", "prime-universe.json");
 const NOTIFICATION_LOG_PATH = path.join(__dirname, "data", "notification-log.json");
@@ -17,6 +19,7 @@ const EXCLUDED_CANDIDATES_PATH = path.join(__dirname, "data", "excluded-candidat
 const SETTINGS_PATH = path.join(__dirname, "data", "settings.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const MAX_MANAGED_STOCKS = 20;
+const MAX_US_STOCKS = 40;
 const MAX_DISCOVERY_SUGGESTIONS = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
 const defaultSettings = {
@@ -31,6 +34,7 @@ const defaultSettings = {
   unitBudget: Number(process.env.UNIT_BUDGET || 300000),
   dailyDiscoveryEnabled: true,
   dailyDiscoveryHour: 7,
+  hourlyRefreshEnabled: true,
   notificationsEnabled: false,
   notificationMinConfidence: 78,
   notificationMinNetEdgeYen: 5000,
@@ -65,7 +69,7 @@ let lmModelCache = { url: "", model: "" };
 let primeUniverseCache = null;
 let analysisJob = null;
 let discoveryJob = null;
-let dailyDiscoveryTimer = null;
+let hourlyRefreshTimer = null;
 
 const discoveryUniverse = [
   { symbol: "9433.T", name: "KDDI", market: "東証", sector: "通信", notes: "通信、金融、株主還元" },
@@ -137,6 +141,12 @@ const defaultWatchlist = [
   { symbol: "9984.T", name: "SoftBank Group", market: "東証", holding: false, notes: "投資会社、AI、Arm" },
 ];
 
+const defaultUsWatchlist = [
+  { symbol: "ACN", name: "Accenture", market: "NYSE", holding: false, notes: "IT consulting, outsourcing, digital transformation" },
+  { symbol: "NVDA", name: "NVIDIA", market: "NASDAQ", holding: false, notes: "AI semiconductors, GPU, data center" },
+  { symbol: "INTC", name: "Intel", market: "NASDAQ", holding: false, notes: "CPU, foundry, semiconductor turnaround" },
+];
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -151,7 +161,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Stock Signal is running at http://${HOST}:${PORT}`);
-  scheduleDailyDiscovery();
+  scheduleHourlyRefresh();
 });
 
 async function handleApi(req, res, url) {
@@ -174,8 +184,16 @@ async function handleApi(req, res, url) {
     return json(res, 200, { stocks: await readWatchlist() });
   }
 
+  if (url.pathname === "/api/us-stocks" && req.method === "GET") {
+    return json(res, 200, { stocks: await readUsWatchlist() });
+  }
+
   if (url.pathname === "/api/analysis" && req.method === "GET") {
     return json(res, 200, await readAnalysisCache());
+  }
+
+  if (url.pathname === "/api/us-analysis" && req.method === "GET") {
+    return json(res, 200, await readUsAnalysisCache());
   }
 
   if (url.pathname === "/api/analysis-job" && req.method === "GET") {
@@ -263,6 +281,29 @@ async function handleApi(req, res, url) {
     return json(res, 201, { stocks });
   }
 
+  if (url.pathname === "/api/us-stocks" && req.method === "POST") {
+    const body = await readJson(req);
+    const stocks = await readUsWatchlist();
+    if (stocks.length >= MAX_US_STOCKS) return json(res, 400, { error: `米国株で管理できる銘柄は${MAX_US_STOCKS}件までです。` });
+    const symbol = normalizeUsSymbol(body.symbol);
+    const name = String(body.name || "").trim();
+    if (!symbol || !name) return json(res, 400, { error: "銘柄名とティッカーを入力してください。" });
+    if (stocks.some((stock) => stock.symbol === symbol)) return json(res, 400, { error: "同じティッカーがすでにあります。" });
+    stocks.push(normalizeUsStock({
+      symbol,
+      name,
+      market: body.market || "NYSE",
+      notes: body.notes,
+      holding: Boolean(body.holding || body.purchaseDate || body.purchasePrice || body.quantity || body.positions?.length),
+      purchaseDate: body.purchaseDate,
+      purchasePrice: body.purchasePrice,
+      quantity: body.quantity,
+      positions: body.positions,
+    }));
+    await saveUsWatchlist(stocks);
+    return json(res, 201, { stocks });
+  }
+
   if (url.pathname.startsWith("/api/stocks/") && req.method === "PATCH") {
     const symbol = decodeURIComponent(url.pathname.split("/").pop() || "");
     const body = await readJson(req);
@@ -283,10 +324,32 @@ async function handleApi(req, res, url) {
     return json(res, 200, { stock: stocks[index], stocks });
   }
 
+  if (url.pathname.startsWith("/api/us-stocks/") && req.method === "PATCH") {
+    const symbol = normalizeUsSymbol(decodeURIComponent(url.pathname.split("/").pop() || ""));
+    const body = await readJson(req);
+    const stocks = await readUsWatchlist();
+    const index = stocks.findIndex((stock) => stock.symbol === symbol);
+    if (index < 0) return json(res, 404, { error: "米国株の銘柄が見つかりません。" });
+    stocks[index] = normalizeUsStock({
+      ...stocks[index],
+      holding: Boolean(body.holding),
+      positions: body.positions,
+    });
+    await saveUsWatchlist(stocks);
+    return json(res, 200, { stock: stocks[index], stocks });
+  }
+
   if (url.pathname.startsWith("/api/stocks/") && req.method === "DELETE") {
     const symbol = decodeURIComponent(url.pathname.split("/").pop() || "");
     const stocks = (await readWatchlist()).filter((stock) => stock.symbol !== symbol);
     await saveWatchlist(stocks);
+    return json(res, 200, { stocks });
+  }
+
+  if (url.pathname.startsWith("/api/us-stocks/") && req.method === "DELETE") {
+    const symbol = normalizeUsSymbol(decodeURIComponent(url.pathname.split("/").pop() || ""));
+    const stocks = (await readUsWatchlist()).filter((stock) => stock.symbol !== symbol);
+    await saveUsWatchlist(stocks);
     return json(res, 200, { stocks });
   }
 
@@ -298,6 +361,11 @@ async function handleApi(req, res, url) {
       job,
       message: "一括分析を裏で開始しました。進み具合は自動で更新されます。",
     });
+  }
+
+  if (url.pathname === "/api/us-analyze" && req.method === "POST") {
+    const body = await readJson(req);
+    return json(res, 200, await analyzeUsHoldings(body, { notify: true }));
   }
 
   if (url.pathname === "/api/discover" && req.method === "POST") {
@@ -413,6 +481,7 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
     onProgress?.({ phase: "価格・配当・検索を確認中", checked, total: stocks.length });
     return { stock, price, research, fallback };
   });
+  await translateResearchEvidenceRows(rows).catch(() => {});
 
   let aiBySymbol = new Map();
   if (lmStatus.ok && rows.length) {
@@ -449,6 +518,349 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
   await saveAnalysisCache(result);
   await notifyStrongAnalysisSignals(result.analyses).catch(() => {});
   return result;
+}
+
+async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
+  const stocks = await readUsWatchlist();
+  const websiteLimit = clamp(Number(options.websiteLimit || 5), 1, 10);
+  const rows = await mapLimit(stocks, 4, async (stock) => {
+    const [price, research] = await Promise.all([
+      fetchPriceHistory(stock.symbol),
+      researchUsStock(stock, { websiteLimit }),
+    ]);
+    const position = positionMetrics(stock, price);
+    return {
+      symbol: stock.symbol,
+      name: stock.name,
+      market: stock.market || "NYSE",
+      holding: Boolean(stock.holding),
+      notes: stock.notes || "",
+      price: compactUsPrice(price),
+      position,
+      researchStats: {
+        searched: research.searched,
+      },
+      evidence: research.evidence,
+      ai: null,
+    };
+  });
+
+  let usedLmStudio = false;
+  const warnings = [];
+  const lmStatus = await checkLmStudio();
+  if (lmStatus.ok && rows.length) {
+    try {
+      const reviews = await aiUsHoldingReviews(rows);
+      const bySymbol = new Map(reviews.map((review) => [review.symbol, review]));
+      rows.forEach((row) => {
+        row.ai = bySymbol.get(row.symbol) || fallbackUsReview(row);
+        applyUsEvidenceTranslations(row);
+      });
+      usedLmStudio = reviews.length > 0;
+    } catch (error) {
+      warnings.push(`LM Studio: ${error.message || "米国株AI分析が返りませんでした"}`);
+      rows.forEach((row) => {
+        row.ai = fallbackUsReview(row);
+        applyUsEvidenceTranslations(row);
+      });
+    }
+  } else {
+    rows.forEach((row) => {
+      row.ai = fallbackUsReview(row);
+      applyUsEvidenceTranslations(row);
+    });
+  }
+
+  const result = {
+    generatedAt: new Date().toISOString(),
+    currency: "USD",
+    usedLmStudio,
+    warnings,
+    analyses: rows,
+    summary: usPortfolioSummary(rows),
+  };
+  const previous = await readUsAnalysisCache();
+  await saveUsAnalysisCache(result);
+  if (notify) await notifyUsChangeSignals(result, previous).catch(() => {});
+  return result;
+}
+
+function applyUsEvidenceTranslations(row = {}) {
+  const translations = row.ai?.evidenceJa || [];
+  row.evidence = (row.evidence || []).map((item, index) => ({
+    ...item,
+    summaryJa: translations[index]?.summary || item.summaryJa || item.snippet || item.originalSnippet || "",
+  }));
+}
+
+async function researchUsStock(stock, options = {}) {
+  const query = `${stock.name} ${stock.symbol} stock earnings guidance analyst rating news dividend risk`;
+  const results = await searchGoogle(query, { limit: options.websiteLimit || 5 }).catch(() => []);
+  const evidence = results.slice(0, options.websiteLimit || 5).map((item) => {
+    const original = cleanText(item.snippet || "").slice(0, 360);
+    return {
+      title: item.title,
+      url: item.url,
+      source: hostOf(item.url),
+      snippet: original,
+      originalSnippet: original,
+      summaryJa: "",
+      kind: "web",
+    };
+  });
+  return {
+    searched: evidence.length,
+    evidence,
+  };
+}
+
+async function aiUsHoldingReviews(rows = []) {
+  const model = await getLmStudioModel();
+  const reviews = [];
+  const chunks = chunkArray(rows, 3);
+  for (const chunk of chunks) {
+    reviews.push(...(await aiUsHoldingReviewChunk(model, chunk)));
+  }
+  return reviews;
+}
+
+async function aiUsHoldingReviewChunk(model, rows = []) {
+  const items = rows.map((row) => ({
+    symbol: row.symbol,
+    name: row.name,
+    market: row.market,
+    holding: row.holding,
+    notes: row.notes,
+    price: row.price,
+    position: {
+      purchasePrice: row.position.purchasePrice,
+      quantity: row.position.quantity,
+      invested: row.position.invested,
+      marketValue: row.position.marketValue,
+      pnlAmount: row.position.pnlAmount,
+      pnlPct: row.position.pnlPct,
+      holdingDays: row.position.holdingDays,
+    },
+    evidence: row.evidence.slice(0, 5).map((item) => ({
+      title: cleanText(item.title || "").slice(0, 140),
+      source: item.source,
+      snippet: cleanText(item.originalSnippet || item.snippet || "").slice(0, 260),
+    })),
+  }));
+  const prompt = [
+    "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
+    "英語記事のsnippetは日本語に要約してください。利益保証をせず、保有継続の確認材料と注意点を分けてください。",
+    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\"}]}。",
+    "stanceは HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED のいずれか。changeLevelは normal, watch, important のいずれか。",
+    "summaryJaは90字以内、goodとrisksは各3件まで、evidenceJaのsummaryは各80字以内にしてください。",
+    "",
+    JSON.stringify({ stocks: items }),
+  ].join("\n");
+  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 3500 }).catch(async (error) => {
+    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 3500 });
+    throw error;
+  });
+  const parsed = parseJsonObject(content);
+  const reviews = Array.isArray(parsed) ? parsed : parsed.reviews || [];
+  return reviews
+    .filter((review) => review?.symbol)
+    .map((review) => ({
+      symbol: normalizeUsSymbol(review.symbol),
+      stance: String(review.stance || "DATA_NEEDED").toUpperCase(),
+      confidence: clamp(Number(review.confidence || 50), 0, 100),
+      summaryJa: String(review.summaryJa || review.summary || "").slice(0, 180),
+      good: asStringArray(review.good || review.reasons).slice(0, 3),
+      risks: asStringArray(review.risks).slice(0, 3),
+      evidenceJa: Array.isArray(review.evidenceJa) ? review.evidenceJa.map((item) => ({
+        source: String(item.source || ""),
+        summary: String(item.summary || "").slice(0, 140),
+      })).slice(0, 5) : [],
+      changeLevel: ["normal", "watch", "important"].includes(String(review.changeLevel || "").toLowerCase())
+        ? String(review.changeLevel).toLowerCase()
+        : "normal",
+    }))
+    .filter((review) => review.symbol);
+}
+
+async function translateResearchEvidenceRows(rows = []) {
+  const items = [];
+  for (const row of rows) {
+    for (const evidence of row.research?.evidence || []) {
+      const text = `${evidence.title || ""}\n${evidence.snippet || ""}`;
+      if (!isMostlyEnglish(text)) continue;
+      items.push({ evidence, title: evidence.title || "", snippet: evidence.snippet || "", source: evidence.source || "" });
+    }
+  }
+  if (!items.length) return;
+  const model = await getLmStudioModel();
+  for (const chunk of chunkArray(items, 8)) {
+    const translations = await translateEvidenceChunk(model, chunk).catch(() => []);
+    translations.forEach((translation, index) => {
+      const target = chunk[index]?.evidence;
+      if (!target || !translation) return;
+      target.summaryJa = translation;
+      target.snippet = translation;
+    });
+  }
+}
+
+async function translateEvidenceChunk(model, items = []) {
+  const prompt = [
+    "英語の株式ニュース断片を、日本語で短く要約してください。",
+    "出力はJSONのみ。形式は {\"items\":[\"日本語要約\", \"...\"]}。入力と同じ順番、同じ件数で返してください。",
+    "各要約は80字以内。投資助言ではなく、記事の内容だけを訳して要約してください。",
+    "",
+    JSON.stringify({
+      items: items.map((item) => ({
+        source: item.source,
+        title: cleanText(item.title).slice(0, 160),
+        snippet: cleanText(item.snippet).slice(0, 280),
+      })),
+    }),
+  ].join("\n");
+  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 1800 }).catch(async (error) => {
+    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 1800 });
+    throw error;
+  });
+  const parsed = parseJsonObject(content);
+  return asStringArray(Array.isArray(parsed) ? parsed : parsed.items).slice(0, items.length);
+}
+
+function isMostlyEnglish(value = "") {
+  const text = cleanText(value);
+  if (!text || /[ぁ-んァ-ン一-龥]/.test(text)) return false;
+  const letters = (text.match(/[A-Za-z]/g) || []).length;
+  return letters >= 20 && letters / Math.max(1, text.length) > 0.35;
+}
+
+function fallbackUsReview(row = {}) {
+  const position = row.position || {};
+  const price = row.price || {};
+  const risks = [];
+  const good = [];
+  let stance = "DATA_NEEDED";
+  let changeLevel = "normal";
+  if (Number.isFinite(position.pnlPct)) {
+    if (position.pnlPct >= 20) {
+      stance = "HOLD";
+      good.push(`含み益が${position.pnlPct.toFixed(1)}%あります`);
+    } else if (position.pnlPct <= -15) {
+      stance = "REVIEW";
+      risks.push(`含み損が${Math.abs(position.pnlPct).toFixed(1)}%あります`);
+      changeLevel = "watch";
+    } else {
+      stance = "HOLD";
+    }
+  }
+  if (Number.isFinite(price.return1m)) {
+    if (price.return1m <= -10) {
+      risks.push(`直近1か月で${Math.abs(price.return1m).toFixed(1)}%下落`);
+      changeLevel = "watch";
+    } else if (price.return1m >= 10) {
+      good.push(`直近1か月で${price.return1m.toFixed(1)}%上昇`);
+    }
+  }
+  return {
+    symbol: row.symbol,
+    stance,
+    confidence: 45,
+    summaryJa: Number.isFinite(position.pnlPct)
+      ? `現在の損益は${formatSignedPercent(position.pnlPct)}です。ニュース材料は追加確認が必要です。`
+      : "購入明細を入れるとドルベースの損益を確認できます。",
+    good: uniqueText(good).slice(0, 3),
+    risks: uniqueText(risks).slice(0, 3),
+    evidenceJa: (row.evidence || []).slice(0, 5).map((item) => ({
+      source: item.source,
+      summary: item.summaryJa || item.snippet || item.originalSnippet || "",
+    })),
+    changeLevel,
+  };
+}
+
+function compactUsPrice(price = {}) {
+  return {
+    current: price.current,
+    return1m: price.return1m,
+    return3m: price.return3m,
+    return1y: price.return1y,
+    return3y: price.return3y,
+    high52: price.high52,
+    low52: price.low52,
+    distanceFromHigh52: price.distanceFromHigh52,
+    distanceFromLow52: price.distanceFromLow52,
+    trend3y: price.trend3y,
+    shortName: price.shortName,
+    longName: price.longName,
+    yahooSymbol: price.yahooSymbol,
+  };
+}
+
+function usPortfolioSummary(rows = []) {
+  return rows.reduce((summary, row) => {
+    const position = row.position || {};
+    if (!Number.isFinite(position.invested) || !Number.isFinite(position.marketValue)) return summary;
+    summary.invested += position.invested;
+    summary.marketValue += position.marketValue;
+    summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
+    if (Number.isFinite(position.pnlAmount)) {
+      if (position.pnlAmount >= 0) summary.winCount += 1;
+      else summary.lossCount += 1;
+    }
+    summary.pnlPct = summary.invested ? (summary.pnlAmount / summary.invested) * 100 : null;
+    return summary;
+  }, {
+    invested: 0,
+    marketValue: 0,
+    pnlAmount: 0,
+    pnlPct: null,
+    winCount: 0,
+    lossCount: 0,
+  });
+}
+
+async function notifyUsChangeSignals(result, previous) {
+  const settings = await readSettings();
+  if (!settings.notificationsEnabled) return;
+  if (!settings.teamsWebhookUrl && !(settings.graphAccessToken && settings.graphChatId)) return;
+  const previousBySymbol = new Map((previous.analyses || []).map((item) => [item.symbol, item]));
+  const signals = [];
+  for (const analysis of result.analyses || []) {
+    const signal = usChangeSignal(analysis, previousBySymbol.get(analysis.symbol));
+    if (signal) signals.push(signal);
+  }
+  await sendSignalsOnce(signals.slice(0, 6), settings);
+}
+
+function usChangeSignal(current = {}, previous = null) {
+  const ai = current.ai || {};
+  const position = current.position || {};
+  const previousPosition = previous?.position || {};
+  const pnlChange = Number.isFinite(position.pnlPct) && Number.isFinite(previousPosition.pnlPct)
+    ? position.pnlPct - previousPosition.pnlPct
+    : null;
+  const stanceChanged = previous?.ai?.stance && ai.stance && previous.ai.stance !== ai.stance;
+  const important = ai.changeLevel === "important" || ai.stance === "EXIT_WATCH";
+  const sharpMove = Number.isFinite(pnlChange) && Math.abs(pnlChange) >= 5;
+  const newLargeLoss = Number.isFinite(position.pnlPct) && position.pnlPct <= -15
+    && (!Number.isFinite(previousPosition.pnlPct) || previousPosition.pnlPct > -15);
+  if (!important && !sharpMove && !newLargeLoss && !stanceChanged) return null;
+  const points = [
+    Number.isFinite(pnlChange) ? `損益率の変化: ${formatSignedPercent(pnlChange)}` : "",
+    Number.isFinite(position.pnlPct) ? `現在の損益: ${formatSignedPercent(position.pnlPct)} / ${formatUsd(position.pnlAmount)}` : "",
+    ...(ai.good || []).map((item) => `良い材料: ${item}`),
+    ...(ai.risks || []).map((item) => `注意: ${item}`),
+  ].filter(Boolean).slice(0, 6);
+  return {
+    key: `US:${current.symbol}:${ai.stance || "CHANGE"}:${Math.round(Number(position.pnlPct || 0))}`,
+    action: "米国株 変化点",
+    currency: "USD",
+    symbol: current.symbol,
+    name: current.name,
+    confidence: ai.confidence || 60,
+    netEdgeYen: 0,
+    reason: ai.summaryJa || "米国株の保有状況に変化があります。",
+    points,
+  };
 }
 
 function startDiscoveryJob(options = {}, reason = "manual") {
@@ -510,25 +922,28 @@ function discoveryJobSnapshot() {
   return { ...discoveryJob };
 }
 
-function scheduleDailyDiscovery() {
-  if (dailyDiscoveryTimer) clearInterval(dailyDiscoveryTimer);
-  setTimeout(runDailyDiscoveryIfDue, 12000);
-  dailyDiscoveryTimer = setInterval(runDailyDiscoveryIfDue, 60 * 60 * 1000);
+function scheduleHourlyRefresh() {
+  if (hourlyRefreshTimer) clearInterval(hourlyRefreshTimer);
+  setTimeout(runHourlyRefreshIfDue, 12000);
+  hourlyRefreshTimer = setInterval(runHourlyRefreshIfDue, 60 * 60 * 1000);
 }
 
-async function runDailyDiscoveryIfDue() {
+async function runHourlyRefreshIfDue() {
   const settings = await readSettings();
-  if (!settings.dailyDiscoveryEnabled || discoveryJob?.running) return;
+  if (!settings.hourlyRefreshEnabled) return;
   const now = new Date();
-  const jstHour = Number(new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo",
-    hour: "2-digit",
-    hour12: false,
-  }).format(now));
-  if (jstHour < settings.dailyDiscoveryHour) return;
   const cache = await readDiscoveryCache();
-  if (jstDate(cache.generatedAt) === jstDate(now.toISOString())) return;
-  startDiscoveryJob({ websiteLimit: 20, fullScan: true }, "daily");
+  const analysisCache = await readAnalysisCache();
+  const usCache = await readUsAnalysisCache();
+  if (!analysisJob?.running && isOlderThan(cacheHourKey(analysisCache.generatedAt), cacheHourKey(now.toISOString()))) {
+    startAnalysisJob({ websiteLimit: 8, depthLimit: 1, pagesPerSite: 1 });
+  }
+  if (isOlderThan(cacheHourKey(usCache.generatedAt), cacheHourKey(now.toISOString()))) {
+    void analyzeUsHoldings({ websiteLimit: 5 }, { notify: true }).catch(() => {});
+  }
+  if (!discoveryJob?.running && settings.dailyDiscoveryEnabled && jstDate(cache.generatedAt) !== jstDate(now.toISOString())) {
+    startDiscoveryJob({ websiteLimit: 20, fullScan: true }, "daily");
+  }
 }
 
 function jstDate(value = "") {
@@ -541,6 +956,26 @@ function jstDate(value = "") {
     month: "2-digit",
     day: "2-digit",
   }).format(date);
+}
+
+function cacheHourKey(value = "") {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function isOlderThan(left = "", right = "") {
+  if (!right) return false;
+  if (!left) return true;
+  return left < right;
 }
 
 async function discoverStocks(options = {}, job = null) {
@@ -2957,6 +3392,26 @@ function normalizeStock(stock) {
   };
 }
 
+function normalizeUsStock(stock) {
+  const positions = normalizePositions(stock);
+  const aggregate = aggregatePositions(positions);
+  const purchaseDate = aggregate.purchaseDate || normalizeDate(stock.purchaseDate);
+  const purchasePrice = aggregate.purchasePrice || nullablePositiveNumber(stock.purchasePrice);
+  const quantity = aggregate.quantity || nullablePositiveNumber(stock.quantity);
+  const hasPosition = positions.length > 0 || Boolean(purchaseDate || purchasePrice || quantity);
+  return {
+    symbol: normalizeUsSymbol(stock.symbol),
+    name: String(stock.name || "").trim(),
+    market: String(stock.market || "NYSE").trim().toUpperCase(),
+    holding: typeof stock.holding === "boolean" ? stock.holding : hasPosition,
+    notes: String(stock.notes || "").trim(),
+    purchaseDate,
+    purchasePrice,
+    quantity,
+    positions,
+  };
+}
+
 function resolveMinimumHoldQuantity(stock, quantity) {
   const explicit = nullableNonNegativeNumber(stock.minimumHoldQuantity);
   if (explicit !== null) return explicit;
@@ -3452,7 +3907,7 @@ async function sendTeamsSignal(settings, signal) {
   const text = [
     `【Stock Signal】${signal.action}: ${signal.name} (${signal.symbol})`,
     `信頼度: ${Math.round(signal.confidence)}%`,
-    `手数料後メリット目安: ${formatYen(signal.netEdgeYen)}`,
+    signal.currency === "USD" ? "" : `手数料後メリット目安: ${formatYen(signal.netEdgeYen)}`,
     signal.reason,
     ...signal.points.map((item) => `・${item}`),
   ].filter(Boolean).join("\n");
@@ -3473,6 +3928,12 @@ async function sendTeamsWebhook(url, signal, text) {
 }
 
 function teamsAdaptiveCardPayload(signal, text) {
+  const facts = [
+    { title: "信頼度", value: `${Math.round(signal.confidence)}%` },
+  ];
+  if (signal.currency !== "USD") {
+    facts.push({ title: "手数料後メリット", value: formatYen(signal.netEdgeYen) });
+  }
   return {
     type: "message",
     text,
@@ -3497,10 +3958,7 @@ function teamsAdaptiveCardPayload(signal, text) {
           },
           {
             type: "FactSet",
-            facts: [
-              { title: "信頼度", value: `${Math.round(signal.confidence)}%` },
-              { title: "手数料後メリット", value: formatYen(signal.netEdgeYen) },
-            ],
+            facts,
           },
           {
             type: "TextBlock",
@@ -3589,6 +4047,7 @@ function normalizeSettings(settings = {}) {
     unitBudget: clamp(Number(settings.unitBudget || defaultSettings.unitBudget), 10000, 10000000),
     dailyDiscoveryEnabled: settings.dailyDiscoveryEnabled !== false,
     dailyDiscoveryHour: clamp(Number(settings.dailyDiscoveryHour ?? defaultSettings.dailyDiscoveryHour), 0, 23),
+    hourlyRefreshEnabled: settings.hourlyRefreshEnabled !== false,
     notificationsEnabled: settings.notificationsEnabled === true,
     notificationMinConfidence: clamp(Number(settings.notificationMinConfidence || defaultSettings.notificationMinConfidence), 50, 100),
     notificationMinNetEdgeYen: clamp(Number(settings.notificationMinNetEdgeYen || defaultSettings.notificationMinNetEdgeYen), 0, 1000000),
@@ -3616,6 +4075,7 @@ function applySettingsPatch(current, body = {}) {
   if (body.unitBudget) next.unitBudget = body.unitBudget;
   if (typeof body.dailyDiscoveryEnabled === "boolean") next.dailyDiscoveryEnabled = body.dailyDiscoveryEnabled;
   if (body.dailyDiscoveryHour !== undefined) next.dailyDiscoveryHour = body.dailyDiscoveryHour;
+  if (typeof body.hourlyRefreshEnabled === "boolean") next.hourlyRefreshEnabled = body.hourlyRefreshEnabled;
   if (typeof body.notificationsEnabled === "boolean") next.notificationsEnabled = body.notificationsEnabled;
   if (body.notificationMinConfidence) next.notificationMinConfidence = body.notificationMinConfidence;
   if (body.notificationMinNetEdgeYen !== undefined) next.notificationMinNetEdgeYen = body.notificationMinNetEdgeYen;
@@ -3642,6 +4102,7 @@ function publicSettings(settings) {
     unitBudget: settings.unitBudget,
     dailyDiscoveryEnabled: settings.dailyDiscoveryEnabled,
     dailyDiscoveryHour: settings.dailyDiscoveryHour,
+    hourlyRefreshEnabled: settings.hourlyRefreshEnabled,
     notificationsEnabled: settings.notificationsEnabled,
     notificationMinConfidence: settings.notificationMinConfidence,
     notificationMinNetEdgeYen: settings.notificationMinNetEdgeYen,
@@ -3700,6 +4161,56 @@ async function readWatchlist() {
 async function saveWatchlist(stocks) {
   await mkdir(path.dirname(WATCHLIST_PATH), { recursive: true });
   await writeFile(WATCHLIST_PATH, JSON.stringify(stocks.slice(0, MAX_MANAGED_STOCKS).map(normalizeStock), null, 2));
+}
+
+async function readUsWatchlist() {
+  if (!existsSync(US_WATCHLIST_PATH)) {
+    await saveUsWatchlist(defaultUsWatchlist);
+    return defaultUsWatchlist.map(normalizeUsStock);
+  }
+
+  try {
+    const stocks = JSON.parse(await readFile(US_WATCHLIST_PATH, "utf8"));
+    if (Array.isArray(stocks) && stocks.length) return stocks.slice(0, MAX_US_STOCKS).map(normalizeUsStock);
+  } catch {
+    // Recreate the local list when the file is unreadable or partially written.
+  }
+
+  await saveUsWatchlist(defaultUsWatchlist);
+  return defaultUsWatchlist.map(normalizeUsStock);
+}
+
+async function saveUsWatchlist(stocks) {
+  await mkdir(path.dirname(US_WATCHLIST_PATH), { recursive: true });
+  await writeFile(US_WATCHLIST_PATH, JSON.stringify(stocks.slice(0, MAX_US_STOCKS).map(normalizeUsStock), null, 2));
+}
+
+async function readUsAnalysisCache() {
+  try {
+    const cached = JSON.parse(await readFile(US_ANALYSIS_CACHE_PATH, "utf8"));
+    return {
+      generatedAt: cached.generatedAt || "",
+      currency: "USD",
+      usedLmStudio: Boolean(cached.usedLmStudio),
+      warnings: asStringArray(cached.warnings).slice(0, 6),
+      analyses: Array.isArray(cached.analyses) ? cached.analyses : [],
+      summary: cached.summary || usPortfolioSummary(cached.analyses || []),
+    };
+  } catch {
+    return { generatedAt: "", currency: "USD", usedLmStudio: false, warnings: [], analyses: [], summary: usPortfolioSummary([]) };
+  }
+}
+
+async function saveUsAnalysisCache(result) {
+  await mkdir(path.dirname(US_ANALYSIS_CACHE_PATH), { recursive: true });
+  await writeFile(US_ANALYSIS_CACHE_PATH, JSON.stringify({
+    generatedAt: result.generatedAt,
+    currency: "USD",
+    usedLmStudio: result.usedLmStudio,
+    warnings: result.warnings || [],
+    analyses: result.analyses || [],
+    summary: result.summary || usPortfolioSummary(result.analyses || []),
+  }, null, 2));
 }
 
 async function serveFile(res, filePath) {
@@ -3872,6 +4383,12 @@ function normalizeSymbol(value = "") {
   const symbol = String(value).trim().toUpperCase();
   if (!/^[0-9A-Z.-]{3,12}$/.test(symbol)) return "";
   return symbol.includes(".") ? symbol : `${symbol}.T`;
+}
+
+function normalizeUsSymbol(value = "") {
+  const symbol = String(value).trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) return "";
+  return symbol;
 }
 
 function normalizeUrl(value = "") {
@@ -4096,6 +4613,15 @@ function chunkArray(values = [], size = 1) {
 function formatYen(value) {
   if (!Number.isFinite(value)) return "-";
   return `¥${Math.round(value).toLocaleString("ja-JP")}`;
+}
+
+function formatUsd(value) {
+  if (!Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: Math.abs(value) >= 1000 ? 0 : 2,
+  }).format(value);
 }
 
 function formatSignedPercent(value) {
