@@ -3,13 +3,16 @@ const state = {
   analyses: {},
   suggestions: [],
   excludedCandidates: [],
+  sectorEvidence: [],
   sourceSummary: null,
+  analysisJob: null,
   discoveryJob: null,
   discoveryGeneratedAt: "",
   diagnostics: null,
   settings: null,
   selected: null,
   view: "analysis",
+  ideaView: "candidates",
   running: false,
 };
 
@@ -37,6 +40,8 @@ const chartState = {
 const els = {
   viewButtons: [...document.querySelectorAll("[data-view-target]")],
   viewPanels: [...document.querySelectorAll("[data-view]")],
+  ideaTabButtons: [...document.querySelectorAll("[data-idea-tab]")],
+  ideaPanels: [...document.querySelectorAll("[data-idea-panel]")],
   googleStatus: document.getElementById("googleStatus"),
   lmStatus: document.getElementById("lmStatus"),
   stockForm: document.getElementById("stockForm"),
@@ -81,6 +86,7 @@ const els = {
   candidateSavedAt: document.getElementById("candidateSavedAt"),
   excludedCandidateCount: document.getElementById("excludedCandidateCount"),
   excludedCandidateList: document.getElementById("excludedCandidateList"),
+  sectorEvidenceList: document.getElementById("sectorEvidenceList"),
   settingsForm: document.getElementById("settingsForm"),
   settingsSearchProvider: document.getElementById("settingsSearchProvider"),
   settingsSearxngUrl: document.getElementById("settingsSearxngUrl"),
@@ -226,11 +232,29 @@ async function loadAnalysisCache() {
   state.analyses = Object.fromEntries((payload.analyses || [])
     .filter((item) => currentSymbols.has(item.symbol))
     .map((item) => [item.symbol, item]));
+  state.sectorEvidence = payload.sectorEvidence || [];
   if (payload.generatedAt) {
     els.lastRun.textContent = `保存済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
     els.researchProgress.textContent = payload.usedLmStudio ? "保存済み LM Studio分析" : "保存済みルール分析";
   }
   render();
+}
+
+async function loadAnalysisJob() {
+  const payload = await request("/api/analysis-job").catch(() => null);
+  if (!payload) return;
+  state.analysisJob = payload.job || null;
+  if (payload.result) applyAnalysisPayload(payload.result, false);
+  renderAnalysisJob();
+  if (state.analysisJob?.running) void pollAnalysisJob()
+    .then((result) => {
+      applyAnalysisPayload(result);
+      render();
+    })
+    .catch((error) => {
+      toast(error.message);
+      els.researchProgress.textContent = "失敗";
+    });
 }
 
 async function loadDiscoveryCache() {
@@ -247,18 +271,31 @@ async function loadDiscoveryCache() {
 
 function render() {
   renderNavigation();
+  renderIdeaTabs();
   renderTable();
   renderProfitSummary();
   renderSummary();
   renderSelection();
   renderCandidateList();
+  renderSectorEvidence();
   renderDiscoveryJob();
+  renderAnalysisJob();
 }
 
 function setView(view) {
   state.view = view;
   renderNavigation();
+  renderIdeaTabs();
   if (view === "analysis") renderSelection();
+}
+
+function renderIdeaTabs() {
+  els.ideaTabButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.ideaTab === state.ideaView);
+  });
+  els.ideaPanels.forEach((panel) => {
+    panel.hidden = panel.dataset.ideaPanel !== state.ideaView;
+  });
 }
 
 function renderNavigation() {
@@ -498,6 +535,7 @@ function renderSelection() {
       <span><strong>傾向</strong>${escapeHtml(trendLabel(price.trend3y))}</span>
       <span><strong>判定対象株</strong>${position.sellableQuantity ? `${position.sellableQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
     </div>
+    ${riskChecksHtml(analysis.riskChecks)}
     <div class="decision-columns">
       <section>
         <h4>良い材料</h4>
@@ -523,6 +561,29 @@ function renderSelection() {
     </article>
   `).join("") || "<article class=\"evidence-item\"><p>根拠リンクはまだありません。</p></article>";
   els.evidenceList.innerHTML = `${evidenceSummaryHtml(stock, analysis, position)}${evidenceHtml}`;
+}
+
+function riskChecksHtml(checks = []) {
+  if (!Array.isArray(checks) || !checks.length) return "";
+  return `
+    <section class="risk-checks" aria-label="プロ確認">
+      <div class="risk-check-title">
+        <strong>プロ確認</strong>
+        <span>業種・需給・配当まで確認</span>
+      </div>
+      <div class="risk-check-grid">
+        ${checks.map((check) => `
+          <article class="risk-check ${riskLevelClass(check.level)}">
+            <div>
+              <strong>${escapeHtml(check.label || "確認")}</strong>
+              <span>${escapeHtml(check.status || riskLevelText(check.level))}</span>
+            </div>
+            <p>${escapeHtml(check.summary || "確認材料が不足しています。")}</p>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function drawChart(series) {
@@ -932,15 +993,9 @@ async function analyze() {
   state.running = true;
   els.analyzeButton.disabled = true;
   els.discoverButton.disabled = true;
-  const messages = ["価格と配当を確認中", "検索結果を確認中", "LM Studioで整理中"];
-  let messageIndex = 0;
-  els.researchProgress.textContent = messages[0];
   const originalText = els.analyzeButton.textContent;
   els.analyzeButton.textContent = "更新中";
-  const progressTimer = setInterval(() => {
-    messageIndex = Math.min(messages.length - 1, messageIndex + 1);
-    els.researchProgress.textContent = messages[messageIndex];
-  }, 7000);
+  els.researchProgress.textContent = "一括分析を開始中";
 
   try {
     const payload = await request("/api/analyze", {
@@ -951,21 +1006,64 @@ async function analyze() {
         pagesPerSite: clampInput(els.pagesPerSite),
       }),
     });
-    state.analyses = Object.fromEntries(payload.analyses.map((item) => [item.symbol, item]));
-    els.lastRun.textContent = new Date(payload.generatedAt).toLocaleString("ja-JP");
-    els.researchProgress.textContent = payload.usedLmStudio ? "更新済み LM Studio分析" : "更新済み ルール分析";
-    if (payload.warnings?.length) toast(payload.warnings.join(" / "));
+    state.analysisJob = payload.job || null;
+    renderAnalysisJob();
+    const result = payload.analyses ? payload : await pollAnalysisJob();
+    applyAnalysisPayload(result);
     render();
   } catch (error) {
     toast(error.message);
     els.researchProgress.textContent = "失敗";
   } finally {
-    clearInterval(progressTimer);
     state.running = false;
     els.analyzeButton.disabled = false;
     els.discoverButton.disabled = false;
     els.analyzeButton.textContent = originalText;
   }
+}
+
+async function pollAnalysisJob() {
+  for (let i = 0; i < 360; i += 1) {
+    const payload = await request("/api/analysis-job").catch(() => null);
+    if (!payload) throw new Error("一括分析の進み具合を確認できませんでした。");
+    state.analysisJob = payload.job || state.analysisJob;
+    renderAnalysisJob();
+    if (payload.result) return payload.result;
+    if (state.analysisJob?.error) throw new Error(state.analysisJob.error);
+    await sleep(2500);
+  }
+  throw new Error("一括分析が長引いています。保存済み結果を確認してください。");
+}
+
+function applyAnalysisPayload(payload, notifyWarnings = true) {
+  state.analyses = Object.fromEntries((payload.analyses || []).map((item) => [item.symbol, item]));
+  state.sectorEvidence = payload.sectorEvidence || [];
+  els.lastRun.textContent = payload.generatedAt ? new Date(payload.generatedAt).toLocaleString("ja-JP") : "-";
+  els.researchProgress.textContent = payload.usedLmStudio ? "更新済み LM Studio分析" : "更新済み ルール分析";
+  if (notifyWarnings && payload.warnings?.length) toast(payload.warnings.join(" / "));
+}
+
+function renderAnalysisJob() {
+  const job = state.analysisJob;
+  if (!job) return;
+  if (!job.running) {
+    if (job.error) els.researchProgress.textContent = `失敗: ${job.error}`;
+    return;
+  }
+  const total = Number(job.total || 0);
+  const checked = Number(job.checked || 0);
+  const aiTotal = Number(job.aiTotal || 0);
+  const aiDone = Number(job.aiDone || 0);
+  const aiCurrent = Number(job.aiCurrent || 0);
+  const details = [];
+  if (total) details.push(`${Math.min(checked, total)}/${total}銘柄`);
+  if (aiTotal) {
+    const aiText = aiCurrent && aiDone < aiTotal
+      ? `AI ${Math.min(aiCurrent, aiTotal)}/${aiTotal} 生成中`
+      : `AI ${Math.min(aiDone, aiTotal)}/${aiTotal}`;
+    details.push(aiText);
+  }
+  els.researchProgress.textContent = `${job.phase || "進行中"} ${details.join(" / ")}`.trim();
 }
 
 async function discover() {
@@ -1164,6 +1262,28 @@ function trendGapBadge(value) {
   if (value < 0) return `<span class="metric-pos">${Math.abs(value).toFixed(1)}%安い</span>`;
   if (value > 0) return `<span class="${value > 15 ? "metric-neg" : "metric-pos"}">${value.toFixed(1)}%高い</span>`;
   return "同じ";
+}
+
+function buyTimingBadge(price = {}) {
+  const gap = Number(price.distanceFromBuyLine1y);
+  if (!Number.isFinite(gap)) return "-";
+  if (price.buyTiming1y === "DEEP") return `<span class="metric-pos">大きく下回る</span>`;
+  if (price.buyTiming1y === "UNDER") return `<span class="metric-pos">${Math.abs(gap).toFixed(1)}%安い</span>`;
+  if (price.buyTiming1y === "NEAR") return `<span class="metric-pos">近い</span>`;
+  if (gap > 18) return `<span class="metric-neg">${gap.toFixed(1)}%高い</span>`;
+  return `${gap.toFixed(1)}%高い`;
+}
+
+function riskLevelClass(level = "") {
+  if (level === "high") return "high";
+  if (level === "low") return "low";
+  return "medium";
+}
+
+function riskLevelText(level = "") {
+  if (level === "high") return "要注意";
+  if (level === "low") return "良好";
+  return "確認";
 }
 
 function trendGapText(value) {
@@ -1543,6 +1663,34 @@ function renderExcludedCandidates() {
   attachExcludedButtons();
 }
 
+function renderSectorEvidence() {
+  if (!els.sectorEvidenceList) return;
+  const groups = state.sectorEvidence || [];
+  if (!groups.length) {
+    els.sectorEvidenceList.classList.add("empty-state");
+    els.sectorEvidenceList.innerHTML = "<p>一括分析を実行すると、業種Evidenceを保存してここに表示します。</p>";
+    return;
+  }
+  els.sectorEvidenceList.classList.remove("empty-state");
+  els.sectorEvidenceList.innerHTML = groups.map((group) => `
+    <article class="sector-evidence-group">
+      <div class="sector-evidence-head">
+        <strong>${escapeHtml(group.sector || "その他")}</strong>
+        <span>${escapeHtml((group.symbols || []).join(" / "))}</span>
+      </div>
+      <div class="sector-evidence-items">
+        ${(group.items || []).map((item) => `
+          <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">
+            <strong>${escapeHtml(item.title || item.source || "source")}</strong>
+            <small>${escapeHtml(item.source || "")}</small>
+            <span>${escapeHtml(item.snippet || "")}</span>
+          </a>
+        `).join("")}
+      </div>
+    </article>
+  `).join("");
+}
+
 function suggestionItem(item, index) {
   const reasons = (item.reasons || []).map((text) => `<span>${escapeHtml(text)}</span>`).join("");
   const risks = (item.risks || []).map((text) => `<span class="risk">${escapeHtml(text)}</span>`).join("");
@@ -1572,6 +1720,7 @@ function suggestionItem(item, index) {
         <span><strong>価格</strong>${yen(price.current)}</span>
         <span><strong>${Number.isFinite(item.unitSize) ? item.unitSize : 100}株</strong>${yen(price.unitAmount)}</span>
         <span><strong>3年目安</strong>${trendGapBadge(price.distanceFromTrend3y)}</span>
+        <span><strong>1年買い場</strong>${buyTimingBadge(price)}</span>
         <span><strong>3カ月</strong>${pct(price.return3m)}</span>
         <span><strong>1年</strong>${pct(price.return1y)}</span>
         <span><strong>3年</strong>${pct(price.return3y)}</span>
@@ -1885,6 +2034,13 @@ els.viewButtons.forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.viewTarget));
 });
 
+els.ideaTabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    state.ideaView = button.dataset.ideaTab || "candidates";
+    renderIdeaTabs();
+  });
+});
+
 els.analyzeButton.addEventListener("click", analyze);
 els.discoverButton.addEventListener("click", discover);
 els.diagnosticsButton?.addEventListener("click", runDiagnostics);
@@ -1897,5 +2053,6 @@ await loadSettings();
 await loadStatus();
 await loadStocks();
 await loadAnalysisCache();
+await loadAnalysisJob();
 await loadDiscoveryCache();
 setInterval(loadStatus, 15000);

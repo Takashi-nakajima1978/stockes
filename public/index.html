@@ -256,20 +256,31 @@
 
         <section class="research-panel">
           <div class="panel-title">
-            <h3>候補リスト</h3>
-            <span>最大100件</span>
+            <h3>候補と業種Evidence</h3>
+            <span>候補は最大100件</span>
           </div>
-          <div class="excluded-panel">
-            <div>
-              <strong>出さない銘柄</strong>
-              <span id="excludedCandidateCount">0件</span>
+          <div class="idea-tabs" role="tablist" aria-label="候補画面の切り替え">
+            <button type="button" class="active" data-idea-tab="candidates">候補リスト</button>
+            <button type="button" data-idea-tab="sector">業種Evidence</button>
+          </div>
+          <div data-idea-panel="candidates">
+            <div class="excluded-panel">
+              <div>
+                <strong>出さない銘柄</strong>
+                <span id="excludedCandidateCount">0件</span>
+              </div>
+              <div id="excludedCandidateList" class="excluded-candidates">
+                <p>まだありません。</p>
+              </div>
             </div>
-            <div id="excludedCandidateList" class="excluded-candidates">
-              <p>まだありません。</p>
+            <div id="candidateList" class="suggestion-list empty-state">
+              <p>まだ候補はありません。</p>
             </div>
           </div>
-          <div id="candidateList" class="suggestion-list empty-state">
-            <p>まだ候補はありません。</p>
+          <div data-idea-panel="sector" hidden>
+            <div id="sectorEvidenceList" class="sector-evidence-list empty-state">
+              <p>一括分析を実行すると、業種Evidenceを保存してここに表示します。</p>
+            </div>
           </div>
         </section>
       </section>

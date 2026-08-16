@@ -63,6 +63,7 @@ const businessBadWords = ["下方修正", "減益", "赤字", "減配", "不祥�
 
 let lmModelCache = { url: "", model: "" };
 let primeUniverseCache = null;
+let analysisJob = null;
 let discoveryJob = null;
 let dailyDiscoveryTimer = null;
 
@@ -177,6 +178,13 @@ async function handleApi(req, res, url) {
     return json(res, 200, await readAnalysisCache());
   }
 
+  if (url.pathname === "/api/analysis-job" && req.method === "GET") {
+    return json(res, 200, {
+      job: analysisJobSnapshot(),
+      result: analysisJob?.result && !analysisJob.running ? analysisJob.result : null,
+    });
+  }
+
   if (url.pathname === "/api/discovery" && req.method === "GET") {
     const excludedCandidates = await readExcludedCandidates();
     return json(res, 200, {
@@ -284,7 +292,12 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/analyze" && req.method === "POST") {
     const body = await readJson(req);
-    return json(res, 200, await analyzeWatchlist(body));
+    if (body.sync) return json(res, 200, await analyzeWatchlist(body));
+    const job = startAnalysisJob(body);
+    return json(res, 202, {
+      job,
+      message: "一括分析を裏で開始しました。進み具合は自動で更新されます。",
+    });
   }
 
   if (url.pathname === "/api/discover" && req.method === "POST") {
@@ -302,7 +315,75 @@ async function handleApi(req, res, url) {
   return json(res, 404, { error: "Not found" });
 }
 
-async function analyzeWatchlist(options = {}) {
+function startAnalysisJob(options = {}) {
+  if (analysisJob?.running) return analysisJobSnapshot();
+  const job = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    running: true,
+    phase: "一括分析を準備中",
+    checked: 0,
+    total: 0,
+    aiDone: 0,
+    aiCurrent: 0,
+    aiTotal: 0,
+    generatedAt: "",
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    usedLmStudio: false,
+    error: "",
+    result: null,
+  };
+  analysisJob = job;
+  void analyzeWatchlist(options, (patch) => updateAnalysisJob(job, patch))
+    .then((result) => {
+      updateAnalysisJob(job, {
+        running: false,
+        phase: "完了",
+        checked: result.analyses?.length || job.checked,
+        total: result.analyses?.length || job.total,
+        generatedAt: result.generatedAt,
+        usedLmStudio: Boolean(result.usedLmStudio),
+        result,
+      });
+    })
+    .catch((error) => {
+      updateAnalysisJob(job, {
+        running: false,
+        phase: "失敗",
+        error: error.message || "一括分析に失敗しました",
+      });
+    });
+  return analysisJobSnapshot();
+}
+
+function updateAnalysisJob(job, patch = {}) {
+  if (!job || analysisJob?.id !== job.id) return;
+  Object.assign(job, patch, { updatedAt: new Date().toISOString() });
+}
+
+function analysisJobSnapshot() {
+  if (!analysisJob) {
+    return {
+      running: false,
+      phase: "待機中",
+      checked: 0,
+      total: 0,
+      aiDone: 0,
+      aiCurrent: 0,
+      aiTotal: 0,
+      generatedAt: "",
+      startedAt: "",
+      updatedAt: "",
+      usedLmStudio: false,
+      error: "",
+      hasResult: false,
+    };
+  }
+  const { result, ...snapshot } = analysisJob;
+  return { ...snapshot, hasResult: Boolean(result) };
+}
+
+async function analyzeWatchlist(options = {}, onProgress = null) {
   const stocks = await readWatchlist();
   const websiteLimit = clamp(Number(options.websiteLimit || 10), 1, 20);
   const depthLimit = clamp(Number(options.depthLimit || 2), 1, 20);
@@ -310,6 +391,15 @@ async function analyzeWatchlist(options = {}) {
   const lmStatus = await checkLmStudio();
   const warnings = [];
   const systemWarnings = [];
+  let checked = 0;
+  onProgress?.({
+    phase: "価格・配当・検索を確認中",
+    checked,
+    total: stocks.length,
+      aiDone: 0,
+      aiCurrent: 0,
+      aiTotal: 0,
+  });
 
   const rows = await mapLimit(stocks, 4, async (stock) => {
     const [price, research] = await Promise.all([
@@ -319,17 +409,29 @@ async function analyzeWatchlist(options = {}) {
 
     if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
     const fallback = ruleBasedDecision(stock, price, research);
+    checked += 1;
+    onProgress?.({ phase: "価格・配当・検索を確認中", checked, total: stocks.length });
     return { stock, price, research, fallback };
   });
 
   let aiBySymbol = new Map();
   if (lmStatus.ok && rows.length) {
     try {
-      const decisions = await aiBatchDecisions(rows);
+      onProgress?.({
+        phase: "LM Studioで2銘柄ずつ整理中",
+        aiDone: 0,
+        aiCurrent: 1,
+        aiTotal: Math.ceil(rows.length / 2),
+      });
+      const decisions = await aiBatchDecisions(rows, (aiDone, aiTotal, aiCurrent = 0) => {
+        onProgress?.({ phase: "LM Studioで2銘柄ずつ整理中", aiDone, aiTotal, aiCurrent });
+      });
       aiBySymbol = new Map(decisions.map((decision) => [decision.symbol, decision]));
     } catch (error) {
       systemWarnings.push(`LM Studio: ${error.message || "分析が時間内に返りませんでした"}`);
     }
+  } else {
+    onProgress?.({ phase: "価格ルールで整理中", aiDone: 0, aiCurrent: 0, aiTotal: 0 });
   }
 
   const analyses = rows.map(({ stock, price, research, fallback }) => {
@@ -341,7 +443,9 @@ async function analyzeWatchlist(options = {}) {
     usedLmStudio: aiBySymbol.size > 0,
     warnings: [...systemWarnings, ...new Set(warnings)].slice(0, 6),
     analyses,
+    sectorEvidence: buildSectorEvidence(rows),
   };
+  onProgress?.({ phase: "分析結果を保存中", checked: stocks.length, total: stocks.length });
   await saveAnalysisCache(result);
   await notifyStrongAnalysisSignals(result.analyses).catch(() => {});
   return result;
@@ -875,6 +979,25 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     }
   }
 
+  if (Number.isFinite(price.distanceFromBuyLine1y)) {
+    if (price.buyTiming1y === "DEEP") {
+      score += 16;
+      valueScore += 12;
+      reasons.push("過去1年の買い場ラインを大きく下回っている");
+    } else if (price.buyTiming1y === "UNDER") {
+      score += 14;
+      valueScore += 10;
+      reasons.push("過去1年の買い場ラインを下回っている");
+    } else if (price.buyTiming1y === "NEAR") {
+      score += 8;
+      valueScore += 5;
+      reasons.push("過去1年の買い場ラインに近い");
+    } else if (price.distanceFromBuyLine1y > 18) {
+      score -= 6;
+      risks.push("過去1年の買い場ラインより高く、押し目待ち");
+    }
+  }
+
   if (Number.isFinite(price.dividendYield)) {
     if (price.dividendYield >= 4 && !isHighChaseChart(price)) {
       score += 8;
@@ -1134,6 +1257,9 @@ async function aiDiscoveryReview(candidates) {
       return1y: candidate.price?.return1y,
       return3y: candidate.price?.return3y,
       distanceFromTrend3y: candidate.price?.distanceFromTrend3y,
+      distanceFromBuyLine1y: candidate.price?.distanceFromBuyLine1y,
+      buyLine1y: candidate.price?.buyLine1y,
+      buyTiming1y: candidate.price?.buyTiming1y,
       maxDrawdown3y: candidate.price?.maxDrawdown3y,
       dividendYield: candidate.price?.dividendYield,
       dividendPerShareTtm: candidate.price?.dividendPerShareTtm,
@@ -1155,25 +1281,42 @@ async function aiDiscoveryReview(candidates) {
     evidence: discoveryEvidenceForAi(candidate),
   }));
 
+  const model = await getLmStudioModel();
+  const map = new Map();
+  const errors = [];
+  for (const chunk of chunkArray(items, 6)) {
+    try {
+      for (const [symbol, review] of await aiDiscoveryReviewChunk(model, chunk)) {
+        map.set(symbol, review);
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (!map.size && errors.length) throw errors[0];
+  return map;
+}
+
+async function aiDiscoveryReviewChunk(model, items) {
   const prompt = [
     "あなたは日本株の候補発掘レビュー担当です。将来の利益を保証せず、根拠不足を厳しく扱ってください。",
     "目的は「事業として好調そうなのに、株価が高すぎず、1単元30万円前後で買いやすい候補」を上に残すことです。",
-    "過去3年の流れに対する現在価格、配当利回り、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
+    "過去3年の流れに対する現在価格、1年買い場ライン、配当利回り、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
+    "1年買い場ラインを下回っていて、事業材料も良いものはプラス評価してください。上がり切った高値圏はマイナス評価してください。",
     "adjustmentは-8から8の整数。根拠が薄い場合は0以下、悪材料や高値づかみ懸念が強い場合はマイナスにしてください。",
     "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"]}]}。",
     "",
     JSON.stringify({ candidates: items }),
   ].join("\n");
 
-  const model = await getLmStudioModel();
   const content = await callLmStudioResponses(model, prompt, {
     instructions: "Return strict JSON only. Do not explain.",
-    maxOutputTokens: 12000,
+    maxOutputTokens: 5000,
   }).catch(async (error) => {
     if (String(error.message || "").includes("404")) {
       return callLmStudioChat(model, prompt, {
         system: "Return strict JSON only. Do not explain.",
-        maxTokens: 12000,
+        maxTokens: 5000,
       });
     }
     throw error;
@@ -1415,6 +1558,21 @@ function buildDiscoveryProcess({
       notes.timing.push("短期はやや強い");
     }
   }
+  if (Number.isFinite(price.distanceFromBuyLine1y)) {
+    if (price.buyTiming1y === "DEEP") {
+      timing += 10;
+      notes.timing.push("1年買い場ラインを大きく下回る");
+    } else if (price.buyTiming1y === "UNDER") {
+      timing += 9;
+      notes.timing.push("1年買い場ライン以下");
+    } else if (price.buyTiming1y === "NEAR") {
+      timing += 5;
+      notes.timing.push("1年買い場ラインに近い");
+    } else if (price.distanceFromBuyLine1y > 18) {
+      timing -= 4;
+      notes.timing.push("1年買い場ラインより高い");
+    }
+  }
   if (Number.isFinite(price.sma200) && Number.isFinite(price.current) && price.current >= price.sma200 * 0.95) {
     timing += 5;
     notes.timing.push("長めの平均価格を大きく下回っていない");
@@ -1529,9 +1687,11 @@ function candidateBuyPlan(price, options = {}) {
   const unitBudget = nullablePositiveNumber(options.unitBudget);
   const currentUnitAmount = current * unitSize;
   const nearTrendCap = trendPrice ? trendPrice * 1.02 : current * 0.98;
+  const buyLine = nullablePositiveNumber(price.buyLine1y);
   const pullbackCap = Number.isFinite(price.return3m) && price.return3m > 18 ? current * 0.94 : current * 0.98;
   const budgetCap = unitBudget ? unitBudget / unitSize : current * 1.05;
-  const maxBuyPrice = Math.max(1, Math.min(nearTrendCap, pullbackCap, budgetCap));
+  const buyLineCap = buyLine ? buyLine * 1.02 : current * 1.05;
+  const maxBuyPrice = Math.max(1, Math.min(nearTrendCap, pullbackCap, budgetCap, buyLineCap));
   const unitAmountAtMax = maxBuyPrice * unitSize;
   const checks = [];
 
@@ -1548,6 +1708,12 @@ function candidateBuyPlan(price, options = {}) {
       : `${unitSize}株は予算超過`);
   }
 
+  if (buyLine && Number.isFinite(price.distanceFromBuyLine1y)) {
+    if (price.distanceFromBuyLine1y <= 0) checks.push("1年買い場ライン以下");
+    else if (price.distanceFromBuyLine1y <= 3) checks.push("1年買い場ラインに近い");
+    else checks.push("1年買い場ラインより高い");
+  }
+
   if (Number.isFinite(price.return3m)) {
     if (price.return3m >= 28) checks.push("短期で上がりすぎに注意");
     else if (price.return3m >= -5) checks.push("短期の値動きは許容範囲");
@@ -1557,7 +1723,8 @@ function candidateBuyPlan(price, options = {}) {
   const gapToMax = ((current - maxBuyPrice) / maxBuyPrice) * 100;
   const strongScore = Number(options.businessValueScore || 0) >= 65;
   let stance = "待つ";
-  if (gapToMax <= 1 && strongScore) stance = "今すぐ検討";
+  if (buyLine && current <= buyLine && strongScore) stance = "今すぐ検討";
+  else if (gapToMax <= 1 && strongScore) stance = "今すぐ検討";
   else if (gapToMax <= 7) stance = "指値で待つ";
   else stance = "押し目待ち";
 
@@ -1584,6 +1751,16 @@ function compactDiscoveryPrice(price, unitSize = 100) {
     trendPrice3y: price.trendPrice3y,
     distanceFromTrend3y: price.distanceFromTrend3y,
     distanceFromHigh3y: price.distanceFromHigh3y,
+    buyLine1y: price.buyLine1y,
+    deepBuyLine1y: price.deepBuyLine1y,
+    distanceFromBuyLine1y: price.distanceFromBuyLine1y,
+    buyTiming1y: price.buyTiming1y,
+    low1y: price.low1y,
+    low1yDate: price.low1yDate,
+    latestVolume: price.latestVolume,
+    averageVolume20: price.averageVolume20,
+    averageVolume60: price.averageVolume60,
+    volumeRatio20: price.volumeRatio20,
     dividendPerShareTtm: price.dividendPerShareTtm,
     dividendYield: price.dividendYield,
     dividendChangePct: price.dividendChangePct,
@@ -1633,18 +1810,26 @@ function stockSector(stock) {
 
 async function researchStock(stock, options) {
   const queries = [
-    `${stock.name} ${stock.symbol.replace(".T", "")} 株価 決算 業績 ニュース 投資判断`,
-    `${stock.name} ${stock.symbol.replace(".T", "")} 中期経営計画 配当 リスク`,
+    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 株価 決算 業績 ニュース 投資判断 目標株価 レーティング`, topic: "company" },
+    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 中期経営計画 配当 リスク 決算短信 上方修正 下方修正`, topic: "company" },
+    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 信用倍率 空売り 需給`, topic: "company" },
+    { text: `${stock.sector || stockSector(stock)} 業界 見通し 日本株 リスク 好調 不調 需要`, topic: "sector" },
   ];
   const searchResults = [];
   const perQueryLimit = Math.max(5, Math.ceil(options.websiteLimit / queries.length));
 
   for (const query of queries) {
-    const results = await searchGoogle(query, { limit: perQueryLimit }).catch(() => []);
-    searchResults.push(...results);
+    const results = await searchGoogle(query.text, { limit: perQueryLimit }).catch(() => []);
+    searchResults.push(...results.map((item) => ({ ...item, topic: query.topic, query: query.text })));
   }
 
-  const deduped = uniqueBy(searchResults, (item) => item.url).slice(0, options.websiteLimit);
+  const companyResults = uniqueBy(searchResults.filter((item) => item.topic !== "sector"), (item) => item.url);
+  const sectorResults = uniqueBy(searchResults.filter((item) => item.topic === "sector"), (item) => item.url);
+  const sectorLimit = Math.min(6, Math.max(2, Math.ceil(options.websiteLimit / 3)));
+  const deduped = uniqueBy([
+    ...companyResults.slice(0, options.websiteLimit),
+    ...sectorResults.slice(0, sectorLimit),
+  ], (item) => item.url);
   const crawled = [];
   const crawlTargets = deduped.slice(0, Math.min(3, deduped.length));
   for (const item of crawlTargets) {
@@ -1663,7 +1848,8 @@ async function researchStock(stock, options) {
         url: item.url,
         source: hostOf(item.url),
         snippet: cleanText(item.snippet).slice(0, 260),
-        kind: "search",
+        kind: item.topic === "sector" ? "sector" : "search",
+        sector: stock.sector || stockSector(stock),
       })),
       ...crawled.map((item) => ({
         title: item.title,
@@ -1671,6 +1857,7 @@ async function researchStock(stock, options) {
         source: hostOf(item.url),
         snippet: cleanText(item.text).slice(0, 260),
         kind: `depth ${item.depth}`,
+        sector: stock.sector || stockSector(stock),
       })),
     ].slice(0, 30),
     contextText: [
@@ -1831,6 +2018,7 @@ async function fetchPriceHistory(symbol) {
   const quote = result.indicators?.quote?.[0] || {};
   const timestamps = result.timestamp || [];
   const closes = quote.close || [];
+  const volumes = quote.volume || [];
   const dividends = Object.values(result.events?.dividends || {})
     .map((item) => ({
       date: new Date(Number(item.date) * 1000).toISOString().slice(0, 10),
@@ -1842,6 +2030,7 @@ async function fetchPriceHistory(symbol) {
     .map((timestamp, index) => ({
       date: new Date(timestamp * 1000).toISOString().slice(0, 10),
       close: Number(closes[index]),
+      volume: Number(volumes[index]),
     }))
     .filter((point) => Number.isFinite(point.close));
   return priceMetrics(series, {
@@ -1856,6 +2045,10 @@ function priceMetrics(series, meta = {}) {
   if (series.length < 2) return emptyPrice(series, meta);
   const current = last(series).close;
   const closes = series.map((point) => point.close);
+  const volumeValues = series.map((point) => point.volume).filter(Number.isFinite);
+  const latestVolume = Number.isFinite(last(series).volume) ? last(series).volume : null;
+  const averageVolume20 = average(volumeValues.slice(-20));
+  const averageVolume60 = average(volumeValues.slice(-60));
   const series3y = series.slice(-756);
   const closes3y = series3y.map((point) => point.close);
   const high52 = Math.max(...closes.slice(-252));
@@ -1871,6 +2064,7 @@ function priceMetrics(series, meta = {}) {
   const trendSlope3y = trend.slope;
   const trendPrice3y = trend.currentPrice;
   const dividend = dividendMetrics(meta.dividends || [], current);
+  const buyTiming = priceBuyTiming(series);
   return {
     current,
     return1m: returnFrom(series, 21),
@@ -1895,11 +2089,66 @@ function priceMetrics(series, meta = {}) {
     sma50,
     sma200,
     volatility,
+    latestVolume,
+    averageVolume20,
+    averageVolume60,
+    volumeRatio20: latestVolume && averageVolume20 ? latestVolume / averageVolume20 : null,
     shortName: cleanText(meta.shortName || ""),
     longName: cleanText(meta.longName || ""),
     yahooSymbol: cleanText(meta.symbol || ""),
+    ...buyTiming,
     ...dividend,
     series: series3y,
+  };
+}
+
+function priceBuyTiming(series = []) {
+  const clean = (series || [])
+    .map((point) => ({ date: normalizeDate(point.date), close: Number(point.close) }))
+    .filter((point) => point.date && Number.isFinite(point.close))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (clean.length < 40) return emptyBuyTiming();
+  const latest = last(clean);
+  const latestTime = new Date(`${latest.date}T00:00:00`).getTime();
+  if (!Number.isFinite(latestTime)) return emptyBuyTiming();
+  const oneYear = clean.filter((point) => {
+    const time = new Date(`${point.date}T00:00:00`).getTime();
+    return Number.isFinite(time) && latestTime - time <= 366 * 86400000;
+  });
+  if (oneYear.length < 40) return emptyBuyTiming();
+
+  const closes = oneYear.map((point) => point.close).sort((a, b) => a - b);
+  const buyLine1y = quantile(closes, 0.25);
+  const deepBuyLine1y = quantile(closes, 0.15);
+  const median1y = quantile(closes, 0.5);
+  const low = oneYear.reduce((best, point) => (point.close < best.close ? point : best), oneYear[0]);
+  const distanceFromBuyLine1y = buyLine1y ? ((latest.close - buyLine1y) / buyLine1y) * 100 : null;
+  let status = "ABOVE";
+  if (deepBuyLine1y && latest.close <= deepBuyLine1y * 1.02) status = "DEEP";
+  else if (buyLine1y && latest.close <= buyLine1y) status = "UNDER";
+  else if (buyLine1y && latest.close <= buyLine1y * 1.03) status = "NEAR";
+  else if (median1y && latest.close <= median1y) status = "MID";
+
+  return {
+    buyLine1y,
+    deepBuyLine1y,
+    median1y,
+    low1y: low.close,
+    low1yDate: low.date,
+    distanceFromBuyLine1y,
+    buyTiming1y: status,
+  };
+}
+
+function emptyBuyTiming() {
+  return {
+    buyLine1y: null,
+    deepBuyLine1y: null,
+    median1y: null,
+    low1y: null,
+    low1yDate: "",
+    distanceFromBuyLine1y: null,
+    buyTiming1y: "UNKNOWN",
   };
 }
 
@@ -2132,7 +2381,118 @@ function ruleBasedDecision(stock, price, research) {
     thesis,
     reasons: uniqueText(reasons).slice(0, 5),
     risks: uniqueText(risks).slice(0, 5),
+    riskChecks: professionalRiskChecks(stock, price, research, position),
   };
+}
+
+function professionalRiskChecks(stock, price = {}, research = {}, position = positionMetrics(stock, price)) {
+  const context = String(research.contextText || "").toLowerCase();
+  const sector = stock.sector || stockSector(stock);
+  const hasEvidence = Number(research.searched || 0) >= 3;
+  const badWords = ["下方修正", "減益", "赤字", "減配", "不祥事", "行政処分", "訴訟"].filter((word) => context.includes(word.toLowerCase()));
+  const goodWords = ["上方修正", "増収増益", "最高益", "営業益増", "増配", "自社株買い"].filter((word) => context.includes(word.toLowerCase()));
+  const sectorEvidenceCount = (research.evidence || []).filter((item) => item.kind === "sector").length;
+
+  return [
+    riskCheck("業績・決算", badWords.length ? "high" : goodWords.length ? "low" : hasEvidence ? "medium" : "medium",
+      badWords.length
+        ? `検索結果に${badWords.slice(0, 2).join("、")}があり、決算悪化の確認が必要`
+        : goodWords.length
+        ? `検索結果に${goodWords.slice(0, 2).join("、")}があり、業績材料は悪くない`
+        : "決算・業績材料の強さは検索結果だけでは薄い"),
+    riskCheck("業種環境", sectorEvidenceCount ? sectorRiskLevel(context, sector) : "medium",
+      sectorEvidenceCount
+        ? `${sector}の業種情報を${sectorEvidenceCount}件確認。需要、規制、景気感応度を評価材料に含める`
+        : `${sector}の業種Evidenceが不足。個社だけで判断しない`),
+    riskCheck("株価位置", chartRiskLevel(price),
+      chartRiskSummary(price)),
+    riskCheck("需給・流動性", liquidityRiskLevel(price),
+      liquidityRiskSummary(price)),
+    riskCheck("配当", dividendRiskLevel(price),
+      dividendRiskSummary(price)),
+    riskCheck("保有損益", holdingRiskLevel(position),
+      holdingRiskSummary(position)),
+  ];
+}
+
+function riskCheck(label, level, summary) {
+  const normalized = ["low", "medium", "high"].includes(level) ? level : "medium";
+  return {
+    label,
+    level: normalized,
+    status: normalized === "high" ? "要注意" : normalized === "medium" ? "確認" : "良好",
+    summary,
+  };
+}
+
+function sectorRiskLevel(context, sector = "") {
+  const cyclical = /航空|鉄道|自動車|機械|半導体|商社|資源|エネルギー|不動産|銀行|保険/.test(sector);
+  const bad = ["需要減", "減速", "市況悪化", "規制", "原材料高", "金利上昇", "燃料費", "円高", "競争激化"].some((word) => context.includes(word.toLowerCase()));
+  const good = ["需要増", "回復", "好調", "価格転嫁", "増益", "投資拡大"].some((word) => context.includes(word.toLowerCase()));
+  if (bad) return "high";
+  if (cyclical && !good) return "medium";
+  return good ? "low" : "medium";
+}
+
+function chartRiskLevel(price = {}) {
+  if (isHighChaseChart(price) || isNoUpsideChart(price)) return "high";
+  if (Number.isFinite(price.distanceFromBuyLine1y) && price.distanceFromBuyLine1y <= 0) return "low";
+  if (Number.isFinite(price.distanceFromTrend3y) && price.distanceFromTrend3y > 18) return "high";
+  if (Number.isFinite(price.return3m) && price.return3m < -8) return "medium";
+  return "medium";
+}
+
+function chartRiskSummary(price = {}) {
+  if (isHighChaseChart(price)) return "3年で大きく上昇した後の高い位置。買うなら押し目と損切り幅を先に決める";
+  if (isNoUpsideChart(price)) return "3年高値に近い一方で上昇力が弱く、上値余地を慎重に見る";
+  if (Number.isFinite(price.distanceFromBuyLine1y) && price.distanceFromBuyLine1y <= 0) return "過去1年の買い場ライン以下。価格位置だけを見ると入りやすい";
+  if (Number.isFinite(price.distanceFromTrend3y) && price.distanceFromTrend3y > 18) return "3年目安より高く、買い急ぎに注意";
+  return "過熱・下落継続・レンジ位置をチャートで確認する";
+}
+
+function liquidityRiskLevel(price = {}) {
+  if (Number.isFinite(price.averageVolume20) && price.averageVolume20 < 50000) return "high";
+  if (Number.isFinite(price.averageVolume20) && price.averageVolume20 < 200000) return "medium";
+  if (Number.isFinite(price.volatility) && price.volatility > 55) return "high";
+  if (Number.isFinite(price.sma50) && Number.isFinite(price.sma200) && price.sma50 < price.sma200) return "medium";
+  return Number.isFinite(price.averageVolume20) ? "low" : "medium";
+}
+
+function liquidityRiskSummary(price = {}) {
+  if (Number.isFinite(price.averageVolume20) && price.averageVolume20 < 50000) return "平均出来高が少なく、売りたい時に価格が飛びやすい";
+  if (Number.isFinite(price.averageVolume20) && price.averageVolume20 < 200000) return "出来高は厚くない。注文サイズと指値を慎重にする";
+  if (Number.isFinite(price.volatility) && price.volatility > 55) return "値動きが大きく、建玉サイズを落とすべき";
+  if (Number.isFinite(price.sma50) && Number.isFinite(price.sma200) && price.sma50 < price.sma200) return "50日線が200日線を下回り、需給はまだ強くない";
+  return "出来高と移動平均の面では大きな警戒は少ない";
+}
+
+function dividendRiskLevel(price = {}) {
+  if (Number.isFinite(price.dividendChangePct) && price.dividendChangePct < -5) return "high";
+  if (Number.isFinite(price.dividendYield) && price.dividendYield >= 5.5 && (price.return1y < -10 || price.trend3y === "DOWN")) return "high";
+  if (!Number.isFinite(price.dividendYield) || price.dividendYield <= 0) return "medium";
+  return "low";
+}
+
+function dividendRiskSummary(price = {}) {
+  if (Number.isFinite(price.dividendChangePct) && price.dividendChangePct < -5) return "直近1年の配当が減っており、保有理由としての配当を再確認";
+  if (Number.isFinite(price.dividendYield) && price.dividendYield >= 5.5 && (price.return1y < -10 || price.trend3y === "DOWN")) return "高配当だが、株価下落で利回りが高く見えている可能性";
+  if (!Number.isFinite(price.dividendYield) || price.dividendYield <= 0) return "配当データが薄い、または配当を主な保有理由にしにくい";
+  return `配当利回り${price.dividendYield.toFixed(1)}%。減配リスクと業績の裏付けを確認`;
+}
+
+function holdingRiskLevel(position = {}) {
+  if (!position.quantity) return "medium";
+  if (Number.isFinite(position.totalReturnPct) && position.totalReturnPct <= -15) return "high";
+  if (Number.isFinite(position.totalReturnPct) && position.totalReturnPct < 0) return "medium";
+  return "low";
+}
+
+function holdingRiskSummary(position = {}) {
+  if (!position.quantity) return "未保有。買うなら最初の損切り幅と単元数を先に決める";
+  if (Number.isFinite(position.totalReturnPct) && position.totalReturnPct <= -15) return `配当込みで${Math.abs(position.totalReturnPct).toFixed(1)}%の損失。保有理由が残っているか確認`;
+  if (Number.isFinite(position.totalReturnPct) && position.totalReturnPct < 0) return `配当込みで${Math.abs(position.totalReturnPct).toFixed(1)}%の損失。追加買いは慎重にする`;
+  if (Number.isFinite(position.totalReturnPct)) return `配当込みで${position.totalReturnPct.toFixed(1)}%の利益。利益確定ラインも確認`;
+  return "取得情報が不足。購入日、単価、株数の入力が必要";
 }
 
 function isHighChaseChart(price = {}) {
@@ -2152,38 +2512,67 @@ function isNoUpsideChart(price = {}) {
   return nearUpperRange && notCheapVsTrend && weakLongTrend && (reboundAlready || shortOverLongNotEnough);
 }
 
-async function aiBatchDecisions(rows) {
+async function aiBatchDecisions(rows, onProgress = null) {
   const items = rows.map(({ stock, price, research, fallback }) => ({
     symbol: stock.symbol,
     name: stock.name,
+    sector: stock.sector || stockSector(stock),
     holding: Boolean(stock.holding),
     notes: stock.notes || "",
     position: positionMetrics(stock, price),
     price: compactPrice(price),
     ruleDecision: fallback,
-    evidence: research.evidence.slice(0, 5).map((item) => ({
-      title: item.title,
+    evidence: research.evidence.slice(0, 6).map((item) => ({
+      title: cleanText(item.title || "").slice(0, 140),
       source: item.source,
-      snippet: item.snippet,
+      snippet: cleanText(item.snippet || "").slice(0, 220),
       kind: item.kind,
+    })),
+    sectorEvidence: research.evidence.filter((item) => item.kind === "sector").slice(0, 4).map((item) => ({
+      title: cleanText(item.title || "").slice(0, 140),
+      source: item.source,
+      snippet: cleanText(item.snippet || "").slice(0, 180),
     })),
   }));
 
+  const model = await getLmStudioModel();
+  const decisions = [];
+  const errors = [];
+  const chunks = chunkArray(items, 2);
+  let done = 0;
+  for (const chunk of chunks) {
+    onProgress?.(done, chunks.length, done + 1);
+    try {
+      decisions.push(...(await aiDecisionChunk(model, chunk)));
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      done += 1;
+      onProgress?.(done, chunks.length, done < chunks.length ? done + 1 : 0);
+    }
+  }
+  if (!decisions.length && errors.length) throw errors[0];
+  return decisions;
+}
+
+async function aiDecisionChunk(model, items) {
   const prompt = [
     "あなたは日本株のリサーチ補助AIです。将来利益を保証せず、売買判断の根拠とリスクを厳密に分けてください。",
-    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"]}]}。",
+    "注意点は、トレードのプロが最低限確認する観点で評価してください。業種環境も個社とは別の材料として読み込んでください。",
+    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}]}]}。",
     "actionは BUY, HOLD, SELL, WATCH のいずれか。SELLは即時売却ではなく、数週間から数か月の保有理由を見直す意味です。confidenceは0-100。",
+    "riskChecksは必ずこの6項目にしてください: 業績・決算, 業種環境, 株価位置, 需給・流動性, 配当, 保有損益。levelは low, medium, high のいずれか。",
+    "thesisは120字以内、reasonsとrisksは各3件まで、riskChecksのsummaryは各80字以内にしてください。",
     "ユーザーはデイトレーダーではありません。短期ノイズだけで売買を促さず、根拠不足、材料が古い、検索結果が薄い場合はWATCHを優先してください。",
     "3年で大きく上がった後、現在値が3年の流れや安値から見て高い位置にある場合はBUYにせず、WATCHかHOLDにしてください。",
     "配当利回り、配当の増減、購入日以降の配当込み損益を見てください。高配当だけでBUYにせず、株価下落で利回りが高く見える可能性をリスクに入れてください。",
-    "短期売買ではなく、3年の価格傾向、購入日、購入単価、株数、配当込み損益、直近モメンタム、悪材料、過熱感、保有継続可否を総合評価してください。",
+    "短期売買ではなく、3年の価格傾向、1年買い場ライン、購入日、購入単価、株数、配当込み損益、直近モメンタム、出来高、悪材料、過熱感、業種環境、保有継続可否を総合評価してください。",
     "",
     JSON.stringify({ stocks: items }),
   ].join("\n");
 
-  const model = await getLmStudioModel();
-  const content = await callLmStudioResponses(model, prompt).catch(async (error) => {
-    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt);
+  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 2800 }).catch(async (error) => {
+    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 2800 });
     throw error;
   });
   const parsed = parseJsonObject(content);
@@ -2198,6 +2587,7 @@ async function aiBatchDecisions(rows) {
       thesis: decision.thesis,
       reasons: decision.reasons,
       risks: decision.risks,
+      riskChecks: decision.riskChecks,
     }));
 }
 
@@ -2271,9 +2661,19 @@ function compactPrice(price) {
     trendPrice3y: price.trendPrice3y,
     distanceFromTrend3y: price.distanceFromTrend3y,
     trend3y: price.trend3y,
+    buyLine1y: price.buyLine1y,
+    deepBuyLine1y: price.deepBuyLine1y,
+    distanceFromBuyLine1y: price.distanceFromBuyLine1y,
+    buyTiming1y: price.buyTiming1y,
+    low1y: price.low1y,
+    low1yDate: price.low1yDate,
     sma50: price.sma50,
     sma200: price.sma200,
     volatility: price.volatility,
+    latestVolume: price.latestVolume,
+    averageVolume20: price.averageVolume20,
+    averageVolume60: price.averageVolume60,
+    volumeRatio20: price.volumeRatio20,
     dividendPerShareTtm: price.dividendPerShareTtm,
     dividendYield: price.dividendYield,
     dividendChangePct: price.dividendChangePct,
@@ -2302,6 +2702,10 @@ function normalizeDecision(stock, price, research, decision) {
   const action = safety.action;
   const reasons = uniqueText([...asStringArray(decision.reasons), ...safety.reasons]).slice(0, 5);
   const risks = uniqueText([...asStringArray(decision.risks), ...safety.risks]).slice(0, 5);
+  const riskChecks = mergeRiskChecks(
+    professionalRiskChecks(stock, price, research, position),
+    normalizeRiskChecks(decision.riskChecks),
+  );
   return {
     symbol: stock.symbol,
     name: stock.name,
@@ -2310,6 +2714,7 @@ function normalizeDecision(stock, price, research, decision) {
     thesis: String(safety.thesis || decision.thesis || `${stock.name}は${actionLabels[action]}判定。`).slice(0, 360),
     reasons,
     risks,
+    riskChecks,
     price,
     position,
     entryValue: evaluateEntryPrice(stock.targetBuyPrice, price),
@@ -2319,6 +2724,34 @@ function normalizeDecision(stock, price, research, decision) {
       crawled: research.crawled,
     },
   };
+}
+
+function normalizeRiskChecks(value = []) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const label = String(item.label || "").trim();
+    if (!label) return null;
+    const level = ["low", "medium", "high"].includes(item.level) ? item.level : "medium";
+    return {
+      label,
+      level,
+      status: String(item.status || (level === "high" ? "要注意" : level === "medium" ? "確認" : "良好")).slice(0, 24),
+      summary: String(item.summary || "").slice(0, 220),
+    };
+  }).filter(Boolean);
+}
+
+function mergeRiskChecks(base = [], ai = []) {
+  const byLabel = new Map(base.map((item) => [item.label, item]));
+  for (const item of ai) {
+    const current = byLabel.get(item.label);
+    byLabel.set(item.label, {
+      ...(current || {}),
+      ...item,
+      summary: item.summary || current?.summary || "",
+    });
+  }
+  return [...byLabel.values()].slice(0, 8);
 }
 
 function decisionSafetyOverride(stock, price = {}, action, position = positionMetrics(stock, price)) {
@@ -2734,6 +3167,50 @@ function aggregatePositions(positions) {
   };
 }
 
+function buildSectorEvidence(rows = []) {
+  const bySector = new Map();
+  for (const row of rows) {
+    const sector = row.stock?.sector || stockSector(row.stock || {}) || "その他";
+    const current = bySector.get(sector) || {
+      sector,
+      symbols: new Set(),
+      items: [],
+    };
+    if (row.stock?.symbol) current.symbols.add(row.stock.symbol);
+    const sectorItems = (row.research?.evidence || [])
+      .filter((item) => item.kind === "sector")
+      .map((item) => ({
+        title: item.title,
+        url: item.url,
+        source: item.source,
+        snippet: item.snippet,
+        sector,
+      }));
+    current.items.push(...sectorItems);
+    bySector.set(sector, current);
+  }
+  return [...bySector.values()].map((group) => ({
+    sector: group.sector,
+    symbols: [...group.symbols].sort(),
+    items: uniqueBy(group.items, (item) => item.url).slice(0, 8),
+  })).filter((group) => group.items.length);
+}
+
+function normalizeSectorEvidence(value = []) {
+  if (!Array.isArray(value)) return [];
+  return value.map((group) => ({
+    sector: String(group.sector || "その他").trim(),
+    symbols: asStringArray(group.symbols).slice(0, 20),
+    items: Array.isArray(group.items) ? group.items.map((item) => ({
+      title: String(item.title || "").slice(0, 180),
+      url: String(item.url || ""),
+      source: String(item.source || ""),
+      snippet: String(item.snippet || "").slice(0, 300),
+      sector: String(item.sector || group.sector || "その他"),
+    })).filter((item) => item.url || item.title).slice(0, 8) : [],
+  })).filter((group) => group.items.length);
+}
+
 async function readAnalysisCache() {
   try {
     const cached = JSON.parse(await readFile(ANALYSIS_CACHE_PATH, "utf8"));
@@ -2743,9 +3220,10 @@ async function readAnalysisCache() {
       usedLmStudio: Boolean(cached.usedLmStudio),
       warnings: asStringArray(cached.warnings).slice(0, 6),
       analyses,
+      sectorEvidence: normalizeSectorEvidence(cached.sectorEvidence),
     };
   } catch {
-    return { generatedAt: "", usedLmStudio: false, warnings: [], analyses: [] };
+    return { generatedAt: "", usedLmStudio: false, warnings: [], analyses: [], sectorEvidence: [] };
   }
 }
 
@@ -2756,6 +3234,7 @@ async function saveAnalysisCache(result) {
     usedLmStudio: result.usedLmStudio,
     warnings: result.warnings || [],
     analyses: result.analyses || [],
+    sectorEvidence: normalizeSectorEvidence(result.sectorEvidence),
   }, null, 2));
 }
 
@@ -3471,9 +3950,14 @@ function emptyPrice(series = [], meta = {}) {
     trendPrice3y: null,
     distanceFromTrend3y: null,
     trend3y: "UNKNOWN",
+    ...emptyBuyTiming(),
     sma50: null,
     sma200: null,
     volatility: null,
+    latestVolume: null,
+    averageVolume20: null,
+    averageVolume60: null,
+    volumeRatio20: null,
     dividendPerShareTtm: null,
     dividendYield: null,
     dividendPreviousPerShareTtm: null,
@@ -3568,6 +4052,16 @@ function average(values) {
   return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : null;
 }
 
+function quantile(values = [], ratio = 0.5) {
+  const valid = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!valid.length) return null;
+  const position = (valid.length - 1) * ratio;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return valid[lower];
+  return valid[lower] + (valid[upper] - valid[lower]) * (position - lower);
+}
+
 function last(values) {
   return values[values.length - 1];
 }
@@ -3588,6 +4082,15 @@ async function mapLimit(values, limit, fn) {
   });
   await Promise.all(workers);
   return results;
+}
+
+function chunkArray(values = [], size = 1) {
+  const chunkSize = Math.max(1, size);
+  const chunks = [];
+  for (let index = 0; index < values.length; index += chunkSize) {
+    chunks.push(values.slice(index, index + chunkSize));
+  }
+  return chunks;
 }
 
 function formatYen(value) {
