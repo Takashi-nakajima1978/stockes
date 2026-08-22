@@ -1,6 +1,6 @@
 # Stock Signal
 
-20銘柄まで管理し、SearXNGまたはGoogle検索、3年価格データ、LM Studioのローカル生成AIを組み合わせる株式分析アプリです。
+50銘柄まで管理し、SearXNGまたはGoogle検索、3年価格データ、LM Studioのローカル生成AIを組み合わせる株式分析アプリです。
 
 ## できること
 

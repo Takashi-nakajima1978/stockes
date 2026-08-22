@@ -1,3 +1,5 @@
+const MANAGED_STOCK_LIMIT = 50;
+
 const state = {
   stocks: [],
   analyses: {},
@@ -2318,9 +2320,9 @@ function suggestionItem(item, index) {
     <a href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.source || source.title || "source")}</a>
   `).join("");
   const exists = state.stocks.some((stock) => stock.symbol === item.symbol);
-  const full = state.stocks.length >= 20;
+  const full = state.stocks.length >= MANAGED_STOCK_LIMIT;
   const disabled = exists || full ? "disabled" : "";
-  const buttonText = exists ? "追加済み" : full ? "20件満了" : "管理に追加";
+  const buttonText = exists ? "追加済み" : full ? `${MANAGED_STOCK_LIMIT}件満了` : "管理に追加";
   return `
     <article class="suggestion-item">
       <div class="suggestion-head">
