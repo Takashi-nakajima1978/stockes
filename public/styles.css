@@ -786,6 +786,7 @@ tr:hover .drag-handle,
 }
 
 .decision-detail {
+  min-width: 0;
   padding: 16px;
   display: grid;
   gap: 14px;
@@ -871,6 +872,9 @@ tr:hover .drag-handle,
 }
 
 .position-form {
+  width: min(100%, 1120px);
+  max-width: 100%;
+  min-width: 0;
   display: grid;
   gap: 12px;
   border: 1px solid var(--line);
@@ -915,6 +919,7 @@ tr:hover .drag-handle,
 }
 
 .position-lots {
+  min-width: 0;
   display: grid;
   gap: 8px;
 }
@@ -937,7 +942,7 @@ tr:hover .drag-handle,
 .lot-head,
 .lot-row {
   display: grid;
-  grid-template-columns: minmax(126px, 1fr) minmax(126px, 1fr) minmax(100px, 0.8fr) 36px;
+  grid-template-columns: minmax(150px, 220px) minmax(140px, 220px) minmax(92px, 150px) 36px;
   gap: 8px;
   align-items: end;
 }
@@ -954,6 +959,13 @@ tr:hover .drag-handle,
 }
 
 .lot-list {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.sale-list {
+  min-width: 0;
   display: grid;
   gap: 8px;
 }
@@ -978,7 +990,7 @@ tr:hover .drag-handle,
 
 .position-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(92px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 220px));
   gap: 8px;
 }
 
@@ -1900,7 +1912,7 @@ tr:hover .drag-handle,
   color: var(--muted);
 }
 
-@media (max-width: 1120px) {
+@media (max-width: 1420px) {
   .app-shell {
     grid-template-columns: 1fr;
   }
