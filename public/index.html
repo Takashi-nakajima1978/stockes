@@ -35,6 +35,14 @@
           <span>LM Studio</span>
           <strong id="lmStatus">確認中</strong>
         </div>
+        <div class="status-row">
+          <span>日本市場</span>
+          <strong id="jpMarketStatus">確認中</strong>
+        </div>
+        <div class="status-row">
+          <span>米国市場</span>
+          <strong id="usMarketStatus">確認中</strong>
+        </div>
       </div>
 
       <div class="limit-meter" aria-live="polite">
@@ -124,6 +132,7 @@
                     <th>銘柄</th>
                     <th>業種</th>
                     <th>現在</th>
+                    <th>取得</th>
                     <th>損益</th>
                     <th>配当</th>
                     <th>判定</th>
@@ -370,15 +379,16 @@
             <button type="button" data-idea-tab="sector">業種Evidence</button>
           </div>
           <div data-idea-panel="candidates">
-            <div class="excluded-panel">
-              <div>
+            <div id="candidatePerformance" class="candidate-performance"></div>
+            <details class="excluded-panel">
+              <summary>
                 <strong>出さない銘柄</strong>
                 <span id="excludedCandidateCount">0件</span>
-              </div>
+              </summary>
               <div id="excludedCandidateList" class="excluded-candidates">
                 <p>まだありません。</p>
               </div>
-            </div>
+            </details>
             <div id="candidateList" class="suggestion-list empty-state">
               <p>まだ候補はありません。</p>
             </div>
@@ -496,6 +506,10 @@
               <label class="checkbox-line setting-check">
                 <input id="settingsHourlyRefreshEnabled" type="checkbox">
                 <span>1時間ごとに保有を更新</span>
+              </label>
+              <label class="checkbox-line setting-check">
+                <input id="settingsMarketHoursOnlyRefresh" type="checkbox">
+                <span>市場が開いている時だけ更新</span>
               </label>
               <label class="checkbox-line setting-check">
                 <input id="settingsDailyDiscoveryEnabled" type="checkbox">

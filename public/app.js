@@ -8,6 +8,7 @@ const state = {
   excludedCandidates: [],
   sectorEvidence: [],
   sourceSummary: null,
+  candidatePerformance: null,
   analysisJob: null,
   discoveryJob: null,
   discoveryGeneratedAt: "",
@@ -53,6 +54,8 @@ const els = {
   ideaPanels: [...document.querySelectorAll("[data-idea-panel]")],
   googleStatus: document.getElementById("googleStatus"),
   lmStatus: document.getElementById("lmStatus"),
+  jpMarketStatus: document.getElementById("jpMarketStatus"),
+  usMarketStatus: document.getElementById("usMarketStatus"),
   stockForm: document.getElementById("stockForm"),
   stockName: document.getElementById("stockName"),
   stockSymbol: document.getElementById("stockSymbol"),
@@ -111,6 +114,7 @@ const els = {
   candidateList: document.getElementById("candidateList"),
   suggestionSource: document.getElementById("suggestionSource"),
   candidateSavedAt: document.getElementById("candidateSavedAt"),
+  candidatePerformance: document.getElementById("candidatePerformance"),
   excludedCandidateCount: document.getElementById("excludedCandidateCount"),
   excludedCandidateList: document.getElementById("excludedCandidateList"),
   sectorEvidenceList: document.getElementById("sectorEvidenceList"),
@@ -127,6 +131,7 @@ const els = {
   settingsDailyDiscoveryEnabled: document.getElementById("settingsDailyDiscoveryEnabled"),
   settingsDailyDiscoveryHour: document.getElementById("settingsDailyDiscoveryHour"),
   settingsHourlyRefreshEnabled: document.getElementById("settingsHourlyRefreshEnabled"),
+  settingsMarketHoursOnlyRefresh: document.getElementById("settingsMarketHoursOnlyRefresh"),
   settingsNotificationsEnabled: document.getElementById("settingsNotificationsEnabled"),
   settingsTradeFeeYen: document.getElementById("settingsTradeFeeYen"),
   settingsNotificationMinNetEdgeYen: document.getElementById("settingsNotificationMinNetEdgeYen"),
@@ -217,13 +222,22 @@ async function loadStatus() {
       : "未接続";
     setStatus(els.googleStatus, search.ok, searchText);
     setStatus(els.lmStatus, status.lmStudio.ok, status.lmStudio.ok ? status.lmStudio.model || "接続中" : "未接続");
+    applyMarketStatus(status.markets);
     setStatus(els.settingsSearchStatus, search.ok, search.ok ? `検索可 ${Number.isFinite(search.resultCount) ? `${search.resultCount}件` : ""}`.trim() : "未接続");
     setStatus(els.settingsLmStatus, status.lmStudio.ok, status.lmStudio.ok ? "接続中" : "未接続");
     if (status.settings) applySettings(status.settings);
   } catch {
     setStatus(els.googleStatus, false, "未接続");
     setStatus(els.lmStatus, false, "未接続");
+    applyMarketStatus(null);
   }
+}
+
+function applyMarketStatus(markets) {
+  const jpOpen = markets?.jp?.open === true;
+  const usOpen = markets?.us?.open === true;
+  setStatus(els.jpMarketStatus, jpOpen, markets?.jp ? (jpOpen ? "開場中" : "休場中") : "確認不可");
+  setStatus(els.usMarketStatus, usOpen, markets?.us ? (usOpen ? "開場中" : "休場中") : "確認不可");
 }
 
 async function loadSettings() {
@@ -244,6 +258,7 @@ function applySettings(settings = {}) {
   if (els.settingsDailyDiscoveryEnabled) els.settingsDailyDiscoveryEnabled.checked = settings.dailyDiscoveryEnabled !== false;
   if (els.settingsDailyDiscoveryHour) els.settingsDailyDiscoveryHour.value = Number.isFinite(settings.dailyDiscoveryHour) ? settings.dailyDiscoveryHour : 7;
   if (els.settingsHourlyRefreshEnabled) els.settingsHourlyRefreshEnabled.checked = settings.hourlyRefreshEnabled !== false;
+  if (els.settingsMarketHoursOnlyRefresh) els.settingsMarketHoursOnlyRefresh.checked = settings.marketHoursOnlyRefresh !== false;
   if (els.settingsNotificationsEnabled) els.settingsNotificationsEnabled.checked = settings.notificationsEnabled === true;
   if (els.settingsTradeFeeYen) els.settingsTradeFeeYen.value = settings.tradeFeeYen || 0;
   if (els.settingsNotificationMinNetEdgeYen) els.settingsNotificationMinNetEdgeYen.value = settings.notificationMinNetEdgeYen || 5000;
@@ -317,6 +332,7 @@ async function loadDiscoveryCache() {
   state.suggestions = payload.suggestions || [];
   state.excludedCandidates = payload.excludedCandidates || [];
   state.sourceSummary = payload.sourceSummary || null;
+  state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || null;
   state.discoveryJob = payload.job || null;
   state.discoveryGeneratedAt = payload.generatedAt || "";
   renderDiscoveryJob();
@@ -404,6 +420,7 @@ function stockRow(stock, compact) {
         ${nameCell}
         ${sectorCell}
         <td>${yen(analysis?.price?.current)}</td>
+        <td>${yen(position.purchasePrice)}</td>
         <td>${positionPnl(position, true)}</td>
         <td>${dividendCell(position, analysis?.price)}</td>
         <td><span class="badge ${actionClasses[action] || "watch"}">${actionLabels[action] || "要確認"}</span></td>
@@ -1117,6 +1134,19 @@ function drawChart(series) {
     context.font = "11px system-ui";
     context.fillText("1年の買い場", Math.max(pad.left + 4, width - 112), Math.max(pad.top + 12, buyY - 6));
   }
+  if (timing?.sellLine) {
+    const sellY = y(timing.sellLine);
+    context.strokeStyle = "rgba(171, 58, 64, 0.38)";
+    context.setLineDash([6, 5]);
+    context.beginPath();
+    context.moveTo(pad.left, sellY);
+    context.lineTo(width - pad.right, sellY);
+    context.stroke();
+    context.setLineDash([]);
+    context.fillStyle = "#ab3a40";
+    context.font = "11px system-ui";
+    context.fillText("売り場ライン", Math.max(pad.left + 4, width - 112), Math.max(pad.top + 12, sellY - 6));
+  }
 
   context.strokeStyle = "#0b6b58";
   context.lineWidth = 2.5;
@@ -1238,6 +1268,7 @@ function renderChartTiming(price) {
     <p>${escapeHtml(timing.summary)}</p>
     <div class="timing-grid">
       <span><strong>買い場ライン</strong>${yen(timing.buyLine)}</span>
+      <span><strong>売り場ライン</strong>${yen(timing.sellLine)}</span>
       <span><strong>最安日</strong>${escapeHtml(formatDate(timing.low.date))} ${yen(timing.low.close)}</span>
       <span><strong>今との差</strong>${signedPct(timing.currentGapFromBuyLine)}</span>
       <span><strong>安かった時期</strong>${periods || "<em>-</em>"}</span>
@@ -1263,6 +1294,7 @@ function buyTimingFromSeries(series = []) {
   const closes = oneYear.map((point) => point.close).sort((a, b) => a - b);
   const buyLine = quantile(closes, 0.25);
   const deepLine = quantile(closes, 0.15);
+  const sellLine = quantile(closes, 0.75);
   const median = quantile(closes, 0.5);
   const low = oneYear.reduce((best, point) => (point.close < best.close ? point : best), oneYear[0]);
   const cheapPoints = oneYear.filter((point) => point.close <= buyLine);
@@ -1300,6 +1332,7 @@ function buyTimingFromSeries(series = []) {
   return {
     buyLine,
     deepLine,
+    sellLine,
     low,
     latest,
     periods,
@@ -1575,6 +1608,7 @@ async function discover() {
     state.suggestions = payload.suggestions || [];
     state.excludedCandidates = payload.excludedCandidates || state.excludedCandidates;
     state.sourceSummary = payload.sourceSummary || null;
+    state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || state.candidatePerformance;
     state.discoveryJob = payload.job || null;
     state.discoveryGeneratedAt = payload.generatedAt || "";
     state.stocks = payload.stocks || state.stocks;
@@ -1599,6 +1633,7 @@ async function pollDiscoveryJob() {
     state.suggestions = payload.suggestions || state.suggestions;
     state.excludedCandidates = payload.excludedCandidates || state.excludedCandidates;
     state.sourceSummary = payload.sourceSummary || state.sourceSummary;
+    state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || state.candidatePerformance;
     state.discoveryJob = payload.job || state.discoveryJob;
     state.discoveryGeneratedAt = payload.generatedAt || state.discoveryGeneratedAt;
     renderDiscoveryJob();
@@ -2166,6 +2201,7 @@ function entryGradeClass(grade = "") {
 function renderCandidateList() {
   if (!els.candidateList) return;
   renderExcludedCandidates();
+  renderCandidatePerformance();
   if (els.candidateSavedAt) {
     els.candidateSavedAt.textContent = state.discoveryGeneratedAt
       ? `前回検索 ${new Date(state.discoveryGeneratedAt).toLocaleString("ja-JP")}`
@@ -2179,14 +2215,20 @@ function renderCandidateList() {
       : `${source.universe}から`;
     const aiText = source.usedDiscoveryAi ? "最後にLM Studioで上位候補を再点検しています。" : "LM Studio再点検は未実行です。";
     const positionText = source.searchPositionUsed ? "検索順位に出る業績・割安材料も採点しています。" : "";
+    const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
+    const avoidText = source.avoidedBusiness ? `${source.avoidedBusiness}。` : "";
+    const peText = source.peCriteria?.length ? "PE買収マッチも別項目で見ます。" : "";
+    const learnText = source.performance?.evaluated
+      ? `過去候補は${source.performance.evaluated}件判定済み、当たり${Math.round((source.performance.hitRate || 0) * 100)}%です。`
+      : "";
     const briefText = source.marketBrief?.summary ? ` 市場メモ: ${source.marketBrief.summary}` : "";
     const countText = Number.isFinite(source.suggestionCount)
       ? `表示候補は${source.suggestionCount}件です。`
       : `表示候補は${state.suggestions.length}件です。`;
     const excludedText = source.excludedCount ? `非表示は${source.excludedCount}件です。` : "";
     els.suggestionSource.textContent = source.searchCount > 0
-      ? `${source.provider}で${source.searchCount}件確認し、${discoveryText}${source.candidateLimit}銘柄を採点しました。${countText}${excludedText}条件は${budgetText}、価格は${source.priceSource}です。${positionText}${aiText}候補は自動追加されません。${briefText}`
-      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。候補は${budgetText}で買える範囲、${source.priceSource}、${source.universe}を中心に採点しています。${countText}${excludedText}`;
+      ? `${source.provider}で${source.searchCount}件確認し、${discoveryText}${source.candidateLimit}銘柄を採点しました。${countText}${excludedText}条件は${budgetText}、価格は${source.priceSource}です。${strictText}${avoidText}${positionText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
+      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。候補は${budgetText}で買える範囲、${source.priceSource}、${source.universe}を中心に採点しています。${strictText}${countText}${excludedText}`;
   }
   if (!state.suggestions.length) {
     els.candidateList.classList.add("empty-state");
@@ -2196,6 +2238,29 @@ function renderCandidateList() {
   els.candidateList.classList.remove("empty-state");
   els.candidateList.innerHTML = state.suggestions.map((item, index) => suggestionItem(item, index)).join("");
   attachSuggestionButtons();
+}
+
+function renderCandidatePerformance() {
+  if (!els.candidatePerformance) return;
+  const performance = state.candidatePerformance || state.sourceSummary?.performance || null;
+  if (!performance?.total) {
+    els.candidatePerformance.innerHTML = `
+      <span><strong>候補実績</strong>まだ蓄積中</span>
+      <span><strong>判定済み</strong>0件</span>
+      <span><strong>学習反映</strong>履歴が増えたら自動</span>
+    `;
+    return;
+  }
+  const hitRate = Number.isFinite(performance.hitRate) ? `${Math.round(performance.hitRate * 100)}%` : "-";
+  const avg = Number.isFinite(performance.avgReturnPct) ? signedPct(performance.avgReturnPct) : "-";
+  const peRate = Number.isFinite(performance.peLike?.hitRate) ? `${Math.round(performance.peLike.hitRate * 100)}%` : "-";
+  els.candidatePerformance.innerHTML = `
+    <span><strong>保存候補</strong>${performance.total}件</span>
+    <span><strong>判定済み</strong>${performance.evaluated || 0}件</span>
+    <span><strong>当たり率</strong>${hitRate}</span>
+    <span><strong>平均</strong>${avg}</span>
+    <span><strong>PE系</strong>${peRate}</span>
+  `;
 }
 
 function renderExcludedCandidates() {
@@ -2281,11 +2346,56 @@ function suggestionItem(item, index) {
         <span><strong>検索順位</strong>${item.searchPosition?.rank ? `${item.searchPosition.rank}位` : "-"}</span>
       </div>
       ${buyPlanHtml(item.buyPlan)}
+      ${sellPlanHtml(item.sellPlan)}
+      ${peSignalHtml(item.peSignal)}
+      ${learningHtml(item.learning)}
       ${aiReviewHtml(item.aiReview)}
       ${processHtml(process)}
       <div class="suggestion-points">${reasons}${risks}</div>
       <div class="suggestion-evidence ${evidence ? "" : "muted"}"><strong>確認元</strong>${evidence || "<span>業績材料は未確認</span>"}</div>
     </article>
+  `;
+}
+
+function sellPlanHtml(plan) {
+  if (!plan?.targetPrice && !plan?.stopPrice) return "";
+  return `
+    <div class="sell-plan">
+      <span><strong>売り場ライン</strong>${yen(plan.targetPrice)}</span>
+      <span><strong>確認ライン</strong>${yen(plan.stopPrice)}</span>
+      <p>${escapeHtml(plan.summary || "")}</p>
+    </div>
+  `;
+}
+
+function peSignalHtml(signal) {
+  if (!signal) return "";
+  const criteria = (signal.criteria || []).map((item) => `<span>${escapeHtml(item.label)}</span>`).join("");
+  const risks = (signal.risks || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  const evidence = (signal.evidence || []).map((item) => `
+    <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.source || item.title || "source")}</a>
+  `).join("");
+  return `
+    <div class="pe-signal">
+      <div>
+        <strong>PE買収マッチ</strong>
+        <span>${escapeHtml(signal.label || "確認")} ${Number.isFinite(signal.matchScore) ? signal.matchScore : "-"}</span>
+      </div>
+      <p>${escapeHtml(signal.summary || "")}</p>
+      <div>${criteria}${risks}</div>
+      ${evidence ? `<div class="pe-evidence">${evidence}</div>` : ""}
+    </div>
+  `;
+}
+
+function learningHtml(learning) {
+  if (!learning?.adjustment) return "";
+  const reasons = (learning.reasons || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+  return `
+    <div class="learning-signal">
+      <strong>候補成績を反映 ${learning.adjustment > 0 ? "+" : ""}${learning.adjustment}</strong>
+      ${reasons}
+    </div>
   `;
 }
 
@@ -2431,7 +2541,8 @@ function positionLots(stock) {
       purchasePrice: finiteOrNull(lot.purchasePrice),
       quantity: finiteOrNull(lot.quantity),
     }))
-    .filter((lot) => lot.purchasePrice && lot.quantity);
+    .filter((lot) => lot.purchasePrice && lot.quantity)
+    .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"));
 }
 
 function saleLots(stock) {
@@ -2442,7 +2553,8 @@ function saleLots(stock) {
       sellPrice: finiteOrNull(lot.sellPrice || lot.salePrice),
       quantity: finiteOrNull(lot.quantity),
     }))
-    .filter((lot) => lot.sellPrice && lot.quantity);
+    .filter((lot) => lot.sellPrice && lot.quantity)
+    .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99"));
 }
 
 function lotRow(lot) {
@@ -2493,7 +2605,8 @@ function readLotRows(form) {
       purchasePrice: valueOrNull(row.querySelector('[name="purchasePrice"]').value),
       quantity: valueOrNull(row.querySelector('[name="quantity"]').value),
     }))
-    .filter((lot) => lot.purchasePrice && lot.quantity);
+    .filter((lot) => lot.purchasePrice && lot.quantity)
+    .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"));
 }
 
 function readSaleRows(form) {
@@ -2503,7 +2616,8 @@ function readSaleRows(form) {
       sellPrice: valueOrNull(row.querySelector('[name="sellPrice"]').value),
       quantity: valueOrNull(row.querySelector('[name="sellQuantity"]').value),
     }))
-    .filter((lot) => lot.sellPrice && lot.quantity);
+    .filter((lot) => lot.sellPrice && lot.quantity)
+    .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99"));
 }
 
 function clearOrRemoveSaleRow(form, button) {
@@ -2638,6 +2752,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
         dailyDiscoveryEnabled: els.settingsDailyDiscoveryEnabled?.checked === true,
         dailyDiscoveryHour: valueOrZero(els.settingsDailyDiscoveryHour?.value),
         hourlyRefreshEnabled: els.settingsHourlyRefreshEnabled?.checked === true,
+        marketHoursOnlyRefresh: els.settingsMarketHoursOnlyRefresh?.checked !== false,
         notificationsEnabled: els.settingsNotificationsEnabled?.checked === true,
         tradeFeeYen: valueOrZero(els.settingsTradeFeeYen?.value),
         notificationMinNetEdgeYen: valueOrZero(els.settingsNotificationMinNetEdgeYen?.value),
@@ -2664,6 +2779,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
       setStatus(els.lmStatus, payload.status.lmStudio.ok, payload.status.lmStudio.ok ? payload.status.lmStudio.model || "接続中" : "未接続");
       setStatus(els.settingsLmStatus, payload.status.lmStudio.ok, payload.status.lmStudio.ok ? "接続中" : "未接続");
     }
+    applyMarketStatus(payload.status?.markets);
     toast("設定を保存しました。");
   } catch (error) {
     toast(error.message);

@@ -13,6 +13,7 @@ const US_WATCHLIST_PATH = path.join(__dirname, "data", "us-watchlist.json");
 const ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "analysis-cache.json");
 const US_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "us-analysis-cache.json");
 const DISCOVERY_CACHE_PATH = path.join(__dirname, "data", "discovery-cache.json");
+const CANDIDATE_HISTORY_PATH = path.join(__dirname, "data", "candidate-history.json");
 const PRIME_UNIVERSE_PATH = path.join(__dirname, "data", "prime-universe.json");
 const NOTIFICATION_LOG_PATH = path.join(__dirname, "data", "notification-log.json");
 const EXCLUDED_CANDIDATES_PATH = path.join(__dirname, "data", "excluded-candidates.json");
@@ -22,6 +23,20 @@ const MAX_MANAGED_STOCKS = 20;
 const MAX_US_STOCKS = 40;
 const MAX_DISCOVERY_SUGGESTIONS = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
+const STRICT_BUY_TARGET_TOLERANCE = 1.005;
+const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品)/;
+const DISCOVERY_IT_VENTURE_PATTERN = /(情報|IT|ＳＩ|SI|ソフトウェア|クラウド|SaaS|アプリ|ネット|メディア|広告|ゲーム|DX|AI)/i;
+const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹)/i;
+const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "ベイン", "KKR", "カーライル", "ブラックストーン", "CVC", "MBK", "アドバンテッジパートナーズ", "ポラリス", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
+const PE_CRITERIA = [
+  { key: "undervalued", label: "割安放置", words: ["低PBR", "PBR1倍割れ", "低PER", "割安", "資産価値", "純資産"], weight: 18 },
+  { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益", "キャッシュフロー", "高配当", "営業CF", "ストック収益", "継続課金"], weight: 14 },
+  { key: "governance", label: "株主還元・統治余地", words: ["自社株買い", "増配", "政策保有株", "ROE", "資本効率", "中期経営計画"], weight: 13 },
+  { key: "shareholder", label: "株主変化", words: ["大量保有", "保有割合", "株主", "物言う株主", "アクティビスト", "エフィッシモ", "Oasis", "旧村上"], weight: 18 },
+  { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化", "事業売却", "構造改革", "再編", "親子上場"], weight: 18 },
+  { key: "sector_fit", label: "PEが扱いやすい業態", words: ["サービス", "ヘルスケア", "ソフトウェア", "不動産", "物流", "人材", "設備保守"], weight: 9 },
+  { key: "risk", label: "買収阻害リスク", words: ["規制", "国策", "赤字", "訴訟", "不祥事", "過大債務", "景気敏感"], weight: -12 },
+];
 const defaultSettings = {
   searchProvider: process.env.SEARCH_PROVIDER || "searxng",
   searxngUrl: process.env.SEARXNG_URL || "http://127.0.0.1:8081/search",
@@ -35,6 +50,7 @@ const defaultSettings = {
   dailyDiscoveryEnabled: true,
   dailyDiscoveryHour: 7,
   hourlyRefreshEnabled: true,
+  marketHoursOnlyRefresh: true,
   notificationsEnabled: false,
   notificationMinConfidence: 78,
   notificationMinNetEdgeYen: 5000,
@@ -205,9 +221,11 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/discovery" && req.method === "GET") {
     const excludedCandidates = await readExcludedCandidates();
+    const candidatePerformance = candidatePerformanceSummary(await readCandidateHistory());
     return json(res, 200, {
       ...filterDiscoveryResultByExclusions(await readDiscoveryCache(), excludedCandidates),
       excludedCandidates,
+      candidatePerformance,
       job: discoveryJobSnapshot(),
     });
   }
@@ -226,6 +244,14 @@ async function handleApi(req, res, url) {
     const discovery = filterDiscoveryResultByExclusions(await readDiscoveryCache(), excludedCandidates);
     await saveDiscoveryCache(discovery);
     return json(res, 200, { excludedCandidates, ...discovery });
+  }
+
+  if (url.pathname === "/api/candidate-history" && req.method === "GET") {
+    const history = await readCandidateHistory();
+    return json(res, 200, {
+      performance: candidatePerformanceSummary(history),
+      items: history.items.slice(-200).reverse(),
+    });
   }
 
   if (url.pathname.startsWith("/api/excluded-candidates/") && req.method === "DELETE") {
@@ -402,6 +428,7 @@ async function handleApi(req, res, url) {
     return json(res, 202, {
       ...filterDiscoveryResultByExclusions(await readDiscoveryCache(), excludedCandidates),
       excludedCandidates,
+      candidatePerformance: candidatePerformanceSummary(await readCandidateHistory()),
       job,
       message: "候補検索を裏で開始しました。途中結果は自動保存されます。",
     });
@@ -999,15 +1026,221 @@ async function runHourlyRefreshIfDue() {
   const cache = await readDiscoveryCache();
   const analysisCache = await readAnalysisCache();
   const usCache = await readUsAnalysisCache();
-  if (!analysisJob?.running && isOlderThan(cacheHourKey(analysisCache.generatedAt), cacheHourKey(now.toISOString()))) {
+  const jpOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("JP", now);
+  const usOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("US", now);
+  if (jpOpen && !analysisJob?.running && isOlderThan(cacheHourKey(analysisCache.generatedAt), cacheHourKey(now.toISOString()))) {
     startAnalysisJob({ websiteLimit: 8, depthLimit: 1, pagesPerSite: 1 });
   }
-  if (isOlderThan(cacheHourKey(usCache.generatedAt), cacheHourKey(now.toISOString()))) {
+  if (usOpen && isOlderThan(cacheHourKey(usCache.generatedAt), cacheHourKey(now.toISOString()))) {
     void analyzeUsHoldings({ websiteLimit: 5 }, { notify: true }).catch(() => {});
   }
-  if (!discoveryJob?.running && settings.dailyDiscoveryEnabled && jstDate(cache.generatedAt) !== jstDate(now.toISOString())) {
+  if (jpOpen && !discoveryJob?.running && settings.dailyDiscoveryEnabled && jstDate(cache.generatedAt) !== jstDate(now.toISOString())) {
     startDiscoveryJob({ websiteLimit: 20, fullScan: true }, "daily");
   }
+  if (jpOpen) {
+    void updateCandidateHistoryOutcomes({ maxUpdates: 30 }).catch(() => {});
+  }
+}
+
+function isMarketOpen(market, value = new Date()) {
+  const timeZone = market === "US" ? "America/New_York" : "Asia/Tokyo";
+  const parts = zonedParts(value, timeZone);
+  if (!parts) return false;
+  if (market === "US") {
+    if (!isUsExchangeBusinessDay(parts)) return false;
+    return minuteOfDay(parts) >= (9 * 60 + 30) && minuteOfDay(parts) < (16 * 60);
+  }
+  if (!isJpExchangeBusinessDay(parts)) return false;
+  const minutes = minuteOfDay(parts);
+  return (minutes >= 9 * 60 && minutes < 11 * 60 + 30)
+    || (minutes >= 12 * 60 + 30 && minutes < 15 * 60 + 30);
+}
+
+function zonedParts(value, timeZone) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    weekday: "short",
+    hour12: false,
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    weekday: parts.weekday,
+  };
+}
+
+function minuteOfDay(parts) {
+  return (parts.hour * 60) + parts.minute;
+}
+
+function isJpExchangeBusinessDay(parts) {
+  if (parts.weekday === "Sat" || parts.weekday === "Sun") return false;
+  const holidays = new Set(jpExchangeHolidays(parts.year).map(ymd));
+  return !holidays.has(ymd(parts));
+}
+
+function isUsExchangeBusinessDay(parts) {
+  if (parts.weekday === "Sat" || parts.weekday === "Sun") return false;
+  const key = ymd(parts);
+  const holidays = new Set(usExchangeHolidays(parts.year).map(ymd));
+  return !holidays.has(key);
+}
+
+function jpExchangeHolidays(year) {
+  const national = jpNationalHolidays(year);
+  const dates = new Map(national.map((parts) => [ymd(parts), parts]));
+  [2, 3].forEach((day) => {
+    const parts = { year, month: 1, day };
+    dates.set(ymd(parts), parts);
+  });
+  const yearEnd = { year, month: 12, day: 31 };
+  dates.set(ymd(yearEnd), yearEnd);
+  return [...dates.values()];
+}
+
+function jpNationalHolidays(year) {
+  const base = [
+    { year, month: 1, day: 1 },
+    nthWeekdayOfMonth(year, 1, 1, 2),
+    { year, month: 2, day: 11 },
+    { year, month: 2, day: 23 },
+    { year, month: 3, day: vernalEquinoxDay(year) },
+    { year, month: 4, day: 29 },
+    { year, month: 5, day: 3 },
+    { year, month: 5, day: 4 },
+    { year, month: 5, day: 5 },
+    nthWeekdayOfMonth(year, 7, 1, 3),
+    { year, month: 8, day: 11 },
+    nthWeekdayOfMonth(year, 9, 1, 3),
+    { year, month: 9, day: autumnalEquinoxDay(year) },
+    nthWeekdayOfMonth(year, 10, 1, 2),
+    { year, month: 11, day: 3 },
+    { year, month: 11, day: 23 },
+  ];
+  const dates = new Map(base.map((parts) => [ymd(parts), parts]));
+  for (const holiday of base) {
+    if (weekdayUtc(holiday) !== 0) continue;
+    let date = dateFromParts(holiday);
+    do {
+      date.setUTCDate(date.getUTCDate() + 1);
+    } while (dates.has(ymd(datePartsUtc(date))));
+    const substitute = datePartsUtc(date);
+    if (substitute.year === year) dates.set(ymd(substitute), substitute);
+  }
+  for (let month = 1; month <= 12; month += 1) {
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    for (let day = 2; day < lastDay; day += 1) {
+      const parts = { year, month, day };
+      if (weekdayUtc(parts) === 0 || weekdayUtc(parts) === 6) continue;
+      const key = ymd(parts);
+      if (dates.has(key)) continue;
+      const prev = datePartsUtc(new Date(Date.UTC(year, month - 1, day - 1)));
+      const next = datePartsUtc(new Date(Date.UTC(year, month - 1, day + 1)));
+      if (dates.has(ymd(prev)) && dates.has(ymd(next))) dates.set(key, parts);
+    }
+  }
+  return [...dates.values()];
+}
+
+function ymd(parts) {
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
+function usExchangeHolidays(year) {
+  const dates = [
+    observedDate(year, 1, 1),
+    nthWeekdayOfMonth(year, 1, 1, 3),
+    nthWeekdayOfMonth(year, 2, 1, 3),
+    offsetDate(easterDate(year), -2),
+    lastWeekdayOfMonth(year, 5, 1),
+    observedDate(year, 6, 19),
+    observedDate(year, 7, 4),
+    nthWeekdayOfMonth(year, 9, 1, 1),
+    nthWeekdayOfMonth(year, 11, 4, 4),
+    observedDate(year, 12, 25),
+  ];
+  return dates.filter((date) => date.year === year);
+}
+
+function observedDate(year, month, day) {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const weekday = date.getUTCDay();
+  if (weekday === 0) date.setUTCDate(date.getUTCDate() + 1);
+  if (weekday === 6) date.setUTCDate(date.getUTCDate() - 1);
+  return datePartsUtc(date);
+}
+
+function nthWeekdayOfMonth(year, month, weekday, nth) {
+  const date = new Date(Date.UTC(year, month - 1, 1));
+  const offset = (weekday - date.getUTCDay() + 7) % 7;
+  date.setUTCDate(1 + offset + ((nth - 1) * 7));
+  return datePartsUtc(date);
+}
+
+function lastWeekdayOfMonth(year, month, weekday) {
+  const date = new Date(Date.UTC(year, month, 0));
+  const offset = (date.getUTCDay() - weekday + 7) % 7;
+  date.setUTCDate(date.getUTCDate() - offset);
+  return datePartsUtc(date);
+}
+
+function offsetDate(parts, days) {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  return datePartsUtc(date);
+}
+
+function dateFromParts(parts) {
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+}
+
+function weekdayUtc(parts) {
+  return dateFromParts(parts).getUTCDay();
+}
+
+function vernalEquinoxDay(year) {
+  if (year < 1980 || year > 2099) return year % 4 === 0 ? 20 : 21;
+  return Math.floor(20.8431 + (0.242194 * (year - 1980)) - Math.floor((year - 1980) / 4));
+}
+
+function autumnalEquinoxDay(year) {
+  if (year < 1980 || year > 2099) return year % 4 === 0 ? 23 : 24;
+  return Math.floor(23.2488 + (0.242194 * (year - 1980)) - Math.floor((year - 1980) / 4));
+}
+
+function datePartsUtc(date) {
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+  };
+}
+
+function easterDate(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return { year, month, day };
 }
 
 function jstDate(value = "") {
@@ -1062,10 +1295,12 @@ async function discoverStocks(options = {}, job = null) {
   const primeUniverse = await readPrimeUniverse();
   updateDiscoveryJob(job, { phase: "LM Studioで市場トレンドを要約中" });
   const marketBrief = search.length
-    ? await aiMarketTrendBrief(search, primeUniverse.length).catch(() => null)
+    ? await withTimeout(aiMarketTrendBrief(search, primeUniverse.length), 45000).catch(() => null)
     : null;
+  const performance = candidatePerformanceSummary(await readCandidateHistory());
   const candidateUniverse = uniqueBy([...searchCandidates, ...primeUniverse, ...discoveryUniverse], (candidate) => candidate.symbol)
-    .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol));
+    .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
+    .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate));
   const candidateLimit = fullScan
     ? candidateUniverse.length
     : Math.min(
@@ -1082,7 +1317,10 @@ async function discoverStocks(options = {}, job = null) {
   const scored = await mapLimit(candidates, 8, async (candidate) => {
     const price = await fetchPriceHistory(candidate.symbol);
     const resolvedCandidate = resolveCandidateFromPrice(candidate, price);
-    const scoredCandidate = scoreDiscoveryCandidate(resolvedCandidate, price, haystack, sectorCounts, { unitSize, unitBudget, unitBudgetAllowance });
+    const scoredCandidate = applyCandidateLearning(
+      scoreDiscoveryCandidate(resolvedCandidate, price, haystack, sectorCounts, { unitSize, unitBudget, unitBudgetAllowance }),
+      performance,
+    );
     checked += 1;
     if (checked === candidates.length || checked % 25 === 0) {
       updateDiscoveryJob(job, { checked, phase: "全プライム銘柄の価格と3年傾向を確認中" });
@@ -1102,13 +1340,14 @@ async function discoverStocks(options = {}, job = null) {
   });
   const enhanced = await mapLimit(shortlist, 3, async (candidate) => {
     const code = candidate.symbol.replace(".T", "");
-    const results = (await searchGoogle(`${candidate.name} ${code} 株価 評価 レーティング 目標株価 決算短信 業績 増収増益 上方修正 増配 割安 PER PBR TDnet`, {
+    const results = (await searchGoogle(`${candidate.name} ${code} 株価 評価 レーティング 目標株価 決算短信 業績 増収増益 上方修正 増配 割安 PER PBR TDnet PEファンド TOB MBO 大量保有 株主`, {
       limit: websiteLimit,
     }).catch(() => [])).map((item, index) => ({ ...item, rank: index + 1 }));
     const relevantResults = relevantSearchResults(candidate, uniqueBy([...(candidate.sourceEvidence || []), ...results], (item) => item.url));
     const positionSignal = searchPositionSignal(candidate, results, relevantResults);
+    const peSignal = searchPeSignal(candidate, results, relevantResults);
     individualSearchCount += results.length;
-    const enhancedCandidate = enhanceBusinessCandidate(candidate, relevantResults, positionSignal);
+    const enhancedCandidate = applyCandidateLearning(enhanceBusinessCandidate(candidate, relevantResults, positionSignal, peSignal), performance);
     enhancedSoFar.push(enhancedCandidate);
     if (enhancedSoFar.length % 20 === 0 || enhancedSoFar.length === shortlist.length) {
       updateDiscoveryJob(job, {
@@ -1126,13 +1365,16 @@ async function discoverStocks(options = {}, job = null) {
         searchCandidates,
         candidateUniverse,
         usedDiscoveryAi: false,
-      fullScan,
-      marketBrief,
-    });
+        fullScan,
+        marketBrief,
+      });
     }
     return enhancedCandidate;
   });
-  const supported = enhanced.filter(hasDiscoverySupport).filter((candidate) => candidate.evidenceQuality !== "悪材料あり");
+  const supported = enhanced
+    .filter(hasDiscoverySupport)
+    .filter((candidate) => candidate.evidenceQuality !== "悪材料あり")
+    .filter(isActionableDiscoveryCandidate);
   const viable = supported.filter((candidate) => candidate.businessValueScore >= 55);
   const fallbackPool = supported.length ? supported : enhanced.filter((candidate) => candidate.evidenceQuality !== "悪材料あり");
   const suggestionPool = viable.length ? viable : fallbackPool.filter((candidate) => candidate.businessValueScore >= 45);
@@ -1145,6 +1387,7 @@ async function discoverStocks(options = {}, job = null) {
       usedDiscoveryAi = true;
       suggestions = suggestions
         .map((candidate) => applyDiscoveryAiReview(candidate, aiReviewBySymbol.get(candidate.symbol)))
+        .filter(isActionableDiscoveryCandidate)
         .sort((a, b) => b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
         .slice(0, MAX_DISCOVERY_SUGGESTIONS);
     }
@@ -1173,6 +1416,7 @@ async function discoverStocks(options = {}, job = null) {
       fullScan,
       searchPositionUsed: true,
       marketBrief,
+      performance,
     }),
     message: suggestions.length === 0
       ? "1単元の予算に合う候補が見つかりませんでした。"
@@ -1181,6 +1425,8 @@ async function discoverStocks(options = {}, job = null) {
       : `${MAX_MANAGED_STOCKS}銘柄が埋まっているため、入れ替え候補として表示します。`,
   };
   await saveDiscoveryCache(result);
+  await recordCandidateSnapshots(suggestions, result);
+  await updateCandidateHistoryOutcomes({ maxUpdates: 20 }).catch(() => {});
   await notifyStrongDiscoverySignals(suggestions).catch(() => {});
   return result;
 }
@@ -1188,8 +1434,118 @@ async function discoverStocks(options = {}, job = null) {
 function topDiscoverySuggestions(candidates = []) {
   return candidates
     .filter((candidate) => candidate && candidate.evidenceQuality !== "悪材料あり")
+    .filter(isActionableDiscoveryCandidate)
     .sort((a, b) => b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
     .slice(0, MAX_DISCOVERY_SUGGESTIONS);
+}
+
+function isActionableDiscoveryCandidate(candidate = {}) {
+  const price = candidate.price || {};
+  const plan = candidate.buyPlan || {};
+  const current = nullablePositiveNumber(price.current);
+  const maxBuyPrice = nullablePositiveNumber(plan.maxBuyPrice);
+  if (!current || !maxBuyPrice) return false;
+  if (current > maxBuyPrice * STRICT_BUY_TARGET_TOLERANCE) return false;
+  if (price.buyLine1y && current > price.buyLine1y * 1.03) return false;
+  if (candidate.inBudget === false) return false;
+  return (candidate.businessValueScore || candidate.score || 0) >= 50;
+}
+
+function isDiscoveryAvoidedBusiness(candidate = {}) {
+  const sector = `${candidate.sector || candidate.sector17 || ""}`;
+  const notes = `${candidate.notes || ""} ${candidate.name || ""}`;
+  if (DISCOVERY_AVOID_SECTOR_PATTERN.test(sector)) return true;
+  if (DISCOVERY_IT_VENTURE_PATTERN.test(`${sector} ${notes}`) && !DISCOVERY_IT_STABLE_PATTERN.test(`${sector} ${notes}`)) return true;
+  return false;
+}
+
+function searchPeSignal(candidate, allResults = [], relevantResults = []) {
+  const text = businessContextText([
+    candidate.name,
+    candidate.symbol,
+    candidate.sector || "",
+    candidate.notes || "",
+    ...relevantResults.map((item) => `${item.title} ${item.snippet} ${item.url}`),
+  ].join("\n"));
+  const criteria = PE_CRITERIA.map((criterion) => {
+    const hits = criterion.words.filter((word) => text.includes(word.toLowerCase()));
+    if (!hits.length) return null;
+    return {
+      key: criterion.key,
+      label: criterion.label,
+      hits: hits.slice(0, 4),
+      score: criterion.weight,
+    };
+  }).filter(Boolean);
+  const buyerHits = PE_BUYER_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 8);
+  const sector = candidate.sector || "";
+  let score = criteria.reduce((sum, item) => sum + item.score, 0);
+  if (/サービス|ヘルスケア|不動産|物流|人材|設備|メンテ|小売|生活用品/.test(sector)) score += 8;
+  if (/銀行|保険|電力|資源|航空|鉄道|防衛|半導体/.test(sector)) score -= 6;
+  if (buyerHits.length) score += Math.min(15, buyerHits.length * 3);
+  const matchScore = clamp(Math.round(score), 0, 100);
+  const evidence = relevantResults
+    .filter((item) => PE_BUYER_WORDS.some((word) => businessContextText(`${item.title} ${item.snippet}`).includes(word.toLowerCase())))
+    .slice(0, 3)
+    .map((item) => ({
+      title: item.title,
+      url: item.url,
+      source: hostOf(item.url),
+      snippet: item.snippet,
+    }));
+  const label = matchScore >= 70 ? "PE注目度高め" : matchScore >= 45 ? "PE要素あり" : "PE要素薄い";
+  return {
+    matchScore,
+    label,
+    criteria: criteria.filter((item) => item.score > 0).map((item) => ({
+      label: item.label,
+      hits: item.hits,
+    })).slice(0, 5),
+    risks: criteria.filter((item) => item.score < 0).map((item) => item.hits[0]).slice(0, 3),
+    buyerHits,
+    evidence,
+    summary: peSignalSummary(label, criteria, buyerHits),
+  };
+}
+
+function peSignalSummary(label, criteria = [], buyerHits = []) {
+  const positives = criteria.filter((item) => item.score > 0).map((item) => item.label).slice(0, 3);
+  const risk = criteria.find((item) => item.score < 0)?.label;
+  const parts = [];
+  if (positives.length) parts.push(`${positives.join("・")}に該当`);
+  if (buyerHits.length) parts.push(`株主・買収関連語: ${buyerHits.slice(0, 3).join("、")}`);
+  if (risk) parts.push(`注意: ${risk}`);
+  return `${label}${parts.length ? `。${parts.join("。")}` : "。PE買収候補としては根拠が薄い"}`;
+}
+
+function applyCandidateLearning(candidate, performance = {}) {
+  if (!candidate) return candidate;
+  const score = Number(candidate.businessValueScore || candidate.score || 0);
+  let adjustment = 0;
+  const reasons = [];
+  const sectorStats = performance.bySector?.[candidate.sector || "その他"];
+  if (sectorStats?.evaluated >= 3 && Number.isFinite(sectorStats.hitRate) && Number.isFinite(performance.hitRate)) {
+    const delta = sectorStats.hitRate - performance.hitRate;
+    adjustment += clamp(Math.round(delta * 18), -8, 8);
+    reasons.push(`${candidate.sector || "その他"}の過去候補成績を反映`);
+  }
+  if (candidate.peSignal?.matchScore >= 70 && performance.peLike?.evaluated >= 3 && performance.peLike.hitRate >= performance.hitRate) {
+    adjustment += 3;
+    reasons.push("PE要素がある候補の過去成績を加点");
+  }
+  if (!adjustment) return candidate;
+  const businessValueScore = clamp(Math.round(score + adjustment), 0, 100);
+  return {
+    ...candidate,
+    businessValueScore,
+    rankLabel: discoveryRankLabel(businessValueScore),
+    learning: {
+      adjustment,
+      reasons: uniqueText(reasons),
+      evaluated: performance.evaluated || 0,
+      hitRate: performance.hitRate,
+    },
+  };
 }
 
 async function savePartialDiscovery({
@@ -1261,6 +1617,8 @@ async function discoverySearchResults(limit) {
     "日本株 決算短信 増収増益 上方修正 割安",
     "低PBR 増益 上方修正 日本株",
     "高配当 低PBR 上方修正 日本株",
+    "PEファンド 日本企業 買収 TOB MBO 傾向 株主",
+    "大量保有報告書 物言う株主 TOB 候補 日本株",
   ];
   const perQueryLimit = Math.max(4, Math.ceil(limit / queries.length));
   const results = [];
@@ -1627,6 +1985,7 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
   });
   const businessValueScore = process.totalScore;
   const buyPlan = candidateBuyPlan(price, { unitSize, unitBudget: budget.unitBudget, unitAmount, businessValueScore });
+  const sellPlan = candidateExitPlan(price, buyPlan);
 
   return {
     ...candidate,
@@ -1644,16 +2003,18 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     inBudget,
     nearBudget,
     buyPlan,
+    sellPlan,
     price: compactDiscoveryPrice(price, unitSize),
   };
 }
 
-function enhanceBusinessCandidate(candidate, results, positionSignal = null) {
+function enhanceBusinessCandidate(candidate, results, positionSignal = null, peSignal = null) {
   if (!results.length) {
     return {
       ...candidate,
       businessEvidence: [],
       searchPosition: positionSignal,
+      peSignal: peSignal || candidate.peSignal || null,
     };
   }
   const context = businessContextText(results.map((item) => `${item.title} ${item.snippet}`).join("\n"));
@@ -1714,6 +2075,18 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null) {
     }
   }
 
+  if (peSignal?.matchScore >= 65) {
+    const bonus = Math.min(8, Math.round((peSignal.matchScore - 50) / 5));
+    score += bonus;
+    businessValueScore += bonus * 2;
+    candidate.process = boostProcessStage(candidate.process, "再編", Math.min(8, bonus + 2), "PE買収・再編の項目に合う");
+    reasons.push(`PE買収マッチ: ${peSignal.summary}`);
+  } else if (peSignal?.matchScore >= 40) {
+    score += 2;
+    businessValueScore += 2;
+    candidate.process = boostProcessStage(candidate.process, "再編", 3, "PE買収の一部項目に合う");
+  }
+
   const process = finalizeDiscoveryProcess(candidate.process);
   const boundedBusinessValue = process.totalScore;
   const buyPlan = candidateBuyPlan(candidate.price || {}, {
@@ -1729,8 +2102,10 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null) {
     rankLabel: discoveryRankLabel(boundedBusinessValue),
     process,
     buyPlan,
+    sellPlan: candidateExitPlan(candidate.price || {}, buyPlan),
     evidenceQuality,
     searchPosition: positionSignal,
+    peSignal: peSignal || candidate.peSignal || null,
     reasons: uniqueText([...candidate.reasons, ...reasons]).slice(0, 5),
     risks: uniqueText([...candidate.risks, ...risks]).slice(0, 4),
     businessEvidence: materialResults.slice(0, 3).map((item) => ({
@@ -1764,10 +2139,12 @@ async function aiDiscoveryReview(candidates) {
       dividendPerShareTtm: candidate.price?.dividendPerShareTtm,
     },
     searchPosition: candidate.searchPosition || null,
+    peSignal: candidate.peSignal || null,
     buyPlan: {
       stance: candidate.buyPlan?.stance,
       maxBuyPrice: candidate.buyPlan?.maxBuyPrice,
     },
+    sellPlan: candidate.sellPlan || null,
     process: (candidate.process?.stages || []).slice(0, 5).map((stage) => ({
       label: stage.label,
       score: stage.score,
@@ -1802,6 +2179,7 @@ async function aiDiscoveryReviewChunk(model, items) {
     "目的は「事業として好調そうなのに、株価が高すぎず、1単元30万円前後で買いやすい候補」を上に残すことです。",
     "過去3年の流れに対する現在価格、1年買い場ライン、配当利回り、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
     "1年買い場ラインを下回っていて、事業材料も良いものはプラス評価してください。上がり切った高値圏はマイナス評価してください。",
+    "PEファンドが買いそうな会社かは、割安放置、安定キャッシュフロー、株主変化、再編余地、阻害リスクに分けて評価してください。ただしPE要素だけで高値づかみを肯定しないでください。",
     "adjustmentは-8から8の整数。根拠が薄い場合は0以下、悪材料や高値づかみ懸念が強い場合はマイナスにしてください。",
     "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"]}]}。",
     "",
@@ -1847,6 +2225,7 @@ async function aiMarketTrendBrief(searchResults = [], universeCount = 0) {
     "日本株の候補探索のため、検索結果から今見るべき業績トレンドを短く整理してください。",
     "出力はJSONのみ。形式は {\"summary\":\"...\",\"themes\":[\"...\"],\"avoid\":[\"...\"],\"keywords\":[\"...\"]}。",
     "ユーザーはデイトレーダーではありません。数週間から数か月で持てる、事業好調だが株価が高すぎない候補を探します。",
+    "PEファンド、TOB、MBO、大量保有、物言う株主の傾向があれば、過去の買収対象に多い特徴として短く含めてください。",
     "",
     JSON.stringify({ universe: `東証プライム ${universeCount}銘柄`, evidence }),
   ].join("\n");
@@ -1894,6 +2273,12 @@ function applyDiscoveryAiReview(candidate, review) {
   if (!review) return candidate;
   const adjustment = clamp(Math.round(Number(review.adjustment || 0)), -8, 8);
   const businessValueScore = clamp(Math.round((candidate.businessValueScore || 0) + adjustment), 0, 100);
+  const buyPlan = candidateBuyPlan(candidate.price || {}, {
+    unitSize: candidate.unitSize,
+    unitBudget: candidate.unitBudget,
+    unitAmount: candidate.unitAmount,
+    businessValueScore,
+  });
   const aiReview = {
     adjustment,
     summary: review.summary || "LM Studioで候補の根拠を再点検しました。",
@@ -1907,12 +2292,8 @@ function applyDiscoveryAiReview(candidate, review) {
     rankLabel: discoveryRankLabel(businessValueScore),
     evidenceQuality: `${candidate.evidenceQuality || "価格中心"}・AI確認`,
     aiReview,
-    buyPlan: candidateBuyPlan(candidate.price || {}, {
-      unitSize: candidate.unitSize,
-      unitBudget: candidate.unitBudget,
-      unitAmount: candidate.unitAmount,
-      businessValueScore,
-    }),
+    buyPlan,
+    sellPlan: candidateExitPlan(candidate.price || {}, buyPlan),
     reasons: uniqueText([...(candidate.reasons || []), ...aiReview.positives]).slice(0, 5),
     risks: uniqueText([...(candidate.risks || []), ...aiReview.risks]).slice(0, 4),
   };
@@ -1986,12 +2367,14 @@ function buildDiscoveryProcess({
   let timing = 0;
   let risk = 0;
   let fit = 0;
+  let restructuring = 0;
   const notes = {
     business: [],
     value: [],
     timing: [],
     risk: [],
     fit: [],
+    restructuring: [],
   };
 
   if (Number.isFinite(price.return3y) && price.return3y >= 45) {
@@ -2116,6 +2499,9 @@ function buildDiscoveryProcess({
     notes.fit.push("資金を分散しやすい");
   }
 
+  restructuring += 1;
+  notes.restructuring.push("PE買収・再編余地は個別検索で確認");
+
   return finalizeDiscoveryProcess({
     stages: [
       processStage("事業", business, 25, notes.business),
@@ -2123,6 +2509,7 @@ function buildDiscoveryProcess({
       processStage("買い時", timing, 20, notes.timing),
       processStage("リスク", risk, 15, notes.risk),
       processStage("相性", fit, 15, notes.fit),
+      processStage("再編", restructuring, 10, notes.restructuring),
     ],
   });
 }
@@ -2187,7 +2574,12 @@ function candidateBuyPlan(price, options = {}) {
   const currentUnitAmount = current * unitSize;
   const nearTrendCap = trendPrice ? trendPrice * 1.02 : current * 0.98;
   const buyLine = nullablePositiveNumber(price.buyLine1y);
-  const pullbackCap = Number.isFinite(price.return3m) && price.return3m > 18 ? current * 0.94 : current * 0.98;
+  const underBuyLine = buyLine && current <= buyLine;
+  const pullbackCap = Number.isFinite(price.return3m) && price.return3m > 18
+    ? current * 0.94
+    : underBuyLine
+    ? current * 1.01
+    : current * 0.98;
   const budgetCap = unitBudget ? unitBudget / unitSize : current * 1.05;
   const buyLineCap = buyLine ? buyLine * 1.02 : current * 1.05;
   const maxBuyPrice = Math.max(1, Math.min(nearTrendCap, pullbackCap, budgetCap, buyLineCap));
@@ -2236,6 +2628,34 @@ function candidateBuyPlan(price, options = {}) {
   };
 }
 
+function candidateExitPlan(price = {}, buyPlan = {}) {
+  const current = nullablePositiveNumber(price.current);
+  const buy = nullablePositiveNumber(buyPlan.maxBuyPrice) || current;
+  if (!current || !buy) {
+    return {
+      targetPrice: null,
+      stopPrice: null,
+      summary: "価格データ取得後に売り場ラインを出します。",
+    };
+  }
+  const trend = nullablePositiveNumber(price.trendPrice3y);
+  const high52 = nullablePositiveNumber(price.high52);
+  const sellCandidates = [
+    buy * 1.12,
+    current * 1.08,
+    trend ? trend * 1.08 : null,
+    high52 ? high52 * 0.96 : null,
+  ].filter(Number.isFinite);
+  const targetPrice = Math.max(...sellCandidates);
+  const buyLine = nullablePositiveNumber(price.buyLine1y);
+  const stopPrice = Math.max(1, Math.min(buy * 0.92, buyLine ? buyLine * 0.92 : buy * 0.92));
+  return {
+    targetPrice: Math.round(targetPrice * 10) / 10,
+    stopPrice: Math.round(stopPrice * 10) / 10,
+    summary: `${formatYen(targetPrice)}前後で利確・見直し、${formatYen(stopPrice)}割れで理由を再確認。`,
+  };
+}
+
 function compactDiscoveryPrice(price, unitSize = 100) {
   return {
     current: price.current,
@@ -2256,6 +2676,7 @@ function compactDiscoveryPrice(price, unitSize = 100) {
     buyTiming1y: price.buyTiming1y,
     low1y: price.low1y,
     low1yDate: price.low1yDate,
+    high52: price.high52,
     latestVolume: price.latestVolume,
     averageVolume20: price.averageVolume20,
     averageVolume60: price.averageVolume60,
@@ -3255,6 +3676,25 @@ function mergeRiskChecks(base = [], ai = []) {
 }
 
 function decisionSafetyOverride(stock, price = {}, action, position = positionMetrics(stock, price)) {
+  const current = nullablePositiveNumber(price.current);
+  const buyLine = nullablePositiveNumber(price.buyLine1y);
+  const targetBuyPrice = nullablePositiveNumber(stock.targetBuyPrice);
+  if (action === "BUY" && current && targetBuyPrice && current > targetBuyPrice * 1.01) {
+    return {
+      action: stock.holding ? "HOLD" : "WATCH",
+      thesis: `${stock.name}は買いたい価格を超えています。今すぐ買いではなく、入力した買値目安まで待つ判定にしました。`,
+      reasons: ["事業や配当の確認材料は残る"],
+      risks: [`現在値が買いたい価格を上回っているため、追いかけ買いになりやすい`],
+    };
+  }
+  if (action === "BUY" && current && buyLine && current > buyLine * 1.03) {
+    return {
+      action: stock.holding ? "HOLD" : "WATCH",
+      thesis: `${stock.name}は過去1年の買い場ラインより高い位置です。買い候補ではなく、押し目待ちにしました。`,
+      reasons: ["候補として監視する価値は残る"],
+      risks: ["現在値が買い場ラインを超えており、買値としては高い"],
+    };
+  }
   if (action === "BUY" && isHighChaseChart(price)) {
     return {
       action: stock.holding ? "HOLD" : "WATCH",
@@ -3291,10 +3731,25 @@ function decisionSafetyOverride(stock, price = {}, action, position = positionMe
 async function status() {
   const settings = await readSettings();
   const [searchEngine, lmStudio] = await Promise.all([checkSearchEngine(settings), checkLmStudio(settings)]);
+  const now = new Date();
   return {
     searchEngine,
     googleSearch: searchEngine,
     lmStudio,
+    markets: {
+      jp: {
+        label: "東証",
+        open: isMarketOpen("JP", now),
+        timeZone: "Asia/Tokyo",
+        regularHours: "9:00-11:30 / 12:30-15:30",
+      },
+      us: {
+        label: "NYSE",
+        open: isMarketOpen("US", now),
+        timeZone: "America/New_York",
+        regularHours: "9:30-16:00",
+      },
+    },
     settings: publicSettings(settings),
   };
 }
@@ -3386,18 +3841,28 @@ async function checkSearchEngine(settings = null) {
   const resolved = settings || await readSettings();
   if (resolved.searchProvider === "searxng") {
     try {
-      const url = new URL(resolved.searxngUrl);
-      url.searchParams.set("q", "日本株 決算短信");
-      url.searchParams.set("format", "json");
-      url.searchParams.set("language", "ja-JP");
-      url.searchParams.set("safesearch", "0");
-      url.searchParams.set("categories", "news");
-      url.searchParams.set("engines", "bing news");
-      const response = await fetchWithTimeout(url, { timeout: 10000, headers: { accept: "application/json" } });
-      const data = response.ok ? await response.json().catch(() => ({})) : {};
-      const resultCount = Array.isArray(data.results) ? data.results.length : 0;
+      const checks = [
+        { query: "日本株 決算短信 上方修正 増配", categories: "news", engines: "bing news" },
+        { query: "株探 決算速報 日本株", categories: "general", engines: "bing" },
+      ];
+      let responseOk = false;
+      let resultCount = 0;
+      for (const check of checks) {
+        const url = new URL(resolved.searxngUrl);
+        url.searchParams.set("q", check.query);
+        url.searchParams.set("format", "json");
+        url.searchParams.set("language", "ja-JP");
+        url.searchParams.set("safesearch", "0");
+        url.searchParams.set("categories", check.categories);
+        url.searchParams.set("engines", check.engines);
+        const response = await fetchWithTimeout(url, { timeout: 10000, headers: { accept: "application/json" } });
+        const data = response.ok ? await response.json().catch(() => ({})) : {};
+        responseOk ||= response.ok;
+        resultCount = Array.isArray(data.results) ? data.results.length : 0;
+        if (response.ok && resultCount > 0) break;
+      }
       return {
-        ok: response.ok && resultCount > 0,
+        ok: responseOk && resultCount > 0,
         provider: "SearXNG",
         configured: Boolean(resolved.searxngUrl),
         url: resolved.searxngUrl,
@@ -3424,13 +3889,17 @@ async function checkSearchEngine(settings = null) {
 
 async function checkLmStudio(settings = null) {
   const resolved = settings || await readSettings();
-  try {
-    const response = await fetchWithTimeout(`${resolved.lmStudioUrl}/models`, { timeout: 3000 });
-    const data = response.ok ? await response.json() : {};
-    return { ok: response.ok, url: resolved.lmStudioUrl, model: data?.data?.[0]?.id || "" };
-  } catch (error) {
-    return { ok: false, url: resolved.lmStudioUrl, error: error.message };
+  let lastError = null;
+  for (const timeout of [4500, 9000]) {
+    try {
+      const response = await fetchWithTimeout(`${resolved.lmStudioUrl}/models`, { timeout });
+      const data = response.ok ? await response.json() : {};
+      return { ok: response.ok, url: resolved.lmStudioUrl, model: data?.data?.[0]?.id || "" };
+    } catch (error) {
+      lastError = error;
+    }
   }
+  return { ok: false, url: resolved.lmStudioUrl, error: lastError?.message || "LM Studioに接続できません" };
 }
 
 function normalizeStock(stock) {
@@ -3833,7 +4302,10 @@ async function saveDiscoveryCache(result) {
 
 function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = []) {
   const excluded = new Set(excludedCandidates.map((candidate) => candidate.symbol));
-  const suggestions = (result.suggestions || []).filter((candidate) => !excluded.has(candidate.symbol));
+  const suggestions = (result.suggestions || [])
+    .filter((candidate) => !excluded.has(candidate.symbol))
+    .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate))
+    .filter(isActionableDiscoveryCandidate);
   return {
     generatedAt: result.generatedAt || "",
     added: result.added || [],
@@ -3841,9 +4313,200 @@ function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = [])
     suggestions,
     evidence: result.evidence || [],
     sourceSummary: result.sourceSummary
-      ? { ...result.sourceSummary, excludedCount: excludedCandidates.length, suggestionCount: suggestions.length }
+      ? {
+        ...result.sourceSummary,
+        strictBuyTarget: true,
+        avoidedBusiness: result.sourceSummary.avoidedBusiness || "卸売・食品、情報系ベンチャー寄りは候補から除外",
+        peCriteria: result.sourceSummary.peCriteria || PE_CRITERIA.filter((item) => item.weight > 0).map((item) => item.label),
+        excludedCount: excludedCandidates.length,
+        suggestionCount: suggestions.length,
+      }
       : null,
     message: result.message || "",
+  };
+}
+
+async function readCandidateHistory() {
+  try {
+    const cached = JSON.parse(await readFile(CANDIDATE_HISTORY_PATH, "utf8"));
+    const items = Array.isArray(cached.items) ? cached.items.map(normalizeCandidateHistoryItem).filter(Boolean) : [];
+    return { items };
+  } catch {
+    return { items: [] };
+  }
+}
+
+async function saveCandidateHistory(history = {}) {
+  const items = uniqueBy((history.items || []).map(normalizeCandidateHistoryItem).filter(Boolean), (item) => item.id)
+    .sort((a, b) => a.generatedAt.localeCompare(b.generatedAt) || a.symbol.localeCompare(b.symbol))
+    .slice(-2000);
+  await mkdir(path.dirname(CANDIDATE_HISTORY_PATH), { recursive: true });
+  await writeFile(CANDIDATE_HISTORY_PATH, JSON.stringify({ items }, null, 2));
+  return { items };
+}
+
+function normalizeCandidateHistoryItem(item = {}) {
+  const symbol = normalizeSymbol(item.symbol);
+  const generatedAt = item.generatedAt || "";
+  if (!symbol || !generatedAt) return null;
+  return {
+    id: String(item.id || `${generatedAt}:${symbol}`),
+    generatedAt,
+    symbol,
+    name: String(item.name || symbol),
+    sector: String(item.sector || "その他"),
+    rank: Number(item.rank || 0),
+    score: nullableNonNegativeNumber(item.score),
+    businessValueScore: nullableNonNegativeNumber(item.businessValueScore),
+    entryPrice: nullablePositiveNumber(item.entryPrice),
+    buyTarget: nullablePositiveNumber(item.buyTarget),
+    sellTarget: nullablePositiveNumber(item.sellTarget),
+    stopLine: nullablePositiveNumber(item.stopLine),
+    buyLine1y: nullablePositiveNumber(item.buyLine1y),
+    peMatchScore: nullableNonNegativeNumber(item.peMatchScore),
+    peLabel: String(item.peLabel || ""),
+    reasons: asStringArray(item.reasons).slice(0, 5),
+    risks: asStringArray(item.risks).slice(0, 5),
+    latestPrice: nullablePositiveNumber(item.latestPrice),
+    latestDate: normalizeDate(item.latestDate),
+    latestReturnPct: numberOrNull(item.latestReturnPct),
+    maxReturnPct: numberOrNull(item.maxReturnPct),
+    minReturnPct: numberOrNull(item.minReturnPct),
+    elapsedTradingDays: nullableNonNegativeNumber(item.elapsedTradingDays) || 0,
+    outcome: ["hit", "miss", "pending"].includes(item.outcome) ? item.outcome : "pending",
+    outcomeReason: String(item.outcomeReason || ""),
+    evaluatedAt: item.evaluatedAt || "",
+  };
+}
+
+async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
+  if (!suggestions.length) return;
+  const history = await readCandidateHistory();
+  const byId = new Map(history.items.map((item) => [item.id, item]));
+  suggestions.forEach((candidate, index) => {
+    const current = nullablePositiveNumber(candidate.price?.current);
+    const generatedAt = discovery.generatedAt || new Date().toISOString();
+    if (!current) return;
+    const item = normalizeCandidateHistoryItem({
+      id: `${generatedAt}:${candidate.symbol}`,
+      generatedAt,
+      symbol: candidate.symbol,
+      name: candidate.name,
+      sector: candidate.sector,
+      rank: index + 1,
+      score: candidate.score,
+      businessValueScore: candidate.businessValueScore,
+      entryPrice: current,
+      buyTarget: candidate.buyPlan?.maxBuyPrice,
+      sellTarget: candidate.sellPlan?.targetPrice,
+      stopLine: candidate.sellPlan?.stopPrice,
+      buyLine1y: candidate.price?.buyLine1y,
+      peMatchScore: candidate.peSignal?.matchScore,
+      peLabel: candidate.peSignal?.label,
+      reasons: candidate.reasons,
+      risks: candidate.risks,
+      outcome: "pending",
+    });
+    if (item) byId.set(item.id, { ...byId.get(item.id), ...item });
+  });
+  await saveCandidateHistory({ items: [...byId.values()] });
+}
+
+async function updateCandidateHistoryOutcomes({ maxUpdates = 50 } = {}) {
+  const history = await readCandidateHistory();
+  const pending = history.items
+    .filter((item) => item.outcome === "pending" && item.entryPrice)
+    .sort((a, b) => a.evaluatedAt.localeCompare(b.evaluatedAt))
+    .slice(0, maxUpdates);
+  if (!pending.length) return history;
+  const updated = new Map(history.items.map((item) => [item.id, item]));
+  for (const item of pending) {
+    const price = await fetchPriceHistory(item.symbol).catch(() => emptyPrice());
+    updated.set(item.id, evaluateCandidateOutcome(item, price.series || []));
+  }
+  return saveCandidateHistory({ items: [...updated.values()] });
+}
+
+function evaluateCandidateOutcome(item, series = []) {
+  const start = new Date(item.generatedAt);
+  if (Number.isNaN(start.getTime())) return { ...item, evaluatedAt: new Date().toISOString(), outcome: "pending", outcomeReason: "候補作成日の形式を確認" };
+  const startDate = start.toISOString().slice(0, 10);
+  const after = (series || [])
+    .filter((point) => point.date >= startDate && Number.isFinite(point.close))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (!after.length || !item.entryPrice) {
+    return { ...item, evaluatedAt: new Date().toISOString(), outcome: "pending", outcomeReason: "評価できる価格がまだありません" };
+  }
+  const closes = after.map((point) => point.close);
+  const latest = after.at(-1);
+  const maxPrice = Math.max(...closes);
+  const minPrice = Math.min(...closes);
+  const latestReturnPct = ((latest.close - item.entryPrice) / item.entryPrice) * 100;
+  const maxReturnPct = ((maxPrice - item.entryPrice) / item.entryPrice) * 100;
+  const minReturnPct = ((minPrice - item.entryPrice) / item.entryPrice) * 100;
+  let outcome = "pending";
+  let outcomeReason = "判定に必要な日数がまだ不足";
+  if (item.sellTarget && maxPrice >= item.sellTarget) {
+    outcome = "hit";
+    outcomeReason = "売り場ラインに到達";
+  } else if (item.stopLine && minPrice <= item.stopLine && after.length >= 5) {
+    outcome = "miss";
+    outcomeReason = "損切り確認ラインを割った";
+  } else if (after.length >= 20 && latestReturnPct >= 2) {
+    outcome = "hit";
+    outcomeReason = "20営業日後にプラスを維持";
+  } else if (after.length >= 20 && latestReturnPct < 0) {
+    outcome = "miss";
+    outcomeReason = "20営業日後にマイナス";
+  }
+  return {
+    ...item,
+    latestPrice: latest.close,
+    latestDate: latest.date,
+    latestReturnPct,
+    maxReturnPct,
+    minReturnPct,
+    elapsedTradingDays: after.length,
+    outcome,
+    outcomeReason,
+    evaluatedAt: new Date().toISOString(),
+  };
+}
+
+function candidatePerformanceSummary(history = {}) {
+  const items = Array.isArray(history.items) ? history.items : [];
+  const evaluatedItems = items.filter((item) => item.outcome === "hit" || item.outcome === "miss");
+  const hitItems = evaluatedItems.filter((item) => item.outcome === "hit");
+  const bySector = {};
+  for (const item of evaluatedItems) {
+    const key = item.sector || "その他";
+    bySector[key] ||= { evaluated: 0, hits: 0, avgReturnPct: 0 };
+    bySector[key].evaluated += 1;
+    if (item.outcome === "hit") bySector[key].hits += 1;
+    bySector[key].avgReturnPct += Number(item.latestReturnPct || 0);
+  }
+  for (const stats of Object.values(bySector)) {
+    stats.hitRate = stats.evaluated ? stats.hits / stats.evaluated : null;
+    stats.avgReturnPct = stats.evaluated ? stats.avgReturnPct / stats.evaluated : null;
+  }
+  const peLikeItems = evaluatedItems.filter((item) => Number(item.peMatchScore || 0) >= 60);
+  const avgReturnPct = evaluatedItems.length
+    ? evaluatedItems.reduce((sum, item) => sum + Number(item.latestReturnPct || 0), 0) / evaluatedItems.length
+    : null;
+  return {
+    total: items.length,
+    pending: items.filter((item) => item.outcome === "pending").length,
+    evaluated: evaluatedItems.length,
+    hits: hitItems.length,
+    misses: evaluatedItems.length - hitItems.length,
+    hitRate: evaluatedItems.length ? hitItems.length / evaluatedItems.length : null,
+    avgReturnPct,
+    bySector,
+    peLike: {
+      evaluated: peLikeItems.length,
+      hits: peLikeItems.filter((item) => item.outcome === "hit").length,
+      hitRate: peLikeItems.length ? peLikeItems.filter((item) => item.outcome === "hit").length / peLikeItems.length : null,
+    },
   };
 }
 
@@ -3963,6 +4626,7 @@ function analysisSignal(analysis, settings) {
 function discoverySignal(candidate, settings) {
   const confidence = candidate.businessValueScore || candidate.score || 0;
   if (confidence < settings.notificationMinConfidence) return null;
+  if (!isActionableDiscoveryCandidate(candidate)) return null;
   const price = candidate.price || {};
   const plan = candidate.buyPlan || {};
   if (plan.stance !== "今すぐ検討") return null;
@@ -4160,6 +4824,7 @@ function normalizeSettings(settings = {}) {
     dailyDiscoveryEnabled: settings.dailyDiscoveryEnabled !== false,
     dailyDiscoveryHour: clamp(Number(settings.dailyDiscoveryHour ?? defaultSettings.dailyDiscoveryHour), 0, 23),
     hourlyRefreshEnabled: settings.hourlyRefreshEnabled !== false,
+    marketHoursOnlyRefresh: settings.marketHoursOnlyRefresh !== false,
     notificationsEnabled: settings.notificationsEnabled === true,
     notificationMinConfidence: clamp(Number(settings.notificationMinConfidence || defaultSettings.notificationMinConfidence), 50, 100),
     notificationMinNetEdgeYen: clamp(Number(settings.notificationMinNetEdgeYen || defaultSettings.notificationMinNetEdgeYen), 0, 1000000),
@@ -4188,6 +4853,7 @@ function applySettingsPatch(current, body = {}) {
   if (typeof body.dailyDiscoveryEnabled === "boolean") next.dailyDiscoveryEnabled = body.dailyDiscoveryEnabled;
   if (body.dailyDiscoveryHour !== undefined) next.dailyDiscoveryHour = body.dailyDiscoveryHour;
   if (typeof body.hourlyRefreshEnabled === "boolean") next.hourlyRefreshEnabled = body.hourlyRefreshEnabled;
+  if (typeof body.marketHoursOnlyRefresh === "boolean") next.marketHoursOnlyRefresh = body.marketHoursOnlyRefresh;
   if (typeof body.notificationsEnabled === "boolean") next.notificationsEnabled = body.notificationsEnabled;
   if (body.notificationMinConfidence) next.notificationMinConfidence = body.notificationMinConfidence;
   if (body.notificationMinNetEdgeYen !== undefined) next.notificationMinNetEdgeYen = body.notificationMinNetEdgeYen;
@@ -4215,6 +4881,7 @@ function publicSettings(settings) {
     dailyDiscoveryEnabled: settings.dailyDiscoveryEnabled,
     dailyDiscoveryHour: settings.dailyDiscoveryHour,
     hourlyRefreshEnabled: settings.hourlyRefreshEnabled,
+    marketHoursOnlyRefresh: settings.marketHoursOnlyRefresh,
     notificationsEnabled: settings.notificationsEnabled,
     notificationMinConfidence: settings.notificationMinConfidence,
     notificationMinNetEdgeYen: settings.notificationMinNetEdgeYen,
@@ -4246,6 +4913,10 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     fullScan: Boolean(budget.fullScan),
     searchPositionUsed: Boolean(budget.searchPositionUsed),
     marketBrief: budget.marketBrief || null,
+    performance: budget.performance || null,
+    strictBuyTarget: true,
+    avoidedBusiness: "卸売・食品、情報系ベンチャー寄りは候補から除外",
+    peCriteria: PE_CRITERIA.filter((item) => item.weight > 0).map((item) => item.label),
     unitSize,
     unitBudget,
     priceSource: "Yahoo Finance 5年日足",
@@ -4386,6 +5057,16 @@ async function fetchWithTimeout(url, options = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function withTimeout(promise, ms) {
+  let timer = null;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Timed out")), ms);
+    }),
+  ]);
 }
 
 function htmlToText(html) {
@@ -4532,6 +5213,7 @@ function normalizePositions(stock) {
       quantity: nullablePositiveNumber(lot.quantity),
     }))
     .filter((lot) => lot.purchasePrice && lot.quantity)
+    .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"))
     .slice(0, 50);
 }
 
@@ -4544,6 +5226,7 @@ function normalizeSales(stock) {
       quantity: nullablePositiveNumber(lot.quantity),
     }))
     .filter((lot) => lot.sellPrice && lot.quantity)
+    .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99"))
     .slice(0, 50);
 }
 
@@ -4564,6 +5247,12 @@ function nullableNonNegativeNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function daysSince(dateString) {

@@ -498,6 +498,7 @@ progress {
 
 table {
   width: 100%;
+  min-width: 760px;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -577,14 +578,19 @@ tr:hover .drag-handle,
 
 .sector-badge {
   display: inline-flex;
+  max-width: 118px;
   min-height: 24px;
   align-items: center;
+  justify-content: center;
   border-radius: 7px;
   background: #eef4f2;
   color: var(--accent);
   padding: 0 8px;
   font-size: 12px;
   font-weight: 900;
+  line-height: 1.25;
+  text-align: center;
+  white-space: normal;
 }
 
 .badge {
@@ -1346,6 +1352,35 @@ tr:hover .drag-handle,
   gap: 0;
 }
 
+.candidate-performance {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfc;
+}
+
+.candidate-performance span {
+  min-height: 46px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  padding: 8px 10px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.candidate-performance strong {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .idea-tabs {
   display: flex;
   gap: 8px;
@@ -1494,6 +1529,107 @@ tr:hover .drag-handle,
   flex-basis: 100%;
 }
 
+.sell-plan {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 0.24fr)) minmax(220px, 1fr);
+  gap: 8px;
+  align-items: stretch;
+  border: 1px solid #ecd0d2;
+  border-radius: 7px;
+  background: #fffafa;
+  padding: 10px;
+}
+
+.sell-plan span {
+  display: grid;
+  gap: 3px;
+  border-radius: 7px;
+  background: #fff;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.sell-plan strong {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sell-plan p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pe-signal,
+.learning-signal {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #d6dfef;
+  border-radius: 7px;
+  background: #f7faff;
+  padding: 10px;
+}
+
+.pe-signal > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.pe-signal strong,
+.learning-signal strong {
+  color: var(--accent-2);
+  font-size: 13px;
+}
+
+.pe-signal > div:first-child span {
+  border-radius: 7px;
+  background: #e8effb;
+  color: var(--accent-2);
+  padding: 4px 7px;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.pe-signal p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pe-signal > div:not(:first-child),
+.learning-signal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pe-signal > div:not(:first-child) span,
+.learning-signal span {
+  border-radius: 7px;
+  background: #e8effb;
+  color: var(--accent-2);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pe-signal .risk {
+  background: #fff3d8;
+  color: var(--watch);
+}
+
+.pe-evidence a {
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 900;
+  text-decoration: none;
+}
+
 .ai-review {
   display: grid;
   gap: 7px;
@@ -1587,7 +1723,7 @@ tr:hover .drag-handle,
   background: #f7faf9;
 }
 
-.excluded-panel > div:first-child {
+.excluded-panel summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1595,6 +1731,12 @@ tr:hover .drag-handle,
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
+  cursor: pointer;
+  list-style: none;
+}
+
+.excluded-panel summary::-webkit-details-marker {
+  display: none;
 }
 
 .excluded-panel strong {
@@ -1810,7 +1952,8 @@ tr:hover .drag-handle,
   .decision-columns,
   .reason-columns,
   .evidence-summary-grid,
-  .suggestion-metrics {
+  .suggestion-metrics,
+  .sell-plan {
     grid-template-columns: 1fr;
   }
 
