@@ -25,7 +25,7 @@ const MAX_DISCOVERY_SUGGESTIONS = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
-const STRICT_BUY_TARGET_TOLERANCE = 1.005;
+const STRICT_BUY_TARGET_TOLERANCE = 1;
 const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品|wholesale|food|grocery|consumer staples|packaged foods)/i;
 const DISCOVERY_IT_VENTURE_PATTERN = /(情報|IT|ＳＩ|SI|ソフトウェア|クラウド|SaaS|アプリ|ネット|メディア|広告|ゲーム|DX|AI)/i;
 const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹|mature|enterprise|consulting|infrastructure|security)/i;
@@ -249,9 +249,18 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/settings" && req.method === "PATCH") {
     const body = await readJson(req);
-    const settings = await saveSettings(applySettingsPatch(await readSettings(), body));
+    const previousSettings = await readSettings();
+    const previousDiscoveryKey = discoverySettingsKey(previousSettings);
+    const settings = await saveSettings(applySettingsPatch(previousSettings, body));
+    const discoveryReset = previousDiscoveryKey !== discoverySettingsKey(settings);
+    const discovery = discoveryReset ? await resetDiscoveryCacheForSettings(settings) : null;
     lmModelCache = { url: "", model: "" };
-    return json(res, 200, { settings: publicSettings(settings), status: await status() });
+    return json(res, 200, {
+      settings: publicSettings(settings),
+      status: await status(),
+      discoveryReset,
+      discovery,
+    });
   }
 
   if (url.pathname === "/api/stocks" && req.method === "GET") {
@@ -281,7 +290,7 @@ async function handleApi(req, res, url) {
     const excludedCandidates = await readExcludedCandidates();
     const candidatePerformance = candidatePerformanceSummary(await readCandidateHistory());
     return json(res, 200, {
-      ...filterDiscoveryResultByExclusions(await readDiscoveryCache(), excludedCandidates),
+      ...filterDiscoveryResultByExclusions(await discoveryCacheForCurrentSettings(), excludedCandidates),
       excludedCandidates,
       candidatePerformance,
       job: discoveryJobSnapshot(),
@@ -299,7 +308,7 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/excluded-candidates" && req.method === "POST") {
     const body = await readJson(req);
     const excludedCandidates = await addExcludedCandidate(body);
-    const discovery = filterDiscoveryResultByExclusions(await readDiscoveryCache(), excludedCandidates);
+    const discovery = filterDiscoveryResultByExclusions(await discoveryCacheForCurrentSettings(), excludedCandidates);
     await saveDiscoveryCache(discovery);
     return json(res, 200, { excludedCandidates, ...discovery });
   }
@@ -484,7 +493,7 @@ async function handleApi(req, res, url) {
     const job = startDiscoveryJob(body, "manual");
     const excludedCandidates = await readExcludedCandidates();
     return json(res, 202, {
-      ...filterDiscoveryResultByExclusions(await readDiscoveryCache(), excludedCandidates),
+      ...filterDiscoveryResultByExclusions(await discoveryCacheForCurrentSettings(), excludedCandidates),
       excludedCandidates,
       candidatePerformance: candidatePerformanceSummary(await readCandidateHistory()),
       job,
@@ -2790,6 +2799,11 @@ function candidateBuyPlan(price, options = {}) {
   }
 
   const gapToMax = ((current - maxBuyPrice) / maxBuyPrice) * 100;
+  const gapFromMaxAmount = maxBuyPrice - current;
+  const gapFromMaxPct = (gapFromMaxAmount / current) * 100;
+  const gapFromMaxText = gapFromMaxAmount >= 0
+    ? `今は買い目安より${formatMoney(gapFromMaxAmount, currency)}安い`
+    : `今は買い目安より${formatMoney(Math.abs(gapFromMaxAmount), currency)}高い`;
   const strongScore = Number(options.businessValueScore || 0) >= 65;
   let stance = "待つ";
   if (buyLine && current <= buyLine && strongScore) stance = "今すぐ検討";
@@ -2801,7 +2815,7 @@ function candidateBuyPlan(price, options = {}) {
     stance,
     maxBuyPrice: Math.round(maxBuyPrice * 10) / 10,
     unitAmountAtMax: Math.round(unitAmountAtMax),
-    summary: `${formatMoney(maxBuyPrice, currency)}以下なら検討しやすい水準。現在値との差は${formatSignedPercent(((maxBuyPrice - current) / current) * 100)}です。`,
+    summary: `${formatMoney(maxBuyPrice, currency)}以下なら入口OK。${gapFromMaxText}（${formatSignedPercent(gapFromMaxPct)}）です。`,
     checks: uniqueText(checks).slice(0, 4),
   };
 }
@@ -4511,6 +4525,49 @@ async function readDiscoveryCache() {
   }
 }
 
+async function discoveryCacheForCurrentSettings() {
+  const settings = await readSettings();
+  const cached = await readDiscoveryCache();
+  const cachedKey = cached.sourceSummary?.settingsKey || "";
+  const currentKey = discoverySettingsKey(settings);
+  if (!cachedKey && (cached.suggestions.length || cached.sourceSummary)) return resetDiscoveryCacheForSettings(settings);
+  if (cachedKey && cachedKey !== currentKey) return resetDiscoveryCacheForSettings(settings);
+  return cached;
+}
+
+async function resetDiscoveryCacheForSettings(settings) {
+  const sourceSummary = await searchSourceSummary(0, 0, {
+    unitSize: settings.unitSize,
+    unitBudget: settings.unitBudget,
+    unitBudgetUnlimited: settings.unitBudgetUnlimited,
+    settingsChanged: true,
+    message: "調査条件が変わりました。候補を探すで現在の条件に合わせて作り直してください。",
+  });
+  const result = {
+    generatedAt: "",
+    added: [],
+    stocks: [],
+    suggestions: [],
+    evidence: [],
+    sourceSummary,
+    message: sourceSummary.message,
+  };
+  await saveDiscoveryCache(result);
+  return result;
+}
+
+function discoverySettingsKey(settings = {}) {
+  const normalized = normalizeSettings(settings);
+  return JSON.stringify({
+    unitSize: normalized.unitSize,
+    unitBudget: normalized.unitBudget,
+    unitBudgetUnlimited: normalized.unitBudgetUnlimited === true,
+    websiteLimit: normalized.websiteLimit,
+    depthLimit: normalized.depthLimit,
+    pagesPerSite: normalized.pagesPerSite,
+  });
+}
+
 async function saveDiscoveryCache(result) {
   const excludedCandidates = await readExcludedCandidates();
   const filtered = filterDiscoveryResultByExclusions(result, excludedCandidates);
@@ -5156,6 +5213,9 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     searchPositionUsed: Boolean(budget.searchPositionUsed),
     marketBrief: budget.marketBrief || null,
     performance: budget.performance || null,
+    settingsKey: discoverySettingsKey(settings),
+    settingsChanged: Boolean(budget.settingsChanged),
+    message: String(budget.message || ""),
     strictBuyTarget: true,
     avoidedBusiness: "卸売・食品、情報系ベンチャー寄りは候補から除外",
     peCriteria: PE_CRITERIA.filter((item) => item.weight > 0).map((item) => item.label),

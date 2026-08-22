@@ -2445,7 +2445,9 @@ function renderCandidateList() {
       ? `表示候補は${source.suggestionCount}件です。`
       : `表示候補は${state.suggestions.length}件です。`;
     const excludedText = source.excludedCount ? `非表示は${source.excludedCount}件です。` : "";
-    els.suggestionSource.textContent = source.searchCount > 0
+    els.suggestionSource.textContent = source.settingsChanged
+      ? `${source.message || "調査条件が変わりました。候補を探すで現在の条件に合わせて作り直してください。"}現在の日本株条件は${budgetText}、米国株条件は${usBudgetText}です。候補は自動追加されません。`
+      : source.searchCount > 0
       ? `${source.provider}で${source.searchCount}件確認しました。${discoveryText}${poolText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${avoidText}${positionText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
       : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${poolText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${countText}${excludedText}`;
   }
@@ -2664,20 +2666,53 @@ function buyPlanHtml(plan, item = {}) {
   const currency = candidateCurrency(item);
   const unitLabel = candidateTarget(item) === "us" ? "1株" : "1単元";
   const money = (value) => candidateMoney(value, currency);
+  const gap = buyPlanGap(plan, item);
   return `
     <div class="buy-plan">
       <div>
         <strong>買い目安</strong>
-        <p>${escapeHtml(plan.summary || "")}</p>
+        <p>${escapeHtml(gap.text || plan.summary || "")}</p>
       </div>
       <div class="buy-plan-price">
-        <span>${escapeHtml(plan.stance || "検討")}</span>
+        <span class="${gap.ok === false ? "is-over" : ""}">${escapeHtml(gap.label || plan.stance || "検討")}</span>
         <strong>${money(plan.maxBuyPrice)}</strong>
         <small>${Number.isFinite(plan.unitAmountAtMax) ? `${money(plan.unitAmountAtMax)} / ${unitLabel}` : ""}</small>
       </div>
       <div class="buy-plan-checks">${checks}</div>
     </div>
   `;
+}
+
+function buyPlanGap(plan = {}, item = {}) {
+  const current = Number(item.price?.current);
+  const target = Number(plan.maxBuyPrice);
+  if (!Number.isFinite(current) || !Number.isFinite(target) || current <= 0 || target <= 0) {
+    return { ok: null, label: plan.stance || "検討", text: "" };
+  }
+  const currency = candidateCurrency(item);
+  const diff = target - current;
+  const pctDiff = (diff / current) * 100;
+  const pctText = Number.isFinite(pctDiff) ? `（${pctDiff >= 0 ? "+" : ""}${pctDiff.toFixed(1)}%）` : "";
+  if (Math.abs(diff) < 0.05) {
+    return {
+      ok: true,
+      label: "入口OK",
+      text: `今は買い目安とほぼ同じ価格です${pctText}。業績・配当・悪材料まで確認して検討します。`,
+    };
+  }
+  const amountText = candidateMoney(Math.abs(diff), currency);
+  if (diff > 0) {
+    return {
+      ok: true,
+      label: "入口OK",
+      text: `今は買い目安より${amountText}安いので入口条件は満たしています${pctText}。業績・配当・悪材料まで確認して検討します。`,
+    };
+  }
+  return {
+    ok: false,
+    label: "目安超え",
+    text: `今は買い目安より${amountText}高いので、追わずに待つ水準です${pctText}。`,
+  };
 }
 
 function processHtml(process) {
@@ -3023,6 +3058,12 @@ els.settingsForm.addEventListener("submit", async (event) => {
       }),
     });
     applySettings(payload.settings);
+    if (payload.discoveryReset) {
+      state.suggestions = payload.discovery?.suggestions || [];
+      state.sourceSummary = payload.discovery?.sourceSummary || null;
+      state.discoveryGeneratedAt = payload.discovery?.generatedAt || "";
+      renderCandidateList();
+    }
     els.settingsGoogleApiKey.value = "";
     if (els.settingsTeamsWebhookUrl) els.settingsTeamsWebhookUrl.value = "";
     if (els.settingsGraphClientSecret) els.settingsGraphClientSecret.value = "";
@@ -3037,7 +3078,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
       setStatus(els.settingsLmStatus, payload.status.lmStudio.ok, payload.status.lmStudio.ok ? "接続中" : "未接続");
     }
     applyMarketStatus(payload.status?.markets);
-    toast("設定を保存しました。");
+    toast(payload.discoveryReset ? "設定を保存しました。候補条件が変わったので探し直してください。" : "設定を保存しました。");
   } catch (error) {
     toast(error.message);
   }
