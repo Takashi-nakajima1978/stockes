@@ -2,6 +2,8 @@ const MANAGED_STOCK_LIMIT = 50;
 
 const state = {
   stocks: [],
+  stocksLoaded: false,
+  stockLoadError: "",
   analyses: {},
   usStocks: [],
   usAnalyses: {},
@@ -282,7 +284,9 @@ function applySettings(settings = {}) {
 
 async function loadStocks() {
   const payload = await request("/api/stocks");
-  state.stocks = payload.stocks;
+  state.stocks = payload.stocks || [];
+  state.stocksLoaded = true;
+  state.stockLoadError = "";
   if (!state.selected && state.stocks.length) state.selected = state.stocks[0].symbol;
   render();
 }
@@ -349,17 +353,25 @@ async function loadDiscoveryCache() {
 }
 
 function render() {
-  renderNavigation();
-  renderIdeaTabs();
-  renderTable();
-  renderProfitSummary();
-  renderSummary();
-  renderSelection();
-  renderCandidateList();
-  renderSectorEvidence();
-  renderDiscoveryJob();
-  renderAnalysisJob();
-  renderUs();
+  safeRender("ナビゲーション", renderNavigation);
+  safeRender("候補タブ", renderIdeaTabs);
+  safeRender("銘柄一覧", renderTable);
+  safeRender("損益サマリー", renderProfitSummary);
+  safeRender("判定カウント", renderSummary);
+  safeRender("Decision", renderSelection);
+  safeRender("候補一覧", renderCandidateList);
+  safeRender("業種Evidence", renderSectorEvidence);
+  safeRender("候補検索ジョブ", renderDiscoveryJob);
+  safeRender("分析ジョブ", renderAnalysisJob);
+  safeRender("米国株", renderUs);
+}
+
+function safeRender(label, fn) {
+  try {
+    fn();
+  } catch (error) {
+    console.error(`${label}の描画に失敗しました`, error);
+  }
 }
 
 function setView(view) {
@@ -393,14 +405,24 @@ function renderTable() {
   els.stockProgress.value = state.stocks.length;
 
   if (els.stockTable) {
-    els.stockTable.innerHTML = state.stocks.map((stock) => stockRow(stock, true)).join("");
+    els.stockTable.innerHTML = state.stocks.length
+      ? state.stocks.map((stock) => stockRow(stock, true)).join("")
+      : emptyStockRow(7);
     attachTableEvents(els.stockTable);
   }
 
   if (els.manageStockTable) {
-    els.manageStockTable.innerHTML = state.stocks.map((stock) => stockRow(stock, false)).join("");
+    els.manageStockTable.innerHTML = state.stocks.length
+      ? state.stocks.map((stock) => stockRow(stock, false)).join("")
+      : emptyStockRow(8);
     attachTableEvents(els.manageStockTable);
   }
+}
+
+function emptyStockRow(colspan) {
+  const message = state.stockLoadError
+    || (state.stocksLoaded ? "銘柄を追加してください。" : "銘柄を読み込み中です。");
+  return `<tr><td colspan="${colspan}">${escapeHtml(message)}</td></tr>`;
 }
 
 function stockRow(stock, compact) {
@@ -3108,12 +3130,38 @@ els.chart?.addEventListener("pointermove", updateChartHover);
 els.chart?.addEventListener("pointerleave", clearChartHover);
 window.addEventListener("resize", () => renderSelection());
 
-await loadSettings();
-await loadStatus();
-await loadStocks();
-await loadUsStocks();
-await loadAnalysisCache();
-await loadAnalysisJob();
-await loadUsAnalysisCache();
-await loadDiscoveryCache();
+await loadInitialData();
 setInterval(loadStatus, 15000);
+
+async function loadInitialData() {
+  render();
+  void safeLoad("設定", loadSettings);
+  void safeLoad("接続状態", loadStatus);
+
+  await safeLoad("銘柄", loadStocks, (error) => {
+    state.stocksLoaded = true;
+    state.stockLoadError = `銘柄を読み込めませんでした。${error.message || ""}`.trim();
+    render();
+  });
+  await safeLoad("保存済み分析", loadAnalysisCache);
+
+  await Promise.allSettled([
+    safeLoad("分析ジョブ", loadAnalysisJob),
+    safeLoad("米国株", loadUsStocks),
+    safeLoad("米国株分析", loadUsAnalysisCache),
+    safeLoad("候補検索", loadDiscoveryCache),
+  ]);
+  render();
+}
+
+async function safeLoad(label, fn, onError = null) {
+  try {
+    await fn();
+    return true;
+  } catch (error) {
+    console.error(`${label}の読み込みに失敗しました`, error);
+    if (onError) onError(error);
+    else toast(`${label}の読み込みに失敗しました。`);
+    return false;
+  }
+}
