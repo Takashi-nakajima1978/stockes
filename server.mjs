@@ -23,19 +23,21 @@ const MAX_MANAGED_STOCKS = 50;
 const MAX_US_STOCKS = 40;
 const MAX_DISCOVERY_SUGGESTIONS = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
+const US_DISCOVERY_UNIT_SIZE = 1;
+const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1.005;
-const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品)/;
+const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品|wholesale|food|grocery|consumer staples|packaged foods)/i;
 const DISCOVERY_IT_VENTURE_PATTERN = /(情報|IT|ＳＩ|SI|ソフトウェア|クラウド|SaaS|アプリ|ネット|メディア|広告|ゲーム|DX|AI)/i;
-const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹)/i;
-const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "ベイン", "KKR", "カーライル", "ブラックストーン", "CVC", "MBK", "アドバンテッジパートナーズ", "ポラリス", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
+const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹|mature|enterprise|consulting|infrastructure|security)/i;
+const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "private equity", "buyout", "take private", "tender offer", "activist", "shareholder", "stake", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
 const PE_CRITERIA = [
-  { key: "undervalued", label: "割安放置", words: ["低PBR", "PBR1倍割れ", "低PER", "割安", "資産価値", "純資産"], weight: 18 },
-  { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益", "キャッシュフロー", "高配当", "営業CF", "ストック収益", "継続課金"], weight: 14 },
-  { key: "governance", label: "株主還元・統治余地", words: ["自社株買い", "増配", "政策保有株", "ROE", "資本効率", "中期経営計画"], weight: 13 },
-  { key: "shareholder", label: "株主変化", words: ["大量保有", "保有割合", "株主", "物言う株主", "アクティビスト", "エフィッシモ", "Oasis", "旧村上"], weight: 18 },
-  { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化", "事業売却", "構造改革", "再編", "親子上場"], weight: 18 },
-  { key: "sector_fit", label: "PEが扱いやすい業態", words: ["サービス", "ヘルスケア", "ソフトウェア", "不動産", "物流", "人材", "設備保守"], weight: 9 },
-  { key: "risk", label: "買収阻害リスク", words: ["規制", "国策", "赤字", "訴訟", "不祥事", "過大債務", "景気敏感"], weight: -12 },
+  { key: "undervalued", label: "割安放置", words: ["低PBR", "PBR1倍割れ", "低PER", "割安", "資産価値", "純資産", "undervalued", "low multiple", "cheap valuation", "sum-of-the-parts"], weight: 18 },
+  { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益", "キャッシュフロー", "高配当", "営業CF", "ストック収益", "継続課金", "cash flow", "free cash flow", "recurring revenue", "stable revenue", "dividend"], weight: 14 },
+  { key: "governance", label: "株主還元・統治余地", words: ["自社株買い", "増配", "政策保有株", "ROE", "資本効率", "中期経営計画", "buyback", "capital allocation", "margin improvement", "ROIC", "shareholder return"], weight: 13 },
+  { key: "shareholder", label: "株主変化", words: ["大量保有", "保有割合", "株主", "物言う株主", "アクティビスト", "エフィッシモ", "Oasis", "旧村上", "activist", "shareholder", "stake", "13D", "13G"], weight: 18 },
+  { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化", "事業売却", "構造改革", "再編", "親子上場", "buyout", "take private", "spin off", "divestiture", "strategic review", "tender offer"], weight: 18 },
+  { key: "sector_fit", label: "PEが扱いやすい業態", words: ["サービス", "ヘルスケア", "ソフトウェア", "不動産", "物流", "人材", "設備保守", "services", "healthcare", "industrial", "maintenance", "logistics", "consumer staples"], weight: 9 },
+  { key: "risk", label: "買収阻害リスク", words: ["規制", "国策", "赤字", "訴訟", "不祥事", "過大債務", "景気敏感", "regulatory", "litigation", "loss", "high debt", "cyclical"], weight: -12 },
 ];
 const defaultSettings = {
   searchProvider: process.env.SEARCH_PROVIDER || "searxng",
@@ -47,6 +49,9 @@ const defaultSettings = {
   lmStudioTimeoutMs: clamp(Number(process.env.LM_STUDIO_TIMEOUT_MS || 180000), 5000, 300000),
   unitSize: 100,
   unitBudget: Number(process.env.UNIT_BUDGET || 300000),
+  websiteLimit: 10,
+  depthLimit: 2,
+  pagesPerSite: 2,
   dailyDiscoveryEnabled: true,
   dailyDiscoveryHour: 7,
   hourlyRefreshEnabled: true,
@@ -77,9 +82,9 @@ const actionLabels = {
   WATCH: "要確認",
 };
 
-const businessGoodWords = ["増収増益", "上方修正", "最高益", "過去最高益", "最高益更新", "営業益増", "営業利益増", "経常増益", "増益", "増収", "黒字転換", "増配", "配当増額", "自社株買い", "受注増", "受注高"];
-const valueGoodWords = ["割安", "低per", "低pbr", "pbr1倍割れ", "pbr", "per", "配当利回り", "高配当", "出遅れ"];
-const businessBadWords = ["下方修正", "減益", "赤字", "減配", "不祥事", "行政処分", "訴訟"];
+const businessGoodWords = ["増収増益", "上方修正", "最高益", "過去最高益", "最高益更新", "営業益増", "営業利益増", "経常増益", "増益", "増収", "黒字転換", "増配", "配当増額", "自社株買い", "受注増", "受注高", "revenue growth", "earnings beat", "raised guidance", "record profit", "margin expansion", "free cash flow", "buyback", "dividend increase"];
+const valueGoodWords = ["割安", "低per", "低pbr", "pbr1倍割れ", "pbr", "per", "配当利回り", "高配当", "出遅れ", "undervalued", "low multiple", "cheap valuation", "dividend yield", "discount"];
+const businessBadWords = ["下方修正", "減益", "赤字", "減配", "不祥事", "行政処分", "訴訟", "guidance cut", "earnings miss", "loss", "dividend cut", "lawsuit", "investigation"];
 
 let lmModelCache = { url: "", model: "" };
 let primeUniverseCache = null;
@@ -161,6 +166,59 @@ const defaultUsWatchlist = [
   { symbol: "ACN", name: "Accenture", market: "NYSE", holding: false, notes: "IT consulting, outsourcing, digital transformation" },
   { symbol: "NVDA", name: "NVIDIA", market: "NASDAQ", holding: false, notes: "AI semiconductors, GPU, data center" },
   { symbol: "INTC", name: "Intel", market: "NASDAQ", holding: false, notes: "CPU, foundry, semiconductor turnaround" },
+];
+
+const usDiscoveryUniverse = [
+  { symbol: "IBM", name: "IBM", market: "NYSE", sector: "Technology services", notes: "mature enterprise software, consulting, recurring revenue", currency: "USD" },
+  { symbol: "ORCL", name: "Oracle", market: "NYSE", sector: "Enterprise software", notes: "mature software, cloud infrastructure, cash flow", currency: "USD" },
+  { symbol: "CSCO", name: "Cisco Systems", market: "NASDAQ", sector: "Network equipment", notes: "network infrastructure, security, buybacks", currency: "USD" },
+  { symbol: "HPQ", name: "HP", market: "NYSE", sector: "Hardware", notes: "cash flow, buybacks, mature technology", currency: "USD" },
+  { symbol: "DELL", name: "Dell Technologies", market: "NYSE", sector: "Hardware", notes: "enterprise infrastructure, AI servers, cash flow", currency: "USD" },
+  { symbol: "HPE", name: "Hewlett Packard Enterprise", market: "NYSE", sector: "Infrastructure", notes: "enterprise infrastructure, hybrid cloud, restructuring", currency: "USD" },
+  { symbol: "PARA", name: "Paramount Global", market: "NASDAQ", sector: "Media", notes: "media assets, strategic review, M&A", currency: "USD" },
+  { symbol: "WBD", name: "Warner Bros. Discovery", market: "NASDAQ", sector: "Media", notes: "media restructuring, cash flow, debt reduction", currency: "USD" },
+  { symbol: "DIS", name: "Walt Disney", market: "NYSE", sector: "Media", notes: "brand assets, streaming turnaround, activist history", currency: "USD" },
+  { symbol: "PYPL", name: "PayPal", market: "NASDAQ", sector: "Financial technology", notes: "payments, buybacks, margin improvement", currency: "USD" },
+  { symbol: "GPN", name: "Global Payments", market: "NYSE", sector: "Payment services", notes: "payment processing, cash flow, strategic review potential", currency: "USD" },
+  { symbol: "FIS", name: "Fidelity National Information Services", market: "NYSE", sector: "Payment services", notes: "financial services infrastructure, divestiture, cash flow", currency: "USD" },
+  { symbol: "FI", name: "Fiserv", market: "NYSE", sector: "Payment services", notes: "merchant acquiring, recurring revenue, buybacks", currency: "USD" },
+  { symbol: "UPS", name: "UPS", market: "NYSE", sector: "Logistics", notes: "logistics, union cost reset, cash flow", currency: "USD" },
+  { symbol: "FDX", name: "FedEx", market: "NYSE", sector: "Logistics", notes: "logistics, restructuring, margin improvement", currency: "USD" },
+  { symbol: "KHC", name: "Kraft Heinz", market: "NASDAQ", sector: "Consumer staples", notes: "stable brands, dividend, private equity history", currency: "USD" },
+  { symbol: "MDLZ", name: "Mondelez", market: "NASDAQ", sector: "Consumer staples", notes: "global snacks, stable cash flow", currency: "USD" },
+  { symbol: "GIS", name: "General Mills", market: "NYSE", sector: "Consumer staples", notes: "packaged foods, dividend, stable demand", currency: "USD" },
+  { symbol: "K", name: "Kellanova", market: "NYSE", sector: "Consumer staples", notes: "packaged foods, brand portfolio, restructuring", currency: "USD" },
+  { symbol: "CLX", name: "Clorox", market: "NYSE", sector: "Consumer staples", notes: "household brands, margin recovery", currency: "USD" },
+  { symbol: "SYY", name: "Sysco", market: "NYSE", sector: "Food services", notes: "food distribution, stable cash flow", currency: "USD" },
+  { symbol: "KR", name: "Kroger", market: "NYSE", sector: "Retail", notes: "grocery retail, stable demand, cash flow", currency: "USD" },
+  { symbol: "TGT", name: "Target", market: "NYSE", sector: "Retail", notes: "retail turnaround, brand assets, cash flow", currency: "USD" },
+  { symbol: "LOW", name: "Lowe's", market: "NYSE", sector: "Retail", notes: "home improvement, buybacks, cash flow", currency: "USD" },
+  { symbol: "HD", name: "Home Depot", market: "NYSE", sector: "Retail", notes: "home improvement, cash flow, dividend", currency: "USD" },
+  { symbol: "CVS", name: "CVS Health", market: "NYSE", sector: "Healthcare services", notes: "healthcare services, restructuring, cash flow", currency: "USD" },
+  { symbol: "CI", name: "Cigna", market: "NYSE", sector: "Healthcare services", notes: "managed care, buybacks, cash flow", currency: "USD" },
+  { symbol: "HUM", name: "Humana", market: "NYSE", sector: "Healthcare services", notes: "managed care, Medicare, valuation reset", currency: "USD" },
+  { symbol: "BMY", name: "Bristol Myers Squibb", market: "NYSE", sector: "Pharmaceuticals", notes: "pharma, patent cycle, dividend", currency: "USD" },
+  { symbol: "PFE", name: "Pfizer", market: "NYSE", sector: "Pharmaceuticals", notes: "pharma, dividend, pipeline reset", currency: "USD" },
+  { symbol: "MMM", name: "3M", market: "NYSE", sector: "Industrial", notes: "industrial restructuring, litigation overhang, cash flow", currency: "USD" },
+  { symbol: "HON", name: "Honeywell", market: "NASDAQ", sector: "Industrial", notes: "industrial automation, aerospace, portfolio changes", currency: "USD" },
+  { symbol: "GE", name: "GE Aerospace", market: "NYSE", sector: "Aerospace", notes: "aerospace, margin expansion, cash flow", currency: "USD" },
+  { symbol: "EMR", name: "Emerson Electric", market: "NYSE", sector: "Industrial automation", notes: "automation, portfolio reshaping, cash flow", currency: "USD" },
+  { symbol: "ETN", name: "Eaton", market: "NYSE", sector: "Electrical equipment", notes: "electrification, data center power, cash flow", currency: "USD" },
+  { symbol: "APD", name: "Air Products", market: "NYSE", sector: "Industrial gases", notes: "industrial gases, activist interest, capital allocation", currency: "USD" },
+  { symbol: "DOW", name: "Dow", market: "NYSE", sector: "Chemicals", notes: "chemicals, dividend, cyclical recovery", currency: "USD" },
+  { symbol: "LYB", name: "LyondellBasell", market: "NYSE", sector: "Chemicals", notes: "chemicals, cash return, cyclical", currency: "USD" },
+  { symbol: "VZ", name: "Verizon", market: "NYSE", sector: "Telecom", notes: "telecom, dividend, stable cash flow", currency: "USD" },
+  { symbol: "T", name: "AT&T", market: "NYSE", sector: "Telecom", notes: "telecom, deleveraging, dividend", currency: "USD" },
+  { symbol: "CMCSA", name: "Comcast", market: "NASDAQ", sector: "Telecom media", notes: "cable, media assets, buybacks", currency: "USD" },
+  { symbol: "GM", name: "General Motors", market: "NYSE", sector: "Automotive", notes: "automotive, buybacks, valuation discount", currency: "USD" },
+  { symbol: "F", name: "Ford Motor", market: "NYSE", sector: "Automotive", notes: "automotive, dividend, restructuring", currency: "USD" },
+  { symbol: "UAL", name: "United Airlines", market: "NASDAQ", sector: "Airlines", notes: "airline, travel demand, cyclical", currency: "USD" },
+  { symbol: "DAL", name: "Delta Air Lines", market: "NYSE", sector: "Airlines", notes: "airline, travel demand, loyalty cash flow", currency: "USD" },
+  { symbol: "AAL", name: "American Airlines", market: "NASDAQ", sector: "Airlines", notes: "airline, high debt, cyclical", currency: "USD" },
+  { symbol: "BKNG", name: "Booking Holdings", market: "NASDAQ", sector: "Travel services", notes: "travel platform, cash flow, buybacks", currency: "USD" },
+  { symbol: "MAR", name: "Marriott International", market: "NASDAQ", sector: "Travel services", notes: "asset-light hotels, recurring fee revenue", currency: "USD" },
+  { symbol: "H", name: "Hyatt Hotels", market: "NYSE", sector: "Travel services", notes: "hotels, asset-light transition, cash flow", currency: "USD" },
+  { symbol: "LUV", name: "Southwest Airlines", market: "NYSE", sector: "Airlines", notes: "airline turnaround, activist interest", currency: "USD" },
 ];
 
 const server = http.createServer(async (req, res) => {
@@ -255,7 +313,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/excluded-candidates/") && req.method === "DELETE") {
-    const symbol = normalizeSymbol(decodeURIComponent(url.pathname.split("/").pop() || ""));
+    const symbol = normalizeDiscoverySymbol(decodeURIComponent(url.pathname.split("/").pop() || ""));
     const excludedCandidates = await removeExcludedCandidate(symbol);
     return json(res, 200, { excludedCandidates });
   }
@@ -507,9 +565,10 @@ function analysisJobSnapshot() {
 
 async function analyzeWatchlist(options = {}, onProgress = null) {
   const stocks = await readWatchlist();
-  const websiteLimit = clamp(Number(options.websiteLimit || 10), 1, 20);
-  const depthLimit = clamp(Number(options.depthLimit || 2), 1, 20);
-  const pagesPerSite = clamp(Number(options.pagesPerSite || 2), 1, 20);
+  const settings = await readSettings();
+  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, 20);
+  const depthLimit = clamp(Number(options.depthLimit || settings.depthLimit || defaultSettings.depthLimit), 1, 20);
+  const pagesPerSite = clamp(Number(options.pagesPerSite || settings.pagesPerSite || defaultSettings.pagesPerSite), 1, 20);
   const lmStatus = await checkLmStudio();
   const warnings = [];
   const systemWarnings = [];
@@ -576,7 +635,8 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
 
 async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
   const stocks = await readUsWatchlist();
-  const websiteLimit = clamp(Number(options.websiteLimit || 5), 1, 10);
+  const settings = await readSettings();
+  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, 20);
   const rows = await mapLimit(stocks, 4, async (stock) => {
     const [price, research] = await Promise.all([
       fetchPriceHistory(stock.symbol),
@@ -846,13 +906,28 @@ function compactUsPrice(price = {}) {
     current: price.current,
     return1m: price.return1m,
     return3m: price.return3m,
+    return6m: price.return6m,
     return1y: price.return1y,
     return3y: price.return3y,
+    annualizedReturn3y: price.annualizedReturn3y,
     high52: price.high52,
     low52: price.low52,
+    high3y: price.high3y,
+    low3y: price.low3y,
     distanceFromHigh52: price.distanceFromHigh52,
     distanceFromLow52: price.distanceFromLow52,
+    distanceFromHigh3y: price.distanceFromHigh3y,
+    distanceFromLow3y: price.distanceFromLow3y,
+    maxDrawdown3y: price.maxDrawdown3y,
+    trendPrice3y: price.trendPrice3y,
+    distanceFromTrend3y: price.distanceFromTrend3y,
     trend3y: price.trend3y,
+    buyLine1y: price.buyLine1y,
+    deepBuyLine1y: price.deepBuyLine1y,
+    distanceFromBuyLine1y: price.distanceFromBuyLine1y,
+    buyTiming1y: price.buyTiming1y,
+    low1y: price.low1y,
+    low1yDate: price.low1yDate,
     dividendPerShareTtm: price.dividendPerShareTtm,
     dividendYield: price.dividendYield,
     dividendChangePct: price.dividendChangePct,
@@ -862,6 +937,7 @@ function compactUsPrice(price = {}) {
     shortName: price.shortName,
     longName: price.longName,
     yahooSymbol: price.yahooSymbol,
+    series: price.series || [],
   };
 }
 
@@ -1277,20 +1353,26 @@ function isOlderThan(left = "", right = "") {
 
 async function discoverStocks(options = {}, job = null) {
   const stocks = await readWatchlist();
+  const usStocks = await readUsWatchlist();
   const settings = await readSettings();
   const excludedCandidates = await readExcludedCandidates();
-  const existing = new Set(stocks.map((stock) => stock.symbol));
+  const existing = new Set([...stocks, ...usStocks].map((stock) => stock.symbol));
   const excluded = new Set(excludedCandidates.map((candidate) => candidate.symbol));
   const slots = Math.max(0, MAX_MANAGED_STOCKS - stocks.length);
+  const usSlots = Math.max(0, MAX_US_STOCKS - usStocks.length);
+  const totalSlots = slots + usSlots;
   const websiteLimit = clamp(Number(options.websiteLimit || 20), 1, 20);
   const unitSize = clamp(Number(options.unitSize || settings.unitSize || 100), 1, 1000);
-  const unitBudget = clamp(Number(options.unitBudget || settings.unitBudget || 300000), 10000, 10000000);
-  const unitBudgetAllowance = unitBudget * 1.1;
+  const unitBudgetUnlimited = options.unitBudgetUnlimited === true || settings.unitBudgetUnlimited === true;
+  const unitBudget = unitBudgetUnlimited
+    ? null
+    : clamp(Number(options.unitBudget || settings.unitBudget || 300000), 10000, 10000000);
+  const unitBudgetAllowance = unitBudget ? unitBudget * 1.1 : Infinity;
   const fullScan = options.fullScan !== false;
   updateDiscoveryJob(job, { phase: "市場全体の材料を検索中" });
   const search = await discoverySearchResults(websiteLimit);
   const haystack = `${search.map((item) => `${item.title} ${item.snippet}`).join("\n")}`.toLowerCase();
-  const sectorCounts = sectorCount(stocks);
+  const sectorCounts = sectorCount([...stocks, ...usStocks]);
   const searchCandidates = extractDiscoveryCandidates(search, existing, excluded);
   const primeUniverse = await readPrimeUniverse();
   updateDiscoveryJob(job, { phase: "LM Studioで市場トレンドを要約中" });
@@ -1298,7 +1380,7 @@ async function discoverStocks(options = {}, job = null) {
     ? await withTimeout(aiMarketTrendBrief(search, primeUniverse.length), 45000).catch(() => null)
     : null;
   const performance = candidatePerformanceSummary(await readCandidateHistory());
-  const candidateUniverse = uniqueBy([...searchCandidates, ...primeUniverse, ...discoveryUniverse], (candidate) => candidate.symbol)
+  const candidateUniverse = uniqueBy([...searchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse], (candidate) => candidate.symbol)
     .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
     .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate));
   const candidateLimit = fullScan
@@ -1317,8 +1399,14 @@ async function discoverStocks(options = {}, job = null) {
   const scored = await mapLimit(candidates, 8, async (candidate) => {
     const price = await fetchPriceHistory(candidate.symbol);
     const resolvedCandidate = resolveCandidateFromPrice(candidate, price);
+    const candidateBudget = discoveryBudgetForCandidate(resolvedCandidate, {
+      unitSize,
+      unitBudget,
+      unitBudgetAllowance,
+      unitBudgetUnlimited,
+    });
     const scoredCandidate = applyCandidateLearning(
-      scoreDiscoveryCandidate(resolvedCandidate, price, haystack, sectorCounts, { unitSize, unitBudget, unitBudgetAllowance }),
+      scoreDiscoveryCandidate(resolvedCandidate, price, haystack, sectorCounts, candidateBudget),
       performance,
     );
     checked += 1;
@@ -1340,7 +1428,10 @@ async function discoverStocks(options = {}, job = null) {
   });
   const enhanced = await mapLimit(shortlist, 3, async (candidate) => {
     const code = candidate.symbol.replace(".T", "");
-    const results = (await searchGoogle(`${candidate.name} ${code} 株価 評価 レーティング 目標株価 決算短信 業績 増収増益 上方修正 増配 割安 PER PBR TDnet PEファンド TOB MBO 大量保有 株主`, {
+    const query = isUsDiscoveryCandidate(candidate)
+      ? `${candidate.name} ${code} stock earnings guidance analyst rating dividend free cash flow valuation activist shareholder private equity buyout tender offer`
+      : `${candidate.name} ${code} 株価 評価 レーティング 目標株価 決算短信 業績 増収増益 上方修正 増配 割安 PER PBR TDnet PEファンド TOB MBO 大量保有 株主`;
+    const results = (await searchGoogle(query, {
       limit: websiteLimit,
     }).catch(() => [])).map((item, index) => ({ ...item, rank: index + 1 }));
     const relevantResults = relevantSearchResults(candidate, uniqueBy([...(candidate.sourceEvidence || []), ...results], (item) => item.url));
@@ -1362,6 +1453,7 @@ async function discoverStocks(options = {}, job = null) {
         candidateLimit,
         unitSize,
         unitBudget,
+        unitBudgetUnlimited,
         searchCandidates,
         candidateUniverse,
         usedDiscoveryAi: false,
@@ -1388,30 +1480,46 @@ async function discoverStocks(options = {}, job = null) {
       suggestions = suggestions
         .map((candidate) => applyDiscoveryAiReview(candidate, aiReviewBySymbol.get(candidate.symbol)))
         .filter(isActionableDiscoveryCandidate)
-        .sort((a, b) => b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
+        .sort((a, b) => pePriorityScore(b) - pePriorityScore(a) || b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
         .slice(0, MAX_DISCOVERY_SUGGESTIONS);
     }
   } catch {
     // Candidate discovery still works without the local model.
   }
 
-  const added = options.autoAdd && slots > 0
-    ? suggestions.slice(0, slots).map(candidateToStock)
-    : [];
-  const next = added.length ? [...stocks, ...added].slice(0, MAX_MANAGED_STOCKS) : stocks;
-  if (added.length) await saveWatchlist(next);
+  const added = [];
+  const addedUs = [];
+  let next = stocks;
+  let nextUs = usStocks;
+  if (options.autoAdd) {
+    const jpSlots = Math.max(0, MAX_MANAGED_STOCKS - stocks.length);
+    const usSlots = Math.max(0, MAX_US_STOCKS - usStocks.length);
+    for (const candidate of suggestions) {
+      if (isUsDiscoveryCandidate(candidate) && addedUs.length < usSlots) addedUs.push(candidateToUsStock(candidate));
+      else if (!isUsDiscoveryCandidate(candidate) && added.length < jpSlots) added.push(candidateToStock(candidate));
+      if (added.length >= jpSlots && addedUs.length >= usSlots) break;
+    }
+    next = added.length ? [...stocks, ...added].slice(0, MAX_MANAGED_STOCKS) : stocks;
+    nextUs = addedUs.length ? [...usStocks, ...addedUs].slice(0, MAX_US_STOCKS) : usStocks;
+    if (added.length) await saveWatchlist(next);
+    if (addedUs.length) await saveUsWatchlist(nextUs);
+  }
 
   const result = {
     generatedAt: new Date().toISOString(),
-    added,
+    added: [...added, ...addedUs],
     stocks: next,
+    usStocks: nextUs,
     suggestions,
     evidence: search.slice(0, 5),
     sourceSummary: await searchSourceSummary(search.length + individualSearchCount, candidateLimit, {
       unitSize,
       unitBudget,
+      unitBudgetUnlimited,
       discoveredCount: searchCandidates.length,
       candidatePool: candidateUniverse.length,
+      jpCandidatePool: candidateUniverse.filter((candidate) => !isUsDiscoveryCandidate(candidate)).length,
+      usCandidatePool: candidateUniverse.filter(isUsDiscoveryCandidate).length,
       usedDiscoveryAi,
       fullScan,
       searchPositionUsed: true,
@@ -1419,10 +1527,10 @@ async function discoverStocks(options = {}, job = null) {
       performance,
     }),
     message: suggestions.length === 0
-      ? "1単元の予算に合う候補が見つかりませんでした。"
-      : slots > 0
+      ? "買い場ライン以下で条件に合う候補が見つかりませんでした。"
+      : totalSlots > 0
       ? "候補を表示しました。必要な銘柄だけ追加してください。"
-      : `${MAX_MANAGED_STOCKS}銘柄が埋まっているため、入れ替え候補として表示します。`,
+      : "管理枠が埋まっているため、入れ替え候補として表示します。",
   };
   await saveDiscoveryCache(result);
   await recordCandidateSnapshots(suggestions, result);
@@ -1435,8 +1543,26 @@ function topDiscoverySuggestions(candidates = []) {
   return candidates
     .filter((candidate) => candidate && candidate.evidenceQuality !== "悪材料あり")
     .filter(isActionableDiscoveryCandidate)
-    .sort((a, b) => b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
+    .sort((a, b) => pePriorityScore(b) - pePriorityScore(a) || b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
+    .map((candidate) => ({ ...candidate, pePriorityScore: pePriorityScore(candidate) }))
     .slice(0, MAX_DISCOVERY_SUGGESTIONS);
+}
+
+function pePriorityScore(candidate = {}) {
+  const pe = Number(candidate.peSignal?.matchScore || 0);
+  const value = Number(candidate.businessValueScore || candidate.score || 0);
+  const current = nullablePositiveNumber(candidate.price?.current);
+  const buyLine = nullablePositiveNumber(candidate.price?.buyLine1y);
+  const buyPlan = nullablePositiveNumber(candidate.buyPlan?.maxBuyPrice);
+  const timingBonus = candidate.buyPlan?.stance === "今すぐ検討"
+    ? 22
+    : candidate.buyPlan?.stance === "指値で待つ"
+    ? 10
+    : 0;
+  const buyLineBonus = current && buyLine && current <= buyLine * 1.005 ? 18 : 0;
+  const planBonus = current && buyPlan && current <= buyPlan * STRICT_BUY_TARGET_TOLERANCE ? 14 : 0;
+  const currencyBonus = isUsDiscoveryCandidate(candidate) ? 2 : 0;
+  return Math.round((pe * 1.15) + (value * 0.6) + timingBonus + buyLineBonus + planBonus + currencyBonus);
 }
 
 function isActionableDiscoveryCandidate(candidate = {}) {
@@ -1457,6 +1583,40 @@ function isDiscoveryAvoidedBusiness(candidate = {}) {
   if (DISCOVERY_AVOID_SECTOR_PATTERN.test(sector)) return true;
   if (DISCOVERY_IT_VENTURE_PATTERN.test(`${sector} ${notes}`) && !DISCOVERY_IT_STABLE_PATTERN.test(`${sector} ${notes}`)) return true;
   return false;
+}
+
+function isUsDiscoveryCandidate(candidate = {}) {
+  const symbol = String(candidate.symbol || "").trim().toUpperCase();
+  if (candidate.currency === "USD") return true;
+  if (["NYSE", "NASDAQ", "AMEX"].includes(String(candidate.market || "").toUpperCase())) return true;
+  return /^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol) && !symbol.endsWith(".T");
+}
+
+function discoveryCurrency(candidate = {}) {
+  return isUsDiscoveryCandidate(candidate) ? "USD" : "JPY";
+}
+
+function discoveryBudgetForCandidate(candidate, base = {}) {
+  if (isUsDiscoveryCandidate(candidate)) {
+    return {
+      currency: "USD",
+      unitSize: US_DISCOVERY_UNIT_SIZE,
+      unitBudget: US_DISCOVERY_UNIT_BUDGET,
+      unitBudgetAllowance: US_DISCOVERY_UNIT_BUDGET * 1.1,
+      unitBudgetUnlimited: false,
+    };
+  }
+  return {
+    currency: "JPY",
+    unitSize: base.unitSize || 100,
+    unitBudget: base.unitBudget,
+    unitBudgetAllowance: base.unitBudgetAllowance ?? Infinity,
+    unitBudgetUnlimited: base.unitBudgetUnlimited === true,
+  };
+}
+
+function formatMoney(value, currency = "JPY") {
+  return currency === "USD" ? formatUsd(value) : formatYen(value);
 }
 
 function searchPeSignal(candidate, allResults = [], relevantResults = []) {
@@ -1480,8 +1640,8 @@ function searchPeSignal(candidate, allResults = [], relevantResults = []) {
   const buyerHits = PE_BUYER_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 8);
   const sector = candidate.sector || "";
   let score = criteria.reduce((sum, item) => sum + item.score, 0);
-  if (/サービス|ヘルスケア|不動産|物流|人材|設備|メンテ|小売|生活用品/.test(sector)) score += 8;
-  if (/銀行|保険|電力|資源|航空|鉄道|防衛|半導体/.test(sector)) score -= 6;
+  if (/サービス|ヘルスケア|不動産|物流|人材|設備|メンテ|小売|生活用品|services|healthcare|logistics|industrial|maintenance|payment|telecom|media/i.test(sector)) score += 8;
+  if (/銀行|保険|電力|資源|航空|鉄道|防衛|半導体|bank|insurance|utility|airline|aerospace|semiconductor/i.test(sector)) score -= 6;
   if (buyerHits.length) score += Math.min(15, buyerHits.length * 3);
   const matchScore = clamp(Math.round(score), 0, 100);
   const evidence = relevantResults
@@ -1556,6 +1716,7 @@ async function savePartialDiscovery({
   candidateLimit,
   unitSize,
   unitBudget,
+  unitBudgetUnlimited,
   searchCandidates,
   candidateUniverse,
   usedDiscoveryAi,
@@ -1571,8 +1732,11 @@ async function savePartialDiscovery({
     sourceSummary: await searchSourceSummary(searchCount, candidateLimit, {
       unitSize,
       unitBudget,
+      unitBudgetUnlimited,
       discoveredCount: searchCandidates.length,
       candidatePool: candidateUniverse.length,
+      jpCandidatePool: candidateUniverse.filter((candidate) => !isUsDiscoveryCandidate(candidate)).length,
+      usCandidatePool: candidateUniverse.filter(isUsDiscoveryCandidate).length,
       usedDiscoveryAi,
       fullScan,
       searchPositionUsed: true,
@@ -1758,9 +1922,11 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
   const reasons = [];
   const risks = [];
   const unitSize = budget.unitSize || 100;
+  const currency = budget.currency || discoveryCurrency(candidate);
+  const hasBudget = Number.isFinite(budget.unitBudget) && budget.unitBudget > 0;
   const unitAmount = Number.isFinite(price.current) ? price.current * unitSize : null;
-  const inBudget = Number.isFinite(unitAmount) && unitAmount <= budget.unitBudget;
-  const nearBudget = Number.isFinite(unitAmount) && unitAmount <= budget.unitBudgetAllowance;
+  const inBudget = Number.isFinite(unitAmount) && (!hasBudget || unitAmount <= budget.unitBudget);
+  const nearBudget = Number.isFinite(unitAmount) && (!hasBudget || unitAmount <= budget.unitBudgetAllowance);
   const context = businessContextText(haystack);
   let businessScore = 0;
   let valueScore = 0;
@@ -1777,14 +1943,16 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
   } else if (inBudget) {
     score += 10;
     valueScore += 10;
-    reasons.push(`${unitSize}株で${formatYen(unitAmount)}。30万円目安で買える`);
+    reasons.push(hasBudget
+      ? `${unitSize}株で${formatMoney(unitAmount, currency)}。予算目安内で買える`
+      : `${unitSize}株で${formatMoney(unitAmount, currency)}。予算上限なしで確認`);
   } else if (nearBudget) {
     score += 2;
     valueScore += 2;
-    risks.push(`${unitSize}株で${formatYen(unitAmount)}。30万円を少し超える`);
+    risks.push(`${unitSize}株で${formatMoney(unitAmount, currency)}。予算目安を少し超える`);
   } else {
     score -= 30;
-    risks.push(`${unitSize}株で${formatYen(unitAmount)}。30万円目安を超える`);
+    risks.push(`${unitSize}株で${formatMoney(unitAmount, currency)}。予算目安を超える`);
   }
 
   if (Number.isFinite(price.return3y)) {
@@ -1976,6 +2144,7 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     price,
     unitSize,
     unitAmount,
+    currency,
     inBudget,
     nearBudget,
     sectorHeld,
@@ -1984,12 +2153,14 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     badHits: mentioned ? badHits : [],
   });
   const businessValueScore = process.totalScore;
-  const buyPlan = candidateBuyPlan(price, { unitSize, unitBudget: budget.unitBudget, unitAmount, businessValueScore });
-  const sellPlan = candidateExitPlan(price, buyPlan);
+  const buyPlan = candidateBuyPlan(price, { unitSize, unitBudget: budget.unitBudget, unitAmount, businessValueScore, currency });
+  const sellPlan = candidateExitPlan(price, buyPlan, { currency });
 
   return {
     ...candidate,
     sector,
+    currency,
+    targetCollection: currency === "USD" ? "us" : "jp",
     score: clamp(Math.round(score), 0, 100),
     businessValueScore,
     rankLabel: discoveryRankLabel(businessValueScore),
@@ -1999,12 +2170,13 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     evidenceQuality: candidate.discoverySource ? "検索から発掘" : "価格中心",
     unitSize,
     unitBudget: budget.unitBudget,
+    unitBudgetUnlimited: budget.unitBudgetUnlimited === true,
     unitAmount,
     inBudget,
     nearBudget,
     buyPlan,
     sellPlan,
-    price: compactDiscoveryPrice(price, unitSize),
+    price: compactDiscoveryPrice(price, unitSize, currency),
   };
 }
 
@@ -2094,6 +2266,7 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
     unitBudget: candidate.unitBudget,
     unitAmount: candidate.unitAmount,
     businessValueScore: boundedBusinessValue,
+    currency: candidate.currency || candidate.price?.currency || discoveryCurrency(candidate),
   });
   return {
     ...candidate,
@@ -2102,7 +2275,7 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
     rankLabel: discoveryRankLabel(boundedBusinessValue),
     process,
     buyPlan,
-    sellPlan: candidateExitPlan(candidate.price || {}, buyPlan),
+    sellPlan: candidateExitPlan(candidate.price || {}, buyPlan, { currency: candidate.currency || candidate.price?.currency || discoveryCurrency(candidate) }),
     evidenceQuality,
     searchPosition: positionSignal,
     peSignal: peSignal || candidate.peSignal || null,
@@ -2175,13 +2348,13 @@ async function aiDiscoveryReview(candidates) {
 
 async function aiDiscoveryReviewChunk(model, items) {
   const prompt = [
-    "あなたは日本株の候補発掘レビュー担当です。将来の利益を保証せず、根拠不足を厳しく扱ってください。",
-    "目的は「事業として好調そうなのに、株価が高すぎず、1単元30万円前後で買いやすい候補」を上に残すことです。",
+    "あなたは日本株・米国株の候補発掘レビュー担当です。将来の利益を保証せず、根拠不足を厳しく扱ってください。",
+    "目的は「事業として好調そうなのに、株価が高すぎず、買い場ラインや買い目安以下で検討できる候補」を上に残すことです。",
     "過去3年の流れに対する現在価格、1年買い場ライン、配当利回り、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
     "1年買い場ラインを下回っていて、事業材料も良いものはプラス評価してください。上がり切った高値圏はマイナス評価してください。",
     "PEファンドが買いそうな会社かは、割安放置、安定キャッシュフロー、株主変化、再編余地、阻害リスクに分けて評価してください。ただしPE要素だけで高値づかみを肯定しないでください。",
     "adjustmentは-8から8の整数。根拠が薄い場合は0以下、悪材料や高値づかみ懸念が強い場合はマイナスにしてください。",
-    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"]}]}。",
+    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"]}]}。米国株は IBM のようにティッカーをそのまま返してください。",
     "",
     JSON.stringify({ candidates: items }),
   ].join("\n");
@@ -2202,7 +2375,7 @@ async function aiDiscoveryReviewChunk(model, items) {
   const reviews = Array.isArray(parsed) ? parsed : parsed.reviews || parsed.rankings || [];
   const map = new Map();
   for (const review of reviews) {
-    const symbol = normalizeSymbol(review?.symbol);
+    const symbol = normalizeDiscoverySymbol(review?.symbol);
     if (!symbol) continue;
     map.set(symbol, {
       adjustment: clamp(Math.round(Number(review.adjustment ?? review.qualityAdjustment ?? 0)), -8, 8),
@@ -2278,6 +2451,7 @@ function applyDiscoveryAiReview(candidate, review) {
     unitBudget: candidate.unitBudget,
     unitAmount: candidate.unitAmount,
     businessValueScore,
+    currency: candidate.currency || candidate.price?.currency || discoveryCurrency(candidate),
   });
   const aiReview = {
     adjustment,
@@ -2293,7 +2467,7 @@ function applyDiscoveryAiReview(candidate, review) {
     evidenceQuality: `${candidate.evidenceQuality || "価格中心"}・AI確認`,
     aiReview,
     buyPlan,
-    sellPlan: candidateExitPlan(candidate.price || {}, buyPlan),
+    sellPlan: candidateExitPlan(candidate.price || {}, buyPlan, { currency: candidate.currency || candidate.price?.currency || discoveryCurrency(candidate) }),
     reasons: uniqueText([...(candidate.reasons || []), ...aiReview.positives]).slice(0, 5),
     risks: uniqueText([...(candidate.risks || []), ...aiReview.risks]).slice(0, 4),
   };
@@ -2355,6 +2529,7 @@ function buildDiscoveryProcess({
   price,
   unitSize,
   unitAmount,
+  currency = "JPY",
   inBudget,
   nearBudget,
   sectorHeld,
@@ -2399,7 +2574,7 @@ function buildDiscoveryProcess({
 
   if (inBudget) {
     value += 5;
-    notes.value.push(`${unitSize}株で${formatYen(unitAmount)}`);
+    notes.value.push(`${unitSize}株で${formatMoney(unitAmount, currency)}`);
   } else if (nearBudget) {
     value += 2;
     notes.value.push("予算を少し超える");
@@ -2558,6 +2733,7 @@ function discoveryRankLabel(score) {
 
 function candidateBuyPlan(price, options = {}) {
   const current = nullablePositiveNumber(price.current);
+  const currency = options.currency || price.currency || "JPY";
   if (!current) {
     return {
       stance: "価格待ち",
@@ -2597,6 +2773,8 @@ function candidateBuyPlan(price, options = {}) {
     checks.push(currentUnitAmount <= unitBudget
       ? `${unitSize}株が予算内`
       : `${unitSize}株は予算超過`);
+  } else {
+    checks.push("予算上限なし");
   }
 
   if (buyLine && Number.isFinite(price.distanceFromBuyLine1y)) {
@@ -2623,14 +2801,15 @@ function candidateBuyPlan(price, options = {}) {
     stance,
     maxBuyPrice: Math.round(maxBuyPrice * 10) / 10,
     unitAmountAtMax: Math.round(unitAmountAtMax),
-    summary: `${formatYen(maxBuyPrice)}以下なら検討しやすい水準。現在値との差は${formatSignedPercent(((maxBuyPrice - current) / current) * 100)}です。`,
+    summary: `${formatMoney(maxBuyPrice, currency)}以下なら検討しやすい水準。現在値との差は${formatSignedPercent(((maxBuyPrice - current) / current) * 100)}です。`,
     checks: uniqueText(checks).slice(0, 4),
   };
 }
 
-function candidateExitPlan(price = {}, buyPlan = {}) {
+function candidateExitPlan(price = {}, buyPlan = {}, options = {}) {
   const current = nullablePositiveNumber(price.current);
   const buy = nullablePositiveNumber(buyPlan.maxBuyPrice) || current;
+  const currency = options.currency || price.currency || "JPY";
   if (!current || !buy) {
     return {
       targetPrice: null,
@@ -2652,12 +2831,13 @@ function candidateExitPlan(price = {}, buyPlan = {}) {
   return {
     targetPrice: Math.round(targetPrice * 10) / 10,
     stopPrice: Math.round(stopPrice * 10) / 10,
-    summary: `${formatYen(targetPrice)}前後で利確・見直し、${formatYen(stopPrice)}割れで理由を再確認。`,
+    summary: `${formatMoney(targetPrice, currency)}前後で利確・見直し、${formatMoney(stopPrice, currency)}割れで理由を再確認。`,
   };
 }
 
-function compactDiscoveryPrice(price, unitSize = 100) {
+function compactDiscoveryPrice(price, unitSize = 100, currency = "JPY") {
   return {
+    currency,
     current: price.current,
     unitAmount: Number.isFinite(price.current) ? price.current * unitSize : null,
     return3m: price.return3m,
@@ -2700,6 +2880,16 @@ function candidateToStock(candidate) {
   });
 }
 
+function candidateToUsStock(candidate) {
+  return normalizeUsStock({
+    symbol: candidate.symbol,
+    name: candidate.name,
+    market: candidate.market || "NYSE",
+    holding: false,
+    notes: candidate.notes || "",
+  });
+}
+
 function sectorCount(stocks) {
   const counts = new Map();
   for (const stock of stocks) {
@@ -2711,7 +2901,7 @@ function sectorCount(stocks) {
 
 function stockSector(stock) {
   if (stock.sector) return stock.sector;
-  const universe = discoveryUniverse.find((candidate) => candidate.symbol === stock.symbol);
+  const universe = [...discoveryUniverse, ...usDiscoveryUniverse].find((candidate) => candidate.symbol === stock.symbol);
   if (universe?.sector) return universe.sector;
   const known = {
     "9005.T": "鉄道",
@@ -3294,14 +3484,16 @@ function ruleBasedDecision(stock, price, research) {
     }
   }
 
-  const action = score >= 72 ? "BUY" : score >= 46 ? "HOLD" : score >= 26 ? "WATCH" : "SELL";
-  const thesis = `${stock.name}は価格トレンド、検索材料、変動率を総合して${actionLabels[action]}判定。`;
+  const initialAction = score >= 72 ? "BUY" : score >= 46 ? "HOLD" : score >= 26 ? "WATCH" : "SELL";
+  const safety = decisionSafetyOverride(stock, price, initialAction, position);
+  const action = safety.action;
+  const thesis = safety.thesis || `${stock.name}は価格トレンド、検索材料、変動率を総合して${actionLabels[action]}判定。`;
   return {
     action,
     confidence: clamp(Math.round(Math.abs(score - 50) * 1.2 + 45), 35, 86),
     thesis,
-    reasons: uniqueText(reasons).slice(0, 5),
-    risks: uniqueText(risks).slice(0, 5),
+    reasons: uniqueText([...reasons, ...safety.reasons]).slice(0, 5),
+    risks: uniqueText([...risks, ...safety.risks]).slice(0, 5),
     riskChecks: professionalRiskChecks(stock, price, research, position),
   };
 }
@@ -3680,19 +3872,21 @@ function decisionSafetyOverride(stock, price = {}, action, position = positionMe
   const buyLine = nullablePositiveNumber(price.buyLine1y);
   const targetBuyPrice = nullablePositiveNumber(stock.targetBuyPrice);
   if (action === "BUY" && current && targetBuyPrice && current > targetBuyPrice * 1.01) {
+    const gap = ((current - targetBuyPrice) / targetBuyPrice) * 100;
     return {
       action: stock.holding ? "HOLD" : "WATCH",
       thesis: `${stock.name}は買いたい価格を超えています。今すぐ買いではなく、入力した買値目安まで待つ判定にしました。`,
       reasons: ["事業や配当の確認材料は残る"],
-      risks: [`現在値が買いたい価格を上回っているため、追いかけ買いになりやすい`],
+      risks: [`現在値${formatYen(current)}は買いたい価格${formatYen(targetBuyPrice)}より${formatSignedPercent(gap)}高い`],
     };
   }
   if (action === "BUY" && current && buyLine && current > buyLine * 1.03) {
+    const gap = ((current - buyLine) / buyLine) * 100;
     return {
       action: stock.holding ? "HOLD" : "WATCH",
       thesis: `${stock.name}は過去1年の買い場ラインより高い位置です。買い候補ではなく、押し目待ちにしました。`,
       reasons: ["候補として監視する価値は残る"],
-      risks: ["現在値が買い場ラインを超えており、買値としては高い"],
+      risks: [`現在値${formatYen(current)}は買い場ライン${formatYen(buyLine)}より${formatSignedPercent(gap)}高い`],
     };
   }
   if (action === "BUY" && isHighChaseChart(price)) {
@@ -4248,7 +4442,11 @@ function normalizeSectorEvidence(value = []) {
 async function readAnalysisCache() {
   try {
     const cached = JSON.parse(await readFile(ANALYSIS_CACHE_PATH, "utf8"));
-    const analyses = Array.isArray(cached.analyses) ? cached.analyses : [];
+    const stocks = await readWatchlist().catch(() => []);
+    const bySymbol = new Map(stocks.map((stock) => [stock.symbol, stock]));
+    const analyses = Array.isArray(cached.analyses)
+      ? cached.analyses.map((analysis) => sanitizeCachedAnalysis(analysis, bySymbol.get(analysis.symbol))).filter(Boolean)
+      : [];
     return {
       generatedAt: cached.generatedAt || "",
       usedLmStudio: Boolean(cached.usedLmStudio),
@@ -4259,6 +4457,32 @@ async function readAnalysisCache() {
   } catch {
     return { generatedAt: "", usedLmStudio: false, warnings: [], analyses: [], sectorEvidence: [] };
   }
+}
+
+function sanitizeCachedAnalysis(analysis = {}, stock = null) {
+  const symbol = normalizeSymbol(analysis.symbol || stock?.symbol);
+  if (!symbol) return null;
+  const resolvedStock = stock || normalizeStock({
+    symbol,
+    name: analysis.name || symbol,
+    holding: Boolean(analysis.position?.quantity),
+  });
+  const price = analysis.price || {};
+  const position = positionMetrics(resolvedStock, price);
+  const initialAction = ["BUY", "HOLD", "SELL", "WATCH"].includes(analysis.action) ? analysis.action : "WATCH";
+  const safety = decisionSafetyOverride(resolvedStock, price, initialAction, position);
+  const action = safety.action;
+  return {
+    ...analysis,
+    symbol,
+    name: resolvedStock.name || analysis.name || symbol,
+    action,
+    thesis: safety.thesis || analysis.thesis || `${resolvedStock.name || symbol}は${actionLabels[action]}判定。`,
+    reasons: uniqueText([...asStringArray(analysis.reasons), ...safety.reasons]).slice(0, 5),
+    risks: uniqueText([...asStringArray(analysis.risks), ...safety.risks]).slice(0, 5),
+    position,
+    entryValue: evaluateEntryPrice(resolvedStock.targetBuyPrice, price),
+  };
 }
 
 async function saveAnalysisCache(result) {
@@ -4346,13 +4570,15 @@ async function saveCandidateHistory(history = {}) {
 }
 
 function normalizeCandidateHistoryItem(item = {}) {
-  const symbol = normalizeSymbol(item.symbol);
+  const symbol = normalizeDiscoverySymbol(item.symbol, item);
   const generatedAt = item.generatedAt || "";
   if (!symbol || !generatedAt) return null;
+  const currency = item.currency || (/\.T$/.test(symbol) ? "JPY" : "USD");
   return {
     id: String(item.id || `${generatedAt}:${symbol}`),
     generatedAt,
     symbol,
+    currency,
     name: String(item.name || symbol),
     sector: String(item.sector || "その他"),
     rank: Number(item.rank || 0),
@@ -4391,6 +4617,7 @@ async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
       id: `${generatedAt}:${candidate.symbol}`,
       generatedAt,
       symbol: candidate.symbol,
+      currency: candidate.currency || candidate.price?.currency || discoveryCurrency(candidate),
       name: candidate.name,
       sector: candidate.sector,
       rank: index + 1,
@@ -4532,7 +4759,7 @@ async function saveExcludedCandidates(candidates = []) {
 }
 
 async function addExcludedCandidate(candidate = {}) {
-  const symbol = normalizeSymbol(candidate.symbol);
+  const symbol = normalizeDiscoverySymbol(candidate.symbol, candidate);
   if (!symbol) throw new Error("非表示にする銘柄コードが見つかりません。");
   const current = await readExcludedCandidates();
   const next = current.filter((item) => item.symbol !== symbol);
@@ -4551,9 +4778,10 @@ async function removeExcludedCandidate(symbol) {
 }
 
 function normalizeExcludedCandidate(candidate = {}) {
-  const symbol = normalizeSymbol(candidate.symbol);
+  const symbol = normalizeDiscoverySymbol(candidate.symbol, candidate);
   return {
     symbol,
+    currency: candidate.currency || (/\.T$/.test(symbol) ? "JPY" : "USD"),
     name: String(candidate.name || symbol || "").trim(),
     sector: String(candidate.sector || "").trim(),
     reason: String(candidate.reason || "好みではない").trim(),
@@ -4811,6 +5039,7 @@ async function saveSettings(settings) {
 
 function normalizeSettings(settings = {}) {
   const provider = String(settings.searchProvider || "searxng").toLowerCase() === "google" ? "google" : "searxng";
+  const unitBudgetUnlimited = settings.unitBudgetUnlimited === true;
   return {
     searchProvider: provider,
     searxngUrl: normalizeUrl(settings.searxngUrl) || defaultSettings.searxngUrl,
@@ -4820,7 +5049,11 @@ function normalizeSettings(settings = {}) {
     lmStudioUrl: normalizeUrl(settings.lmStudioUrl) || defaultSettings.lmStudioUrl,
     lmStudioTimeoutMs: clamp(Number(settings.lmStudioTimeoutMs || defaultSettings.lmStudioTimeoutMs), 5000, 300000),
     unitSize: clamp(Number(settings.unitSize || defaultSettings.unitSize), 1, 1000),
-    unitBudget: clamp(Number(settings.unitBudget || defaultSettings.unitBudget), 10000, 10000000),
+    unitBudget: unitBudgetUnlimited ? null : clamp(Number(settings.unitBudget || defaultSettings.unitBudget), 10000, 10000000),
+    unitBudgetUnlimited,
+    websiteLimit: clamp(Number(settings.websiteLimit || defaultSettings.websiteLimit), 1, 20),
+    depthLimit: clamp(Number(settings.depthLimit || defaultSettings.depthLimit), 1, 20),
+    pagesPerSite: clamp(Number(settings.pagesPerSite || defaultSettings.pagesPerSite), 1, 20),
     dailyDiscoveryEnabled: settings.dailyDiscoveryEnabled !== false,
     dailyDiscoveryHour: clamp(Number(settings.dailyDiscoveryHour ?? defaultSettings.dailyDiscoveryHour), 0, 23),
     hourlyRefreshEnabled: settings.hourlyRefreshEnabled !== false,
@@ -4849,7 +5082,11 @@ function applySettingsPatch(current, body = {}) {
   if (typeof body.lmStudioUrl === "string" && body.lmStudioUrl.trim()) next.lmStudioUrl = body.lmStudioUrl;
   if (body.lmStudioTimeoutMs) next.lmStudioTimeoutMs = body.lmStudioTimeoutMs;
   if (body.unitSize) next.unitSize = body.unitSize;
-  if (body.unitBudget) next.unitBudget = body.unitBudget;
+  if (body.unitBudget !== undefined) next.unitBudget = body.unitBudget;
+  if (typeof body.unitBudgetUnlimited === "boolean") next.unitBudgetUnlimited = body.unitBudgetUnlimited;
+  if (body.websiteLimit !== undefined) next.websiteLimit = body.websiteLimit;
+  if (body.depthLimit !== undefined) next.depthLimit = body.depthLimit;
+  if (body.pagesPerSite !== undefined) next.pagesPerSite = body.pagesPerSite;
   if (typeof body.dailyDiscoveryEnabled === "boolean") next.dailyDiscoveryEnabled = body.dailyDiscoveryEnabled;
   if (body.dailyDiscoveryHour !== undefined) next.dailyDiscoveryHour = body.dailyDiscoveryHour;
   if (typeof body.hourlyRefreshEnabled === "boolean") next.hourlyRefreshEnabled = body.hourlyRefreshEnabled;
@@ -4878,6 +5115,10 @@ function publicSettings(settings) {
     lmStudioTimeoutMs: settings.lmStudioTimeoutMs,
     unitSize: settings.unitSize,
     unitBudget: settings.unitBudget,
+    unitBudgetUnlimited: settings.unitBudgetUnlimited === true,
+    websiteLimit: settings.websiteLimit,
+    depthLimit: settings.depthLimit,
+    pagesPerSite: settings.pagesPerSite,
     dailyDiscoveryEnabled: settings.dailyDiscoveryEnabled,
     dailyDiscoveryHour: settings.dailyDiscoveryHour,
     hourlyRefreshEnabled: settings.hourlyRefreshEnabled,
@@ -4899,7 +5140,8 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
   const settings = await readSettings();
   const provider = settings.searchProvider === "searxng" ? "SearXNG" : "Google";
   const unitSize = budget.unitSize || settings.unitSize;
-  const unitBudget = budget.unitBudget || settings.unitBudget;
+  const unitBudgetUnlimited = budget.unitBudgetUnlimited === true || settings.unitBudgetUnlimited === true;
+  const unitBudget = unitBudgetUnlimited ? null : (budget.unitBudget || settings.unitBudget);
   return {
     provider,
     searchConfigured: settings.searchProvider === "searxng"
@@ -4919,8 +5161,13 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     peCriteria: PE_CRITERIA.filter((item) => item.weight > 0).map((item) => item.label),
     unitSize,
     unitBudget,
+    unitBudgetUnlimited,
+    usUnitSize: US_DISCOVERY_UNIT_SIZE,
+    usUnitBudget: US_DISCOVERY_UNIT_BUDGET,
+    jpCandidatePool: budget.jpCandidatePool || 0,
+    usCandidatePool: budget.usCandidatePool || 0,
     priceSource: "Yahoo Finance 5年日足",
-    universe: budget.fullScan ? "東証プライム全銘柄" : "事業好調・割安候補リスト",
+    universe: budget.fullScan ? "東証プライム全銘柄 + 米国大型株候補" : "事業好調・割安候補リスト",
   };
 }
 
@@ -5185,6 +5432,16 @@ function normalizeUsSymbol(value = "") {
   const symbol = String(value).trim().toUpperCase();
   if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) return "";
   return symbol;
+}
+
+function normalizeDiscoverySymbol(value = "", context = {}) {
+  const symbol = String(value || "").trim().toUpperCase();
+  if (!symbol) return "";
+  if (/^\d{4}(?:\.T)?$/.test(symbol)) return normalizeSymbol(symbol);
+  if (context.currency === "USD" || ["NYSE", "NASDAQ", "AMEX"].includes(String(context.market || "").toUpperCase()) || /^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) {
+    return normalizeUsSymbol(symbol);
+  }
+  return normalizeSymbol(symbol);
 }
 
 function normalizeUrl(value = "") {

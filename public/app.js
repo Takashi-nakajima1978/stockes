@@ -130,6 +130,7 @@ const els = {
   settingsLmStudioTimeoutMs: document.getElementById("settingsLmStudioTimeoutMs"),
   settingsUnitSize: document.getElementById("settingsUnitSize"),
   settingsUnitBudget: document.getElementById("settingsUnitBudget"),
+  settingsUnitBudgetUnlimited: document.getElementById("settingsUnitBudgetUnlimited"),
   settingsDailyDiscoveryEnabled: document.getElementById("settingsDailyDiscoveryEnabled"),
   settingsDailyDiscoveryHour: document.getElementById("settingsDailyDiscoveryHour"),
   settingsHourlyRefreshEnabled: document.getElementById("settingsHourlyRefreshEnabled"),
@@ -257,6 +258,11 @@ function applySettings(settings = {}) {
   if (els.settingsLmStudioTimeoutMs) els.settingsLmStudioTimeoutMs.value = settings.lmStudioTimeoutMs || 180000;
   if (els.settingsUnitSize) els.settingsUnitSize.value = settings.unitSize || 100;
   if (els.settingsUnitBudget) els.settingsUnitBudget.value = settings.unitBudget || 300000;
+  if (els.settingsUnitBudgetUnlimited) els.settingsUnitBudgetUnlimited.checked = settings.unitBudgetUnlimited === true;
+  if (els.settingsUnitBudget) els.settingsUnitBudget.disabled = settings.unitBudgetUnlimited === true;
+  if (els.websiteLimit) els.websiteLimit.value = settings.websiteLimit || 10;
+  if (els.depthLimit) els.depthLimit.value = settings.depthLimit || 2;
+  if (els.pagesPerSite) els.pagesPerSite.value = settings.pagesPerSite || 2;
   if (els.settingsDailyDiscoveryEnabled) els.settingsDailyDiscoveryEnabled.checked = settings.dailyDiscoveryEnabled !== false;
   if (els.settingsDailyDiscoveryHour) els.settingsDailyDiscoveryHour.value = Number.isFinite(settings.dailyDiscoveryHour) ? settings.dailyDiscoveryHour : 7;
   if (els.settingsHourlyRefreshEnabled) els.settingsHourlyRefreshEnabled.checked = settings.hourlyRefreshEnabled !== false;
@@ -699,6 +705,17 @@ function renderUsDetail() {
     ${usPositionEditor(stock, position, analysis?.price)}
     <section class="decision-card">
       <div>
+        <h4>3年チャート</h4>
+        <span>${escapeHtml(stock.symbol)}</span>
+      </div>
+      <div class="chart-frame embedded-chart">
+        <canvas data-us-price-chart aria-label="${escapeAttr(stock.name)}の3年チャート"></canvas>
+        <div class="chart-tooltip" data-us-chart-tooltip hidden></div>
+      </div>
+      <div class="chart-timing" data-us-chart-timing hidden></div>
+    </section>
+    <section class="decision-card">
+      <div>
         <h4>AI確認</h4>
         ${usStanceBadge(ai)}
       </div>
@@ -727,6 +744,7 @@ function renderUsDetail() {
     </section>
   `;
   attachUsPositionForm(stock.symbol);
+  renderEmbeddedPriceChart(els.usDetail, analysis?.price?.series || [], usd);
 }
 
 function portfolioSummary() {
@@ -1249,9 +1267,202 @@ function hideChartTooltip() {
   if (els.chartTooltip) els.chartTooltip.hidden = true;
 }
 
+function renderEmbeddedPriceChart(root, series = [], formatter = yen) {
+  const canvas = root?.querySelector("[data-us-price-chart]");
+  const tooltip = root?.querySelector("[data-us-chart-tooltip]");
+  const timingNode = root?.querySelector("[data-us-chart-timing]");
+  if (!canvas) return;
+  const state = { series: [], points: [], plot: null, hoverIndex: null };
+
+  const draw = () => {
+    const context = canvas.getContext("2d");
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const cssHeight = Number.parseFloat(getComputedStyle(canvas).height) || 230;
+    canvas.width = Math.max(320, Math.floor(rect.width * dpr));
+    canvas.height = Math.floor(cssHeight * dpr);
+    context.scale(dpr, dpr);
+    const width = canvas.width / dpr;
+    const height = canvas.height / dpr;
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    const pad = { top: 22, right: 18, bottom: 28, left: 64 };
+    const cleanSeries = (series || [])
+      .map((point) => ({ date: point.date, close: Number(point.close) }))
+      .filter((point) => point.date && Number.isFinite(point.close));
+    state.series = cleanSeries;
+    state.points = [];
+    state.plot = null;
+    if (cleanSeries.length < 2) {
+      context.fillStyle = "#667277";
+      context.font = "13px system-ui";
+      context.fillText("価格データなし", pad.left, 46);
+      if (tooltip) tooltip.hidden = true;
+      renderEmbeddedChartTiming(timingNode, null, formatter);
+      return;
+    }
+    const values = cleanSeries.map((point) => point.close);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const span = max - min || 1;
+    const x = (index) => pad.left + (index / (cleanSeries.length - 1)) * (width - pad.left - pad.right);
+    const y = (value) => pad.top + (1 - ((value - min) / span)) * (height - pad.top - pad.bottom);
+    state.plot = { left: pad.left, right: width - pad.right, top: pad.top, bottom: height - pad.bottom };
+
+    context.strokeStyle = "#dbe2e4";
+    context.lineWidth = 1;
+    for (let i = 0; i < 4; i += 1) {
+      const gy = pad.top + (i / 3) * (height - pad.top - pad.bottom);
+      context.beginPath();
+      context.moveTo(pad.left, gy);
+      context.lineTo(width - pad.right, gy);
+      context.stroke();
+    }
+
+    const timing = buyTimingFromSeries(cleanSeries, formatter);
+    if (timing?.buyLine) {
+      const buyY = y(timing.buyLine);
+      context.fillStyle = "rgba(11, 107, 88, 0.08)";
+      context.fillRect(pad.left, buyY, width - pad.left - pad.right, Math.max(0, height - pad.bottom - buyY));
+      context.strokeStyle = "rgba(11, 107, 88, 0.35)";
+      context.setLineDash([5, 5]);
+      context.beginPath();
+      context.moveTo(pad.left, buyY);
+      context.lineTo(width - pad.right, buyY);
+      context.stroke();
+      context.setLineDash([]);
+      context.fillStyle = "#0b6b58";
+      context.font = "11px system-ui";
+      context.fillText("1年の買い場", Math.max(pad.left + 4, width - 112), Math.max(pad.top + 12, buyY - 6));
+    }
+    if (timing?.sellLine) {
+      const sellY = y(timing.sellLine);
+      context.strokeStyle = "rgba(171, 58, 64, 0.38)";
+      context.setLineDash([6, 5]);
+      context.beginPath();
+      context.moveTo(pad.left, sellY);
+      context.lineTo(width - pad.right, sellY);
+      context.stroke();
+      context.setLineDash([]);
+    }
+
+    context.strokeStyle = "#0b6b58";
+    context.lineWidth = 2.5;
+    context.beginPath();
+    cleanSeries.forEach((point, index) => {
+      const px = x(index);
+      const py = y(point.close);
+      if (index === 0) context.moveTo(px, py);
+      else context.lineTo(px, py);
+    });
+    context.stroke();
+    context.fillStyle = "#1a2428";
+    context.font = "12px system-ui";
+    context.fillText("3年", pad.left, 16);
+    context.fillText(formatter(max), 8, pad.top + 4);
+    context.fillText(formatter(min), 8, height - pad.bottom + 4);
+    state.points = cleanSeries.map((point, index) => ({ index, point, x: x(index), y: y(point.close) }));
+
+    if (Number.isFinite(state.hoverIndex)) {
+      const hovered = state.points[state.hoverIndex];
+      if (hovered) {
+        context.strokeStyle = "rgba(26, 36, 40, 0.35)";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(hovered.x, pad.top);
+        context.lineTo(hovered.x, height - pad.bottom);
+        context.stroke();
+        context.fillStyle = "#ffffff";
+        context.strokeStyle = "#0b6b58";
+        context.lineWidth = 2;
+        context.beginPath();
+        context.arc(hovered.x, hovered.y, 4.5, 0, Math.PI * 2);
+        context.fill();
+        context.stroke();
+        positionEmbeddedTooltip(canvas, tooltip, hovered, formatter);
+      }
+    }
+    renderEmbeddedChartTiming(timingNode, timing, formatter);
+  };
+
+  canvas.addEventListener("mousemove", (event) => {
+    if (!state.points.length || !state.plot) return;
+    const rect = canvas.getBoundingClientRect();
+    const px = event.clientX - rect.left;
+    const py = event.clientY - rect.top;
+    if (px < state.plot.left || px > state.plot.right || py < state.plot.top - 12 || py > state.plot.bottom + 12) {
+      state.hoverIndex = null;
+      if (tooltip) tooltip.hidden = true;
+      draw();
+      return;
+    }
+    let nearest = state.points[0];
+    let best = Math.abs(nearest.x - px);
+    for (const point of state.points) {
+      const distance = Math.abs(point.x - px);
+      if (distance < best) {
+        nearest = point;
+        best = distance;
+      }
+    }
+    state.hoverIndex = nearest.index;
+    draw();
+  });
+  canvas.addEventListener("mouseleave", () => {
+    state.hoverIndex = null;
+    if (tooltip) tooltip.hidden = true;
+    draw();
+  });
+  draw();
+}
+
+function positionEmbeddedTooltip(canvas, tooltip, point, formatter) {
+  if (!tooltip || !canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  tooltip.hidden = false;
+  tooltip.innerHTML = `
+    <strong>${escapeHtml(formatDate(point.point.date))}</strong>
+    <span>${formatter(point.point.close)}</span>
+  `;
+  const width = tooltip.offsetWidth || 120;
+  const left = Math.min(Math.max(point.x, width / 2 + 6), rect.width - width / 2 - 6);
+  const top = Math.max(12, point.y - 12);
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+}
+
+function renderEmbeddedChartTiming(node, timing, formatter) {
+  if (!node) return;
+  if (!timing) {
+    node.hidden = true;
+    node.innerHTML = "";
+    return;
+  }
+  node.hidden = false;
+  node.className = `chart-timing ${timing.statusClass}`;
+  const periods = timing.periods.length
+    ? timing.periods.map((period) => `<span>${escapeHtml(period.label)}</span>`).join("")
+    : timing.months.map((month) => `<span>${escapeHtml(month)}</span>`).join("");
+  node.innerHTML = `
+    <div>
+      <strong>1年の買い時</strong>
+      <span>${escapeHtml(timing.status)}</span>
+    </div>
+    <p>${escapeHtml(timing.summary)}</p>
+    <div class="timing-grid">
+      <span><strong>買い場ライン</strong>${formatter(timing.buyLine)}</span>
+      <span><strong>売り場ライン</strong>${formatter(timing.sellLine)}</span>
+      <span><strong>最安日</strong>${escapeHtml(formatDate(timing.low.date))} ${formatter(timing.low.close)}</span>
+      <span><strong>今との差</strong>${signedPct(timing.currentGapFromBuyLine)}</span>
+      <span><strong>安かった時期</strong>${periods || "<em>-</em>"}</span>
+    </div>
+  `;
+}
+
 function renderChartTiming(price) {
   if (!els.chartTiming) return;
-  const timing = buyTimingFromSeries(price?.series || []);
+  const timing = buyTimingFromSeries(price?.series || [], yen);
   if (!timing) {
     els.chartTiming.hidden = true;
     els.chartTiming.innerHTML = "";
@@ -1278,7 +1489,7 @@ function renderChartTiming(price) {
   `;
 }
 
-function buyTimingFromSeries(series = []) {
+function buyTimingFromSeries(series = [], formatter = yen) {
   const clean = (series || [])
     .map((point) => ({ date: point.date, close: Number(point.close) }))
     .filter((point) => point.date && Number.isFinite(point.close))
@@ -1330,7 +1541,7 @@ function buyTimingFromSeries(series = []) {
   const periodText = periods.length
     ? periods.map((period) => period.label).join("、")
     : months.join("、");
-  const summary = `過去1年では ${periodText || "安値圏"} が買いやすい時期でした。${phrase} 目安は ${yen(buyLine)} 以下、直近は ${yen(latest.close)} です。`;
+  const summary = `過去1年では ${periodText || "安値圏"} が買いやすい時期でした。${phrase} 目安は ${formatter(buyLine)} 以下、直近は ${formatter(latest.close)} です。`;
   return {
     buyLine,
     deepLine,
@@ -1527,7 +1738,7 @@ async function analyzeUs() {
   try {
     const payload = await request("/api/us-analyze", {
       method: "POST",
-      body: JSON.stringify({ websiteLimit: 5 }),
+      body: JSON.stringify({ websiteLimit: clampInput(els.websiteLimit) }),
     });
     state.usAnalyses = Object.fromEntries((payload.analyses || []).map((item) => [item.symbol, item]));
     state.usSummary = payload.summary || null;
@@ -1604,6 +1815,7 @@ async function discover() {
         websiteLimit: clampInput(els.websiteLimit),
         unitSize: valueOrNull(els.settingsUnitSize?.value) || 100,
         unitBudget: valueOrNull(els.settingsUnitBudget?.value) || 300000,
+        unitBudgetUnlimited: els.settingsUnitBudgetUnlimited?.checked === true,
       }),
     });
     const added = payload.added || [];
@@ -2211,10 +2423,15 @@ function renderCandidateList() {
   }
   if (state.sourceSummary) {
     const source = state.sourceSummary;
-    const budgetText = `${source.unitSize || 100}株で${yen(source.unitBudget || 300000)}くらい`;
-    const discoveryText = source.discoveredCount > 0
-      ? `検索結果から${source.discoveredCount}銘柄を拾い、全${source.candidatePool || source.candidateLimit}銘柄から`
-      : `${source.universe}から`;
+    const budgetText = source.unitBudgetUnlimited
+      ? `${source.unitSize || 100}株・予算上限なし`
+      : `${source.unitSize || 100}株で${yen(source.unitBudget || 300000)}くらい`;
+    const usBudgetText = `${source.usUnitSize || 1}株で${usd(source.usUnitBudget || 2000)}くらい`;
+    const totalPool = source.candidatePool || source.candidateLimit || 0;
+    const jpPool = Number.isFinite(source.jpCandidatePool) ? source.jpCandidatePool : totalPool;
+    const usPool = Number.isFinite(source.usCandidatePool) ? source.usCandidatePool : 0;
+    const poolText = `採点対象は日本${jpPool}件・米国${usPool}件、合計${totalPool}件です。`;
+    const discoveryText = `検索結果から銘柄コードとして拾えたのは${source.discoveredCount || 0}件です。検索抽出が少なくても、銘柄一覧は別で全件採点しています。`;
     const aiText = source.usedDiscoveryAi ? "最後にLM Studioで上位候補を再点検しています。" : "LM Studio再点検は未実行です。";
     const positionText = source.searchPositionUsed ? "検索順位に出る業績・割安材料も採点しています。" : "";
     const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
@@ -2229,8 +2446,8 @@ function renderCandidateList() {
       : `表示候補は${state.suggestions.length}件です。`;
     const excludedText = source.excludedCount ? `非表示は${source.excludedCount}件です。` : "";
     els.suggestionSource.textContent = source.searchCount > 0
-      ? `${source.provider}で${source.searchCount}件確認し、${discoveryText}${source.candidateLimit}銘柄を採点しました。${countText}${excludedText}条件は${budgetText}、価格は${source.priceSource}です。${strictText}${avoidText}${positionText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
-      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。候補は${budgetText}で買える範囲、${source.priceSource}、${source.universe}を中心に採点しています。${strictText}${countText}${excludedText}`;
+      ? `${source.provider}で${source.searchCount}件確認しました。${discoveryText}${poolText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${avoidText}${positionText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
+      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${poolText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${countText}${excludedText}`;
   }
   if (!state.suggestions.length) {
     els.candidateList.classList.add("empty-state");
@@ -2316,29 +2533,36 @@ function suggestionItem(item, index) {
   const risks = (item.risks || []).map((text) => `<span class="risk">${escapeHtml(text)}</span>`).join("");
   const price = item.price || {};
   const process = item.process || {};
+  const currency = candidateCurrency(item);
+  const money = (value) => candidateMoney(value, currency);
+  const target = candidateTarget(item);
   const evidence = (item.businessEvidence || []).map((source) => `
     <a href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.source || source.title || "source")}</a>
   `).join("");
-  const exists = state.stocks.some((stock) => stock.symbol === item.symbol);
-  const full = state.stocks.length >= MANAGED_STOCK_LIMIT;
+  const exists = target === "us"
+    ? state.usStocks.some((stock) => stock.symbol === item.symbol)
+    : state.stocks.some((stock) => stock.symbol === item.symbol);
+  const full = target === "us" ? state.usStocks.length >= 40 : state.stocks.length >= MANAGED_STOCK_LIMIT;
   const disabled = exists || full ? "disabled" : "";
-  const buttonText = exists ? "追加済み" : full ? `${MANAGED_STOCK_LIMIT}件満了` : "管理に追加";
+  const buttonText = exists ? "追加済み" : full ? "管理枠満了" : target === "us" ? "米国株に追加" : "日本株に追加";
+  const marketLabel = target === "us" ? "米国株" : "日本株";
+  const priority = Number.isFinite(item.pePriorityScore) ? item.pePriorityScore : null;
   return `
     <article class="suggestion-item">
       <div class="suggestion-head">
         <div>
           <strong>${index + 1}. ${escapeHtml(item.name)}</strong>
-          <span>${escapeHtml(item.symbol)} / ${escapeHtml(item.sector || "その他")} / ${escapeHtml(item.evidenceQuality || item.discoverySource || "価格中心")}</span>
+          <span>${escapeHtml(item.symbol)} / ${escapeHtml(marketLabel)} / ${escapeHtml(item.sector || "その他")} / ${escapeHtml(item.evidenceQuality || item.discoverySource || "価格中心")}</span>
         </div>
         <div class="suggestion-actions">
-          <span class="suggestion-score">${escapeHtml(item.rankLabel || "候補")} ${Number.isFinite(item.businessValueScore) ? item.businessValueScore : item.score || "-"}</span>
+          <span class="suggestion-score">${escapeHtml(item.rankLabel || "候補")} ${Number.isFinite(item.businessValueScore) ? item.businessValueScore : item.score || "-"}${priority ? ` / PE優先 ${priority}` : ""}</span>
           <button type="button" class="secondary" data-add-suggestion="${escapeAttr(item.symbol)}" ${disabled}>${buttonText}</button>
           <button type="button" class="secondary subtle-danger" data-hide-suggestion="${escapeAttr(item.symbol)}">出さない</button>
         </div>
       </div>
       <div class="suggestion-metrics">
-        <span><strong>価格</strong>${yen(price.current)}</span>
-        <span><strong>${Number.isFinite(item.unitSize) ? item.unitSize : 100}株</strong>${yen(price.unitAmount)}</span>
+        <span><strong>価格</strong>${money(price.current)}</span>
+        <span><strong>${Number.isFinite(item.unitSize) ? item.unitSize : target === "us" ? 1 : 100}株</strong>${money(price.unitAmount)}</span>
         <span><strong>3年目安</strong>${trendGapBadge(price.distanceFromTrend3y)}</span>
         <span><strong>1年買い場</strong>${buyTimingBadge(price)}</span>
         <span><strong>3カ月</strong>${pct(price.return3m)}</span>
@@ -2347,8 +2571,8 @@ function suggestionItem(item, index) {
         <span><strong>配当</strong>${Number.isFinite(price.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
         <span><strong>検索順位</strong>${item.searchPosition?.rank ? `${item.searchPosition.rank}位` : "-"}</span>
       </div>
-      ${buyPlanHtml(item.buyPlan)}
-      ${sellPlanHtml(item.sellPlan)}
+      ${buyPlanHtml(item.buyPlan, item)}
+      ${sellPlanHtml(item.sellPlan, item)}
       ${peSignalHtml(item.peSignal)}
       ${learningHtml(item.learning)}
       ${aiReviewHtml(item.aiReview)}
@@ -2359,12 +2583,26 @@ function suggestionItem(item, index) {
   `;
 }
 
-function sellPlanHtml(plan) {
+function candidateTarget(item = {}) {
+  if (item.targetCollection === "us" || item.currency === "USD" || item.price?.currency === "USD") return "us";
+  return "jp";
+}
+
+function candidateCurrency(item = {}) {
+  return candidateTarget(item) === "us" ? "USD" : "JPY";
+}
+
+function candidateMoney(value, currency = "JPY") {
+  return currency === "USD" ? usd(value) : yen(value);
+}
+
+function sellPlanHtml(plan, item = {}) {
   if (!plan?.targetPrice && !plan?.stopPrice) return "";
+  const money = (value) => candidateMoney(value, candidateCurrency(item));
   return `
     <div class="sell-plan">
-      <span><strong>売り場ライン</strong>${yen(plan.targetPrice)}</span>
-      <span><strong>確認ライン</strong>${yen(plan.stopPrice)}</span>
+      <span><strong>売り場ライン</strong>${money(plan.targetPrice)}</span>
+      <span><strong>確認ライン</strong>${money(plan.stopPrice)}</span>
       <p>${escapeHtml(plan.summary || "")}</p>
     </div>
   `;
@@ -2420,9 +2658,12 @@ function aiReviewHtml(review) {
   `;
 }
 
-function buyPlanHtml(plan) {
+function buyPlanHtml(plan, item = {}) {
   if (!plan) return "";
   const checks = (plan.checks || []).map((text) => `<span>${escapeHtml(text)}</span>`).join("");
+  const currency = candidateCurrency(item);
+  const unitLabel = candidateTarget(item) === "us" ? "1株" : "1単元";
+  const money = (value) => candidateMoney(value, currency);
   return `
     <div class="buy-plan">
       <div>
@@ -2431,8 +2672,8 @@ function buyPlanHtml(plan) {
       </div>
       <div class="buy-plan-price">
         <span>${escapeHtml(plan.stance || "検討")}</span>
-        <strong>${yen(plan.maxBuyPrice)}</strong>
-        <small>${Number.isFinite(plan.unitAmountAtMax) ? `${yen(plan.unitAmountAtMax)} / 1単元` : ""}</small>
+        <strong>${money(plan.maxBuyPrice)}</strong>
+        <small>${Number.isFinite(plan.unitAmountAtMax) ? `${money(plan.unitAmountAtMax)} / ${unitLabel}` : ""}</small>
       </div>
       <div class="buy-plan-checks">${checks}</div>
     </div>
@@ -2466,8 +2707,9 @@ function attachSuggestionButtons() {
     button.addEventListener("click", async () => {
       const suggestion = state.suggestions.find((item) => item.symbol === button.dataset.addSuggestion);
       if (!suggestion) return;
+      const target = candidateTarget(suggestion);
       try {
-        const payload = await request("/api/stocks", {
+        const payload = await request(target === "us" ? "/api/us-stocks" : "/api/stocks", {
           method: "POST",
           body: JSON.stringify({
             name: suggestion.name,
@@ -2478,8 +2720,15 @@ function attachSuggestionButtons() {
             holding: false,
           }),
         });
-        state.stocks = payload.stocks;
-        toast(`${suggestion.name}を管理銘柄に追加しました。`);
+        if (target === "us") {
+          state.usStocks = payload.stocks || state.usStocks;
+          state.usSelected = suggestion.symbol;
+          toast(`${suggestion.name}を米国株に追加しました。`);
+        } else {
+          state.stocks = payload.stocks || state.stocks;
+          state.selected = suggestion.symbol;
+          toast(`${suggestion.name}を日本株に追加しました。`);
+        }
         render();
       } catch (error) {
         toast(error.message);
@@ -2497,6 +2746,8 @@ function attachSuggestionButtons() {
             symbol: suggestion.symbol,
             name: suggestion.name,
             sector: suggestion.sector,
+            market: suggestion.market,
+            currency: suggestion.currency || suggestion.price?.currency,
           }),
         });
         state.suggestions = payload.suggestions || state.suggestions.filter((item) => item.symbol !== suggestion.symbol);
@@ -2751,6 +3002,10 @@ els.settingsForm.addEventListener("submit", async (event) => {
         lmStudioTimeoutMs: valueOrNull(els.settingsLmStudioTimeoutMs.value),
         unitSize: valueOrNull(els.settingsUnitSize.value),
         unitBudget: valueOrNull(els.settingsUnitBudget.value),
+        unitBudgetUnlimited: els.settingsUnitBudgetUnlimited?.checked === true,
+        websiteLimit: clampInput(els.websiteLimit),
+        depthLimit: clampInput(els.depthLimit),
+        pagesPerSite: clampInput(els.pagesPerSite),
         dailyDiscoveryEnabled: els.settingsDailyDiscoveryEnabled?.checked === true,
         dailyDiscoveryHour: valueOrZero(els.settingsDailyDiscoveryHour?.value),
         hourlyRefreshEnabled: els.settingsHourlyRefreshEnabled?.checked === true,
@@ -2786,6 +3041,10 @@ els.settingsForm.addEventListener("submit", async (event) => {
   } catch (error) {
     toast(error.message);
   }
+});
+
+els.settingsUnitBudgetUnlimited?.addEventListener("change", () => {
+  if (els.settingsUnitBudget) els.settingsUnitBudget.disabled = els.settingsUnitBudgetUnlimited.checked;
 });
 
 els.viewButtons.forEach((button) => {
