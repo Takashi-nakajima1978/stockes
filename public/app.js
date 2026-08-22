@@ -2468,7 +2468,7 @@ function renderCandidateList() {
       : `表示候補は${state.suggestions.length}件です。`;
     const excludedText = source.excludedCount ? `非表示は${source.excludedCount}件です。` : "";
     els.suggestionSource.textContent = source.settingsChanged
-      ? `${source.message || "調査条件が変わりました。候補を探すで現在の条件に合わせて作り直してください。"}現在の日本株条件は${budgetText}、米国株条件は${usBudgetText}です。候補は自動追加されません。`
+      ? `${source.message || "調査条件または採点ルールが変わりました。候補を探すで現在の条件に合わせて作り直してください。"}現在の日本株条件は${budgetText}、米国株条件は${usBudgetText}です。候補は自動追加されません。`
       : source.searchCount > 0
       ? `${source.provider}で${source.searchCount}件確認しました。${discoveryText}${poolText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${avoidText}${positionText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
       : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${poolText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${countText}${excludedText}`;
@@ -2570,7 +2570,6 @@ function suggestionItem(item, index) {
   const disabled = exists || full ? "disabled" : "";
   const buttonText = exists ? "追加済み" : full ? "管理枠満了" : target === "us" ? "米国株に追加" : "日本株に追加";
   const marketLabel = target === "us" ? "米国株" : "日本株";
-  const priority = Number.isFinite(item.pePriorityScore) ? item.pePriorityScore : null;
   return `
     <article class="suggestion-item">
       <div class="suggestion-head">
@@ -2579,7 +2578,7 @@ function suggestionItem(item, index) {
           <span>${escapeHtml(item.symbol)} / ${escapeHtml(marketLabel)} / ${escapeHtml(item.sector || "その他")} / ${escapeHtml(item.evidenceQuality || item.discoverySource || "価格中心")}</span>
         </div>
         <div class="suggestion-actions">
-          <span class="suggestion-score">${escapeHtml(item.rankLabel || "候補")} ${Number.isFinite(item.businessValueScore) ? item.businessValueScore : item.score || "-"}${priority ? ` / PE優先 ${priority}` : ""}</span>
+          ${suggestionScoreHtml(item)}
           <button type="button" class="secondary" data-add-suggestion="${escapeAttr(item.symbol)}" ${disabled}>${buttonText}</button>
           <button type="button" class="secondary subtle-danger" data-hide-suggestion="${escapeAttr(item.symbol)}">出さない</button>
         </div>
@@ -2605,6 +2604,21 @@ function suggestionItem(item, index) {
       <div class="suggestion-evidence ${evidence ? "" : "muted"}"><strong>確認元</strong>${evidence || "<span>業績材料は未確認</span>"}</div>
     </article>
   `;
+}
+
+function suggestionScoreHtml(item = {}) {
+  const valueScore = Number.isFinite(item.businessValueScore) ? item.businessValueScore : item.score || "-";
+  const priority = Number.isFinite(item.priorityScore) ? item.priorityScore : null;
+  const peScore = Number.isFinite(item.peSignal?.matchScore) ? item.peSignal.matchScore : null;
+  const peLabel = peScore === null
+    ? ""
+    : peScore >= 70
+    ? ` / PE高 ${peScore}`
+    : peScore >= 45
+    ? ` / PE中 ${peScore}`
+    : ` / PE薄 ${peScore}`;
+  const priorityText = priority === null ? "" : ` / 総合 ${priority}`;
+  return `<span class="suggestion-score">${escapeHtml(item.rankLabel || "候補")} ${valueScore}${priorityText}${peLabel}</span>`;
 }
 
 function candidateTarget(item = {}) {

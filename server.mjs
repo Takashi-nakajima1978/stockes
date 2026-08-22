@@ -23,6 +23,7 @@ const MAX_MANAGED_STOCKS = 50;
 const MAX_US_STOCKS = 40;
 const MAX_DISCOVERY_SUGGESTIONS = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
+const DISCOVERY_SCORING_VERSION = 2;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
@@ -1489,7 +1490,7 @@ async function discoverStocks(options = {}, job = null) {
       suggestions = suggestions
         .map((candidate) => applyDiscoveryAiReview(candidate, aiReviewBySymbol.get(candidate.symbol)))
         .filter(isActionableDiscoveryCandidate)
-        .sort((a, b) => pePriorityScore(b) - pePriorityScore(a) || b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
+        .sort((a, b) => discoveryPriorityScore(b) - discoveryPriorityScore(a) || b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
         .slice(0, MAX_DISCOVERY_SUGGESTIONS);
     }
   } catch {
@@ -1552,12 +1553,16 @@ function topDiscoverySuggestions(candidates = []) {
   return candidates
     .filter((candidate) => candidate && candidate.evidenceQuality !== "悪材料あり")
     .filter(isActionableDiscoveryCandidate)
-    .sort((a, b) => pePriorityScore(b) - pePriorityScore(a) || b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
-    .map((candidate) => ({ ...candidate, pePriorityScore: pePriorityScore(candidate) }))
+    .sort((a, b) => discoveryPriorityScore(b) - discoveryPriorityScore(a) || b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
+    .map((candidate) => ({
+      ...candidate,
+      priorityScore: discoveryPriorityScore(candidate),
+      pePriorityScore: pePriorityScore(candidate),
+    }))
     .slice(0, MAX_DISCOVERY_SUGGESTIONS);
 }
 
-function pePriorityScore(candidate = {}) {
+function discoveryPriorityScore(candidate = {}) {
   const pe = Number(candidate.peSignal?.matchScore || 0);
   const value = Number(candidate.businessValueScore || candidate.score || 0);
   const current = nullablePositiveNumber(candidate.price?.current);
@@ -1571,7 +1576,33 @@ function pePriorityScore(candidate = {}) {
   const buyLineBonus = current && buyLine && current <= buyLine * 1.005 ? 18 : 0;
   const planBonus = current && buyPlan && current <= buyPlan * STRICT_BUY_TARGET_TOLERANCE ? 14 : 0;
   const currencyBonus = isUsDiscoveryCandidate(candidate) ? 2 : 0;
-  return Math.round((pe * 1.15) + (value * 0.6) + timingBonus + buyLineBonus + planBonus + currencyBonus);
+  const peTierBonus = pe >= 70 ? 300 : pe >= 45 ? 180 : 0;
+  const nonPeWeight = pe >= 45 ? 0.6 : 0.15;
+  const timingWeight = pe >= 45 ? 1 : 0.25;
+  return Math.round(
+    peTierBonus
+    + (pe * 1.4)
+    + (value * nonPeWeight)
+    + ((timingBonus + buyLineBonus + planBonus) * timingWeight)
+    + currencyBonus,
+  );
+}
+
+function pePriorityScore(candidate = {}) {
+  const pe = Number(candidate.peSignal?.matchScore || 0);
+  const current = nullablePositiveNumber(candidate.price?.current);
+  const buyLine = nullablePositiveNumber(candidate.price?.buyLine1y);
+  const buyPlan = nullablePositiveNumber(candidate.buyPlan?.maxBuyPrice);
+  if (pe < 45) return Math.round(pe);
+  const timingBonus = candidate.buyPlan?.stance === "今すぐ検討"
+    ? 22
+    : candidate.buyPlan?.stance === "指値で待つ"
+    ? 10
+    : 0;
+  const buyLineBonus = current && buyLine && current <= buyLine * 1.005 ? 18 : 0;
+  const planBonus = current && buyPlan && current <= buyPlan * STRICT_BUY_TARGET_TOLERANCE ? 14 : 0;
+  const currencyBonus = isUsDiscoveryCandidate(candidate) ? 2 : 0;
+  return Math.round((pe * 1.25) + timingBonus + buyLineBonus + planBonus + currencyBonus);
 }
 
 function isActionableDiscoveryCandidate(candidate = {}) {
@@ -4541,7 +4572,7 @@ async function resetDiscoveryCacheForSettings(settings) {
     unitBudget: settings.unitBudget,
     unitBudgetUnlimited: settings.unitBudgetUnlimited,
     settingsChanged: true,
-    message: "調査条件が変わりました。候補を探すで現在の条件に合わせて作り直してください。",
+    message: "調査条件または採点ルールが変わりました。候補を探すで現在の条件に合わせて作り直してください。",
   });
   const result = {
     generatedAt: "",
@@ -4565,6 +4596,7 @@ function discoverySettingsKey(settings = {}) {
     websiteLimit: normalized.websiteLimit,
     depthLimit: normalized.depthLimit,
     pagesPerSite: normalized.pagesPerSite,
+    scoringVersion: DISCOVERY_SCORING_VERSION,
   });
 }
 
