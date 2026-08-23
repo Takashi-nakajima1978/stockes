@@ -206,6 +206,15 @@ h3 {
   gap: 12px;
 }
 
+.manage-grid .stock-form {
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+}
+
+.manage-grid .stock-form .compact-title,
+.manage-grid .stock-form button {
+  grid-column: 1 / -1;
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -276,7 +285,7 @@ progress {
 }
 
 .manage-grid {
-  grid-template-columns: minmax(280px, 0.35fr) minmax(520px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .compact-title {
@@ -503,6 +512,55 @@ table {
   font-size: 13px;
 }
 
+.manage-table {
+  min-width: 1120px;
+  table-layout: fixed;
+}
+
+.us-manage-table {
+  min-width: 940px;
+}
+
+.manage-table th:nth-child(1),
+.manage-table td:nth-child(1) {
+  width: 190px;
+}
+
+.manage-table th:nth-child(2),
+.manage-table td:nth-child(2) {
+  width: 120px;
+}
+
+.manage-table td:nth-child(1),
+.manage-table td:nth-child(2) {
+  white-space: normal;
+}
+
+.manage-table th:nth-child(3),
+.manage-table td:nth-child(3),
+.manage-table th:nth-child(4),
+.manage-table td:nth-child(4),
+.manage-table th:nth-child(5),
+.manage-table td:nth-child(5),
+.manage-table th:nth-child(6),
+.manage-table td:nth-child(6),
+.manage-table th:nth-child(7),
+.manage-table td:nth-child(7),
+.manage-table th:nth-child(8),
+.manage-table td:nth-child(8) {
+  width: 105px;
+}
+
+.manage-table th:nth-child(9),
+.manage-table td:nth-child(9) {
+  width: 100px;
+}
+
+.manage-table th:last-child,
+.manage-table td:last-child {
+  width: 44px;
+}
+
 th,
 td {
   padding: 9px 10px;
@@ -563,22 +621,26 @@ tr:hover .drag-handle,
 }
 
 .stock-name {
+  min-width: 0;
   display: grid;
   gap: 3px;
 }
 
 .stock-name strong {
   font-size: 14px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .stock-name span {
   color: var(--muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .sector-badge {
   display: inline-flex;
-  max-width: 118px;
+  max-width: 100%;
   min-height: 24px;
   align-items: center;
   justify-content: center;
@@ -591,6 +653,7 @@ tr:hover .drag-handle,
   line-height: 1.25;
   text-align: center;
   white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .badge {
@@ -1930,6 +1993,10 @@ tr:hover .drag-handle,
   .manage-grid {
     grid-template-columns: 1fr;
   }
+
+  .manage-grid .stock-form {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
 }
 
 @media (max-width: 720px) {
@@ -1955,6 +2022,10 @@ tr:hover .drag-handle,
   .profit-summary,
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .manage-grid .stock-form {
+    grid-template-columns: 1fr;
   }
 
   .metric-strip {
