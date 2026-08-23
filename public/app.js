@@ -2495,7 +2495,7 @@ function renderCandidateList() {
     const positionText = source.searchPositionUsed ? "検索順位に出る業績・割安材料も採点しています。" : "";
     const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
     const avoidText = source.avoidedBusiness ? `${source.avoidedBusiness}。` : "";
-    const peText = source.peCriteria?.length ? "PE買収マッチも別項目で見ます。" : "";
+    const peText = source.peCriteria?.length ? "PE買収狙いと通常の株候補は別レポートで見ます。" : "";
     const earlyText = "米国株は買い場以下・反発初動・短期非過熱を優先します。";
     const learnText = source.performance?.evaluated
       ? `過去候補は${source.performance.evaluated}件判定済み、当たり${Math.round((source.performance.hitRate || 0) * 100)}%です。`
@@ -2517,8 +2517,74 @@ function renderCandidateList() {
     return;
   }
   els.candidateList.classList.remove("empty-state");
-  els.candidateList.innerHTML = state.suggestions.map((item, index) => suggestionItem(item, index)).join("");
+  els.candidateList.innerHTML = candidateReportsHtml(state.suggestions);
   attachSuggestionButtons();
+}
+
+function candidateReportsHtml(items = []) {
+  const peItems = items.filter(isPeReportItem).sort(sortPeReportItems);
+  const stockItems = items.filter((item) => !isPeReportItem(item)).sort(sortStockReportItems);
+  return [
+    reportSectionHtml({
+      title: "PEが買いそうな候補",
+      count: peItems.length,
+      description: "TOB・MBO・ファンド名・株主変化・低負債・割安放置など、買収されやすさを別軸で見ます。PE要素が薄いものはここには入れません。",
+      empty: "今の条件では、PE買収狙いとして根拠が強い候補はありません。",
+      items: peItems,
+    }),
+    reportSectionHtml({
+      title: "株として買う候補",
+      count: stockItems.length,
+      description: "買い場ライン、3年目安、業績材料、配当、短期の過熱感で見ます。PE買収狙いとは別の通常候補です。",
+      empty: "通常の株候補はありません。",
+      items: stockItems,
+    }),
+  ].join("");
+}
+
+function reportSectionHtml({ title, count, description, empty, items }) {
+  const body = items.length
+    ? items.map((item, index) => suggestionItem(item, index)).join("")
+    : `<p class="report-empty">${escapeHtml(empty)}</p>`;
+  return `
+    <section class="candidate-report">
+      <header>
+        <div>
+          <h4>${escapeHtml(title)}</h4>
+          <p>${escapeHtml(description)}</p>
+        </div>
+        <span>${count}件</span>
+      </header>
+      <div class="candidate-report-list">
+        ${body}
+      </div>
+    </section>
+  `;
+}
+
+function isPeReportItem(item = {}) {
+  if (item.reportBucket === "pe") return true;
+  const peScore = Number(item.peSignal?.matchScore || 0);
+  if (peScore < 45) return false;
+  if (item.peSignal?.reportEligible === false) return false;
+  const keys = new Set((item.peSignal?.criteria || []).map((criterion) => criterion.key));
+  return peScore >= 55
+    || keys.has("shareholder")
+    || keys.has("restructuring")
+    || (keys.has("undervalued") && (keys.has("cashflow") || keys.has("debt_capacity")));
+}
+
+function sortPeReportItems(a, b) {
+  return (b.pePriorityScore || 0) - (a.pePriorityScore || 0)
+    || (b.priorityScore || 0) - (a.priorityScore || 0)
+    || (b.businessValueScore || 0) - (a.businessValueScore || 0)
+    || String(a.symbol || "").localeCompare(String(b.symbol || ""));
+}
+
+function sortStockReportItems(a, b) {
+  return (b.businessValueScore || 0) - (a.businessValueScore || 0)
+    || (b.priorityScore || 0) - (a.priorityScore || 0)
+    || String(a.symbol || "").localeCompare(String(b.symbol || ""));
 }
 
 function renderCandidatePerformance() {
@@ -2648,6 +2714,7 @@ function suggestionItem(item, index) {
 function suggestionScoreHtml(item = {}) {
   const valueScore = Number.isFinite(item.businessValueScore) ? item.businessValueScore : item.score || "-";
   const priority = Number.isFinite(item.priorityScore) ? item.priorityScore : null;
+  const pePriority = Number.isFinite(item.pePriorityScore) ? item.pePriorityScore : null;
   const peScore = Number.isFinite(item.peSignal?.matchScore) ? item.peSignal.matchScore : null;
   const earlyScore = Number.isFinite(item.earlySignal?.score) ? item.earlySignal.score : null;
   const earlyText = earlyScore === null
@@ -2660,11 +2727,11 @@ function suggestionScoreHtml(item = {}) {
   const peLabel = peScore === null
     ? ""
     : peScore >= 70
-    ? ` / PE高 ${peScore}`
+    ? ` / PE優先 ${pePriority || peScore}`
     : peScore >= 45
-    ? ` / PE中 ${peScore}`
-    : ` / PE薄 ${peScore}`;
-  const priorityText = priority === null ? "" : ` / 総合 ${priority}`;
+    ? ` / PE確認 ${pePriority || peScore}`
+    : ` / PE対象外 ${peScore}`;
+  const priorityText = priority === null ? "" : ` / 株候補 ${priority}`;
   return `<span class="suggestion-score">${escapeHtml(item.rankLabel || "候補")} ${valueScore}${priorityText}${earlyText}${peLabel}</span>`;
 }
 
@@ -2717,13 +2784,19 @@ function peSignalHtml(signal) {
   const evidence = (signal.evidence || []).map((item) => `
     <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.source || item.title || "source")}</a>
   `).join("");
+  const score = Number(signal.matchScore || 0);
+  const cls = score >= 70 ? "strong" : score >= 45 ? "watch" : "weak";
+  const warning = score < 45
+    ? `<p class="pe-warning">PE買収狙いでは優先しません。安定収益や業種だけでは、買収候補としての根拠が足りません。</p>`
+    : "";
   return `
-    <div class="pe-signal">
+    <div class="pe-signal ${cls}">
       <div>
         <strong>PE買収マッチ</strong>
         <span>${escapeHtml(signal.label || "確認")} ${Number.isFinite(signal.matchScore) ? signal.matchScore : "-"}</span>
       </div>
       <p>${escapeHtml(signal.summary || "")}</p>
+      ${warning}
       <div>${criteria}${risks}</div>
       ${evidence ? `<div class="pe-evidence">${evidence}</div>` : ""}
     </div>

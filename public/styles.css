@@ -1141,6 +1141,60 @@ tr:hover .drag-handle,
   color: var(--sell);
 }
 
+.candidate-report {
+  display: grid;
+  gap: 10px;
+}
+
+.candidate-report + .candidate-report {
+  margin-top: 14px;
+}
+
+.candidate-report > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+}
+
+.candidate-report h4 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.candidate-report p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.candidate-report > header > span {
+  flex: 0 0 auto;
+  border-radius: 8px;
+  background: #eaf4ef;
+  color: var(--accent);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.candidate-report-list {
+  display: grid;
+  gap: 12px;
+}
+
+.report-empty {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+}
+
 .entry-points,
 .suggestion-points {
   display: flex;
@@ -1671,6 +1725,21 @@ tr:hover .drag-handle,
   background: #fffafa;
 }
 
+.pe-signal.strong {
+  border-color: #bad9ca;
+  background: #f4fbf7;
+}
+
+.pe-signal.watch {
+  border-color: #d5e4fb;
+  background: #f7fbff;
+}
+
+.pe-signal.weak {
+  border-color: #f1d1d4;
+  background: #fffafa;
+}
+
 .early-signal > div:first-child,
 .pe-signal > div:first-child {
   display: flex;
@@ -1715,12 +1784,27 @@ tr:hover .drag-handle,
   color: var(--sell);
 }
 
+.pe-signal.strong > div:first-child span {
+  background: #e5f4ed;
+  color: var(--buy);
+}
+
+.pe-signal.weak > div:first-child span {
+  background: #f8e6e7;
+  color: var(--sell);
+}
+
 .early-signal p,
 .pe-signal p {
   margin: 0;
   color: var(--ink);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.pe-signal .pe-warning {
+  color: var(--sell);
+  font-weight: 800;
 }
 
 .early-signal > div:not(:first-child),

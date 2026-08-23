@@ -26,17 +26,21 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 3;
+const DISCOVERY_SCORING_VERSION = 4;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
+const PE_PRIORITY_MIN_SCORE = 45;
+const PE_STRONG_MIN_SCORE = 55;
 const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品|wholesale|food|grocery|consumer staples|packaged foods)/i;
 const DISCOVERY_IT_VENTURE_PATTERN = /(情報|IT|ＳＩ|SI|ソフトウェア|クラウド|SaaS|アプリ|ネット|メディア|広告|ゲーム|DX|AI)/i;
 const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹|mature|enterprise|consulting|infrastructure|security)/i;
 const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "private equity", "buyout", "take private", "tender offer", "activist", "shareholder", "stake", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
+const PE_DIRECT_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "private equity", "buyout", "take private", "tender offer", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス"];
 const PE_CRITERIA = [
   { key: "undervalued", label: "割安放置", words: ["低PBR", "PBR1倍割れ", "低PER", "割安", "資産価値", "純資産", "undervalued", "low multiple", "cheap valuation", "sum-of-the-parts"], weight: 18 },
   { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益", "キャッシュフロー", "高配当", "営業CF", "ストック収益", "継続課金", "cash flow", "free cash flow", "recurring revenue", "stable revenue", "dividend"], weight: 14 },
+  { key: "debt_capacity", label: "低負債・借入余地", words: ["無借金", "ネットキャッシュ", "財務健全", "自己資本比率", "低負債", "debt capacity", "low debt", "net cash", "strong balance sheet"], weight: 14 },
   { key: "governance", label: "株主還元・統治余地", words: ["自社株買い", "増配", "政策保有株", "ROE", "資本効率", "中期経営計画", "buyback", "capital allocation", "margin improvement", "ROIC", "shareholder return"], weight: 13 },
   { key: "shareholder", label: "株主変化", words: ["大量保有", "保有割合", "株主", "物言う株主", "アクティビスト", "エフィッシモ", "Oasis", "旧村上", "activist", "shareholder", "stake", "13D", "13G"], weight: 18 },
   { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化", "事業売却", "構造改革", "再編", "親子上場", "buyout", "take private", "spin off", "divestiture", "strategic review", "tender offer"], weight: 18 },
@@ -1609,7 +1613,13 @@ async function discoverStocks(options = {}, job = null) {
       suggestions = suggestions
         .map((candidate) => applyDiscoveryAiReview(candidate, aiReviewBySymbol.get(candidate.symbol)))
         .filter(isActionableDiscoveryCandidate)
-        .sort((a, b) => discoveryPriorityScore(b) - discoveryPriorityScore(a) || b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
+        .sort(sortDiscoveryCandidates)
+        .map((candidate) => ({
+          ...candidate,
+          priorityScore: discoveryPriorityScore(candidate),
+          pePriorityScore: pePriorityScore(candidate),
+          reportBucket: isPeReportCandidate(candidate) ? "pe" : "stock",
+        }))
         .slice(0, MAX_DISCOVERY_SUGGESTIONS);
     }
   } catch {
@@ -1672,17 +1682,41 @@ function topDiscoverySuggestions(candidates = []) {
   return candidates
     .filter((candidate) => candidate && candidate.evidenceQuality !== "悪材料あり")
     .filter(isActionableDiscoveryCandidate)
-    .sort((a, b) => discoveryPriorityScore(b) - discoveryPriorityScore(a) || b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol))
+    .sort(sortDiscoveryCandidates)
     .map((candidate) => ({
       ...candidate,
       priorityScore: discoveryPriorityScore(candidate),
       pePriorityScore: pePriorityScore(candidate),
+      reportBucket: isPeReportCandidate(candidate) ? "pe" : "stock",
     }))
     .slice(0, MAX_DISCOVERY_SUGGESTIONS);
 }
 
+function sortDiscoveryCandidates(a, b) {
+  return discoveryPriorityScore(b) - discoveryPriorityScore(a)
+    || pePriorityScore(b) - pePriorityScore(a)
+    || b.businessValueScore - a.businessValueScore
+    || b.score - a.score
+    || a.risks.length - b.risks.length
+    || a.symbol.localeCompare(b.symbol);
+}
+
+function candidatePeScore(candidate = {}) {
+  return Number(candidate.peSignal?.matchScore || 0);
+}
+
+function isPeReportCandidate(candidate = {}) {
+  const pe = candidatePeScore(candidate);
+  if (pe >= PE_STRONG_MIN_SCORE) return true;
+  if (pe < PE_PRIORITY_MIN_SCORE) return false;
+  const keys = new Set((candidate.peSignal?.criteria || []).map((item) => item.key));
+  return keys.has("shareholder")
+    || keys.has("restructuring")
+    || (keys.has("undervalued") && (keys.has("cashflow") || keys.has("debt_capacity")));
+}
+
 function discoveryPriorityScore(candidate = {}) {
-  const pe = Number(candidate.peSignal?.matchScore || 0);
+  const pe = candidatePeScore(candidate);
   const value = Number(candidate.businessValueScore || candidate.score || 0);
   const early = Number(candidate.earlySignal?.score || 0);
   const current = nullablePositiveNumber(candidate.price?.current);
@@ -1697,13 +1731,15 @@ function discoveryPriorityScore(candidate = {}) {
   const planBonus = current && buyPlan && current <= buyPlan * STRICT_BUY_TARGET_TOLERANCE ? 14 : 0;
   const us = isUsDiscoveryCandidate(candidate);
   const currencyBonus = us ? 8 : 0;
-  const peTierBonus = pe >= 70 ? 240 : pe >= 45 ? 115 : 0;
-  const earlyTierBonus = early >= 75 ? (us ? 260 : 130) : early >= 60 ? (us ? 150 : 70) : early >= 45 ? 35 : 0;
-  const earlyWeight = us ? 1.75 : 0.8;
-  const nonPeWeight = pe >= 45 ? 0.55 : 0.35;
-  const timingWeight = pe >= 45 || early >= 60 ? 1 : 0.4;
+  const peAligned = isPeReportCandidate(candidate);
+  const peTierBonus = pe >= 70 ? 260 : pe >= PE_STRONG_MIN_SCORE ? 170 : pe >= PE_PRIORITY_MIN_SCORE ? 75 : 0;
+  const earlyTierBonus = early >= 75 ? (us ? 145 : 70) : early >= 60 ? (us ? 90 : 42) : early >= 45 ? 24 : 0;
+  const earlyWeight = us ? 1.1 : 0.6;
+  const nonPeWeight = peAligned ? 0.55 : 0.28;
+  const timingWeight = peAligned || early >= 60 ? 1 : 0.4;
+  const peThinPenalty = pe < PE_PRIORITY_MIN_SCORE ? (pe < 30 ? 120 : 70) : 0;
   const overheatPenalty = Number.isFinite(candidate.price?.return3m) && candidate.price.return3m > 28 ? 60 : 0;
-  return Math.round(
+  return Math.max(0, Math.round(
     peTierBonus
     + earlyTierBonus
     + (pe * 1.4)
@@ -1711,16 +1747,17 @@ function discoveryPriorityScore(candidate = {}) {
     + (value * nonPeWeight)
     + ((timingBonus + buyLineBonus + planBonus) * timingWeight)
     + currencyBonus
+    - peThinPenalty
     - overheatPenalty,
-  );
+  ));
 }
 
 function pePriorityScore(candidate = {}) {
-  const pe = Number(candidate.peSignal?.matchScore || 0);
+  const pe = candidatePeScore(candidate);
   const current = nullablePositiveNumber(candidate.price?.current);
   const buyLine = nullablePositiveNumber(candidate.price?.buyLine1y);
   const buyPlan = nullablePositiveNumber(candidate.buyPlan?.maxBuyPrice);
-  if (pe < 45) return Math.round(pe);
+  if (!isPeReportCandidate(candidate)) return Math.round(pe);
   const timingBonus = candidate.buyPlan?.stance === "今すぐ検討"
     ? 22
     : candidate.buyPlan?.stance === "指値で待つ"
@@ -1729,7 +1766,8 @@ function pePriorityScore(candidate = {}) {
   const buyLineBonus = current && buyLine && current <= buyLine * 1.005 ? 18 : 0;
   const planBonus = current && buyPlan && current <= buyPlan * STRICT_BUY_TARGET_TOLERANCE ? 14 : 0;
   const currencyBonus = isUsDiscoveryCandidate(candidate) ? 2 : 0;
-  return Math.round((pe * 1.25) + timingBonus + buyLineBonus + planBonus + currencyBonus);
+  const hardSignalBonus = pe >= PE_STRONG_MIN_SCORE ? 18 : 0;
+  return Math.round((pe * 1.35) + hardSignalBonus + timingBonus + buyLineBonus + planBonus + currencyBonus);
 }
 
 function isActionableDiscoveryCandidate(candidate = {}) {
@@ -1805,14 +1843,24 @@ function searchPeSignal(candidate, allResults = [], relevantResults = []) {
     };
   }).filter(Boolean);
   const buyerHits = PE_BUYER_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 8);
+  const directBuyerHits = PE_DIRECT_BUYER_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 6);
   const sector = candidate.sector || "";
   let score = criteria.reduce((sum, item) => sum + item.score, 0);
   if (/サービス|ヘルスケア|不動産|物流|人材|設備|メンテ|小売|生活用品|services|healthcare|logistics|industrial|maintenance|payment|telecom|media/i.test(sector)) score += 8;
   if (/銀行|保険|電力|資源|航空|鉄道|防衛|半導体|bank|insurance|utility|airline|aerospace|semiconductor/i.test(sector)) score -= 6;
-  if (buyerHits.length) score += Math.min(15, buyerHits.length * 3);
+  if (directBuyerHits.length) score += Math.min(20, directBuyerHits.length * 5);
+  else if (buyerHits.length) score += Math.min(8, buyerHits.length * 2);
+  const positiveKeys = new Set(criteria.filter((item) => item.score > 0).map((item) => item.key));
+  const hasHardSignal = directBuyerHits.length
+    || positiveKeys.has("shareholder")
+    || positiveKeys.has("restructuring");
+  const hasLboBase = positiveKeys.has("cashflow")
+    && (positiveKeys.has("undervalued") || positiveKeys.has("debt_capacity") || positiveKeys.has("sector_fit"));
+  if (!hasHardSignal && !hasLboBase) score = Math.min(score, 34);
+  else if (!hasHardSignal) score = Math.min(score, 54);
   const matchScore = clamp(Math.round(score), 0, 100);
   const evidence = relevantResults
-    .filter((item) => PE_BUYER_WORDS.some((word) => businessContextText(`${item.title} ${item.snippet}`).includes(word.toLowerCase())))
+    .filter((item) => PE_DIRECT_BUYER_WORDS.some((word) => businessContextText(`${item.title} ${item.snippet}`).includes(word.toLowerCase())))
     .slice(0, 3)
     .map((item) => ({
       title: item.title,
@@ -1820,28 +1868,40 @@ function searchPeSignal(candidate, allResults = [], relevantResults = []) {
       source: hostOf(item.url),
       snippet: item.snippet,
     }));
-  const label = matchScore >= 70 ? "PE注目度高め" : matchScore >= 45 ? "PE要素あり" : "PE要素薄い";
+  const label = matchScore >= 70
+    ? "PE注目度高め"
+    : matchScore >= PE_STRONG_MIN_SCORE
+    ? "PE候補として要確認"
+    : matchScore >= PE_PRIORITY_MIN_SCORE
+    ? "PE要素あり"
+    : "PE要素薄い";
   return {
     matchScore,
     label,
     criteria: criteria.filter((item) => item.score > 0).map((item) => ({
+      key: item.key,
       label: item.label,
       hits: item.hits,
     })).slice(0, 5),
     risks: criteria.filter((item) => item.score < 0).map((item) => item.hits[0]).slice(0, 3),
     buyerHits,
+    directBuyerHits,
+    reportEligible: matchScore >= PE_PRIORITY_MIN_SCORE && (hasHardSignal || hasLboBase),
     evidence,
-    summary: peSignalSummary(label, criteria, buyerHits),
+    summary: peSignalSummary(label, criteria, buyerHits, { directBuyerHits, hasHardSignal, hasLboBase, matchScore }),
   };
 }
 
-function peSignalSummary(label, criteria = [], buyerHits = []) {
+function peSignalSummary(label, criteria = [], buyerHits = [], options = {}) {
   const positives = criteria.filter((item) => item.score > 0).map((item) => item.label).slice(0, 3);
   const risk = criteria.find((item) => item.score < 0)?.label;
   const parts = [];
   if (positives.length) parts.push(`${positives.join("・")}に該当`);
-  if (buyerHits.length) parts.push(`株主・買収関連語: ${buyerHits.slice(0, 3).join("、")}`);
+  if (options.directBuyerHits?.length) parts.push(`直接材料: ${options.directBuyerHits.slice(0, 3).join("、")}`);
+  else if (buyerHits.length) parts.push(`周辺語: ${buyerHits.slice(0, 3).join("、")}`);
   if (risk) parts.push(`注意: ${risk}`);
+  if (Number(options.matchScore || 0) < PE_PRIORITY_MIN_SCORE) parts.push("PE買収狙いとしては優先しない");
+  else if (!options.hasHardSignal) parts.push("直接の買収・株主変化は未確認");
   return `${label}${parts.length ? `。${parts.join("。")}` : "。PE買収候補としては根拠が薄い"}`;
 }
 
@@ -2576,16 +2636,18 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
     }
   }
 
-  if (peSignal?.matchScore >= 65) {
+  if (peSignal?.matchScore >= 65 && peSignal.reportEligible !== false) {
     const bonus = Math.min(8, Math.round((peSignal.matchScore - 50) / 5));
     score += bonus;
     businessValueScore += bonus * 2;
     candidate.process = boostProcessStage(candidate.process, "再編", Math.min(8, bonus + 2), "PE買収・再編の項目に合う");
     reasons.push(`PE買収マッチ: ${peSignal.summary}`);
-  } else if (peSignal?.matchScore >= 40) {
+  } else if (peSignal?.matchScore >= PE_PRIORITY_MIN_SCORE && peSignal.reportEligible !== false) {
     score += 2;
     businessValueScore += 2;
     candidate.process = boostProcessStage(candidate.process, "再編", 3, "PE買収の一部項目に合う");
+  } else if (peSignal?.matchScore) {
+    risks.push("PE買収狙いとしては根拠が薄い");
   }
 
   const process = finalizeDiscoveryProcess(candidate.process);
