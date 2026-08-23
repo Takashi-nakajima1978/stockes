@@ -26,7 +26,7 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 2;
+const DISCOVERY_SCORING_VERSION = 3;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
@@ -1684,6 +1684,7 @@ function topDiscoverySuggestions(candidates = []) {
 function discoveryPriorityScore(candidate = {}) {
   const pe = Number(candidate.peSignal?.matchScore || 0);
   const value = Number(candidate.businessValueScore || candidate.score || 0);
+  const early = Number(candidate.earlySignal?.score || 0);
   const current = nullablePositiveNumber(candidate.price?.current);
   const buyLine = nullablePositiveNumber(candidate.price?.buyLine1y);
   const buyPlan = nullablePositiveNumber(candidate.buyPlan?.maxBuyPrice);
@@ -1694,16 +1695,23 @@ function discoveryPriorityScore(candidate = {}) {
     : 0;
   const buyLineBonus = current && buyLine && current <= buyLine * 1.005 ? 18 : 0;
   const planBonus = current && buyPlan && current <= buyPlan * STRICT_BUY_TARGET_TOLERANCE ? 14 : 0;
-  const currencyBonus = isUsDiscoveryCandidate(candidate) ? 2 : 0;
-  const peTierBonus = pe >= 70 ? 300 : pe >= 45 ? 180 : 0;
-  const nonPeWeight = pe >= 45 ? 0.6 : 0.15;
-  const timingWeight = pe >= 45 ? 1 : 0.25;
+  const us = isUsDiscoveryCandidate(candidate);
+  const currencyBonus = us ? 8 : 0;
+  const peTierBonus = pe >= 70 ? 240 : pe >= 45 ? 115 : 0;
+  const earlyTierBonus = early >= 75 ? (us ? 260 : 130) : early >= 60 ? (us ? 150 : 70) : early >= 45 ? 35 : 0;
+  const earlyWeight = us ? 1.75 : 0.8;
+  const nonPeWeight = pe >= 45 ? 0.55 : 0.35;
+  const timingWeight = pe >= 45 || early >= 60 ? 1 : 0.4;
+  const overheatPenalty = Number.isFinite(candidate.price?.return3m) && candidate.price.return3m > 28 ? 60 : 0;
   return Math.round(
     peTierBonus
+    + earlyTierBonus
     + (pe * 1.4)
+    + (early * earlyWeight)
     + (value * nonPeWeight)
     + ((timingBonus + buyLineBonus + planBonus) * timingWeight)
-    + currencyBonus,
+    + currencyBonus
+    - overheatPenalty,
   );
 }
 
@@ -2076,6 +2084,154 @@ function hasDiscoverySupport(candidate) {
   );
 }
 
+function earlyEntrySignal(candidate = {}, price = {}) {
+  const current = nullablePositiveNumber(price.current);
+  if (!current) return null;
+  let score = 35;
+  const criteria = [];
+  const risks = [];
+
+  const buyLine = nullablePositiveNumber(price.buyLine1y);
+  if (buyLine) {
+    if (current <= buyLine) {
+      score += 24;
+      criteria.push("買い場ライン以下");
+    } else if (current <= buyLine * 1.03) {
+      score += 12;
+      criteria.push("買い場ラインに近い");
+    } else {
+      score -= 28;
+      risks.push("買い場ラインを超過");
+    }
+  }
+
+  const trendPrice = nullablePositiveNumber(price.trendPrice3y);
+  if (trendPrice) {
+    if (current <= trendPrice * 0.95) {
+      score += 12;
+      criteria.push("3年目安より安い");
+    } else if (current <= trendPrice * 1.04) {
+      score += 8;
+      criteria.push("3年目安に近い");
+    } else if (current > trendPrice * 1.12) {
+      score -= 16;
+      risks.push("3年目安より高い");
+    }
+  }
+
+  if (Number.isFinite(price.return1m)) {
+    if (price.return1m >= 0 && price.return1m <= 12) {
+      score += 14;
+      criteria.push("1か月が上向き始め");
+    } else if (price.return1m > 12 && price.return1m <= 22) {
+      score += 7;
+      criteria.push("短期反発あり");
+    } else if (price.return1m < -8) {
+      score -= 10;
+      risks.push("直近1か月が弱い");
+    }
+  }
+
+  if (Number.isFinite(price.return3m)) {
+    if (price.return3m >= -8 && price.return3m <= 18) {
+      score += 12;
+      criteria.push("3か月は過熱していない");
+    } else if (price.return3m > 28) {
+      score -= 24;
+      risks.push("3か月で上がりすぎ");
+    } else if (price.return3m < -18) {
+      score -= 8;
+      risks.push("3か月の下げが強い");
+    }
+  }
+
+  if (Number.isFinite(price.return1y)) {
+    if (price.return1y >= -20 && price.return1y <= 35) {
+      score += 8;
+      criteria.push("1年では走り切っていない");
+    } else if (price.return1y > 65) {
+      score -= 16;
+      risks.push("1年で上がりすぎ");
+    }
+  }
+
+  if (Number.isFinite(price.distanceFromHigh52)) {
+    if (price.distanceFromHigh52 <= -8 && price.distanceFromHigh52 >= -45) {
+      score += 10;
+      criteria.push("高値圏ではない");
+    } else if (price.distanceFromHigh52 > -5) {
+      score -= 14;
+      risks.push("52週高値に近い");
+    }
+  }
+
+  if (Number.isFinite(price.sma50) && Number.isFinite(price.sma200)) {
+    if (price.sma50 >= price.sma200 * 0.96 && price.sma50 <= price.sma200 * 1.08) {
+      score += 9;
+      criteria.push("長期線近くで初動を狙える");
+    }
+    if (current >= price.sma50 * 0.98 && Number.isFinite(price.return1m) && price.return1m > 0) {
+      score += 7;
+      criteria.push("50日線付近を回復");
+    }
+    if (current > price.sma200 * 1.25) {
+      score -= 12;
+      risks.push("200日線から離れすぎ");
+    }
+  }
+
+  if (Number.isFinite(price.volumeRatio20)) {
+    if (price.volumeRatio20 >= 1.1 && price.volumeRatio20 <= 2.8) {
+      score += 7;
+      criteria.push("出来高が増え始め");
+    } else if (price.volumeRatio20 > 4) {
+      score -= 6;
+      risks.push("出来高が過熱");
+    }
+  }
+
+  if (Number.isFinite(price.maxDrawdown3y)) {
+    if (price.maxDrawdown3y > -45) {
+      score += 5;
+      criteria.push("大崩れが比較的浅い");
+    } else if (price.maxDrawdown3y < -65) {
+      score -= 10;
+      risks.push("過去の下落が深い");
+    }
+  }
+
+  if (Number.isFinite(price.volatility)) {
+    if (price.volatility <= 45) score += 4;
+    else if (price.volatility > 70) {
+      score -= 10;
+      risks.push("値動きが荒すぎる");
+    }
+  }
+
+  if (isUsDiscoveryCandidate(candidate)) {
+    const notes = businessContextText(candidate.notes || "");
+    if (/(turnaround|restructuring|margin improvement|buyback|free cash flow|ai|data center|infrastructure|security|guidance)/i.test(notes)) {
+      score += 6;
+      criteria.push("米国株の材料テーマあり");
+    }
+  }
+
+  const bounded = clamp(Math.round(score), 0, 100);
+  const label = bounded >= 75 ? "先回り優先" : bounded >= 60 ? "初動候補" : bounded >= 45 ? "押し目監視" : "先回り弱い";
+  const summary = criteria.length
+    ? criteria.slice(0, 3).join("・")
+    : risks.length
+    ? risks.slice(0, 2).join("・")
+    : "価格の初動条件はまだ薄い";
+  return {
+    score: bounded,
+    label,
+    summary,
+    criteria: uniqueText(criteria).slice(0, 5),
+    risks: uniqueText(risks).slice(0, 4),
+  };
+}
+
 function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budget = {}) {
   let score = 50;
   const reasons = [];
@@ -2298,7 +2454,8 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     reasons.push("検索結果にも名前が出ている");
   }
 
-  const process = buildDiscoveryProcess({
+  const earlySignal = earlyEntrySignal(candidate, price);
+  let process = buildDiscoveryProcess({
     candidate,
     price,
     unitSize,
@@ -2311,6 +2468,18 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     valueHits: mentioned ? valueHits : [],
     badHits: mentioned ? badHits : [],
   });
+  if (earlySignal?.score >= 75) {
+    process = boostProcessStage(process, "買い時", 6, "先回りで入りやすい初動条件");
+    score += isUsDiscoveryCandidate(candidate) ? 12 : 8;
+    reasons.push(`先回り初動: ${earlySignal.summary}`);
+  } else if (earlySignal?.score >= 60) {
+    process = boostProcessStage(process, "買い時", 4, "上昇前の条件を一部満たす");
+    score += isUsDiscoveryCandidate(candidate) ? 7 : 4;
+    reasons.push(`初動候補: ${earlySignal.summary}`);
+  } else if (earlySignal?.score && earlySignal.score < 45) {
+    score -= isUsDiscoveryCandidate(candidate) ? 8 : 4;
+    risks.push(`先回り条件は弱い: ${earlySignal.summary}`);
+  }
   const businessValueScore = process.totalScore;
   const buyPlan = candidateBuyPlan(price, { unitSize, unitBudget: budget.unitBudget, unitAmount, businessValueScore, currency });
   const sellPlan = candidateExitPlan(price, buyPlan, { currency });
@@ -2323,6 +2492,7 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     score: clamp(Math.round(score), 0, 100),
     businessValueScore,
     rankLabel: discoveryRankLabel(businessValueScore),
+    earlySignal,
     process,
     reasons: uniqueText(reasons).slice(0, 4),
     risks: uniqueText(risks).slice(0, 3),
@@ -2472,6 +2642,7 @@ async function aiDiscoveryReview(candidates) {
     },
     searchPosition: candidate.searchPosition || null,
     peSignal: candidate.peSignal || null,
+    earlySignal: candidate.earlySignal || null,
     buyPlan: {
       stance: candidate.buyPlan?.stance,
       maxBuyPrice: candidate.buyPlan?.maxBuyPrice,
@@ -2509,7 +2680,8 @@ async function aiDiscoveryReviewChunk(model, items) {
   const prompt = [
     "あなたは日本株・米国株の候補発掘レビュー担当です。将来の利益を保証せず、根拠不足を厳しく扱ってください。",
     "目的は「事業として好調そうなのに、株価が高すぎず、買い場ラインや買い目安以下で検討できる候補」を上に残すことです。",
-    "過去3年の流れに対する現在価格、1年買い場ライン、配当利回り、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
+    "米国株は特に、すでに急騰した後ではなく、買い場以下・3年目安付近・1か月反発・3か月非過熱・出来高増のような先回り初動を重視してください。",
+    "過去3年の流れに対する現在価格、1年買い場ライン、先回り初動スコア、配当利回り、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
     "1年買い場ラインを下回っていて、事業材料も良いものはプラス評価してください。上がり切った高値圏はマイナス評価してください。",
     "PEファンドが買いそうな会社かは、割安放置、安定キャッシュフロー、株主変化、再編余地、阻害リスクに分けて評価してください。ただしPE要素だけで高値づかみを肯定しないでください。",
     "adjustmentは-8から8の整数。根拠が薄い場合は0以下、悪材料や高値づかみ懸念が強い場合はマイナスにしてください。",

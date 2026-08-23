@@ -1323,11 +1323,13 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen) {
   const tooltip = root?.querySelector("[data-us-chart-tooltip]");
   const timingNode = root?.querySelector("[data-us-chart-timing]");
   if (!canvas) return;
+  const frame = canvas.closest(".chart-frame") || canvas;
   const state = { series: [], points: [], plot: null, hoverIndex: null };
 
   const draw = () => {
     const context = canvas.getContext("2d");
     const rect = canvas.getBoundingClientRect();
+    if (rect.width < 120) return;
     const dpr = window.devicePixelRatio || 1;
     const cssHeight = Number.parseFloat(getComputedStyle(canvas).height) || 230;
     canvas.width = Math.max(320, Math.floor(rect.width * dpr));
@@ -1465,7 +1467,13 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen) {
     if (tooltip) tooltip.hidden = true;
     draw();
   });
-  draw();
+  requestAnimationFrame(draw);
+  if ("ResizeObserver" in window) {
+    const observer = new ResizeObserver(() => requestAnimationFrame(draw));
+    observer.observe(frame);
+  } else {
+    window.addEventListener("resize", draw, { passive: true });
+  }
 }
 
 function positionEmbeddedTooltip(canvas, tooltip, point, formatter) {
@@ -2488,6 +2496,7 @@ function renderCandidateList() {
     const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
     const avoidText = source.avoidedBusiness ? `${source.avoidedBusiness}。` : "";
     const peText = source.peCriteria?.length ? "PE買収マッチも別項目で見ます。" : "";
+    const earlyText = "米国株は買い場以下・反発初動・短期非過熱を優先します。";
     const learnText = source.performance?.evaluated
       ? `過去候補は${source.performance.evaluated}件判定済み、当たり${Math.round((source.performance.hitRate || 0) * 100)}%です。`
       : "";
@@ -2497,10 +2506,10 @@ function renderCandidateList() {
       : `表示候補は${state.suggestions.length}件です。`;
     const excludedText = source.excludedCount ? `非表示は${source.excludedCount}件です。` : "";
     els.suggestionSource.textContent = source.settingsChanged
-      ? `${source.message || "調査条件または採点ルールが変わりました。候補を探すで現在の条件に合わせて作り直してください。"}現在の日本株条件は${budgetText}、米国株条件は${usBudgetText}です。候補は自動追加されません。`
+      ? `${source.message || "調査条件または採点ルールが変わりました。候補を探すで現在の条件に合わせて作り直してください。"}現在の日本株条件は${budgetText}、米国株条件は${usBudgetText}です。${earlyText}候補は自動追加されません。`
       : source.searchCount > 0
-      ? `${source.provider}で${source.searchCount}件確認しました。${discoveryText}${poolText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${avoidText}${positionText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
-      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${poolText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${countText}${excludedText}`;
+      ? `${source.provider}で${source.searchCount}件確認しました。${discoveryText}${poolText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
+      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${poolText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${countText}${excludedText}`;
   }
   if (!state.suggestions.length) {
     els.candidateList.classList.add("empty-state");
@@ -2624,6 +2633,7 @@ function suggestionItem(item, index) {
         <span><strong>検索順位</strong>${item.searchPosition?.rank ? `${item.searchPosition.rank}位` : "-"}</span>
       </div>
       ${buyPlanHtml(item.buyPlan, item)}
+      ${earlySignalHtml(item.earlySignal)}
       ${sellPlanHtml(item.sellPlan, item)}
       ${peSignalHtml(item.peSignal)}
       ${learningHtml(item.learning)}
@@ -2639,6 +2649,14 @@ function suggestionScoreHtml(item = {}) {
   const valueScore = Number.isFinite(item.businessValueScore) ? item.businessValueScore : item.score || "-";
   const priority = Number.isFinite(item.priorityScore) ? item.priorityScore : null;
   const peScore = Number.isFinite(item.peSignal?.matchScore) ? item.peSignal.matchScore : null;
+  const earlyScore = Number.isFinite(item.earlySignal?.score) ? item.earlySignal.score : null;
+  const earlyText = earlyScore === null
+    ? ""
+    : earlyScore >= 75
+    ? ` / 先回り高 ${earlyScore}`
+    : earlyScore >= 60
+    ? ` / 初動 ${earlyScore}`
+    : ` / 初動弱 ${earlyScore}`;
   const peLabel = peScore === null
     ? ""
     : peScore >= 70
@@ -2647,7 +2665,7 @@ function suggestionScoreHtml(item = {}) {
     ? ` / PE中 ${peScore}`
     : ` / PE薄 ${peScore}`;
   const priorityText = priority === null ? "" : ` / 総合 ${priority}`;
-  return `<span class="suggestion-score">${escapeHtml(item.rankLabel || "候補")} ${valueScore}${priorityText}${peLabel}</span>`;
+  return `<span class="suggestion-score">${escapeHtml(item.rankLabel || "候補")} ${valueScore}${priorityText}${earlyText}${peLabel}</span>`;
 }
 
 function candidateTarget(item = {}) {
@@ -2671,6 +2689,23 @@ function sellPlanHtml(plan, item = {}) {
       <span><strong>売り場ライン</strong>${money(plan.targetPrice)}</span>
       <span><strong>確認ライン</strong>${money(plan.stopPrice)}</span>
       <p>${escapeHtml(plan.summary || "")}</p>
+    </div>
+  `;
+}
+
+function earlySignalHtml(signal) {
+  if (!signal) return "";
+  const criteria = (signal.criteria || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+  const risks = (signal.risks || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  const cls = Number(signal.score || 0) >= 75 ? "good" : Number(signal.score || 0) >= 60 ? "ok" : Number(signal.score || 0) >= 45 ? "watch" : "weak";
+  return `
+    <div class="early-signal ${cls}">
+      <div>
+        <strong>先回り初動</strong>
+        <span>${escapeHtml(signal.label || "確認")} ${Number.isFinite(signal.score) ? signal.score : "-"}</span>
+      </div>
+      <p>${escapeHtml(signal.summary || "買い場と初動条件を確認します。")}</p>
+      <div>${criteria}${risks}</div>
     </div>
   `;
 }

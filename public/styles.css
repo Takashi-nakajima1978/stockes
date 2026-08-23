@@ -719,6 +719,19 @@ tr:hover .drag-handle,
   background: linear-gradient(180deg, #ffffff 0%, #f4f8f6 100%);
 }
 
+.embedded-chart {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.embedded-chart canvas {
+  display: block;
+  width: 100%;
+  height: 260px;
+  background: linear-gradient(180deg, #ffffff 0%, #f4f8f6 100%);
+}
+
 .chart-frame {
   position: relative;
   border-bottom: 1px solid var(--line);
@@ -1642,6 +1655,7 @@ tr:hover .drag-handle,
   line-height: 1.45;
 }
 
+.early-signal,
 .pe-signal,
 .learning-signal {
   display: grid;
@@ -1652,6 +1666,22 @@ tr:hover .drag-handle,
   padding: 10px;
 }
 
+.early-signal {
+  border-color: #cfe4dc;
+  background: #f3faf7;
+}
+
+.early-signal.watch {
+  border-color: #ead7a5;
+  background: #fffaf0;
+}
+
+.early-signal.weak {
+  border-color: #ecd0d2;
+  background: #fffafa;
+}
+
+.early-signal > div:first-child,
 .pe-signal > div:first-child {
   display: flex;
   justify-content: space-between;
@@ -1659,12 +1689,18 @@ tr:hover .drag-handle,
   align-items: center;
 }
 
+.early-signal strong,
 .pe-signal strong,
 .learning-signal strong {
   color: var(--accent-2);
   font-size: 13px;
 }
 
+.early-signal strong {
+  color: var(--accent);
+}
+
+.early-signal > div:first-child span,
 .pe-signal > div:first-child span {
   border-radius: 7px;
   background: #e8effb;
@@ -1674,6 +1710,22 @@ tr:hover .drag-handle,
   font-weight: 900;
 }
 
+.early-signal > div:first-child span {
+  background: #e5f4ed;
+  color: var(--buy);
+}
+
+.early-signal.watch > div:first-child span {
+  background: #fff3d8;
+  color: var(--watch);
+}
+
+.early-signal.weak > div:first-child span {
+  background: #f8e6e7;
+  color: var(--sell);
+}
+
+.early-signal p,
 .pe-signal p {
   margin: 0;
   color: var(--ink);
@@ -1681,6 +1733,7 @@ tr:hover .drag-handle,
   line-height: 1.5;
 }
 
+.early-signal > div:not(:first-child),
 .pe-signal > div:not(:first-child),
 .learning-signal {
   display: flex;
@@ -1688,6 +1741,7 @@ tr:hover .drag-handle,
   gap: 6px;
 }
 
+.early-signal > div:not(:first-child) span,
 .pe-signal > div:not(:first-child) span,
 .learning-signal span {
   border-radius: 7px;
@@ -1698,6 +1752,12 @@ tr:hover .drag-handle,
   font-weight: 800;
 }
 
+.early-signal > div:not(:first-child) span {
+  background: #e5f4ed;
+  color: var(--accent);
+}
+
+.early-signal .risk,
 .pe-signal .risk {
   background: #fff3d8;
   color: var(--watch);
