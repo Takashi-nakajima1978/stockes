@@ -1,4 +1,6 @@
 const MANAGED_STOCK_LIMIT = 50;
+const VIEW_KEYS = new Set(["analysis", "stocks", "us", "ideas", "settings"]);
+const VIEW_STORAGE_KEY = "stockSignalActiveView";
 
 const state = {
   stocks: [],
@@ -20,7 +22,7 @@ const state = {
   settings: null,
   selected: null,
   usSelected: null,
-  view: "analysis",
+  view: preferredView(),
   ideaView: "candidates",
   running: false,
 };
@@ -375,11 +377,30 @@ function safeRender(label, fn) {
 }
 
 function setView(view) {
-  state.view = view;
+  const nextView = VIEW_KEYS.has(view) ? view : "analysis";
+  state.view = nextView;
+  rememberView(nextView);
   renderNavigation();
   renderIdeaTabs();
-  if (view === "analysis") renderSelection();
-  if (view === "us") renderUs();
+  if (nextView === "analysis") renderSelection();
+  if (nextView === "us") renderUs();
+}
+
+function preferredView() {
+  try {
+    const view = localStorage.getItem(VIEW_STORAGE_KEY);
+    return VIEW_KEYS.has(view) ? view : "analysis";
+  } catch {
+    return "analysis";
+  }
+}
+
+function rememberView(view) {
+  try {
+    localStorage.setItem(VIEW_STORAGE_KEY, view);
+  } catch {
+    // iPhoneのプライベート設定などで保存できない場合は、その場の表示だけ維持します。
+  }
 }
 
 function renderIdeaTabs() {
@@ -1717,19 +1738,21 @@ function evidenceSummaryHtml(stock, analysis, position) {
   `;
 }
 
-async function analyze() {
+async function analyze(options = {}) {
   if (state.running) return;
   state.running = true;
   els.analyzeButton.disabled = true;
   els.discoverButton.disabled = true;
   const originalText = els.analyzeButton.textContent;
   els.analyzeButton.textContent = "更新中";
-  els.researchProgress.textContent = "一括分析を開始中";
+  els.researchProgress.textContent = options.source === "reload" ? "ブラウザ更新で再確認中" : "一括分析を開始中";
 
   try {
     const payload = await request("/api/analyze", {
       method: "POST",
       body: JSON.stringify({
+        manual: true,
+        force: true,
         websiteLimit: clampInput(els.websiteLimit),
         depthLimit: clampInput(els.depthLimit),
         pagesPerSite: clampInput(els.pagesPerSite),
@@ -1751,16 +1774,16 @@ async function analyze() {
   }
 }
 
-async function analyzeUs() {
+async function analyzeUs(options = {}) {
   if (!els.usAnalyzeButton) return;
   els.usAnalyzeButton.disabled = true;
   const originalText = els.usAnalyzeButton.textContent;
   els.usAnalyzeButton.textContent = "更新中";
-  if (els.usLastRun) els.usLastRun.textContent = "米国株を確認中";
+  if (els.usLastRun) els.usLastRun.textContent = options.source === "reload" ? "ブラウザ更新で米国株を確認中" : "米国株を確認中";
   try {
     const payload = await request("/api/us-analyze", {
       method: "POST",
-      body: JSON.stringify({ websiteLimit: clampInput(els.websiteLimit) }),
+      body: JSON.stringify({ manual: true, force: true, websiteLimit: clampInput(els.websiteLimit) }),
     });
     state.usAnalyses = Object.fromEntries((payload.analyses || []).map((item) => [item.symbol, item]));
     state.usSummary = payload.summary || null;
@@ -1826,8 +1849,7 @@ function renderAnalysisJob() {
 
 async function discover() {
   if (state.running) return;
-  state.view = "ideas";
-  renderNavigation();
+  setView("ideas");
   els.discoverButton.disabled = true;
   els.candidateProgress.textContent = "裏で開始中";
   try {
@@ -3145,6 +3167,7 @@ els.chart?.addEventListener("pointerleave", clearChartHover);
 window.addEventListener("resize", () => renderSelection());
 
 await loadInitialData();
+void refreshAfterBrowserReload();
 setInterval(loadStatus, 15000);
 
 async function loadInitialData() {
@@ -3166,6 +3189,26 @@ async function loadInitialData() {
     safeLoad("候補検索", loadDiscoveryCache),
   ]);
   render();
+}
+
+async function refreshAfterBrowserReload() {
+  if (navigationType() !== "reload") return;
+  if (state.view === "us") {
+    await analyzeUs({ source: "reload" });
+    return;
+  }
+  await analyze({ source: "reload" });
+}
+
+function navigationType() {
+  try {
+    const entry = performance.getEntriesByType("navigation")?.[0];
+    if (entry?.type) return entry.type;
+    if (performance.navigation?.type === 1) return "reload";
+  } catch {
+    // 古いiOSブラウザではNavigation Timingが取れないことがあります。
+  }
+  return "";
 }
 
 async function safeLoad(label, fn, onError = null) {
