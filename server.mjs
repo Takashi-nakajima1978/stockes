@@ -357,7 +357,7 @@ async function handleApi(req, res, url) {
     const name = String(body.name || "").trim();
     if (!symbol || !name) return json(res, 400, { error: "銘柄名とコードを入力してください。" });
     if (stocks.some((stock) => stock.symbol === symbol)) return json(res, 400, { error: "同じ銘柄がすでにあります。" });
-    stocks.push(normalizeStock({
+    const stock = normalizeStock({
       symbol,
       name,
       market: body.market || "東証",
@@ -371,9 +371,16 @@ async function handleApi(req, res, url) {
       sales: body.sales,
       minimumHoldQuantity: body.minimumHoldQuantity,
       targetBuyPrice: body.targetBuyPrice,
-    }));
+    });
+    stocks.push(stock);
     await saveWatchlist(stocks);
-    return json(res, 201, { stocks });
+    if (!body.analyze) return json(res, 201, { stocks });
+    try {
+      const analysisCache = await analyzeSingleWatchStock(stock, body, { notify: true });
+      return json(res, 201, { stocks, analysis: analysisCache.analysis, analysisCache });
+    } catch (error) {
+      return json(res, 201, { stocks, analysisError: error.message || "追加後の分析に失敗しました。" });
+    }
   }
 
   if (url.pathname === "/api/stocks/reorder" && req.method === "POST") {
@@ -407,7 +414,7 @@ async function handleApi(req, res, url) {
     const name = String(body.name || "").trim();
     if (!symbol || !name) return json(res, 400, { error: "銘柄名とティッカーを入力してください。" });
     if (stocks.some((stock) => stock.symbol === symbol)) return json(res, 400, { error: "同じティッカーがすでにあります。" });
-    stocks.push(normalizeUsStock({
+    const stock = normalizeUsStock({
       symbol,
       name,
       market: body.market || "NYSE",
@@ -418,9 +425,16 @@ async function handleApi(req, res, url) {
       quantity: body.quantity,
       positions: body.positions,
       sales: body.sales,
-    }));
+    });
+    stocks.push(stock);
     await saveUsWatchlist(stocks);
-    return json(res, 201, { stocks });
+    if (!body.analyze) return json(res, 201, { stocks });
+    try {
+      const analysisCache = await analyzeSingleUsStock(stock, body, { notify: true });
+      return json(res, 201, { stocks, analysis: analysisCache.analysis, analysisCache });
+    } catch (error) {
+      return json(res, 201, { stocks, analysisError: error.message || "追加後の分析に失敗しました。" });
+    }
   }
 
   if (url.pathname.startsWith("/api/stocks/") && req.method === "PATCH") {
@@ -643,6 +657,51 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
   return result;
 }
 
+async function analyzeSingleWatchStock(stock, options = {}, { notify = false } = {}) {
+  const settings = await readSettings();
+  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, 20);
+  const depthLimit = clamp(Number(options.depthLimit || settings.depthLimit || defaultSettings.depthLimit), 1, 20);
+  const pagesPerSite = clamp(Number(options.pagesPerSite || settings.pagesPerSite || defaultSettings.pagesPerSite), 1, 20);
+  const warnings = [];
+  const systemWarnings = [];
+  const [price, research] = await Promise.all([
+    fetchPriceHistory(stock.symbol),
+    researchStock(stock, { websiteLimit, depthLimit, pagesPerSite }),
+  ]);
+  if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
+  const row = {
+    stock,
+    price,
+    research,
+    fallback: ruleBasedDecision(stock, price, research),
+  };
+  await translateResearchEvidenceRows([row]).catch(() => {});
+
+  let aiDecision = null;
+  const lmStatus = await checkLmStudio(settings);
+  if (lmStatus.ok) {
+    try {
+      aiDecision = (await aiBatchDecisions([row]))[0] || null;
+    } catch (error) {
+      systemWarnings.push(`LM Studio: ${error.message || "分析が時間内に返りませんでした"}`);
+    }
+  }
+
+  const analysis = normalizeDecision(stock, price, research, aiDecision || row.fallback);
+  const previous = await readAnalysisCache();
+  const result = {
+    generatedAt: new Date().toISOString(),
+    usedLmStudio: Boolean(aiDecision || previous.usedLmStudio),
+    warnings: uniqueText([...systemWarnings, ...warnings, ...(previous.warnings || [])]).slice(0, 6),
+    analyses: mergeAnalysisRows(previous.analyses, analysis),
+    sectorEvidence: mergeSectorEvidence(previous.sectorEvidence, buildSectorEvidence([row])),
+    analysis,
+  };
+  await saveAnalysisCache(result);
+  if (notify) await notifyStrongAnalysisSignals([analysis]).catch(() => {});
+  return result;
+}
+
 async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
   const stocks = await readUsWatchlist();
   const settings = await readSettings();
@@ -706,6 +765,63 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
   const previous = await readUsAnalysisCache();
   await saveUsAnalysisCache(result);
   if (notify) await notifyUsChangeSignals(result, previous).catch(() => {});
+  return result;
+}
+
+async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}) {
+  const settings = await readSettings();
+  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, 20);
+  const [price, research] = await Promise.all([
+    fetchPriceHistory(stock.symbol),
+    researchUsStock(stock, { websiteLimit }),
+  ]);
+  const row = {
+    symbol: stock.symbol,
+    name: stock.name,
+    market: stock.market || "NYSE",
+    holding: Boolean(stock.holding),
+    notes: stock.notes || "",
+    price: compactUsPrice(price),
+    position: positionMetrics(stock, price),
+    researchStats: {
+      searched: research.searched,
+    },
+    evidence: research.evidence,
+    ai: null,
+  };
+
+  let usedLmStudio = false;
+  const warnings = [];
+  const lmStatus = await checkLmStudio(settings);
+  if (lmStatus.ok) {
+    try {
+      const review = (await aiUsHoldingReviews([row]))[0] || null;
+      row.ai = review || fallbackUsReview(row);
+      applyUsEvidenceTranslations(row);
+      usedLmStudio = Boolean(review);
+    } catch (error) {
+      warnings.push(`LM Studio: ${error.message || "米国株AI分析が返りませんでした"}`);
+      row.ai = fallbackUsReview(row);
+      applyUsEvidenceTranslations(row);
+    }
+  } else {
+    row.ai = fallbackUsReview(row);
+    applyUsEvidenceTranslations(row);
+  }
+
+  const previous = await readUsAnalysisCache();
+  const analyses = mergeAnalysisRows(previous.analyses, row);
+  const result = {
+    generatedAt: new Date().toISOString(),
+    currency: "USD",
+    usedLmStudio: Boolean(usedLmStudio || previous.usedLmStudio),
+    warnings: uniqueText([...warnings, ...(previous.warnings || [])]).slice(0, 6),
+    analyses,
+    summary: usPortfolioSummary(analyses),
+    analysis: row,
+  };
+  await saveUsAnalysisCache(result);
+  if (notify) await notifyUsChangeSignals({ ...result, analyses: [row] }, previous).catch(() => {});
   return result;
 }
 
@@ -4466,6 +4582,46 @@ function buildSectorEvidence(rows = []) {
     sector: group.sector,
     symbols: [...group.symbols].sort(),
     items: uniqueBy(group.items, (item) => item.url).slice(0, 8),
+  })).filter((group) => group.items.length);
+}
+
+function mergeAnalysisRows(existing = [], nextRow = null) {
+  const rows = Array.isArray(existing) ? existing.filter((row) => row?.symbol) : [];
+  if (!nextRow?.symbol) return rows;
+  const index = rows.findIndex((row) => row.symbol === nextRow.symbol);
+  if (index >= 0) {
+    rows[index] = nextRow;
+    return rows;
+  }
+  return [...rows, nextRow];
+}
+
+function mergeSectorEvidence(existing = [], incoming = []) {
+  const bySector = new Map();
+  for (const group of normalizeSectorEvidence(existing)) {
+    bySector.set(group.sector, {
+      sector: group.sector,
+      symbols: new Set(group.symbols || []),
+      items: group.items || [],
+    });
+  }
+  for (const group of normalizeSectorEvidence(incoming)) {
+    const current = bySector.get(group.sector) || {
+      sector: group.sector,
+      symbols: new Set(),
+      items: [],
+    };
+    for (const symbol of group.symbols || []) current.symbols.add(symbol);
+    current.items = uniqueBy(
+      [...(group.items || []), ...current.items],
+      (item) => item.url || `${item.source || ""}:${item.title || ""}`,
+    ).slice(0, 8);
+    bySector.set(group.sector, current);
+  }
+  return [...bySector.values()].map((group) => ({
+    sector: group.sector,
+    symbols: [...group.symbols].sort(),
+    items: group.items,
   })).filter((group) => group.items.length);
 }
 

@@ -316,12 +316,16 @@ async function loadAnalysisCache() {
 
 async function loadUsAnalysisCache() {
   const payload = await request("/api/us-analysis");
+  applyUsAnalysisPayload(payload);
+  renderUs();
+}
+
+function applyUsAnalysisPayload(payload = {}) {
   state.usAnalyses = Object.fromEntries((payload.analyses || []).map((item) => [item.symbol, item]));
   state.usSummary = payload.summary || null;
   if (payload.generatedAt && els.usLastRun) {
     els.usLastRun.textContent = `保存済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
   }
-  renderUs();
 }
 
 async function loadAnalysisJob() {
@@ -1785,8 +1789,7 @@ async function analyzeUs(options = {}) {
       method: "POST",
       body: JSON.stringify({ manual: true, force: true, websiteLimit: clampInput(els.websiteLimit) }),
     });
-    state.usAnalyses = Object.fromEntries((payload.analyses || []).map((item) => [item.symbol, item]));
-    state.usSummary = payload.summary || null;
+    applyUsAnalysisPayload(payload);
     if (els.usLastRun) {
       els.usLastRun.textContent = payload.usedLmStudio
         ? `更新済み AI ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`
@@ -2801,30 +2804,50 @@ function attachSuggestionButtons() {
       const suggestion = state.suggestions.find((item) => item.symbol === button.dataset.addSuggestion);
       if (!suggestion) return;
       const target = candidateTarget(suggestion);
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = "追加・分析中";
       try {
         const payload = await request(target === "us" ? "/api/us-stocks" : "/api/stocks", {
           method: "POST",
           body: JSON.stringify({
+            analyze: true,
             name: suggestion.name,
             symbol: suggestion.symbol,
             market: suggestion.market,
             sector: suggestion.sector,
             notes: suggestion.notes,
             holding: false,
+            websiteLimit: clampInput(els.websiteLimit),
+            depthLimit: clampInput(els.depthLimit),
+            pagesPerSite: clampInput(els.pagesPerSite),
           }),
         });
         if (target === "us") {
           state.usStocks = payload.stocks || state.usStocks;
           state.usSelected = suggestion.symbol;
-          toast(`${suggestion.name}を米国株に追加しました。`);
+          if (payload.analysisCache) applyUsAnalysisPayload(payload.analysisCache);
+          setView("us");
+          toast(payload.analysisError
+            ? `${suggestion.name}を米国株に追加しました。分析は失敗しました: ${payload.analysisError}`
+            : `${suggestion.name}を米国株に追加して分析しました。`);
         } else {
           state.stocks = payload.stocks || state.stocks;
           state.selected = suggestion.symbol;
-          toast(`${suggestion.name}を日本株に追加しました。`);
+          if (payload.analysisCache) applyAnalysisPayload(payload.analysisCache, false);
+          setView("analysis");
+          toast(payload.analysisError
+            ? `${suggestion.name}を日本株に追加しました。分析は失敗しました: ${payload.analysisError}`
+            : `${suggestion.name}を日本株に追加して分析しました。`);
         }
         render();
       } catch (error) {
         toast(error.message);
+      } finally {
+        if (button.isConnected) {
+          button.disabled = false;
+          button.textContent = originalText;
+        }
       }
     });
   });
