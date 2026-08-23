@@ -438,6 +438,7 @@
               <span>Google検索URL</span>
               <input id="settingsGoogleSearchUrl" name="googleSearchUrl" placeholder="https://www.googleapis.com/customsearch/v1">
             </label>
+            <p class="settings-help">接続OKの確認件数は接続テストの結果です。調査で見る数は下の検索結果数で増やします。</p>
           </div>
 
           <div class="settings-card">
@@ -471,7 +472,7 @@
           <div class="settings-card">
             <div class="panel-title compact-title">
               <h3>調査条件</h3>
-              <span>分析と候補検索で使用</span>
+              <span>数を増やすほど深く確認</span>
             </div>
             <section class="control-strip" aria-label="調査条件">
               <label>
@@ -487,16 +488,16 @@
                 <span>予算上限なし</span>
               </label>
               <label>
-                <span>Website</span>
-                <input id="websiteLimit" type="number" min="1" max="20" value="10">
+                <span>検索結果数</span>
+                <input id="websiteLimit" type="number" min="1" max="100" value="10">
               </label>
               <label>
-                <span>階層</span>
-                <input id="depthLimit" type="number" min="1" max="20" value="2">
+                <span>リンク階層</span>
+                <input id="depthLimit" type="number" min="1" max="50" value="2">
               </label>
               <label>
-                <span>1サイト上限</span>
-                <input id="pagesPerSite" type="number" min="1" max="20" value="2">
+                <span>1サイト内ページ</span>
+                <input id="pagesPerSite" type="number" min="1" max="100" value="2">
               </label>
             </section>
           </div>
@@ -504,7 +505,7 @@
           <div class="settings-card">
             <div class="panel-title compact-title">
               <h3>自動更新</h3>
-              <span>起動中だけ実行</span>
+              <span>Macがスリープしていない間だけ</span>
             </div>
             <section class="control-strip" aria-label="自動更新">
               <label class="checkbox-line setting-check">
@@ -524,6 +525,7 @@
                 <input id="settingsDailyDiscoveryHour" type="number" min="0" max="23" step="1" value="7">
               </label>
             </section>
+            <p class="settings-help">手動の更新ボタンとブラウザの再読み込みは、市場時間外でも確認します。</p>
           </div>
 
           <div class="settings-card">
@@ -585,6 +587,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260823-candidate-analysis" type="module"></script>
+  <script src="/app.js?v=20260823-search-limits" type="module"></script>
 </body>
 </html>

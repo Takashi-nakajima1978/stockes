@@ -212,6 +212,13 @@ function setStatus(el, ok, text) {
   el.textContent = text;
 }
 
+function searchStatusText(search = {}, options = {}) {
+  if (!search.ok) return "未接続";
+  const provider = options.provider ? `${search.provider || "検索"} ` : "";
+  const checked = Number.isFinite(search.resultCount) ? `（確認${search.resultCount}件）` : "";
+  return `${provider}接続OK${checked}`;
+}
+
 function toast(message) {
   const node = document.createElement("div");
   node.className = "toast";
@@ -224,13 +231,10 @@ async function loadStatus() {
   try {
     const status = await request("/api/status");
     const search = status.searchEngine || status.googleSearch || {};
-    const searchText = search.ok
-      ? `${search.provider || "検索"} ${Number.isFinite(search.resultCount) ? `${search.resultCount}件` : "接続中"}`
-      : "未接続";
-    setStatus(els.googleStatus, search.ok, searchText);
+    setStatus(els.googleStatus, search.ok, searchStatusText(search, { provider: true }));
     setStatus(els.lmStatus, status.lmStudio.ok, status.lmStudio.ok ? status.lmStudio.model || "接続中" : "未接続");
     applyMarketStatus(status.markets);
-    setStatus(els.settingsSearchStatus, search.ok, search.ok ? `検索可 ${Number.isFinite(search.resultCount) ? `${search.resultCount}件` : ""}`.trim() : "未接続");
+    setStatus(els.settingsSearchStatus, search.ok, searchStatusText(search));
     setStatus(els.settingsLmStatus, status.lmStudio.ok, status.lmStudio.ok ? "接続中" : "未接続");
     if (status.settings) applySettings(status.settings);
   } catch {
@@ -3150,9 +3154,8 @@ els.settingsForm.addEventListener("submit", async (event) => {
     if (els.settingsGraphClientSecret) els.settingsGraphClientSecret.value = "";
     if (els.settingsGraphAccessToken) els.settingsGraphAccessToken.value = "";
     if (payload.status?.searchEngine) {
-      const countText = Number.isFinite(payload.status.searchEngine.resultCount) ? ` ${payload.status.searchEngine.resultCount}件` : "";
-      setStatus(els.googleStatus, payload.status.searchEngine.ok, payload.status.searchEngine.ok ? `${payload.status.searchEngine.provider}${countText}` : "未接続");
-      setStatus(els.settingsSearchStatus, payload.status.searchEngine.ok, payload.status.searchEngine.ok ? `検索可${countText}` : "未接続");
+      setStatus(els.googleStatus, payload.status.searchEngine.ok, searchStatusText(payload.status.searchEngine, { provider: true }));
+      setStatus(els.settingsSearchStatus, payload.status.searchEngine.ok, searchStatusText(payload.status.searchEngine));
     }
     if (payload.status?.lmStudio) {
       setStatus(els.lmStatus, payload.status.lmStudio.ok, payload.status.lmStudio.ok ? payload.status.lmStudio.model || "接続中" : "未接続");

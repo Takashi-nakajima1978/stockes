@@ -22,6 +22,9 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const MAX_MANAGED_STOCKS = 50;
 const MAX_US_STOCKS = 40;
 const MAX_DISCOVERY_SUGGESTIONS = 100;
+const MAX_WEBSITE_LIMIT = 100;
+const MAX_DEPTH_LIMIT = 50;
+const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
 const DISCOVERY_SCORING_VERSION = 2;
 const US_DISCOVERY_UNIT_SIZE = 1;
@@ -590,9 +593,9 @@ function analysisJobSnapshot() {
 async function analyzeWatchlist(options = {}, onProgress = null) {
   const stocks = await readWatchlist();
   const settings = await readSettings();
-  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, 20);
-  const depthLimit = clamp(Number(options.depthLimit || settings.depthLimit || defaultSettings.depthLimit), 1, 20);
-  const pagesPerSite = clamp(Number(options.pagesPerSite || settings.pagesPerSite || defaultSettings.pagesPerSite), 1, 20);
+  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT);
+  const depthLimit = clamp(Number(options.depthLimit || settings.depthLimit || defaultSettings.depthLimit), 1, MAX_DEPTH_LIMIT);
+  const pagesPerSite = clamp(Number(options.pagesPerSite || settings.pagesPerSite || defaultSettings.pagesPerSite), 1, MAX_PAGES_PER_SITE);
   const lmStatus = await checkLmStudio();
   const warnings = [];
   const systemWarnings = [];
@@ -659,9 +662,9 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
 
 async function analyzeSingleWatchStock(stock, options = {}, { notify = false } = {}) {
   const settings = await readSettings();
-  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, 20);
-  const depthLimit = clamp(Number(options.depthLimit || settings.depthLimit || defaultSettings.depthLimit), 1, 20);
-  const pagesPerSite = clamp(Number(options.pagesPerSite || settings.pagesPerSite || defaultSettings.pagesPerSite), 1, 20);
+  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT);
+  const depthLimit = clamp(Number(options.depthLimit || settings.depthLimit || defaultSettings.depthLimit), 1, MAX_DEPTH_LIMIT);
+  const pagesPerSite = clamp(Number(options.pagesPerSite || settings.pagesPerSite || defaultSettings.pagesPerSite), 1, MAX_PAGES_PER_SITE);
   const warnings = [];
   const systemWarnings = [];
   const [price, research] = await Promise.all([
@@ -705,7 +708,7 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
 async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
   const stocks = await readUsWatchlist();
   const settings = await readSettings();
-  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, 20);
+  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT);
   const rows = await mapLimit(stocks, 4, async (stock) => {
     const [price, research] = await Promise.all([
       fetchPriceHistory(stock.symbol),
@@ -770,7 +773,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
 
 async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}) {
   const settings = await readSettings();
-  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, 20);
+  const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT);
   const [price, research] = await Promise.all([
     fetchPriceHistory(stock.symbol),
     researchUsStock(stock, { websiteLimit }),
@@ -1487,7 +1490,7 @@ async function discoverStocks(options = {}, job = null) {
   const slots = Math.max(0, MAX_MANAGED_STOCKS - stocks.length);
   const usSlots = Math.max(0, MAX_US_STOCKS - usStocks.length);
   const totalSlots = slots + usSlots;
-  const websiteLimit = clamp(Number(options.websiteLimit || 20), 1, 20);
+  const websiteLimit = clamp(Number(options.websiteLimit || 20), 1, MAX_WEBSITE_LIMIT);
   const unitSize = clamp(Number(options.unitSize || settings.unitSize || 100), 1, 1000);
   const unitBudgetUnlimited = options.unitBudgetUnlimited === true || settings.unitBudgetUnlimited === true;
   const unitBudget = unitBudgetUnlimited
@@ -5296,9 +5299,9 @@ function normalizeSettings(settings = {}) {
     unitSize: clamp(Number(settings.unitSize || defaultSettings.unitSize), 1, 1000),
     unitBudget: unitBudgetUnlimited ? null : clamp(Number(settings.unitBudget || defaultSettings.unitBudget), 10000, 10000000),
     unitBudgetUnlimited,
-    websiteLimit: clamp(Number(settings.websiteLimit || defaultSettings.websiteLimit), 1, 20),
-    depthLimit: clamp(Number(settings.depthLimit || defaultSettings.depthLimit), 1, 20),
-    pagesPerSite: clamp(Number(settings.pagesPerSite || defaultSettings.pagesPerSite), 1, 20),
+    websiteLimit: clamp(Number(settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT),
+    depthLimit: clamp(Number(settings.depthLimit || defaultSettings.depthLimit), 1, MAX_DEPTH_LIMIT),
+    pagesPerSite: clamp(Number(settings.pagesPerSite || defaultSettings.pagesPerSite), 1, MAX_PAGES_PER_SITE),
     dailyDiscoveryEnabled: settings.dailyDiscoveryEnabled !== false,
     dailyDiscoveryHour: clamp(Number(settings.dailyDiscoveryHour ?? defaultSettings.dailyDiscoveryHour), 0, 23),
     hourlyRefreshEnabled: settings.hourlyRefreshEnabled !== false,
