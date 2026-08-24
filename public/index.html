@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260823-pe-reports">
+  <link rel="stylesheet" href="/styles.css?v=20260824-crypto-fx">
 </head>
 <body>
   <div class="app-shell">
@@ -21,6 +21,7 @@
         <button type="button" data-view-target="analysis" class="active">損益を見る</button>
         <button type="button" data-view-target="stocks">保有を入力</button>
         <button type="button" data-view-target="us">米国株</button>
+        <button type="button" data-view-target="crypto">BTC・為替</button>
         <button type="button" data-view-target="ideas">候補を探す</button>
         <button type="button" data-view-target="settings">接続設定</button>
       </nav>
@@ -348,6 +349,61 @@
         </section>
       </section>
 
+      <section class="view-panel" data-view="crypto">
+        <section class="command-band">
+          <div>
+            <p class="eyebrow">Crypto / FX</p>
+            <h2>BTC・為替</h2>
+          </div>
+          <div class="actions">
+            <button id="cryptoAnalyzeButton" type="button">BTCを更新</button>
+          </div>
+        </section>
+
+        <section class="profit-summary crypto-profit-summary" aria-live="polite">
+          <article class="profit-card primary">
+            <span>BTC/USD</span>
+            <strong id="btcUsdPrice">-</strong>
+            <small>Bitcoinドル価格</small>
+          </article>
+          <article class="profit-card">
+            <span>BTC/JPY</span>
+            <strong id="btcJpyPrice">-</strong>
+            <small>USD/JPYで円換算</small>
+          </article>
+          <article class="profit-card">
+            <span>USD/JPY</span>
+            <strong id="usdJpyRate">-</strong>
+            <small>ドル円</small>
+          </article>
+          <article class="profit-card">
+            <span>保有BTC</span>
+            <strong id="cryptoQuantity">-</strong>
+            <small>残数量</small>
+          </article>
+          <article class="profit-card">
+            <span>円損益</span>
+            <strong id="cryptoPnlJpy">-</strong>
+            <small id="cryptoPnlJpyPct">入力後に計算</small>
+          </article>
+          <article class="profit-card">
+            <span>ドル損益</span>
+            <strong id="cryptoPnlUsd">-</strong>
+            <small id="cryptoPnlUsdPct">入力後に計算</small>
+          </article>
+        </section>
+
+        <section class="research-panel">
+          <div class="panel-title">
+            <h3>BTC Detail</h3>
+            <span id="cryptoLastRun">未更新</span>
+          </div>
+          <div id="cryptoDetail" class="decision-detail">
+            <p>BTCを更新すると、価格・為替・買うタイミング・売るタイミングを表示します。</p>
+          </div>
+        </section>
+      </section>
+
       <section class="view-panel" data-view="ideas">
         <section class="command-band">
           <div>
@@ -586,6 +642,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260823-pe-reports" type="module"></script>
+  <script src="/app.js?v=20260824-crypto-fx" type="module"></script>
 </body>
 </html>

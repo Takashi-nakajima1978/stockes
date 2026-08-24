@@ -10,8 +10,10 @@ const PORT = Number(process.env.PORT || 5173);
 const HOST = process.env.HOST || "127.0.0.1";
 const WATCHLIST_PATH = path.join(__dirname, "data", "watchlist.json");
 const US_WATCHLIST_PATH = path.join(__dirname, "data", "us-watchlist.json");
+const CRYPTO_HOLDING_PATH = path.join(__dirname, "data", "crypto-holding.json");
 const ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "analysis-cache.json");
 const US_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "us-analysis-cache.json");
+const CRYPTO_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "crypto-analysis-cache.json");
 const DISCOVERY_CACHE_PATH = path.join(__dirname, "data", "discovery-cache.json");
 const CANDIDATE_HISTORY_PATH = path.join(__dirname, "data", "candidate-history.json");
 const PRIME_UNIVERSE_PATH = path.join(__dirname, "data", "prime-universe.json");
@@ -176,6 +178,15 @@ const defaultUsWatchlist = [
   { symbol: "INTC", name: "Intel", market: "NASDAQ", holding: false, notes: "CPU, foundry, semiconductor turnaround" },
 ];
 
+const defaultCryptoHolding = {
+  symbol: "BTC",
+  name: "Bitcoin",
+  market: "Crypto",
+  holding: false,
+  positions: [],
+  sales: [],
+};
+
 const usDiscoveryUniverse = [
   { symbol: "IBM", name: "IBM", market: "NYSE", sector: "Technology services", notes: "mature enterprise software, consulting, recurring revenue", currency: "USD" },
   { symbol: "ORCL", name: "Oracle", market: "NYSE", sector: "Enterprise software", notes: "mature software, cloud infrastructure, cash flow", currency: "USD" },
@@ -279,12 +290,25 @@ async function handleApi(req, res, url) {
     return json(res, 200, { stocks: await readUsWatchlist() });
   }
 
+  if (url.pathname === "/api/crypto" && req.method === "GET") {
+    const [holding, analysis] = await Promise.all([
+      readCryptoHolding(),
+      readCryptoAnalysisCache(),
+    ]);
+    return json(res, 200, { holding, analysis });
+  }
+
   if (url.pathname === "/api/analysis" && req.method === "GET") {
     return json(res, 200, await readAnalysisCache());
   }
 
   if (url.pathname === "/api/us-analysis" && req.method === "GET") {
     return json(res, 200, await readUsAnalysisCache());
+  }
+
+  if (url.pathname === "/api/crypto-analyze" && req.method === "POST") {
+    const body = await readJson(req);
+    return json(res, 200, await analyzeCryptoHolding(body));
   }
 
   if (url.pathname === "/api/analysis-job" && req.method === "GET") {
@@ -479,6 +503,17 @@ async function handleApi(req, res, url) {
     });
     await saveUsWatchlist(stocks);
     return json(res, 200, { stock: stocks[index], stocks });
+  }
+
+  if (url.pathname === "/api/crypto" && req.method === "PATCH") {
+    const body = await readJson(req);
+    const holding = await saveCryptoHolding({
+      ...(await readCryptoHolding()),
+      holding: Boolean(body.holding),
+      positions: body.positions,
+      sales: body.sales,
+    });
+    return json(res, 200, { holding, analysis: await readCryptoAnalysisCache() });
   }
 
   if (url.pathname.startsWith("/api/stocks/") && req.method === "DELETE") {
@@ -772,6 +807,41 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
   const previous = await readUsAnalysisCache();
   await saveUsAnalysisCache(result);
   if (notify) await notifyUsChangeSignals(result, previous).catch(() => {});
+  return result;
+}
+
+async function analyzeCryptoHolding() {
+  const holding = await readCryptoHolding();
+  const [btcUsdRaw, usdJpyRaw] = await Promise.all([
+    fetchPriceHistory("BTC-USD"),
+    fetchPriceHistory("JPY=X"),
+  ]);
+  const btcJpyRaw = priceMetrics(combineBtcJpySeries(btcUsdRaw.series || [], usdJpyRaw.series || []), {
+    shortName: "Bitcoin JPY",
+    longName: "Bitcoin / Japanese Yen",
+    symbol: "BTC-JPY",
+  });
+  const fxRate = nullablePositiveNumber(usdJpyRaw.current);
+  const position = cryptoPositionMetrics(holding, btcUsdRaw, btcJpyRaw, fxRate);
+  const timing = {
+    usd: cryptoTradeTiming(btcUsdRaw, "USD"),
+    jpy: cryptoTradeTiming(btcJpyRaw, "JPY"),
+  };
+  const fxTiming = cryptoTradeTiming(usdJpyRaw, "JPY");
+  const result = {
+    generatedAt: new Date().toISOString(),
+    asset: "BTC",
+    name: "Bitcoin",
+    holding,
+    btcUsd: compactCryptoPrice(btcUsdRaw, "USD"),
+    btcJpy: compactCryptoPrice(btcJpyRaw, "JPY"),
+    usdJpy: compactFxPrice(usdJpyRaw),
+    position,
+    timing,
+    fxTiming,
+    summary: cryptoPortfolioSummary(position),
+  };
+  await saveCryptoAnalysisCache(result);
   return result;
 }
 
@@ -1074,6 +1144,132 @@ function compactUsPrice(price = {}) {
   };
 }
 
+function compactCryptoPrice(price = {}, currency = "USD") {
+  return {
+    ...compactUsPrice(price),
+    currency,
+  };
+}
+
+function compactFxPrice(price = {}) {
+  return {
+    current: price.current,
+    return1m: price.return1m,
+    return3m: price.return3m,
+    return6m: price.return6m,
+    return1y: price.return1y,
+    return3y: price.return3y,
+    high52: price.high52,
+    low52: price.low52,
+    high3y: price.high3y,
+    low3y: price.low3y,
+    trendPrice3y: price.trendPrice3y,
+    distanceFromTrend3y: price.distanceFromTrend3y,
+    trend3y: price.trend3y,
+    buyLine1y: price.buyLine1y,
+    distanceFromBuyLine1y: price.distanceFromBuyLine1y,
+    shortName: price.shortName,
+    longName: price.longName,
+    yahooSymbol: price.yahooSymbol,
+    pair: "USD/JPY",
+    currency: "JPY",
+    series: price.series || [],
+  };
+}
+
+function cryptoTradeTiming(price = {}, currency = "USD") {
+  const current = nullablePositiveNumber(price.current);
+  if (!current) {
+    return {
+      buy: { label: "価格待ち", line: null, summary: "価格データ取得後に買うタイミングを出します。", checks: ["価格データ待ち"] },
+      sell: { label: "価格待ち", line: null, stopLine: null, summary: "価格データ取得後に売るタイミングを出します。", checks: ["価格データ待ち"] },
+    };
+  }
+  const buyLine = nullablePositiveNumber(price.buyLine1y) || current * 0.82;
+  const deepLine = nullablePositiveNumber(price.deepBuyLine1y) || buyLine * 0.92;
+  const trendPrice = nullablePositiveNumber(price.trendPrice3y);
+  const high52 = nullablePositiveNumber(price.high52);
+  const gapFromBuy = buyLine ? ((current - buyLine) / buyLine) * 100 : null;
+  const checks = [];
+  if (Number.isFinite(gapFromBuy)) {
+    if (gapFromBuy <= -4) checks.push("買い場ラインを下回る");
+    else if (gapFromBuy <= 3) checks.push("買い場ラインに近い");
+    else checks.push("買い場ラインより高い");
+  }
+  if (trendPrice) {
+    const trendGap = ((current - trendPrice) / trendPrice) * 100;
+    if (trendGap <= 0) checks.push("3年トレンドより安い");
+    else if (trendGap <= 15) checks.push("3年トレンドから大きく離れていない");
+    else checks.push("3年トレンドより高い");
+  }
+  if (Number.isFinite(price.return3m)) {
+    if (price.return3m >= 35) checks.push("短期で急騰気味");
+    else if (price.return3m <= -12) checks.push("直近は押し目");
+    else checks.push("短期は中立");
+  }
+
+  let buyLabel = "押し目待ち";
+  let buySummary = `買うなら ${formatMoney(buyLine, currency)} 以下を目安にします。直近は ${formatMoney(current, currency)} なので、まだ追わずに待つ位置です。`;
+  if (current <= deepLine) {
+    buyLabel = "分割で検討";
+    buySummary = `直近は過去1年のかなり安い側です。${formatMoney(deepLine, currency)} 近辺以下なら、急落理由を確認しつつ分割で検討します。`;
+  } else if (current <= buyLine) {
+    buyLabel = "買い場";
+    buySummary = `直近は買い場ライン以下です。${formatMoney(buyLine, currency)} 以下なら、反発の兆しを見ながら検討しやすい位置です。`;
+  } else if (current <= buyLine * 1.05) {
+    buyLabel = "近い";
+    buySummary = `直近は買い場ラインに近いです。${formatMoney(buyLine, currency)} まで待つか、少額で分けて入る候補です。`;
+  }
+
+  const sellLine = Math.max(
+    current * 1.12,
+    high52 ? high52 * 0.96 : 0,
+    trendPrice ? trendPrice * 1.25 : 0,
+    buyLine * 1.35,
+  );
+  const stopLine = Math.max(1, Math.min(buyLine * 0.88, current * 0.82));
+  const gapFromSell = sellLine ? ((sellLine - current) / current) * 100 : null;
+  let sellLabel = "上振れ待ち";
+  let sellSummary = `${formatMoney(sellLine, currency)} 前後は利確・売却検討ラインです。${formatMoney(stopLine, currency)} を割る場合は、下落理由を再確認します。`;
+  if (Number.isFinite(gapFromSell) && gapFromSell <= 0) {
+    sellLabel = "利確検討";
+    sellSummary = `売り場ラインに到達しています。保有量がある場合は、利益確定か一部売却を検討する位置です。`;
+  } else if (Number.isFinite(gapFromSell) && gapFromSell <= 8) {
+    sellLabel = "利確準備";
+    sellSummary = `売り場ラインが近いです。${formatMoney(sellLine, currency)} 付近では欲張らず一部利確を検討します。`;
+  }
+
+  return {
+    buy: {
+      label: buyLabel,
+      line: roundMoney(buyLine, currency),
+      deepLine: roundMoney(deepLine, currency),
+      currentGapPct: Number.isFinite(gapFromBuy) ? gapFromBuy : null,
+      summary: buySummary,
+      checks: uniqueText(checks).slice(0, 4),
+    },
+    sell: {
+      label: sellLabel,
+      line: roundMoney(sellLine, currency),
+      stopLine: roundMoney(stopLine, currency),
+      currentGapPct: Number.isFinite(gapFromSell) ? gapFromSell : null,
+      summary: sellSummary,
+      checks: uniqueText([
+        high52 ? "52週高値に近い位置を利確目安に含める" : "",
+        trendPrice ? "3年トレンドから上振れた位置を売り場に含める" : "",
+        "買い場ライン割れは確認ラインに使う",
+      ].filter(Boolean)).slice(0, 4),
+    },
+  };
+}
+
+function roundMoney(value, currency = "JPY") {
+  if (!Number.isFinite(value)) return null;
+  return currency === "USD"
+    ? Math.round(value * 100) / 100
+    : Math.round(value);
+}
+
 function usPortfolioSummary(rows = []) {
   return rows.reduce((summary, row) => {
     const position = row.position || {};
@@ -1235,6 +1431,7 @@ async function runHourlyRefreshIfDue() {
   const cache = await readDiscoveryCache();
   const analysisCache = await readAnalysisCache();
   const usCache = await readUsAnalysisCache();
+  const cryptoCache = await readCryptoAnalysisCache();
   const jpOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("JP", now);
   const usOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("US", now);
   if (jpOpen && !analysisJob?.running && isOlderThan(cacheHourKey(analysisCache.generatedAt), cacheHourKey(now.toISOString()))) {
@@ -1242,6 +1439,9 @@ async function runHourlyRefreshIfDue() {
   }
   if (usOpen && isOlderThan(cacheHourKey(usCache.generatedAt), cacheHourKey(now.toISOString()))) {
     void analyzeUsHoldings({ websiteLimit: 5 }, { notify: true }).catch(() => {});
+  }
+  if (isOlderThan(cacheHourKey(cryptoCache.generatedAt), cacheHourKey(now.toISOString()))) {
+    void analyzeCryptoHolding({ auto: true }).catch(() => {});
   }
   if (jpOpen && !discoveryJob?.running && settings.dailyDiscoveryEnabled && jstDate(cache.generatedAt) !== jstDate(now.toISOString())) {
     startDiscoveryJob({ websiteLimit: 20, fullScan: true }, "daily");
@@ -3549,6 +3749,41 @@ async function fetchPriceHistory(symbol) {
   });
 }
 
+function combineBtcJpySeries(btcSeries = [], fxSeries = []) {
+  const btc = (btcSeries || [])
+    .map((point) => ({
+      date: normalizeDate(point.date),
+      close: nullablePositiveNumber(point.close),
+      volume: Number(point.volume),
+    }))
+    .filter((point) => point.date && point.close)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const fx = (fxSeries || [])
+    .map((point) => ({
+      date: normalizeDate(point.date),
+      close: nullablePositiveNumber(point.close),
+    }))
+    .filter((point) => point.date && point.close)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (!btc.length || !fx.length) return [];
+  const combined = [];
+  let fxIndex = 0;
+  let lastRate = null;
+  for (const point of btc) {
+    while (fxIndex < fx.length && fx[fxIndex].date <= point.date) {
+      lastRate = fx[fxIndex].close;
+      fxIndex += 1;
+    }
+    if (!lastRate) continue;
+    combined.push({
+      date: point.date,
+      close: point.close * lastRate,
+      volume: point.volume,
+    });
+  }
+  return combined;
+}
+
 function priceMetrics(series, meta = {}) {
   if (series.length < 2) return emptyPrice(series, meta);
   const current = last(series).close;
@@ -4341,6 +4576,12 @@ async function status() {
         timeZone: "America/New_York",
         regularHours: "9:30-16:00",
       },
+      crypto: {
+        label: "BTC",
+        open: true,
+        timeZone: "UTC",
+        regularHours: "24時間",
+      },
     },
     settings: publicSettings(settings),
   };
@@ -4544,6 +4785,20 @@ function normalizeUsStock(stock) {
   };
 }
 
+function normalizeCryptoHolding(holding = {}) {
+  const positions = normalizeCryptoPositions(holding);
+  const sales = normalizeCryptoSales(holding);
+  const hasPosition = positions.length > 0 || sales.length > 0;
+  return {
+    symbol: "BTC",
+    name: "Bitcoin",
+    market: "Crypto",
+    holding: typeof holding.holding === "boolean" ? holding.holding : hasPosition,
+    positions,
+    sales,
+  };
+}
+
 function resolveMinimumHoldQuantity(stock, quantity) {
   const explicit = nullableNonNegativeNumber(stock.minimumHoldQuantity);
   if (explicit !== null) return explicit;
@@ -4616,6 +4871,155 @@ function positionMetrics(stock, price = {}) {
     totalReturnPct,
     minimumHoldQuantity,
     sellableQuantity,
+  };
+}
+
+function cryptoPositionMetrics(holding, btcUsd = {}, btcJpy = {}, fxRate = null) {
+  const normalized = normalizeCryptoHolding(holding);
+  const positions = normalized.positions;
+  const sales = normalized.sales;
+  const aggregate = aggregateCryptoPositions(positions, fxRate);
+  const saleAggregate = aggregateCryptoSales(sales, fxRate);
+  const grossQuantity = aggregate.quantity || 0;
+  const saleInputQuantity = saleAggregate.quantity || 0;
+  const soldQuantity = Math.min(saleInputQuantity, grossQuantity);
+  const remainingQuantity = Math.max(0, grossQuantity - soldQuantity);
+  const currentUsd = nullablePositiveNumber(btcUsd.current);
+  const currentJpy = nullablePositiveNumber(btcJpy.current) || (currentUsd && fxRate ? currentUsd * fxRate : null);
+  const remainingInvestedUsd = aggregate.purchasePriceUsd && remainingQuantity ? aggregate.purchasePriceUsd * remainingQuantity : null;
+  const remainingInvestedJpy = aggregate.purchasePriceJpy && remainingQuantity ? aggregate.purchasePriceJpy * remainingQuantity : null;
+  const realizedProceedsUsd = saleInputQuantity > 0 && soldQuantity < saleInputQuantity
+    ? (saleAggregate.proceedsUsd || 0) * (soldQuantity / saleInputQuantity)
+    : saleAggregate.proceedsUsd;
+  const realizedProceedsJpy = saleInputQuantity > 0 && soldQuantity < saleInputQuantity
+    ? (saleAggregate.proceedsJpy || 0) * (soldQuantity / saleInputQuantity)
+    : saleAggregate.proceedsJpy;
+  const realizedPnlUsd = aggregate.purchasePriceUsd && soldQuantity
+    ? (realizedProceedsUsd || 0) - (aggregate.purchasePriceUsd * soldQuantity)
+    : null;
+  const realizedPnlJpy = aggregate.purchasePriceJpy && soldQuantity
+    ? (realizedProceedsJpy || 0) - (aggregate.purchasePriceJpy * soldQuantity)
+    : null;
+  const unrealizedPnlUsd = aggregate.purchasePriceUsd && currentUsd && remainingQuantity
+    ? (currentUsd - aggregate.purchasePriceUsd) * remainingQuantity
+    : null;
+  const unrealizedPnlJpy = aggregate.purchasePriceJpy && currentJpy && remainingQuantity
+    ? (currentJpy - aggregate.purchasePriceJpy) * remainingQuantity
+    : null;
+  const pnlAmountUsd = sumFinite([realizedPnlUsd, unrealizedPnlUsd]);
+  const pnlAmountJpy = sumFinite([realizedPnlJpy, unrealizedPnlJpy]);
+  const grossInvestedUsd = aggregate.investedUsd || null;
+  const grossInvestedJpy = aggregate.investedJpy || null;
+  return {
+    positions,
+    sales,
+    purchaseDate: aggregate.purchaseDate,
+    purchasePriceUsd: aggregate.purchasePriceUsd,
+    purchasePriceJpy: aggregate.purchasePriceJpy,
+    quantity: remainingQuantity || null,
+    grossQuantity: grossQuantity || null,
+    soldQuantity: soldQuantity || null,
+    holdingDays: aggregate.purchaseDate ? daysSince(aggregate.purchaseDate) : null,
+    currentUsd,
+    currentJpy,
+    investedUsd: remainingInvestedUsd,
+    investedJpy: remainingInvestedJpy,
+    grossInvestedUsd,
+    grossInvestedJpy,
+    marketValueUsd: currentUsd && remainingQuantity ? currentUsd * remainingQuantity : null,
+    marketValueJpy: currentJpy && remainingQuantity ? currentJpy * remainingQuantity : null,
+    realizedPnlUsd,
+    realizedPnlJpy,
+    unrealizedPnlUsd,
+    unrealizedPnlJpy,
+    pnlAmountUsd,
+    pnlAmountJpy,
+    pnlPctUsd: grossInvestedUsd && Number.isFinite(pnlAmountUsd) ? (pnlAmountUsd / grossInvestedUsd) * 100 : null,
+    pnlPctJpy: grossInvestedJpy && Number.isFinite(pnlAmountJpy) ? (pnlAmountJpy / grossInvestedJpy) * 100 : null,
+    realizedProceedsUsd: realizedProceedsUsd || null,
+    realizedProceedsJpy: realizedProceedsJpy || null,
+    fxRate,
+    jpyEstimated: aggregate.jpyEstimated || saleAggregate.jpyEstimated,
+    usdEstimated: aggregate.usdEstimated || saleAggregate.usdEstimated,
+  };
+}
+
+function aggregateCryptoPositions(positions = [], fxRate = null) {
+  const quantity = positions.reduce((sum, lot) => sum + lot.quantity, 0);
+  let investedUsd = 0;
+  let investedJpy = 0;
+  let usdEstimated = false;
+  let jpyEstimated = false;
+  for (const lot of positions) {
+    if (lot.purchasePriceUsd) investedUsd += lot.purchasePriceUsd * lot.quantity;
+    else if (lot.purchasePriceJpy && fxRate) {
+      investedUsd += (lot.purchasePriceJpy / fxRate) * lot.quantity;
+      usdEstimated = true;
+    }
+    if (lot.purchasePriceJpy) investedJpy += lot.purchasePriceJpy * lot.quantity;
+    else if (lot.purchasePriceUsd && fxRate) {
+      investedJpy += (lot.purchasePriceUsd * fxRate) * lot.quantity;
+      jpyEstimated = true;
+    }
+  }
+  return {
+    purchaseDate: positions.map((lot) => lot.purchaseDate).filter(Boolean).sort()[0] || "",
+    purchasePriceUsd: quantity > 0 && investedUsd > 0 ? investedUsd / quantity : null,
+    purchasePriceJpy: quantity > 0 && investedJpy > 0 ? investedJpy / quantity : null,
+    quantity: quantity || null,
+    investedUsd: investedUsd || null,
+    investedJpy: investedJpy || null,
+    usdEstimated,
+    jpyEstimated,
+  };
+}
+
+function aggregateCryptoSales(sales = [], fxRate = null) {
+  const quantity = sales.reduce((sum, lot) => sum + lot.quantity, 0);
+  let proceedsUsd = 0;
+  let proceedsJpy = 0;
+  let usdEstimated = false;
+  let jpyEstimated = false;
+  for (const lot of sales) {
+    if (lot.sellPriceUsd) proceedsUsd += lot.sellPriceUsd * lot.quantity;
+    else if (lot.sellPriceJpy && fxRate) {
+      proceedsUsd += (lot.sellPriceJpy / fxRate) * lot.quantity;
+      usdEstimated = true;
+    }
+    if (lot.sellPriceJpy) proceedsJpy += lot.sellPriceJpy * lot.quantity;
+    else if (lot.sellPriceUsd && fxRate) {
+      proceedsJpy += (lot.sellPriceUsd * fxRate) * lot.quantity;
+      jpyEstimated = true;
+    }
+  }
+  return {
+    sellDate: sales.map((lot) => lot.sellDate).filter(Boolean).sort().at(-1) || "",
+    sellPriceUsd: quantity > 0 && proceedsUsd > 0 ? proceedsUsd / quantity : null,
+    sellPriceJpy: quantity > 0 && proceedsJpy > 0 ? proceedsJpy / quantity : null,
+    quantity: quantity || null,
+    proceedsUsd: proceedsUsd || null,
+    proceedsJpy: proceedsJpy || null,
+    usdEstimated,
+    jpyEstimated,
+  };
+}
+
+function sumFinite(values = []) {
+  const clean = values.filter(Number.isFinite);
+  return clean.length ? clean.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function cryptoPortfolioSummary(position = {}) {
+  return {
+    quantity: position.quantity,
+    investedUsd: position.investedUsd,
+    investedJpy: position.investedJpy,
+    marketValueUsd: position.marketValueUsd,
+    marketValueJpy: position.marketValueJpy,
+    pnlAmountUsd: position.pnlAmountUsd,
+    pnlAmountJpy: position.pnlAmountJpy,
+    pnlPctUsd: position.pnlPctUsd,
+    pnlPctJpy: position.pnlPctJpy,
   };
 }
 
@@ -5700,6 +6104,27 @@ async function saveUsWatchlist(stocks) {
   await writeFile(US_WATCHLIST_PATH, JSON.stringify(stocks.slice(0, MAX_US_STOCKS).map(normalizeUsStock), null, 2));
 }
 
+async function readCryptoHolding() {
+  if (!existsSync(CRYPTO_HOLDING_PATH)) {
+    await saveCryptoHolding(defaultCryptoHolding);
+    return normalizeCryptoHolding(defaultCryptoHolding);
+  }
+  try {
+    const holding = JSON.parse(await readFile(CRYPTO_HOLDING_PATH, "utf8"));
+    return normalizeCryptoHolding(holding);
+  } catch {
+    await saveCryptoHolding(defaultCryptoHolding);
+    return normalizeCryptoHolding(defaultCryptoHolding);
+  }
+}
+
+async function saveCryptoHolding(holding) {
+  const normalized = normalizeCryptoHolding(holding);
+  await mkdir(path.dirname(CRYPTO_HOLDING_PATH), { recursive: true });
+  await writeFile(CRYPTO_HOLDING_PATH, JSON.stringify(normalized, null, 2));
+  return normalized;
+}
+
 async function readUsAnalysisCache() {
   try {
     const cached = JSON.parse(await readFile(US_ANALYSIS_CACHE_PATH, "utf8"));
@@ -5725,6 +6150,65 @@ async function saveUsAnalysisCache(result) {
     warnings: result.warnings || [],
     analyses: result.analyses || [],
     summary: result.summary || usPortfolioSummary(result.analyses || []),
+  }, null, 2));
+}
+
+async function readCryptoAnalysisCache() {
+  try {
+    const cached = JSON.parse(await readFile(CRYPTO_ANALYSIS_CACHE_PATH, "utf8"));
+    return {
+      generatedAt: cached.generatedAt || "",
+      asset: "BTC",
+      name: "Bitcoin",
+      holding: normalizeCryptoHolding(cached.holding || defaultCryptoHolding),
+      btcUsd: cached.btcUsd || compactCryptoPrice(emptyPrice(), "USD"),
+      btcJpy: cached.btcJpy || compactCryptoPrice(emptyPrice(), "JPY"),
+      usdJpy: cached.usdJpy || compactFxPrice(emptyPrice()),
+      position: cached.position || cryptoPositionMetrics(defaultCryptoHolding),
+      timing: cached.timing || {
+        usd: cryptoTradeTiming(emptyPrice(), "USD"),
+        jpy: cryptoTradeTiming(emptyPrice(), "JPY"),
+      },
+      fxTiming: cached.fxTiming || cryptoTradeTiming(emptyPrice(), "JPY"),
+      summary: cached.summary || cryptoPortfolioSummary(cached.position || {}),
+    };
+  } catch {
+    return {
+      generatedAt: "",
+      asset: "BTC",
+      name: "Bitcoin",
+      holding: normalizeCryptoHolding(defaultCryptoHolding),
+      btcUsd: compactCryptoPrice(emptyPrice(), "USD"),
+      btcJpy: compactCryptoPrice(emptyPrice(), "JPY"),
+      usdJpy: compactFxPrice(emptyPrice()),
+      position: cryptoPositionMetrics(defaultCryptoHolding),
+      timing: {
+        usd: cryptoTradeTiming(emptyPrice(), "USD"),
+        jpy: cryptoTradeTiming(emptyPrice(), "JPY"),
+      },
+      fxTiming: cryptoTradeTiming(emptyPrice(), "JPY"),
+      summary: cryptoPortfolioSummary({}),
+    };
+  }
+}
+
+async function saveCryptoAnalysisCache(result) {
+  await mkdir(path.dirname(CRYPTO_ANALYSIS_CACHE_PATH), { recursive: true });
+  await writeFile(CRYPTO_ANALYSIS_CACHE_PATH, JSON.stringify({
+    generatedAt: result.generatedAt,
+    asset: "BTC",
+    name: "Bitcoin",
+    holding: normalizeCryptoHolding(result.holding || defaultCryptoHolding),
+    btcUsd: result.btcUsd || compactCryptoPrice(emptyPrice(), "USD"),
+    btcJpy: result.btcJpy || compactCryptoPrice(emptyPrice(), "JPY"),
+    usdJpy: result.usdJpy || compactFxPrice(emptyPrice()),
+    position: result.position || cryptoPositionMetrics(result.holding || defaultCryptoHolding),
+    timing: result.timing || {
+      usd: cryptoTradeTiming(emptyPrice(), "USD"),
+      jpy: cryptoTradeTiming(emptyPrice(), "JPY"),
+    },
+    fxTiming: result.fxTiming || cryptoTradeTiming(emptyPrice(), "JPY"),
+    summary: result.summary || cryptoPortfolioSummary(result.position || {}),
   }, null, 2));
 }
 
@@ -5970,6 +6454,34 @@ function normalizeSales(stock) {
     .filter((lot) => lot.sellPrice && lot.quantity)
     .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99"))
     .slice(0, 50);
+}
+
+function normalizeCryptoPositions(holding = {}) {
+  const raw = Array.isArray(holding.positions) ? holding.positions : [];
+  return raw
+    .map((lot) => ({
+      purchaseDate: normalizeDate(lot.purchaseDate),
+      purchasePriceUsd: nullablePositiveNumber(lot.purchasePriceUsd ?? lot.purchasePrice),
+      purchasePriceJpy: nullablePositiveNumber(lot.purchasePriceJpy),
+      quantity: nullablePositiveNumber(lot.quantity),
+    }))
+    .filter((lot) => lot.quantity && (lot.purchasePriceUsd || lot.purchasePriceJpy))
+    .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"))
+    .slice(0, 80);
+}
+
+function normalizeCryptoSales(holding = {}) {
+  const raw = Array.isArray(holding.sales) ? holding.sales : [];
+  return raw
+    .map((lot) => ({
+      sellDate: normalizeDate(lot.sellDate || lot.saleDate),
+      sellPriceUsd: nullablePositiveNumber(lot.sellPriceUsd ?? lot.sellPrice ?? lot.salePrice),
+      sellPriceJpy: nullablePositiveNumber(lot.sellPriceJpy),
+      quantity: nullablePositiveNumber(lot.quantity),
+    }))
+    .filter((lot) => lot.quantity && (lot.sellPriceUsd || lot.sellPriceJpy))
+    .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99"))
+    .slice(0, 80);
 }
 
 function normalizeDate(value = "") {
