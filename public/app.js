@@ -1573,6 +1573,7 @@ function exitPlanHtml(plan = {}) {
         <span>${escapeHtml(alert.action || "要確認")}</span>
       </div>
       <p>${escapeHtml(alert.summary || "")}</p>
+      ${alertPointsHtml(alert.points)}
     </article>
   `).join("");
   return `
@@ -1594,6 +1595,15 @@ function exitPlanHtml(plan = {}) {
         ${alerts}
       </div>
     </section>
+  `;
+}
+
+function alertPointsHtml(points = []) {
+  if (!Array.isArray(points) || !points.length) return "";
+  return `
+    <ul class="compact-list">
+      ${points.slice(0, 8).map((point) => `<li>${linkifyPlainText(point)}</li>`).join("")}
+    </ul>
   `;
 }
 
@@ -2631,6 +2641,16 @@ function escapeHtml(value = "") {
 
 function escapeAttr(value = "") {
   return escapeHtml(value).replaceAll("`", "&#96;");
+}
+
+function linkifyPlainText(value = "") {
+  const text = String(value);
+  const urlMatch = text.match(/https?:\/\/\S+/);
+  if (!urlMatch) return escapeHtml(text);
+  const url = urlMatch[0].replace(/[)、。]+$/, "");
+  const before = text.slice(0, urlMatch.index);
+  const after = text.slice((urlMatch.index || 0) + urlMatch[0].length);
+  return `${escapeHtml(before)}<a href="${escapeAttr(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>${escapeHtml(after)}`;
 }
 
 function trendLabel(value) {

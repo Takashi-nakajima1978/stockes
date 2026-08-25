@@ -1447,6 +1447,19 @@ tr:hover .drag-handle,
   line-height: 1.45;
 }
 
+.compact-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.compact-list a {
+  color: var(--buy);
+  word-break: break-all;
+}
+
 .reason-list,
 .risk-list {
   margin: 0;

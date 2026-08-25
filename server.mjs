@@ -1031,16 +1031,17 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     evidence: row.evidence.slice(0, 5).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
       source: item.source,
+      url: item.url,
       snippet: cleanText(item.originalSnippet || item.snippet || "").slice(0, 260),
     })),
   }));
   const prompt = [
     "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
     "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益、受取配当、年間配当目安、配当込み損益を分けて読み、利益保証をせず、保有継続の確認材料と注意点を分けてください。",
-    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"]}}]}。",
+    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"summary\":\"...\"}]}}]}。",
     "stanceは HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED のいずれか。changeLevelは normal, watch, important のいずれか。",
     "NVIDIAのような10倍候補は20〜30%の株価下落だけではEXITにしません。売上成長の鈍化、guidanceがconsensusを下回る、需要・粗利・受注の構造悪化、成長投資テーマの破綻など、買った根拠が崩れた時だけgrowthExit.levelをexit_alertにしてください。",
-    "summaryJaは90字以内、goodとrisksは各3件まで、evidenceJaのsummaryは各80字以内にしてください。",
+    "summaryJaは90字以内、goodとrisksは各3件まで、evidenceJaのsummaryは各80字以内にしてください。growthExit.evidenceは根拠にした記事や開示だけを最大3件入れてください。",
     "",
     JSON.stringify({ stocks: items }),
   ].join("\n");
@@ -4359,6 +4360,7 @@ async function aiBatchDecisions(rows, onProgress = null) {
     evidence: research.evidence.slice(0, 6).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
       source: item.source,
+      url: item.url,
       snippet: cleanText(item.snippet || "").slice(0, 220),
       kind: item.kind,
     })),
@@ -4393,11 +4395,11 @@ async function aiDecisionChunk(model, items) {
   const prompt = [
     "あなたは日本株のリサーチ補助AIです。将来利益を保証せず、売買判断の根拠とリスクを厳密に分けてください。",
     "注意点は、トレードのプロが最低限確認する観点で評価してください。業種環境も個社とは別の材料として読み込んでください。",
-    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"]}}]}。",
+    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"summary\":\"...\"}]}}]}。",
     "actionは BUY, HOLD, SELL, WATCH のいずれか。SELLは即時売却ではなく、数週間から数か月の保有理由を見直す意味です。confidenceは0-100。",
     "NVIDIAのような10倍候補は20〜30%の株価下落だけではファンダ崩壊にしないでください。growthExitは、売上高成長率の明確な鈍化、ガイダンスが市場予想を下回る、需要・粗利・受注の構造悪化、減配/下方修正など、買った根拠そのものが崩れた時だけexit_alertにしてください。",
     "riskChecksは必ずこの6項目にしてください: 業績・決算, 業種環境, 株価位置, 需給・流動性, 配当, 保有損益。levelは low, medium, high のいずれか。",
-    "thesisは120字以内、reasonsとrisksは各3件まで、riskChecksのsummaryは各80字以内にしてください。",
+    "thesisは120字以内、reasonsとrisksは各3件まで、riskChecksのsummaryは各80字以内にしてください。growthExit.evidenceは根拠にした記事や開示だけを最大3件入れてください。",
     "ユーザーはデイトレーダーではありません。短期ノイズだけで売買を促さず、根拠不足、材料が古い、検索結果が薄い場合はWATCHを優先してください。",
     "3年で大きく上がった後、現在値が3年の流れや安値から見て高い位置にある場合はBUYにせず、WATCHかHOLDにしてください。",
     "配当利回り、配当の増減、購入日以降の配当込み損益を見てください。高配当だけでBUYにせず、株価下落で利回りが高く見える可能性をリスクに入れてください。",
@@ -4540,7 +4542,14 @@ function normalizeDecision(stock, price, research, decision) {
   const position = positionMetrics(stock, price);
   const safety = decisionSafetyOverride(stock, price, initialAction, position);
   const action = safety.action;
-  const growthExit = normalizeGrowthExit(decision.growthExit || ruleGrowthExit(stock, research, price));
+  const fallbackGrowthExit = ruleGrowthExit(stock, research, price);
+  const growthExit = normalizeGrowthExit(decision.growthExit || fallbackGrowthExit);
+  if (!growthExit.evidence.length && fallbackGrowthExit.evidence?.length) {
+    growthExit.evidence = normalizeGrowthExitEvidence(fallbackGrowthExit.evidence).slice(0, 3);
+  }
+  if (!growthExit.signals.length && fallbackGrowthExit.signals?.length) {
+    growthExit.signals = asStringArray(fallbackGrowthExit.signals).slice(0, 5);
+  }
   const reasons = uniqueText([...asStringArray(decision.reasons), ...safety.reasons]).slice(0, 5);
   const risks = uniqueText([...asStringArray(decision.risks), ...safety.risks]).slice(0, 5);
   const riskChecks = mergeRiskChecks(
@@ -4570,18 +4579,17 @@ function normalizeDecision(stock, price, research, decision) {
 
 function ruleGrowthExit(stock, research = {}, price = {}) {
   const context = cleanText(research.contextText || "").toLowerCase();
-  const exitSignals = [
-    ["下方修正", /下方修正|guidance cut|lowered guidance|cut forecast/i],
-    ["ガイダンス失望", /ガイダンス.{0,30}(下回|未達)|guidance.{0,80}(below|miss|disappoint)/i],
-    ["成長鈍化", /成長率.{0,20}(鈍化|低下)|売上.{0,20}(鈍化|減速)|growth.{0,80}(slow|decelerate)/i],
-    ["減配", /減配|無配|dividend cut/i],
-    ["赤字・損失", /赤字|減損|特別損失|loss|impairment/i],
-  ].filter(([, pattern]) => pattern.test(context)).map(([label]) => label);
+  const matchedEvidence = growthExitEvidenceFromResearch(research);
+  const exitSignals = uniqueText([
+    ...growthExitPatterns().filter(([, pattern]) => pattern.test(context)).map(([label]) => label),
+    ...matchedEvidence.flatMap((item) => item.signals || []),
+  ]);
   if (exitSignals.some((item) => ["下方修正", "ガイダンス失望", "減配"].includes(item))) {
     return {
       level: "exit_alert",
-      reason: `${stock.name}の買った根拠に関わる悪材料が検索結果にあります。`,
+      reason: `${stock.name}の買った根拠に関わる悪材料が検索結果にあります。通知内の根拠リンクで確認してください。`,
       signals: exitSignals,
+      evidence: matchedEvidence,
     };
   }
   if (exitSignals.length) {
@@ -4589,6 +4597,7 @@ function ruleGrowthExit(stock, research = {}, price = {}) {
       level: "watch",
       reason: `${stock.name}に成長鈍化や損失関連の確認材料があります。`,
       signals: exitSignals,
+      evidence: matchedEvidence,
     };
   }
   if (price.trend3y === "UP" && Number.isFinite(price.return3y) && price.return3y > 80) {
@@ -4601,6 +4610,34 @@ function ruleGrowthExit(stock, research = {}, price = {}) {
   return { level: "normal", reason: "ファンダ崩壊を示す材料は未検出です。", signals: [] };
 }
 
+function growthExitPatterns() {
+  return [
+    ["下方修正", /下方修正|guidance cut|lowered guidance|cut forecast/i],
+    ["ガイダンス失望", /ガイダンス.{0,30}(下回|未達)|guidance.{0,80}(below|miss|disappoint)/i],
+    ["成長鈍化", /成長率.{0,20}(鈍化|低下)|売上.{0,20}(鈍化|減速)|growth.{0,80}(slow|decelerate)/i],
+    ["減配", /減配|無配|dividend cut/i],
+    ["赤字・損失", /赤字|減損|特別損失|loss|impairment/i],
+  ];
+}
+
+function growthExitEvidenceFromResearch(research = {}) {
+  const evidence = Array.isArray(research.evidence) ? research.evidence : [];
+  return evidence.map((item) => {
+    const text = cleanText(`${item.title || ""}\n${item.snippet || ""}\n${item.source || ""}`);
+    const signals = growthExitPatterns()
+      .filter(([, pattern]) => pattern.test(text))
+      .map(([label]) => label);
+    if (!signals.length) return null;
+    return {
+      title: cleanText(item.title || item.source || "検索結果").slice(0, 120),
+      source: cleanText(item.source || hostOf(item.url || "") || "").slice(0, 80),
+      url: normalizeUrl(item.url) || "",
+      summary: cleanText(item.snippet || "").slice(0, 180),
+      signals: uniqueText(signals).slice(0, 5),
+    };
+  }).filter(Boolean).slice(0, 3);
+}
+
 function normalizeGrowthExit(value = {}) {
   const level = ["normal", "watch", "exit_alert"].includes(String(value.level || "").toLowerCase())
     ? String(value.level).toLowerCase()
@@ -4609,7 +4646,19 @@ function normalizeGrowthExit(value = {}) {
     level,
     reason: String(value.reason || (level === "normal" ? "ファンダ崩壊を示す材料は未検出です。" : "確認が必要です。")).slice(0, 180),
     signals: asStringArray(value.signals).slice(0, 5),
+    evidence: normalizeGrowthExitEvidence(value.evidence || value.sources).slice(0, 3),
   };
+}
+
+function normalizeGrowthExitEvidence(items = []) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => ({
+    title: cleanText(item.title || item.headline || "").slice(0, 120),
+    source: cleanText(item.source || hostOf(item.url || "") || "").slice(0, 80),
+    url: normalizeUrl(item.url) || "",
+    summary: cleanText(item.summary || item.snippet || item.reason || "").slice(0, 180),
+    signals: asStringArray(item.signals).slice(0, 5),
+  })).filter((item) => item.title || item.summary || item.url);
 }
 
 async function attachExitPlansToAnalyses(analyses = [], settings = defaultSettings, options = {}) {
@@ -4648,10 +4697,10 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
     alerts.push({
       type: "FUNDAMENTAL_EXIT",
       label: "ファンダ崩壊",
-      action: "売りアラート",
+      action: "ファンダ売り確認アラート",
       confidence: 92,
       summary: growthExit.reason,
-      points: growthExit.signals,
+      points: growthExitAlertPoints(growthExit, analysis),
     });
   }
   if (trailingTriggered) {
@@ -4660,7 +4709,7 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
       label: "トレーリングストップ",
       action: "利確/損切りアラート",
       confidence: 88,
-      summary: `最高値${formatMoney(highWaterPrice, currency)}から${formatSignedPercent(drawdownFromHighPct)}下落し、${trailingStopPct}%下落ラインを割りました。`,
+      summary: `最高値${formatMoney(highWaterPrice, currency)}から${Math.abs(drawdownFromHighPct).toFixed(1)}%下落し、${trailingStopPct}%下落ラインを割りました。`,
       points: [
         `最高値: ${formatMoney(highWaterPrice, currency)}${highWaterDate ? ` (${highWaterDate})` : ""}`,
         `確認ライン: ${formatMoney(trailingStopPrice, currency)}`,
@@ -4706,6 +4755,43 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
     alerts,
     summary: exitPlanSummary(alertLevel, growthExit, onkabu, trailingStopPct, drawdownFromHighPct),
   };
+}
+
+function growthExitAlertPoints(growthExit = {}, analysis = {}) {
+  const points = [];
+  const signals = asStringArray(growthExit.signals).slice(0, 5);
+  if (signals.length) points.push(`検出材料: ${signals.join(" / ")}`);
+  const evidence = growthExitEvidenceForAlert(growthExit, analysis).slice(0, 3);
+  evidence.forEach((item, index) => {
+    points.push(`根拠${index + 1}: ${item.title || item.source || "確認元"}`);
+    if (item.summary) points.push(`内容: ${item.summary}`);
+    if (item.url) points.push(`URL: ${item.url}`);
+  });
+  if (!evidence.length) {
+    points.push("根拠リンク: 画面のEvidence要約で、悪材料に該当した検索結果を確認してください。");
+  }
+  return points.slice(0, 10);
+}
+
+function growthExitEvidenceForAlert(growthExit = {}, analysis = {}) {
+  const explicit = normalizeGrowthExitEvidence(growthExit.evidence);
+  if (explicit.length) return explicit;
+  const signals = new Set(asStringArray(growthExit.signals));
+  const evidence = Array.isArray(analysis.evidence) ? analysis.evidence : [];
+  return evidence.map((item) => {
+    const text = cleanText(`${item.title || ""}\n${item.summaryJa || item.snippet || ""}\n${item.source || ""}`);
+    const matchedSignals = growthExitPatterns()
+      .filter(([label, pattern]) => (signals.size ? signals.has(label) : true) && pattern.test(text))
+      .map(([label]) => label);
+    if (!matchedSignals.length) return null;
+    return {
+      title: cleanText(item.title || item.source || "検索結果").slice(0, 120),
+      source: cleanText(item.source || hostOf(item.url || "") || "").slice(0, 80),
+      url: normalizeUrl(item.url) || "",
+      summary: cleanText(item.summaryJa || item.snippet || "").slice(0, 180),
+      signals: uniqueText(matchedSignals).slice(0, 5),
+    };
+  }).filter(Boolean);
 }
 
 function bestKnownHighPoint(price = {}, current = null) {
@@ -6458,7 +6544,7 @@ function exitPlanSignals(analysis = {}) {
       `出口ルール: ${alert.label}`,
       plan.summary,
       ...(alert.points || []),
-    ].filter(Boolean).slice(0, 6),
+    ].filter(Boolean).slice(0, 10),
   }));
 }
 
