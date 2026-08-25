@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260824-crypto-fx">
+  <link rel="stylesheet" href="/styles.css?v=20260826-shareholders">
 </head>
 <body>
   <div class="app-shell">
@@ -610,6 +610,31 @@
 
           <div class="settings-card">
             <div class="panel-title compact-title">
+              <h3>株主情報監視</h3>
+              <span id="settingsShareholderStatus">未確認</span>
+            </div>
+            <section class="control-strip" aria-label="株主情報監視">
+              <label class="checkbox-line setting-check">
+                <input id="settingsShareholderMonitorEnabled" type="checkbox">
+                <span>Watchlistの株主情報を監視</span>
+              </label>
+              <label class="checkbox-line setting-check">
+                <input id="settingsShareholderUseLmStudio" type="checkbox">
+                <span>LM Studioで比率を抽出</span>
+              </label>
+              <label>
+                <span>通知する変化幅%</span>
+                <input id="settingsShareholderChangeThresholdPct" type="number" min="0.1" max="20" step="0.1" value="2">
+              </label>
+            </section>
+            <div class="diagnostics-actions">
+              <button id="shareholderCheckButton" type="button" class="secondary">株主情報を今すぐ確認</button>
+            </div>
+            <small class="settings-help">機関投資家比率が前回から指定ポイント以上変わった銘柄だけTeamsへ送ります。比率が取れない場合は主要株主リンクだけ保存します。</small>
+          </div>
+
+          <div class="settings-card">
+            <div class="panel-title compact-title">
               <h3>出口ルール</h3>
               <span>10倍候補を握るための売り条件</span>
             </div>
@@ -689,6 +714,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260825-exit-rules" type="module"></script>
+  <script src="/app.js?v=20260826-shareholders" type="module"></script>
 </body>
 </html>

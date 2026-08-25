@@ -17,6 +17,7 @@ const CRYPTO_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "crypto-analysis
 const DISCOVERY_CACHE_PATH = path.join(__dirname, "data", "discovery-cache.json");
 const CANDIDATE_HISTORY_PATH = path.join(__dirname, "data", "candidate-history.json");
 const EXIT_STATE_PATH = path.join(__dirname, "data", "exit-state.json");
+const SHAREHOLDER_CACHE_PATH = path.join(__dirname, "data", "shareholder-cache.json");
 const PRIME_UNIVERSE_PATH = path.join(__dirname, "data", "prime-universe.json");
 const NOTIFICATION_LOG_PATH = path.join(__dirname, "data", "notification-log.json");
 const EXCLUDED_CANDIDATES_PATH = path.join(__dirname, "data", "excluded-candidates.json");
@@ -90,6 +91,9 @@ const defaultSettings = {
   growthExitEnabled: true,
   trailingStopPct: 25,
   onkabuProfitPct: 100,
+  shareholderMonitorEnabled: true,
+  shareholderChangeThresholdPct: 2,
+  shareholderUseLmStudio: true,
   notificationsEnabled: false,
   notificationMinConfidence: 78,
   notificationMinNetEdgeYen: 5000,
@@ -324,13 +328,13 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/analysis" && req.method === "GET") {
     const [cached, settings] = await Promise.all([readAnalysisCache(), readSettings()]);
-    const analyses = await attachExitPlansToAnalyses(cached.analyses, settings);
+    const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(cached.analyses, settings));
     return json(res, 200, { ...cached, analyses });
   }
 
   if (url.pathname === "/api/us-analysis" && req.method === "GET") {
     const [cached, settings] = await Promise.all([readUsAnalysisCache(), readSettings()]);
-    const analyses = await attachExitPlansToAnalyses(cached.analyses, settings, { currency: "USD" });
+    const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(cached.analyses, settings, { currency: "USD" }));
     return json(res, 200, { ...cached, analyses, summary: usPortfolioSummary(analyses) });
   }
 
@@ -346,6 +350,18 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/disclosures/check" && req.method === "POST") {
     const body = await readJson(req);
     return json(res, 200, await checkTimelyDisclosures({
+      force: true,
+      notify: body.notify !== false,
+    }));
+  }
+
+  if (url.pathname === "/api/shareholders" && req.method === "GET") {
+    return json(res, 200, await readShareholderCache());
+  }
+
+  if (url.pathname === "/api/shareholders/check" && req.method === "POST") {
+    const body = await readJson(req);
+    return json(res, 200, await updateShareholderSnapshots({
       force: true,
       notify: body.notify !== false,
     }));
@@ -722,9 +738,9 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
     onProgress?.({ phase: "価格ルールで整理中", aiDone: 0, aiCurrent: 0, aiTotal: 0 });
   }
 
-  const analyses = await attachExitPlansToAnalyses(rows.map(({ stock, price, research, fallback }) => {
+  const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(rows.map(({ stock, price, research, fallback }) => {
     return normalizeDecision(stock, price, research, aiBySymbol.get(stock.symbol) || fallback);
-  }), settings);
+  }), settings));
 
   const result = {
     generatedAt: new Date().toISOString(),
@@ -769,9 +785,9 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
     }
   }
 
-  const analysis = (await attachExitPlansToAnalyses([
+  const analysis = (await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses([
     normalizeDecision(stock, price, research, aiDecision || row.fallback),
-  ], settings))[0];
+  ], settings)))[0];
   const previous = await readAnalysisCache();
   const result = {
     generatedAt: new Date().toISOString(),
@@ -838,7 +854,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
     });
   }
 
-  const analyses = await attachExitPlansToAnalyses(rows, settings, { currency: "USD" });
+  const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(rows, settings, { currency: "USD" }));
   const result = {
     generatedAt: new Date().toISOString(),
     currency: "USD",
@@ -930,7 +946,7 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
   }
 
   const previous = await readUsAnalysisCache();
-  const rowWithExit = (await attachExitPlansToAnalyses([row], settings, { currency: "USD" }))[0];
+  const rowWithExit = (await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses([row], settings, { currency: "USD" })))[0];
   const analyses = mergeAnalysisRows(previous.analyses, rowWithExit);
   const result = {
     generatedAt: new Date().toISOString(),
@@ -1483,6 +1499,7 @@ async function runHourlyRefreshIfDue() {
   const usCache = await readUsAnalysisCache();
   const cryptoCache = await readCryptoAnalysisCache();
   const disclosureCache = await readDisclosureCache();
+  const shareholderCache = await readShareholderCache();
   const jpOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("JP", now);
   const usOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("US", now);
   if (jpOpen && !analysisJob?.running && isOlderThan(cacheHourKey(analysisCache.generatedAt), cacheHourKey(now.toISOString()))) {
@@ -1497,6 +1514,10 @@ async function runHourlyRefreshIfDue() {
   if (settings.tdnetDisclosureEnabled && isJpDisclosureBusinessDay(now)
     && isOlderThan(cacheHourKey(disclosureCache.generatedAt), cacheHourKey(now.toISOString()))) {
     void checkTimelyDisclosures({ notify: true }).catch(() => {});
+  }
+  if (settings.shareholderMonitorEnabled && (jpOpen || usOpen)
+    && jstDate(shareholderCache.generatedAt) !== jstDate(now.toISOString())) {
+    void updateShareholderSnapshots({ notify: true }).catch(() => {});
   }
   if (jpOpen && !discoveryJob?.running && settings.dailyDiscoveryEnabled && jstDate(cache.generatedAt) !== jstDate(now.toISOString())) {
     startDiscoveryJob({ websiteLimit: 20, fullScan: true }, "daily");
@@ -6735,6 +6756,309 @@ function normalizeExitStateItem(item = {}) {
   };
 }
 
+async function readShareholderCache() {
+  try {
+    const cached = JSON.parse(await readFile(SHAREHOLDER_CACHE_PATH, "utf8"));
+    return normalizeShareholderCache(cached);
+  } catch {
+    return normalizeShareholderCache({});
+  }
+}
+
+async function saveShareholderCache(cache) {
+  const normalized = normalizeShareholderCache(cache);
+  await mkdir(path.dirname(SHAREHOLDER_CACHE_PATH), { recursive: true });
+  await writeFile(SHAREHOLDER_CACHE_PATH, JSON.stringify(normalized, null, 2));
+  return normalized;
+}
+
+function normalizeShareholderCache(cache = {}) {
+  const items = Array.isArray(cache.items)
+    ? cache.items.map(normalizeShareholderItem).filter(Boolean)
+    : [];
+  const changed = Array.isArray(cache.changed)
+    ? cache.changed.map(normalizeShareholderItem).filter(Boolean)
+    : items.filter((item) => item.changeAlert);
+  return {
+    generatedAt: cache.generatedAt || "",
+    usedLmStudio: Boolean(cache.usedLmStudio),
+    checkedCount: Number(cache.checkedCount || 0),
+    warningCount: Number(cache.warningCount || 0),
+    warnings: asStringArray(cache.warnings).slice(0, 10),
+    items,
+    changed,
+  };
+}
+
+function normalizeShareholderItem(item = {}) {
+  const rawSymbol = String(item.symbol || "").trim().toUpperCase();
+  const symbol = rawSymbol.includes(".") ? normalizeSymbol(rawSymbol) : normalizeUsSymbol(rawSymbol);
+  if (!symbol) return null;
+  const institutionalOwnershipPct = nullablePercent(item.institutionalOwnershipPct);
+  const previousInstitutionalOwnershipPct = nullablePercent(item.previousInstitutionalOwnershipPct);
+  const changePct = Number.isFinite(item.changePct)
+    ? Math.round(Number(item.changePct) * 10) / 10
+    : (Number.isFinite(institutionalOwnershipPct) && Number.isFinite(previousInstitutionalOwnershipPct)
+      ? Math.round((institutionalOwnershipPct - previousInstitutionalOwnershipPct) * 10) / 10
+      : null);
+  return {
+    symbol,
+    name: String(item.name || symbol).slice(0, 100),
+    market: String(item.market || (symbol.includes(".") ? "JP" : "US")).slice(0, 20),
+    currency: item.currency === "USD" ? "USD" : "JPY",
+    asOfDate: normalizeDate(item.asOfDate),
+    checkedAt: item.checkedAt || "",
+    institutionalOwnershipPct,
+    previousInstitutionalOwnershipPct,
+    changePct,
+    changeAlert: Boolean(item.changeAlert),
+    foreignOwnershipPct: nullablePercent(item.foreignOwnershipPct),
+    confidence: clamp(Number(item.confidence || 0), 0, 100),
+    summaryJa: String(item.summaryJa || "").slice(0, 220),
+    majorHolders: normalizeMajorHolders(item.majorHolders).slice(0, 8),
+    evidence: normalizeShareholderEvidence(item.evidence).slice(0, 8),
+    warning: String(item.warning || "").slice(0, 180),
+  };
+}
+
+function normalizeMajorHolders(items = []) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => ({
+    name: String(item.name || "").trim().slice(0, 100),
+    pct: nullablePercent(item.pct),
+    type: String(item.type || "").trim().slice(0, 40),
+  })).filter((item) => item.name);
+}
+
+function normalizeShareholderEvidence(items = []) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => ({
+    title: String(item.title || "").slice(0, 180),
+    url: normalizeUrl(item.url) || "",
+    source: String(item.source || hostOf(item.url || "") || "").slice(0, 80),
+    snippet: String(item.snippet || "").slice(0, 260),
+  })).filter((item) => item.url || item.title);
+}
+
+function nullablePercent(value) {
+  const number = nullableNonNegativeNumber(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.round(Math.min(100, number) * 10) / 10;
+}
+
+async function attachShareholderInfoToAnalyses(analyses = [], cache = null) {
+  const shareholderCache = cache || await readShareholderCache();
+  const bySymbol = new Map((shareholderCache.items || []).map((item) => [item.symbol, item]));
+  return analyses.map((analysis) => ({
+    ...analysis,
+    shareholders: bySymbol.get(analysis.symbol) || null,
+  }));
+}
+
+async function updateShareholderSnapshots(options = {}) {
+  const settings = await readSettings();
+  const previous = await readShareholderCache();
+  if (!settings.shareholderMonitorEnabled && !options.force) {
+    return previous;
+  }
+  const [jpStocks, usStocks] = await Promise.all([readWatchlist(), readUsWatchlist()]);
+  const stocks = [
+    ...jpStocks.map((stock) => ({ ...stock, currency: "JPY", shareholderMarket: "JP" })),
+    ...usStocks.map((stock) => ({ ...stock, currency: "USD", shareholderMarket: "US" })),
+  ].filter((stock) => stock.symbol);
+  const previousBySymbol = new Map((previous.items || []).map((item) => [item.symbol, item]));
+  const lmStatus = settings.shareholderUseLmStudio !== false
+    ? await checkLmStudio(settings).catch(() => ({ ok: false }))
+    : { ok: false };
+  const warnings = [];
+  const items = await mapLimit(stocks, 3, async (stock) => {
+    const snapshot = await fetchShareholderSnapshot(stock, settings, { useLmStudio: lmStatus.ok })
+      .catch((error) => shareholderSnapshotFallback(stock, [], String(error.message || "株主情報を取得できませんでした")));
+    if (snapshot.warning) warnings.push(`${stock.name || stock.symbol}: ${snapshot.warning}`);
+    return finalizeShareholderSnapshot(snapshot, previousBySymbol.get(stock.symbol), settings);
+  });
+  const result = await saveShareholderCache({
+    generatedAt: new Date().toISOString(),
+    usedLmStudio: Boolean(lmStatus.ok),
+    checkedCount: stocks.length,
+    warningCount: warnings.length,
+    warnings: uniqueText(warnings).slice(0, 10),
+    items,
+    changed: items.filter((item) => item.changeAlert),
+  });
+  if (options.notify !== false) await notifyShareholderSignals(result, settings).catch(() => {});
+  return result;
+}
+
+async function fetchShareholderSnapshot(stock, settings, options = {}) {
+  const queries = shareholderQueries(stock);
+  const perQueryLimit = Math.max(3, Math.ceil(8 / queries.length));
+  const searchResults = [];
+  for (const query of queries) {
+    const results = await searchGoogle(query, { limit: perQueryLimit }).catch(() => []);
+    searchResults.push(...results.map((item) => ({ ...item, query })));
+  }
+  const evidence = uniqueBy(searchResults, (item) => item.url).slice(0, 8).map((item) => ({
+    title: item.title,
+    url: item.url,
+    source: hostOf(item.url),
+    snippet: cleanText(item.snippet).slice(0, 260),
+  }));
+  if (options.useLmStudio && evidence.length) {
+    const ai = await aiShareholderSnapshot(stock, evidence).catch(() => null);
+    if (ai) return normalizeShareholderItem({
+      ...ai,
+      symbol: stock.symbol,
+      name: stock.name,
+      market: stock.shareholderMarket || stock.market,
+      currency: stock.currency || "JPY",
+      checkedAt: new Date().toISOString(),
+      evidence,
+    });
+  }
+  return shareholderSnapshotFallback(stock, evidence, evidence.length ? "" : googleSearchWarning());
+}
+
+function shareholderQueries(stock = {}) {
+  const symbol = String(stock.symbol || "").trim().toUpperCase();
+  const name = stock.name || symbol;
+  if (symbol.includes(".T")) {
+    const code = symbol.replace(".T", "");
+    return [
+      `${name} ${code} 大株主 機関投資家 比率 外国人 持株比率`,
+      `${name} ${code} 株主構成 金融機関 外国法人 個人 比率`,
+    ];
+  }
+  return [
+    `${symbol} institutional ownership percentage major holders`,
+    `${name} ${symbol} shareholders institutional holders ownership`,
+  ];
+}
+
+async function aiShareholderSnapshot(stock, evidence = []) {
+  const model = await getLmStudioModel();
+  const prompt = [
+    "あなたは株主構成データの抽出係です。根拠に書かれていない数値を推測しないでください。",
+    "機関投資家比率は、institutional ownership または明示された機関投資家/金融機関等の保有割合です。日本株で外国法人等しか分からない場合は foreignOwnershipPct に入れ、institutionalOwnershipPct はnullにしてください。",
+    "出力はJSONのみ。形式: {\"institutionalOwnershipPct\":12.3,\"foreignOwnershipPct\":45.6,\"asOfDate\":\"YYYY-MM-DD\",\"majorHolders\":[{\"name\":\"...\",\"pct\":1.2,\"type\":\"機関/外国/個人/政府/その他\"}],\"summaryJa\":\"日本語で1文\",\"confidence\":0}",
+    "数値は百分率です。明示値がなければnull。majorHoldersは最大6件。",
+    "",
+    JSON.stringify({
+      symbol: stock.symbol,
+      name: stock.name,
+      market: stock.shareholderMarket || stock.market,
+      evidence,
+    }),
+  ].join("\n");
+  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 1400 }).catch(async (error) => {
+    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 1400 });
+    throw error;
+  });
+  const parsed = parseJsonObject(content);
+  return {
+    institutionalOwnershipPct: nullablePercent(parsed.institutionalOwnershipPct),
+    foreignOwnershipPct: nullablePercent(parsed.foreignOwnershipPct),
+    asOfDate: normalizeDate(parsed.asOfDate),
+    majorHolders: normalizeMajorHolders(parsed.majorHolders),
+    summaryJa: String(parsed.summaryJa || "").slice(0, 220),
+    confidence: clamp(Number(parsed.confidence || 0), 0, 100),
+  };
+}
+
+function shareholderSnapshotFallback(stock, evidence = [], warning = "") {
+  const text = evidence.map((item) => `${item.title}\n${item.snippet}`).join("\n");
+  const institutionalOwnershipPct = extractFirstPercent(text, [
+    /機関投資家(?:比率|保有率|持株比率|所有割合)?[^0-9%]{0,30}([0-9]+(?:\.[0-9]+)?)\s*%/i,
+    /institutional ownership[^0-9%]{0,50}([0-9]+(?:\.[0-9]+)?)\s*%/i,
+    /held by institutions[^0-9%]{0,50}([0-9]+(?:\.[0-9]+)?)\s*%/i,
+    /institutions hold[^0-9%]{0,50}([0-9]+(?:\.[0-9]+)?)\s*%/i,
+    /金融機関[^0-9%]{0,30}([0-9]+(?:\.[0-9]+)?)\s*%/i,
+  ]);
+  const foreignOwnershipPct = extractFirstPercent(text, [
+    /外国法人等[^0-9%]{0,30}([0-9]+(?:\.[0-9]+)?)\s*%/i,
+    /外国人(?:持株比率|保有比率|比率)?[^0-9%]{0,30}([0-9]+(?:\.[0-9]+)?)\s*%/i,
+    /foreign ownership[^0-9%]{0,50}([0-9]+(?:\.[0-9]+)?)\s*%/i,
+  ]);
+  const confidence = Number.isFinite(institutionalOwnershipPct) ? 55 : evidence.length ? 25 : 0;
+  return normalizeShareholderItem({
+    symbol: stock.symbol,
+    name: stock.name,
+    market: stock.shareholderMarket || stock.market,
+    currency: stock.currency || "JPY",
+    checkedAt: new Date().toISOString(),
+    institutionalOwnershipPct,
+    foreignOwnershipPct,
+    majorHolders: [],
+    evidence,
+    confidence,
+    summaryJa: Number.isFinite(institutionalOwnershipPct)
+      ? `検索結果から機関投資家比率は約${institutionalOwnershipPct.toFixed(1)}%と読み取れます。`
+      : evidence.length
+      ? "主要株主の根拠リンクは保存しましたが、機関投資家比率の明示値は未検出です。"
+      : "株主情報を取得できませんでした。",
+    warning,
+  });
+}
+
+function extractFirstPercent(text = "", patterns = []) {
+  for (const pattern of patterns) {
+    const match = String(text).match(pattern);
+    const value = nullablePercent(match?.[1]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function finalizeShareholderSnapshot(snapshot = {}, previous = null, settings = defaultSettings) {
+  const current = nullablePercent(snapshot.institutionalOwnershipPct);
+  const previousPct = nullablePercent(previous?.institutionalOwnershipPct);
+  const changePct = Number.isFinite(current) && Number.isFinite(previousPct)
+    ? Math.round((current - previousPct) * 10) / 10
+    : null;
+  const threshold = clamp(Number(settings.shareholderChangeThresholdPct || defaultSettings.shareholderChangeThresholdPct), 0.1, 20);
+  return normalizeShareholderItem({
+    ...snapshot,
+    previousInstitutionalOwnershipPct: previousPct,
+    changePct,
+    changeAlert: Number.isFinite(changePct) && Math.abs(changePct) >= threshold,
+  });
+}
+
+async function notifyShareholderSignals(result = {}, settings = {}) {
+  if (!settings.notificationsEnabled) return;
+  if (!settings.teamsWebhookUrl && !(settings.graphAccessToken && settings.graphChatId)) return;
+  const signals = (result.changed || []).map((item) => {
+    const direction = item.changePct > 0 ? "上昇" : "低下";
+    return {
+      key: `shareholder:${item.symbol}:${formatPercentKey(item.previousInstitutionalOwnershipPct)}:${formatPercentKey(item.institutionalOwnershipPct)}:${item.asOfDate || ""}`,
+      absoluteKey: true,
+      action: "株主構成変化",
+      symbol: item.symbol,
+      name: item.name,
+      confidence: Math.max(80, item.confidence || 0),
+      netEdgeYen: 0,
+      hideEdge: true,
+      reason: `機関投資家比率が${formatPercentValue(item.previousInstitutionalOwnershipPct)}から${formatPercentValue(item.institutionalOwnershipPct)}へ${Math.abs(item.changePct).toFixed(1)}pt${direction}しました。`,
+      points: [
+        item.asOfDate ? `基準日: ${item.asOfDate}` : "",
+        Number.isFinite(item.foreignOwnershipPct) ? `外国人/外国法人比率: ${formatPercentValue(item.foreignOwnershipPct)}` : "",
+        item.summaryJa,
+        ...item.majorHolders.slice(0, 3).map((holder) => `主要株主: ${holder.name}${Number.isFinite(holder.pct) ? ` ${formatPercentValue(holder.pct)}` : ""}`),
+        ...item.evidence.slice(0, 2).map((source) => `確認元: ${source.source || source.url}`),
+      ].filter(Boolean),
+    };
+  });
+  await sendSignalsOnce(signals, settings);
+}
+
+function formatPercentKey(value) {
+  return Number.isFinite(value) ? String(Math.round(value * 10) / 10) : "na";
+}
+
+function formatPercentValue(value) {
+  return Number.isFinite(value) ? `${value.toFixed(1)}%` : "-";
+}
+
 async function readSettings() {
   try {
     const stored = JSON.parse(await readFile(SETTINGS_PATH, "utf8"));
@@ -6778,6 +7102,9 @@ function normalizeSettings(settings = {}) {
     growthExitEnabled: settings.growthExitEnabled !== false,
     trailingStopPct: clamp(Number(settings.trailingStopPct || defaultSettings.trailingStopPct), 5, 60),
     onkabuProfitPct: clamp(Number(settings.onkabuProfitPct || defaultSettings.onkabuProfitPct), 50, 300),
+    shareholderMonitorEnabled: settings.shareholderMonitorEnabled !== false,
+    shareholderChangeThresholdPct: clamp(Number(settings.shareholderChangeThresholdPct || defaultSettings.shareholderChangeThresholdPct), 0.1, 20),
+    shareholderUseLmStudio: settings.shareholderUseLmStudio !== false,
     notificationsEnabled: settings.notificationsEnabled === true,
     notificationMinConfidence: clamp(Number(settings.notificationMinConfidence || defaultSettings.notificationMinConfidence), 50, 100),
     notificationMinNetEdgeYen: clamp(Number(settings.notificationMinNetEdgeYen || defaultSettings.notificationMinNetEdgeYen), 0, 1000000),
@@ -6817,6 +7144,9 @@ function applySettingsPatch(current, body = {}) {
   if (typeof body.growthExitEnabled === "boolean") next.growthExitEnabled = body.growthExitEnabled;
   if (body.trailingStopPct !== undefined) next.trailingStopPct = body.trailingStopPct;
   if (body.onkabuProfitPct !== undefined) next.onkabuProfitPct = body.onkabuProfitPct;
+  if (typeof body.shareholderMonitorEnabled === "boolean") next.shareholderMonitorEnabled = body.shareholderMonitorEnabled;
+  if (body.shareholderChangeThresholdPct !== undefined) next.shareholderChangeThresholdPct = body.shareholderChangeThresholdPct;
+  if (typeof body.shareholderUseLmStudio === "boolean") next.shareholderUseLmStudio = body.shareholderUseLmStudio;
   if (typeof body.notificationsEnabled === "boolean") next.notificationsEnabled = body.notificationsEnabled;
   if (body.notificationMinConfidence) next.notificationMinConfidence = body.notificationMinConfidence;
   if (body.notificationMinNetEdgeYen !== undefined) next.notificationMinNetEdgeYen = body.notificationMinNetEdgeYen;
@@ -6855,6 +7185,9 @@ function publicSettings(settings) {
     growthExitEnabled: settings.growthExitEnabled,
     trailingStopPct: settings.trailingStopPct,
     onkabuProfitPct: settings.onkabuProfitPct,
+    shareholderMonitorEnabled: settings.shareholderMonitorEnabled,
+    shareholderChangeThresholdPct: settings.shareholderChangeThresholdPct,
+    shareholderUseLmStudio: settings.shareholderUseLmStudio,
     notificationsEnabled: settings.notificationsEnabled,
     notificationMinConfidence: settings.notificationMinConfidence,
     notificationMinNetEdgeYen: settings.notificationMinNetEdgeYen,

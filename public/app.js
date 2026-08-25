@@ -158,6 +158,9 @@ const els = {
   settingsGrowthExitEnabled: document.getElementById("settingsGrowthExitEnabled"),
   settingsTrailingStopPct: document.getElementById("settingsTrailingStopPct"),
   settingsOnkabuProfitPct: document.getElementById("settingsOnkabuProfitPct"),
+  settingsShareholderMonitorEnabled: document.getElementById("settingsShareholderMonitorEnabled"),
+  settingsShareholderUseLmStudio: document.getElementById("settingsShareholderUseLmStudio"),
+  settingsShareholderChangeThresholdPct: document.getElementById("settingsShareholderChangeThresholdPct"),
   settingsNotificationsEnabled: document.getElementById("settingsNotificationsEnabled"),
   settingsTradeFeeYen: document.getElementById("settingsTradeFeeYen"),
   settingsNotificationMinNetEdgeYen: document.getElementById("settingsNotificationMinNetEdgeYen"),
@@ -171,8 +174,10 @@ const els = {
   settingsSearchStatus: document.getElementById("settingsSearchStatus"),
   settingsLmStatus: document.getElementById("settingsLmStatus"),
   settingsDisclosureStatus: document.getElementById("settingsDisclosureStatus"),
+  settingsShareholderStatus: document.getElementById("settingsShareholderStatus"),
   diagnosticsButton: document.getElementById("diagnosticsButton"),
   disclosureCheckButton: document.getElementById("disclosureCheckButton"),
+  shareholderCheckButton: document.getElementById("shareholderCheckButton"),
   testNotificationButton: document.getElementById("testNotificationButton"),
   diagnosticsStatus: document.getElementById("diagnosticsStatus"),
   diagnosticsList: document.getElementById("diagnosticsList"),
@@ -319,6 +324,12 @@ function applySettings(settings = {}) {
   if (els.settingsGrowthExitEnabled) els.settingsGrowthExitEnabled.checked = settings.growthExitEnabled !== false;
   if (els.settingsTrailingStopPct) els.settingsTrailingStopPct.value = Number.isFinite(settings.trailingStopPct) ? settings.trailingStopPct : 25;
   if (els.settingsOnkabuProfitPct) els.settingsOnkabuProfitPct.value = Number.isFinite(settings.onkabuProfitPct) ? settings.onkabuProfitPct : 100;
+  if (els.settingsShareholderMonitorEnabled) els.settingsShareholderMonitorEnabled.checked = settings.shareholderMonitorEnabled !== false;
+  if (els.settingsShareholderUseLmStudio) els.settingsShareholderUseLmStudio.checked = settings.shareholderUseLmStudio !== false;
+  if (els.settingsShareholderChangeThresholdPct) els.settingsShareholderChangeThresholdPct.value = Number.isFinite(settings.shareholderChangeThresholdPct) ? settings.shareholderChangeThresholdPct : 2;
+  if (els.settingsShareholderStatus) {
+    setStatus(els.settingsShareholderStatus, settings.shareholderMonitorEnabled !== false, settings.shareholderMonitorEnabled !== false ? "監視中" : "停止中");
+  }
   if (els.settingsNotificationsEnabled) els.settingsNotificationsEnabled.checked = settings.notificationsEnabled === true;
   if (els.settingsTradeFeeYen) els.settingsTradeFeeYen.value = settings.tradeFeeYen || 0;
   if (els.settingsNotificationMinNetEdgeYen) els.settingsNotificationMinNetEdgeYen.value = settings.notificationMinNetEdgeYen || 5000;
@@ -842,6 +853,7 @@ function renderUsDetail() {
         <span><strong>1年</strong>${pct(analysis?.price?.return1y)}</span>
       </div>
       ${exitPlanHtml(analysis?.exitPlan)}
+      ${shareholderInfoHtml(analysis?.shareholders)}
       <div class="reason-columns">
         <section>
           <h4>良い材料</h4>
@@ -1478,6 +1490,7 @@ function renderSelection() {
     </div>
     ${riskChecksHtml(analysis.riskChecks)}
     ${exitPlanHtml(analysis.exitPlan)}
+    ${shareholderInfoHtml(analysis.shareholders)}
     <div class="decision-columns">
       <section>
         <h4>良い材料</h4>
@@ -1589,6 +1602,59 @@ function exitPlanStatusText(level = "") {
   if (level === "partial_profit") return "恩株化候補";
   if (level === "watch") return "接近中";
   return "保有継続";
+}
+
+function shareholderInfoHtml(info = null) {
+  if (!info) return "";
+  const change = Number.isFinite(info.changePct)
+    ? `${info.changePct > 0 ? "+" : ""}${info.changePct.toFixed(1)}pt`
+    : "-";
+  const changeLevel = info.changeAlert ? "high" : Number.isFinite(info.changePct) && Math.abs(info.changePct) >= 1 ? "medium" : "low";
+  const holders = (info.majorHolders || []).slice(0, 6).map((holder) => `
+    <article class="risk-check low">
+      <div>
+        <strong>${escapeHtml(holder.name)}</strong>
+        <span>${escapeHtml(holder.type || "株主")}</span>
+      </div>
+      <p>${Number.isFinite(holder.pct) ? `${holder.pct.toFixed(1)}%` : "比率未取得"}</p>
+    </article>
+  `).join("");
+  const sources = (info.evidence || []).slice(0, 3).map((item) => `
+    <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.source || item.title || "確認元")}</a>
+  `).join(" ");
+  return `
+    <section class="risk-checks shareholder-info" aria-label="株主情報">
+      <div class="risk-check-title">
+        <strong>株主情報</strong>
+        <span>${info.checkedAt ? `確認 ${new Date(info.checkedAt).toLocaleString("ja-JP")}` : "未確認"}</span>
+      </div>
+      <div class="risk-check-grid">
+        <article class="risk-check ${Number.isFinite(info.institutionalOwnershipPct) ? "low" : "medium"}">
+          <div>
+            <strong>機関投資家</strong>
+            <span>${Number.isFinite(info.institutionalOwnershipPct) ? `${info.institutionalOwnershipPct.toFixed(1)}%` : "未取得"}</span>
+          </div>
+          <p>${escapeHtml(info.summaryJa || "株主情報を確認中です。")}</p>
+        </article>
+        <article class="risk-check ${riskLevelClass(changeLevel)}">
+          <div>
+            <strong>前回比</strong>
+            <span>${escapeHtml(change)}</span>
+          </div>
+          <p>${Number.isFinite(info.previousInstitutionalOwnershipPct) ? `前回 ${info.previousInstitutionalOwnershipPct.toFixed(1)}%。${info.changeAlert ? "通知対象の変化です。" : "通知しきい値未満です。"}` : "初回取得または前回比率なし。"}</p>
+        </article>
+        <article class="risk-check low">
+          <div>
+            <strong>外国人/外国法人</strong>
+            <span>${Number.isFinite(info.foreignOwnershipPct) ? `${info.foreignOwnershipPct.toFixed(1)}%` : "未取得"}</span>
+          </div>
+          <p>${info.asOfDate ? `基準日 ${escapeHtml(info.asOfDate)}` : "基準日は確認元に依存します。"}</p>
+        </article>
+        ${holders}
+      </div>
+      ${sources ? `<p class="settings-help">確認元 ${sources}</p>` : ""}
+    </section>
+  `;
 }
 
 function signedPctText(value) {
@@ -2477,6 +2543,32 @@ async function checkDisclosures() {
   } finally {
     els.disclosureCheckButton.disabled = false;
     els.disclosureCheckButton.textContent = originalText;
+  }
+}
+
+async function checkShareholders() {
+  if (!els.shareholderCheckButton) return;
+  const originalText = els.shareholderCheckButton.textContent;
+  els.shareholderCheckButton.disabled = true;
+  els.shareholderCheckButton.textContent = "確認中";
+  if (els.settingsShareholderStatus) els.settingsShareholderStatus.textContent = "確認中";
+  try {
+    const payload = await request("/api/shareholders/check", {
+      method: "POST",
+      body: JSON.stringify({ notify: true }),
+    });
+    const changedCount = payload.changed?.length || 0;
+    if (els.settingsShareholderStatus) {
+      setStatus(els.settingsShareholderStatus, true, `確認済み ${changedCount}件`);
+    }
+    await Promise.all([loadAnalysis(), loadUsAnalysis()]);
+    toast(changedCount ? `株主構成の変化 ${changedCount}件を確認しました。` : "通知対象の株主構成変化はありません。");
+  } catch (error) {
+    if (els.settingsShareholderStatus) setStatus(els.settingsShareholderStatus, false, "失敗");
+    toast(error.message);
+  } finally {
+    els.shareholderCheckButton.disabled = false;
+    els.shareholderCheckButton.textContent = originalText;
   }
 }
 
@@ -3837,6 +3929,9 @@ els.settingsForm.addEventListener("submit", async (event) => {
         growthExitEnabled: els.settingsGrowthExitEnabled?.checked !== false,
         trailingStopPct: valueOrZero(els.settingsTrailingStopPct?.value),
         onkabuProfitPct: valueOrZero(els.settingsOnkabuProfitPct?.value),
+        shareholderMonitorEnabled: els.settingsShareholderMonitorEnabled?.checked !== false,
+        shareholderUseLmStudio: els.settingsShareholderUseLmStudio?.checked !== false,
+        shareholderChangeThresholdPct: valueOrNull(els.settingsShareholderChangeThresholdPct?.value),
         notificationsEnabled: els.settingsNotificationsEnabled?.checked === true,
         tradeFeeYen: valueOrZero(els.settingsTradeFeeYen?.value),
         notificationMinNetEdgeYen: valueOrZero(els.settingsNotificationMinNetEdgeYen?.value),
@@ -3896,6 +3991,7 @@ els.cryptoAnalyzeButton?.addEventListener("click", analyzeCrypto);
 els.discoverButton.addEventListener("click", discover);
 els.diagnosticsButton?.addEventListener("click", runDiagnostics);
 els.disclosureCheckButton?.addEventListener("click", checkDisclosures);
+els.shareholderCheckButton?.addEventListener("click", checkShareholders);
 els.testNotificationButton?.addEventListener("click", testNotification);
 els.chart?.addEventListener("pointermove", updateChartHover);
 els.chart?.addEventListener("pointerleave", clearChartHover);
