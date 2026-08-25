@@ -152,6 +152,12 @@ const els = {
   settingsDailyDiscoveryHour: document.getElementById("settingsDailyDiscoveryHour"),
   settingsHourlyRefreshEnabled: document.getElementById("settingsHourlyRefreshEnabled"),
   settingsMarketHoursOnlyRefresh: document.getElementById("settingsMarketHoursOnlyRefresh"),
+  settingsTdnetDisclosureEnabled: document.getElementById("settingsTdnetDisclosureEnabled"),
+  settingsTdnetDisclosureLookbackDays: document.getElementById("settingsTdnetDisclosureLookbackDays"),
+  settingsTdnetDisclosureUseLmStudio: document.getElementById("settingsTdnetDisclosureUseLmStudio"),
+  settingsGrowthExitEnabled: document.getElementById("settingsGrowthExitEnabled"),
+  settingsTrailingStopPct: document.getElementById("settingsTrailingStopPct"),
+  settingsOnkabuProfitPct: document.getElementById("settingsOnkabuProfitPct"),
   settingsNotificationsEnabled: document.getElementById("settingsNotificationsEnabled"),
   settingsTradeFeeYen: document.getElementById("settingsTradeFeeYen"),
   settingsNotificationMinNetEdgeYen: document.getElementById("settingsNotificationMinNetEdgeYen"),
@@ -164,7 +170,9 @@ const els = {
   settingsGraphAccessToken: document.getElementById("settingsGraphAccessToken"),
   settingsSearchStatus: document.getElementById("settingsSearchStatus"),
   settingsLmStatus: document.getElementById("settingsLmStatus"),
+  settingsDisclosureStatus: document.getElementById("settingsDisclosureStatus"),
   diagnosticsButton: document.getElementById("diagnosticsButton"),
+  disclosureCheckButton: document.getElementById("disclosureCheckButton"),
   testNotificationButton: document.getElementById("testNotificationButton"),
   diagnosticsStatus: document.getElementById("diagnosticsStatus"),
   diagnosticsList: document.getElementById("diagnosticsList"),
@@ -201,6 +209,10 @@ function usd(value) {
     currency: "USD",
     maximumFractionDigits: Math.abs(value) >= 1000 ? 0 : 2,
   }).format(value);
+}
+
+function moneyByCurrency(value, currency = "JPY") {
+  return currency === "USD" ? usd(value) : yen(value);
 }
 
 function fxRate(value) {
@@ -298,6 +310,15 @@ function applySettings(settings = {}) {
   if (els.settingsDailyDiscoveryHour) els.settingsDailyDiscoveryHour.value = Number.isFinite(settings.dailyDiscoveryHour) ? settings.dailyDiscoveryHour : 7;
   if (els.settingsHourlyRefreshEnabled) els.settingsHourlyRefreshEnabled.checked = settings.hourlyRefreshEnabled !== false;
   if (els.settingsMarketHoursOnlyRefresh) els.settingsMarketHoursOnlyRefresh.checked = settings.marketHoursOnlyRefresh !== false;
+  if (els.settingsTdnetDisclosureEnabled) els.settingsTdnetDisclosureEnabled.checked = settings.tdnetDisclosureEnabled !== false;
+  if (els.settingsTdnetDisclosureLookbackDays) els.settingsTdnetDisclosureLookbackDays.value = Number.isFinite(settings.tdnetDisclosureLookbackDays) ? settings.tdnetDisclosureLookbackDays : 3;
+  if (els.settingsTdnetDisclosureUseLmStudio) els.settingsTdnetDisclosureUseLmStudio.checked = settings.tdnetDisclosureUseLmStudio !== false;
+  if (els.settingsDisclosureStatus) {
+    setStatus(els.settingsDisclosureStatus, settings.tdnetDisclosureEnabled !== false, settings.tdnetDisclosureEnabled !== false ? "監視中" : "停止中");
+  }
+  if (els.settingsGrowthExitEnabled) els.settingsGrowthExitEnabled.checked = settings.growthExitEnabled !== false;
+  if (els.settingsTrailingStopPct) els.settingsTrailingStopPct.value = Number.isFinite(settings.trailingStopPct) ? settings.trailingStopPct : 25;
+  if (els.settingsOnkabuProfitPct) els.settingsOnkabuProfitPct.value = Number.isFinite(settings.onkabuProfitPct) ? settings.onkabuProfitPct : 100;
   if (els.settingsNotificationsEnabled) els.settingsNotificationsEnabled.checked = settings.notificationsEnabled === true;
   if (els.settingsTradeFeeYen) els.settingsTradeFeeYen.value = settings.tradeFeeYen || 0;
   if (els.settingsNotificationMinNetEdgeYen) els.settingsNotificationMinNetEdgeYen.value = settings.notificationMinNetEdgeYen || 5000;
@@ -820,6 +841,7 @@ function renderUsDetail() {
         <span><strong>1か月</strong>${pct(analysis?.price?.return1m)}</span>
         <span><strong>1年</strong>${pct(analysis?.price?.return1y)}</span>
       </div>
+      ${exitPlanHtml(analysis?.exitPlan)}
       <div class="reason-columns">
         <section>
           <h4>良い材料</h4>
@@ -1455,6 +1477,7 @@ function renderSelection() {
       <span><strong>判定対象株</strong>${position.sellableQuantity ? `${position.sellableQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
     </div>
     ${riskChecksHtml(analysis.riskChecks)}
+    ${exitPlanHtml(analysis.exitPlan)}
     <div class="decision-columns">
       <section>
         <h4>良い材料</h4>
@@ -1503,6 +1526,74 @@ function riskChecksHtml(checks = []) {
       </div>
     </section>
   `;
+}
+
+function exitPlanHtml(plan = {}) {
+  if (!plan || !plan.highWaterPrice) return "";
+  const currency = plan.currency || "JPY";
+  const growth = plan.growthExit || {};
+  const onkabu = plan.onkabu || {};
+  const cards = [
+    {
+      label: "ファンダ崩壊",
+      level: growth.level === "exit_alert" ? "high" : growth.level === "watch" ? "medium" : "low",
+      status: growth.level === "exit_alert" ? "売りアラート" : growth.level === "watch" ? "確認" : "正常",
+      summary: growth.reason || "成長ストーリー崩壊は未検出です。",
+    },
+    {
+      label: "高値トレーリング",
+      level: plan.trailingTriggered ? "high" : plan.alertLevel === "watch" ? "medium" : "low",
+      status: plan.trailingTriggered ? "割れ" : `${plan.trailingStopPct || 25}%`,
+      summary: `最高値 ${moneyByCurrency(plan.highWaterPrice, currency)}${plan.highWaterDate ? ` (${plan.highWaterDate})` : ""}、確認ライン ${moneyByCurrency(plan.trailingStopPrice, currency)}。現在は高値から ${signedPctText(plan.drawdownFromHighPct)}。`,
+    },
+    {
+      label: "恩株化",
+      level: onkabu.triggered ? "medium" : onkabu.achieved ? "low" : "low",
+      status: onkabu.triggered ? "部分利確候補" : onkabu.achieved ? "達成" : `+${onkabu.profitPct || 100}%`,
+      summary: onkabu.summary || "+100%到達時に元本分の部分利確を検討します。",
+    },
+  ];
+  const alerts = (plan.alerts || []).map((alert) => `
+    <article class="risk-check high">
+      <div>
+        <strong>${escapeHtml(alert.label || "出口")}</strong>
+        <span>${escapeHtml(alert.action || "要確認")}</span>
+      </div>
+      <p>${escapeHtml(alert.summary || "")}</p>
+    </article>
+  `).join("");
+  return `
+    <section class="risk-checks exit-plan" aria-label="出口ルール">
+      <div class="risk-check-title">
+        <strong>出口ルール</strong>
+        <span>${escapeHtml(exitPlanStatusText(plan.alertLevel))}</span>
+      </div>
+      <div class="risk-check-grid">
+        ${cards.map((card) => `
+          <article class="risk-check ${riskLevelClass(card.level)}">
+            <div>
+              <strong>${escapeHtml(card.label)}</strong>
+              <span>${escapeHtml(card.status)}</span>
+            </div>
+            <p>${escapeHtml(card.summary)}</p>
+          </article>
+        `).join("")}
+        ${alerts}
+      </div>
+    </section>
+  `;
+}
+
+function exitPlanStatusText(level = "") {
+  if (level === "exit_alert") return "売る理由あり";
+  if (level === "partial_profit") return "恩株化候補";
+  if (level === "watch") return "接近中";
+  return "保有継続";
+}
+
+function signedPctText(value) {
+  if (!Number.isFinite(value)) return "-";
+  return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
 
 function drawChart(series) {
@@ -2361,6 +2452,31 @@ async function testNotification() {
     toast(error.message);
   } finally {
     els.testNotificationButton.disabled = false;
+  }
+}
+
+async function checkDisclosures() {
+  if (!els.disclosureCheckButton) return;
+  const originalText = els.disclosureCheckButton.textContent;
+  els.disclosureCheckButton.disabled = true;
+  els.disclosureCheckButton.textContent = "確認中";
+  if (els.settingsDisclosureStatus) els.settingsDisclosureStatus.textContent = "確認中";
+  try {
+    const payload = await request("/api/disclosures/check", {
+      method: "POST",
+      body: JSON.stringify({ notify: true }),
+    });
+    const count = payload.important?.length || 0;
+    if (els.settingsDisclosureStatus) {
+      setStatus(els.settingsDisclosureStatus, true, `確認済み ${count}件`);
+    }
+    toast(count ? `重大開示 ${count}件を確認しました。` : "通知対象の重大開示はありません。");
+  } catch (error) {
+    if (els.settingsDisclosureStatus) setStatus(els.settingsDisclosureStatus, false, "失敗");
+    toast(error.message);
+  } finally {
+    els.disclosureCheckButton.disabled = false;
+    els.disclosureCheckButton.textContent = originalText;
   }
 }
 
@@ -3715,6 +3831,12 @@ els.settingsForm.addEventListener("submit", async (event) => {
         dailyDiscoveryHour: valueOrZero(els.settingsDailyDiscoveryHour?.value),
         hourlyRefreshEnabled: els.settingsHourlyRefreshEnabled?.checked === true,
         marketHoursOnlyRefresh: els.settingsMarketHoursOnlyRefresh?.checked !== false,
+        tdnetDisclosureEnabled: els.settingsTdnetDisclosureEnabled?.checked === true,
+        tdnetDisclosureLookbackDays: valueOrZero(els.settingsTdnetDisclosureLookbackDays?.value),
+        tdnetDisclosureUseLmStudio: els.settingsTdnetDisclosureUseLmStudio?.checked !== false,
+        growthExitEnabled: els.settingsGrowthExitEnabled?.checked !== false,
+        trailingStopPct: valueOrZero(els.settingsTrailingStopPct?.value),
+        onkabuProfitPct: valueOrZero(els.settingsOnkabuProfitPct?.value),
         notificationsEnabled: els.settingsNotificationsEnabled?.checked === true,
         tradeFeeYen: valueOrZero(els.settingsTradeFeeYen?.value),
         notificationMinNetEdgeYen: valueOrZero(els.settingsNotificationMinNetEdgeYen?.value),
@@ -3773,6 +3895,7 @@ els.usAnalyzeButton?.addEventListener("click", analyzeUs);
 els.cryptoAnalyzeButton?.addEventListener("click", analyzeCrypto);
 els.discoverButton.addEventListener("click", discover);
 els.diagnosticsButton?.addEventListener("click", runDiagnostics);
+els.disclosureCheckButton?.addEventListener("click", checkDisclosures);
 els.testNotificationButton?.addEventListener("click", testNotification);
 els.chart?.addEventListener("pointermove", updateChartHover);
 els.chart?.addEventListener("pointerleave", clearChartHover);

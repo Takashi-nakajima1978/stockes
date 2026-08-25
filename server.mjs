@@ -16,9 +16,11 @@ const US_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "us-analysis-cache.j
 const CRYPTO_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "crypto-analysis-cache.json");
 const DISCOVERY_CACHE_PATH = path.join(__dirname, "data", "discovery-cache.json");
 const CANDIDATE_HISTORY_PATH = path.join(__dirname, "data", "candidate-history.json");
+const EXIT_STATE_PATH = path.join(__dirname, "data", "exit-state.json");
 const PRIME_UNIVERSE_PATH = path.join(__dirname, "data", "prime-universe.json");
 const NOTIFICATION_LOG_PATH = path.join(__dirname, "data", "notification-log.json");
 const EXCLUDED_CANDIDATES_PATH = path.join(__dirname, "data", "excluded-candidates.json");
+const TDNET_DISCLOSURE_CACHE_PATH = path.join(__dirname, "data", "tdnet-disclosure-cache.json");
 const SETTINGS_PATH = path.join(__dirname, "data", "settings.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const MAX_MANAGED_STOCKS = 50;
@@ -39,6 +41,22 @@ const DISCOVERY_IT_VENTURE_PATTERN = /(情報|IT|ＳＩ|SI|ソフトウェア|�
 const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹|mature|enterprise|consulting|infrastructure|security)/i;
 const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "private equity", "buyout", "take private", "tender offer", "activist", "shareholder", "stake", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
 const PE_DIRECT_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "private equity", "buyout", "take private", "tender offer", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス"];
+const TDNET_SOURCE_BASE = "https://www.release.tdnet.info/inbs/";
+const DISCLOSURE_CRITICAL_WORDS = [
+  "下方修正", "業績予想の修正", "業績予想修正", "通期業績予想", "連結業績予想", "減配", "無配",
+  "配当予想の修正", "配当予想修正", "配当方針の変更", "赤字", "損失", "特別損失", "減損",
+  "債務超過", "継続企業の前提", "上場廃止", "整理銘柄", "監理銘柄", "不適切会計", "不正",
+  "行政処分", "訴訟", "調査委員会", "第三者委員会", "リコール", "事業撤退", "事業休止",
+];
+const DISCLOSURE_GROWTH_REVIEW_WORDS = [
+  "決算短信", "四半期決算短信", "決算説明資料", "補足説明資料", "業績説明資料", "Financial Results",
+  "Earnings", "ガイダンス", "業績予想",
+];
+const DISCLOSURE_IGNORE_WORDS = [
+  "役員人事", "人事異動", "自己株式の取得", "ToSTNeT", "ストック・オプション", "譲渡制限付株式",
+  "月次", "定款", "株主総会", "基準日", "独立役員届出書", "コーポレート・ガバナンス", "招集",
+  "議決権", "ETF", "投資法人", "REIT",
+];
 const PE_CRITERIA = [
   { key: "undervalued", label: "割安放置", words: ["低PBR", "PBR1倍割れ", "低PER", "割安", "資産価値", "純資産", "undervalued", "low multiple", "cheap valuation", "sum-of-the-parts"], weight: 18 },
   { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益", "キャッシュフロー", "高配当", "営業CF", "ストック収益", "継続課金", "cash flow", "free cash flow", "recurring revenue", "stable revenue", "dividend"], weight: 14 },
@@ -66,6 +84,12 @@ const defaultSettings = {
   dailyDiscoveryHour: 7,
   hourlyRefreshEnabled: true,
   marketHoursOnlyRefresh: true,
+  tdnetDisclosureEnabled: true,
+  tdnetDisclosureLookbackDays: 3,
+  tdnetDisclosureUseLmStudio: true,
+  growthExitEnabled: true,
+  trailingStopPct: 25,
+  onkabuProfitPct: 100,
   notificationsEnabled: false,
   notificationMinConfidence: 78,
   notificationMinNetEdgeYen: 5000,
@@ -299,16 +323,32 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/analysis" && req.method === "GET") {
-    return json(res, 200, await readAnalysisCache());
+    const [cached, settings] = await Promise.all([readAnalysisCache(), readSettings()]);
+    const analyses = await attachExitPlansToAnalyses(cached.analyses, settings);
+    return json(res, 200, { ...cached, analyses });
   }
 
   if (url.pathname === "/api/us-analysis" && req.method === "GET") {
-    return json(res, 200, await readUsAnalysisCache());
+    const [cached, settings] = await Promise.all([readUsAnalysisCache(), readSettings()]);
+    const analyses = await attachExitPlansToAnalyses(cached.analyses, settings, { currency: "USD" });
+    return json(res, 200, { ...cached, analyses, summary: usPortfolioSummary(analyses) });
   }
 
   if (url.pathname === "/api/crypto-analyze" && req.method === "POST") {
     const body = await readJson(req);
     return json(res, 200, await analyzeCryptoHolding(body));
+  }
+
+  if (url.pathname === "/api/disclosures" && req.method === "GET") {
+    return json(res, 200, await readDisclosureCache());
+  }
+
+  if (url.pathname === "/api/disclosures/check" && req.method === "POST") {
+    const body = await readJson(req);
+    return json(res, 200, await checkTimelyDisclosures({
+      force: true,
+      notify: body.notify !== false,
+    }));
   }
 
   if (url.pathname === "/api/analysis-job" && req.method === "GET") {
@@ -682,9 +722,9 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
     onProgress?.({ phase: "価格ルールで整理中", aiDone: 0, aiCurrent: 0, aiTotal: 0 });
   }
 
-  const analyses = rows.map(({ stock, price, research, fallback }) => {
+  const analyses = await attachExitPlansToAnalyses(rows.map(({ stock, price, research, fallback }) => {
     return normalizeDecision(stock, price, research, aiBySymbol.get(stock.symbol) || fallback);
-  });
+  }), settings);
 
   const result = {
     generatedAt: new Date().toISOString(),
@@ -729,7 +769,9 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
     }
   }
 
-  const analysis = normalizeDecision(stock, price, research, aiDecision || row.fallback);
+  const analysis = (await attachExitPlansToAnalyses([
+    normalizeDecision(stock, price, research, aiDecision || row.fallback),
+  ], settings))[0];
   const previous = await readAnalysisCache();
   const result = {
     generatedAt: new Date().toISOString(),
@@ -796,13 +838,14 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
     });
   }
 
+  const analyses = await attachExitPlansToAnalyses(rows, settings, { currency: "USD" });
   const result = {
     generatedAt: new Date().toISOString(),
     currency: "USD",
     usedLmStudio,
     warnings,
-    analyses: rows,
-    summary: usPortfolioSummary(rows),
+    analyses,
+    summary: usPortfolioSummary(analyses),
   };
   const previous = await readUsAnalysisCache();
   await saveUsAnalysisCache(result);
@@ -887,7 +930,8 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
   }
 
   const previous = await readUsAnalysisCache();
-  const analyses = mergeAnalysisRows(previous.analyses, row);
+  const rowWithExit = (await attachExitPlansToAnalyses([row], settings, { currency: "USD" }))[0];
+  const analyses = mergeAnalysisRows(previous.analyses, rowWithExit);
   const result = {
     generatedAt: new Date().toISOString(),
     currency: "USD",
@@ -895,10 +939,10 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
     warnings: uniqueText([...warnings, ...(previous.warnings || [])]).slice(0, 6),
     analyses,
     summary: usPortfolioSummary(analyses),
-    analysis: row,
+    analysis: rowWithExit,
   };
   await saveUsAnalysisCache(result);
-  if (notify) await notifyUsChangeSignals({ ...result, analyses: [row] }, previous).catch(() => {});
+  if (notify) await notifyUsChangeSignals({ ...result, analyses: [rowWithExit] }, previous).catch(() => {});
   return result;
 }
 
@@ -977,8 +1021,9 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
   const prompt = [
     "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
     "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益、受取配当、年間配当目安、配当込み損益を分けて読み、利益保証をせず、保有継続の確認材料と注意点を分けてください。",
-    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\"}]}。",
+    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"]}}]}。",
     "stanceは HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED のいずれか。changeLevelは normal, watch, important のいずれか。",
+    "NVIDIAのような10倍候補は20〜30%の株価下落だけではEXITにしません。売上成長の鈍化、guidanceがconsensusを下回る、需要・粗利・受注の構造悪化、成長投資テーマの破綻など、買った根拠が崩れた時だけgrowthExit.levelをexit_alertにしてください。",
     "summaryJaは90字以内、goodとrisksは各3件まで、evidenceJaのsummaryは各80字以内にしてください。",
     "",
     JSON.stringify({ stocks: items }),
@@ -1005,6 +1050,7 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       changeLevel: ["normal", "watch", "important"].includes(String(review.changeLevel || "").toLowerCase())
         ? String(review.changeLevel).toLowerCase()
         : "normal",
+      growthExit: normalizeGrowthExit(review.growthExit),
     }))
     .filter((review) => review.symbol);
 }
@@ -1101,6 +1147,7 @@ function fallbackUsReview(row = {}) {
       summary: item.summaryJa || item.snippet || item.originalSnippet || "",
     })),
     changeLevel,
+    growthExit: { level: "normal", reason: "ファンダ崩壊を示す材料は未検出です。", signals: [] },
   };
 }
 
@@ -1114,8 +1161,10 @@ function compactUsPrice(price = {}) {
     return3y: price.return3y,
     annualizedReturn3y: price.annualizedReturn3y,
     high52: price.high52,
+    high52Date: price.high52Date,
     low52: price.low52,
     high3y: price.high3y,
+    high3yDate: price.high3yDate,
     low3y: price.low3y,
     distanceFromHigh52: price.distanceFromHigh52,
     distanceFromLow52: price.distanceFromLow52,
@@ -1321,6 +1370,7 @@ async function notifyUsChangeSignals(result, previous) {
   const previousBySymbol = new Map((previous.analyses || []).map((item) => [item.symbol, item]));
   const signals = [];
   for (const analysis of result.analyses || []) {
+    signals.push(...exitPlanSignals(analysis));
     const signal = usChangeSignal(analysis, previousBySymbol.get(analysis.symbol));
     if (signal) signals.push(signal);
   }
@@ -1432,6 +1482,7 @@ async function runHourlyRefreshIfDue() {
   const analysisCache = await readAnalysisCache();
   const usCache = await readUsAnalysisCache();
   const cryptoCache = await readCryptoAnalysisCache();
+  const disclosureCache = await readDisclosureCache();
   const jpOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("JP", now);
   const usOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("US", now);
   if (jpOpen && !analysisJob?.running && isOlderThan(cacheHourKey(analysisCache.generatedAt), cacheHourKey(now.toISOString()))) {
@@ -1442,6 +1493,10 @@ async function runHourlyRefreshIfDue() {
   }
   if (isOlderThan(cacheHourKey(cryptoCache.generatedAt), cacheHourKey(now.toISOString()))) {
     void analyzeCryptoHolding({ auto: true }).catch(() => {});
+  }
+  if (settings.tdnetDisclosureEnabled && isJpDisclosureBusinessDay(now)
+    && isOlderThan(cacheHourKey(disclosureCache.generatedAt), cacheHourKey(now.toISOString()))) {
+    void checkTimelyDisclosures({ notify: true }).catch(() => {});
   }
   if (jpOpen && !discoveryJob?.running && settings.dailyDiscoveryEnabled && jstDate(cache.generatedAt) !== jstDate(now.toISOString())) {
     startDiscoveryJob({ websiteLimit: 20, fullScan: true }, "daily");
@@ -3794,9 +3849,12 @@ function priceMetrics(series, meta = {}) {
   const averageVolume60 = average(volumeValues.slice(-60));
   const series3y = series.slice(-756);
   const closes3y = series3y.map((point) => point.close);
-  const high52 = Math.max(...closes.slice(-252));
+  const series52 = series.slice(-252);
+  const high52Point = highestClosePoint(series52);
+  const high3yPoint = highestClosePoint(series3y);
+  const high52 = high52Point?.close || Math.max(...closes.slice(-252));
   const low52 = Math.min(...closes.slice(-252));
-  const high3y = Math.max(...closes3y);
+  const high3y = high3yPoint?.close || Math.max(...closes3y);
   const low3y = Math.min(...closes3y);
   const sma50 = average(closes.slice(-50));
   const sma200 = average(closes.slice(-200));
@@ -3817,8 +3875,10 @@ function priceMetrics(series, meta = {}) {
     return3y,
     annualizedReturn3y,
     high52,
+    high52Date: high52Point?.date || "",
     low52,
     high3y,
+    high3yDate: high3yPoint?.date || "",
     low3y,
     distanceFromHigh52: high52 ? ((current - high52) / high52) * 100 : null,
     distanceFromLow52: low52 ? ((current - low52) / low52) * 100 : null,
@@ -3893,6 +3953,13 @@ function emptyBuyTiming() {
     distanceFromBuyLine1y: null,
     buyTiming1y: "UNKNOWN",
   };
+}
+
+function highestClosePoint(series = []) {
+  return (series || [])
+    .map((point) => ({ date: normalizeDate(point.date), close: Number(point.close) }))
+    .filter((point) => point.date && Number.isFinite(point.close))
+    .reduce((best, point) => (!best || point.close > best.close ? point : best), null);
 }
 
 function dividendMetrics(dividends = [], current = null) {
@@ -4305,8 +4372,9 @@ async function aiDecisionChunk(model, items) {
   const prompt = [
     "あなたは日本株のリサーチ補助AIです。将来利益を保証せず、売買判断の根拠とリスクを厳密に分けてください。",
     "注意点は、トレードのプロが最低限確認する観点で評価してください。業種環境も個社とは別の材料として読み込んでください。",
-    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}]}]}。",
+    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"]}}]}。",
     "actionは BUY, HOLD, SELL, WATCH のいずれか。SELLは即時売却ではなく、数週間から数か月の保有理由を見直す意味です。confidenceは0-100。",
+    "NVIDIAのような10倍候補は20〜30%の株価下落だけではファンダ崩壊にしないでください。growthExitは、売上高成長率の明確な鈍化、ガイダンスが市場予想を下回る、需要・粗利・受注の構造悪化、減配/下方修正など、買った根拠そのものが崩れた時だけexit_alertにしてください。",
     "riskChecksは必ずこの6項目にしてください: 業績・決算, 業種環境, 株価位置, 需給・流動性, 配当, 保有損益。levelは low, medium, high のいずれか。",
     "thesisは120字以内、reasonsとrisksは各3件まで、riskChecksのsummaryは各80字以内にしてください。",
     "ユーザーはデイトレーダーではありません。短期ノイズだけで売買を促さず、根拠不足、材料が古い、検索結果が薄い場合はWATCHを優先してください。",
@@ -4334,6 +4402,7 @@ async function aiDecisionChunk(model, items) {
       reasons: decision.reasons,
       risks: decision.risks,
       riskChecks: decision.riskChecks,
+      growthExit: decision.growthExit,
     }));
 }
 
@@ -4399,6 +4468,10 @@ function compactPrice(price) {
     return1y: price.return1y,
     return3y: price.return3y,
     annualizedReturn3y: price.annualizedReturn3y,
+    high52: price.high52,
+    high52Date: price.high52Date,
+    high3y: price.high3y,
+    high3yDate: price.high3yDate,
     distanceFromHigh52: price.distanceFromHigh52,
     distanceFromLow52: price.distanceFromLow52,
     distanceFromHigh3y: price.distanceFromHigh3y,
@@ -4446,6 +4519,7 @@ function normalizeDecision(stock, price, research, decision) {
   const position = positionMetrics(stock, price);
   const safety = decisionSafetyOverride(stock, price, initialAction, position);
   const action = safety.action;
+  const growthExit = normalizeGrowthExit(decision.growthExit || ruleGrowthExit(stock, research, price));
   const reasons = uniqueText([...asStringArray(decision.reasons), ...safety.reasons]).slice(0, 5);
   const risks = uniqueText([...asStringArray(decision.risks), ...safety.risks]).slice(0, 5);
   const riskChecks = mergeRiskChecks(
@@ -4463,6 +4537,7 @@ function normalizeDecision(stock, price, research, decision) {
     riskChecks,
     price,
     position,
+    growthExit,
     entryValue: evaluateEntryPrice(stock.targetBuyPrice, price),
     evidence: research.evidence.slice(0, 12),
     researchStats: {
@@ -4470,6 +4545,233 @@ function normalizeDecision(stock, price, research, decision) {
       crawled: research.crawled,
     },
   };
+}
+
+function ruleGrowthExit(stock, research = {}, price = {}) {
+  const context = cleanText(research.contextText || "").toLowerCase();
+  const exitSignals = [
+    ["下方修正", /下方修正|guidance cut|lowered guidance|cut forecast/i],
+    ["ガイダンス失望", /ガイダンス.{0,30}(下回|未達)|guidance.{0,80}(below|miss|disappoint)/i],
+    ["成長鈍化", /成長率.{0,20}(鈍化|低下)|売上.{0,20}(鈍化|減速)|growth.{0,80}(slow|decelerate)/i],
+    ["減配", /減配|無配|dividend cut/i],
+    ["赤字・損失", /赤字|減損|特別損失|loss|impairment/i],
+  ].filter(([, pattern]) => pattern.test(context)).map(([label]) => label);
+  if (exitSignals.some((item) => ["下方修正", "ガイダンス失望", "減配"].includes(item))) {
+    return {
+      level: "exit_alert",
+      reason: `${stock.name}の買った根拠に関わる悪材料が検索結果にあります。`,
+      signals: exitSignals,
+    };
+  }
+  if (exitSignals.length) {
+    return {
+      level: "watch",
+      reason: `${stock.name}に成長鈍化や損失関連の確認材料があります。`,
+      signals: exitSignals,
+    };
+  }
+  if (price.trend3y === "UP" && Number.isFinite(price.return3y) && price.return3y > 80) {
+    return {
+      level: "normal",
+      reason: "長期上昇株は値動きだけで売らず、決算の成長ストーリーを確認します。",
+      signals: [],
+    };
+  }
+  return { level: "normal", reason: "ファンダ崩壊を示す材料は未検出です。", signals: [] };
+}
+
+function normalizeGrowthExit(value = {}) {
+  const level = ["normal", "watch", "exit_alert"].includes(String(value.level || "").toLowerCase())
+    ? String(value.level).toLowerCase()
+    : "normal";
+  return {
+    level,
+    reason: String(value.reason || (level === "normal" ? "ファンダ崩壊を示す材料は未検出です。" : "確認が必要です。")).slice(0, 180),
+    signals: asStringArray(value.signals).slice(0, 5),
+  };
+}
+
+async function attachExitPlansToAnalyses(analyses = [], settings = defaultSettings, options = {}) {
+  const state = await readExitState();
+  const bySymbol = new Map((state.items || []).map((item) => [item.symbol, item]));
+  const next = analyses.map((analysis) => {
+    const currency = options.currency || analysis.currency || analysis.price?.currency || (/\.T$/.test(analysis.symbol) ? "JPY" : "USD");
+    return {
+      ...analysis,
+      exitPlan: buildExitPlan(analysis, settings, bySymbol.get(analysis.symbol), { currency }),
+    };
+  });
+  await saveExitState(mergeExitState(state, next));
+  return next;
+}
+
+function buildExitPlan(analysis = {}, settings = defaultSettings, previous = null, options = {}) {
+  const price = analysis.price || {};
+  const position = analysis.position || {};
+  const currency = options.currency || price.currency || "JPY";
+  const current = nullablePositiveNumber(price.current);
+  const highPoint = bestKnownHighPoint(price, current);
+  const previousHigh = nullablePositiveNumber(previous?.highWaterPrice);
+  const previousWins = previousHigh && (!highPoint.price || previousHigh >= highPoint.price);
+  const highWaterPrice = previousWins ? previousHigh : highPoint.price;
+  const highWaterDate = previousWins ? previous.highWaterDate || "" : highPoint.date || "";
+  const trailingStopPct = clamp(Number(settings.trailingStopPct || defaultSettings.trailingStopPct), 5, 60);
+  const trailingStopPrice = highWaterPrice ? highWaterPrice * (1 - trailingStopPct / 100) : null;
+  const drawdownFromHighPct = current && highWaterPrice ? ((current - highWaterPrice) / highWaterPrice) * 100 : null;
+  const hasShares = nullablePositiveNumber(position.quantity) > 0;
+  const trailingTriggered = Boolean(hasShares && current && trailingStopPrice && current <= trailingStopPrice);
+  const growthExit = normalizeGrowthExit(analysis.growthExit || analysis.ai?.growthExit);
+  const onkabu = onkabuPlan(position, current, settings, currency);
+  const alerts = [];
+  if (settings.growthExitEnabled !== false && growthExit.level === "exit_alert") {
+    alerts.push({
+      type: "FUNDAMENTAL_EXIT",
+      label: "ファンダ崩壊",
+      action: "売りアラート",
+      confidence: 92,
+      summary: growthExit.reason,
+      points: growthExit.signals,
+    });
+  }
+  if (trailingTriggered) {
+    alerts.push({
+      type: "TRAILING_STOP",
+      label: "トレーリングストップ",
+      action: "利確/損切りアラート",
+      confidence: 88,
+      summary: `最高値${formatMoney(highWaterPrice, currency)}から${formatSignedPercent(drawdownFromHighPct)}下落し、${trailingStopPct}%下落ラインを割りました。`,
+      points: [
+        `最高値: ${formatMoney(highWaterPrice, currency)}${highWaterDate ? ` (${highWaterDate})` : ""}`,
+        `確認ライン: ${formatMoney(trailingStopPrice, currency)}`,
+        `現在値: ${formatMoney(current, currency)}`,
+      ],
+    });
+  }
+  if (onkabu.triggered) {
+    alerts.push({
+      type: "ONKABU",
+      label: "恩株化",
+      action: "部分利確候補",
+      confidence: 84,
+      summary: onkabu.summary,
+      points: [
+        `元本回収目安: ${formatMoney(onkabu.principalToRecover, currency)}`,
+        `売却候補: ${formatShareQuantity(onkabu.suggestedSellQuantity)}株`,
+        `売却後も残る目安: ${formatShareQuantity(onkabu.remainingAfterSell)}株`,
+      ],
+    });
+  }
+  const alertLevel = alerts.some((item) => item.type === "FUNDAMENTAL_EXIT" || item.type === "TRAILING_STOP")
+    ? "exit_alert"
+    : alerts.some((item) => item.type === "ONKABU")
+    ? "partial_profit"
+    : Number.isFinite(drawdownFromHighPct) && drawdownFromHighPct <= -(trailingStopPct * 0.75)
+    ? "watch"
+    : growthExit.level === "watch"
+    ? "watch"
+    : "normal";
+  return {
+    currency,
+    highWaterPrice: roundPrice(highWaterPrice),
+    highWaterDate,
+    current: roundPrice(current),
+    trailingStopPct,
+    trailingStopPrice: roundPrice(trailingStopPrice),
+    drawdownFromHighPct: Number.isFinite(drawdownFromHighPct) ? Math.round(drawdownFromHighPct * 10) / 10 : null,
+    trailingTriggered,
+    growthExit,
+    onkabu,
+    alertLevel,
+    alerts,
+    summary: exitPlanSummary(alertLevel, growthExit, onkabu, trailingStopPct, drawdownFromHighPct),
+  };
+}
+
+function bestKnownHighPoint(price = {}, current = null) {
+  const candidates = [
+    { price: nullablePositiveNumber(price.high3y), date: normalizeDate(price.high3yDate), source: "3年高値" },
+    { price: nullablePositiveNumber(price.high52), date: normalizeDate(price.high52Date), source: "52週高値" },
+    { price: nullablePositiveNumber(current), date: normalizeDate(last(price.series || [])?.date), source: "現在値" },
+  ].filter((item) => item.price);
+  return candidates.reduce((best, item) => (!best || item.price > best.price ? item : best), { price: null, date: "", source: "" });
+}
+
+function onkabuPlan(position = {}, current = null, settings = defaultSettings, currency = "JPY") {
+  const profitPct = Number(settings.onkabuProfitPct || defaultSettings.onkabuProfitPct);
+  const quantity = nullablePositiveNumber(position.quantity) || 0;
+  const sellableQuantity = Number.isFinite(position.sellableQuantity) ? Math.max(0, position.sellableQuantity) : quantity;
+  const grossInvested = nullablePositiveNumber(position.grossInvested);
+  const realizedProceeds = Number.isFinite(position.realizedProceeds) ? position.realizedProceeds : 0;
+  const purchasePrice = nullablePositiveNumber(position.purchasePrice);
+  const totalReturnPct = Number.isFinite(position.totalReturnPct) ? position.totalReturnPct : position.unrealizedPnlPct;
+  const principalRecovered = Boolean(grossInvested && realizedProceeds >= grossInvested);
+  const priceDouble = purchasePrice && current ? current >= purchasePrice * (1 + profitPct / 100) : false;
+  const returnDouble = Number.isFinite(totalReturnPct) && totalReturnPct >= profitPct;
+  const principalToRecover = grossInvested ? Math.max(0, grossInvested - realizedProceeds) : null;
+  const rawSellQuantity = current && principalToRecover ? principalToRecover / current : 0;
+  const suggestedSellQuantity = Math.min(sellableQuantity, roundSellQuantity(rawSellQuantity, currency));
+  const triggered = Boolean(!principalRecovered && sellableQuantity > 0 && suggestedSellQuantity > 0 && (priceDouble || returnDouble));
+  const remainingAfterSell = Math.max(0, quantity - suggestedSellQuantity);
+  return {
+    triggered,
+    achieved: principalRecovered,
+    profitPct,
+    principalToRecover: roundPlanMoney(principalToRecover),
+    suggestedSellQuantity,
+    remainingAfterSell,
+    summary: triggered
+      ? `+${profitPct}%水準に到達。元本回収のため${formatShareQuantity(suggestedSellQuantity)}株の部分利確を検討できます。`
+      : principalRecovered
+      ? "売却済み分で元本回収済みです。残りは恩株として保有できます。"
+      : `+${profitPct}%到達までは、成長ストーリーを見ながら保有確認します。`,
+  };
+}
+
+function exitPlanSummary(level, growthExit, onkabu, trailingStopPct, drawdownFromHighPct) {
+  if (level === "exit_alert") return "売る理由が出た時だけ通知します。ファンダ崩壊またはトレーリングストップを確認してください。";
+  if (level === "partial_profit") return onkabu.summary;
+  if (level === "watch") {
+    const drawdown = Number.isFinite(drawdownFromHighPct) ? `最高値から${formatSignedPercent(drawdownFromHighPct)}。` : "";
+    return `${drawdown}${trailingStopPct}%ライン接近、またはファンダ確認材料あり。`;
+  }
+  return growthExit.reason || "値動きだけでは売らず、成長ストーリーを確認しながら保有します。";
+}
+
+function mergeExitState(state = {}, analyses = []) {
+  const bySymbol = new Map((state.items || []).map((item) => [item.symbol, item]));
+  for (const analysis of analyses) {
+    const plan = analysis.exitPlan || {};
+    if (!analysis.symbol || !plan.highWaterPrice) continue;
+    const previous = bySymbol.get(analysis.symbol) || {};
+    bySymbol.set(analysis.symbol, {
+      symbol: analysis.symbol,
+      name: analysis.name || previous.name || analysis.symbol,
+      currency: plan.currency || previous.currency || "JPY",
+      highWaterPrice: plan.highWaterPrice,
+      highWaterDate: plan.highWaterDate || previous.highWaterDate || "",
+      trailingStopPct: plan.trailingStopPct,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+  return { updatedAt: new Date().toISOString(), items: [...bySymbol.values()] };
+}
+
+function roundPrice(value) {
+  return Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
+}
+
+function roundPlanMoney(value) {
+  return Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
+}
+
+function roundSellQuantity(value, currency = "JPY") {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return currency === "JPY" ? Math.ceil(value) : Math.ceil(value * 10000) / 10000;
+}
+
+function formatShareQuantity(value) {
+  if (!Number.isFinite(value)) return "-";
+  return value % 1 === 0 ? value.toLocaleString("ja-JP") : value.toLocaleString("ja-JP", { maximumFractionDigits: 4 });
 }
 
 function normalizeRiskChecks(value = []) {
@@ -4585,6 +4887,382 @@ async function status() {
     },
     settings: publicSettings(settings),
   };
+}
+
+async function checkTimelyDisclosures(options = {}) {
+  const settings = await readSettings();
+  const previous = await readDisclosureCache();
+  const generatedAt = new Date().toISOString();
+  if (!settings.tdnetDisclosureEnabled) {
+    const result = {
+      generatedAt,
+      enabled: false,
+      source: "TDnet適時開示情報閲覧サービス",
+      sourceUrl: TDNET_SOURCE_BASE,
+      lookbackDays: settings.tdnetDisclosureLookbackDays,
+      holdings: [],
+      checkedCount: 0,
+      matchedCount: 0,
+      candidateCount: 0,
+      usedLmStudio: false,
+      warnings: [],
+      important: [],
+      recent: [],
+      message: "TDnet重大開示フィルタはOFFです。",
+    };
+    await saveDisclosureCache(result);
+    return result;
+  }
+
+  if (!options.force && previous.generatedAt && !isOlderThan(cacheHourKey(previous.generatedAt), cacheHourKey(generatedAt))) {
+    return previous;
+  }
+
+  const stocks = (await readWatchlist()).filter((stock) => stock.holding && /\.T$/.test(stock.symbol));
+  const holdings = stocks.map((stock) => ({
+    symbol: stock.symbol,
+    name: stock.name,
+    codes: tdnetCodesForSymbol(stock.symbol),
+  }));
+  if (!holdings.length) {
+    const result = {
+      generatedAt,
+      enabled: true,
+      source: "TDnet適時開示情報閲覧サービス",
+      sourceUrl: TDNET_SOURCE_BASE,
+      lookbackDays: settings.tdnetDisclosureLookbackDays,
+      holdings: [],
+      checkedCount: 0,
+      matchedCount: 0,
+      candidateCount: 0,
+      usedLmStudio: false,
+      warnings: [],
+      important: [],
+      recent: [],
+      message: "保有中の日本株がないため、TDnet確認はスキップしました。",
+    };
+    await saveDisclosureCache(result);
+    return result;
+  }
+
+  const holdingByCode = new Map();
+  holdings.forEach((stock) => stock.codes.forEach((code) => holdingByCode.set(code, stock)));
+  const lookbackDays = clamp(Number(settings.tdnetDisclosureLookbackDays || 3), 1, 7);
+  const { items, warnings } = await fetchTdnetRecentDisclosures(lookbackDays);
+  const matched = items
+    .map((disclosure) => ({
+      ...disclosure,
+      stock: holdingByCode.get(disclosure.code) || holdingByCode.get(disclosure.normalizedCode),
+    }))
+    .filter((disclosure) => disclosure.stock);
+  const candidates = matched
+    .map((disclosure) => ({
+      ...disclosure,
+      assessment: disclosureTitleAssessment(disclosure.title),
+    }))
+    .filter((disclosure) => disclosure.assessment.watch);
+
+  let reviews = candidates.map((disclosure) => fallbackDisclosureReview(disclosure));
+  let usedLmStudio = false;
+  const nextWarnings = [...warnings];
+  if (settings.tdnetDisclosureUseLmStudio !== false && candidates.length) {
+    try {
+      const model = await getLmStudioModel();
+      reviews = await aiDisclosureReviews(model, candidates);
+      usedLmStudio = true;
+    } catch (error) {
+      nextWarnings.push(`LM Studio判定: ${error.message || "失敗"}`);
+    }
+  }
+  const reviewById = new Map(reviews.map((review) => [review.id, review]));
+  const reviewed = candidates.map((disclosure) => ({
+    ...disclosure,
+    review: normalizeDisclosureReview(reviewById.get(disclosure.id), disclosure),
+  }));
+  const important = reviewed.filter((disclosure) => disclosureIsImportant(disclosure.review)).slice(0, 20);
+  const result = {
+    generatedAt,
+    enabled: true,
+    source: "TDnet適時開示情報閲覧サービス",
+    sourceUrl: TDNET_SOURCE_BASE,
+    lookbackDays,
+    holdings,
+    checkedCount: items.length,
+    matchedCount: matched.length,
+    candidateCount: candidates.length,
+    usedLmStudio,
+    warnings: nextWarnings.slice(0, 8),
+    important: important.map(compactDisclosure),
+    recent: reviewed.slice(0, 80).map(compactDisclosure),
+    message: important.length
+      ? `保有銘柄の重大開示を${important.length}件確認しました。`
+      : "通知対象の重大開示はありません。",
+  };
+  await saveDisclosureCache(result);
+  if (options.notify !== false) await notifyDisclosureSignals(result, settings).catch(() => {});
+  return result;
+}
+
+async function fetchTdnetRecentDisclosures(lookbackDays = 3) {
+  const warnings = [];
+  const items = [];
+  for (const dateKey of recentJstDateKeys(lookbackDays)) {
+    for (let page = 1; page <= 20; page += 1) {
+      const pageUrl = tdnetListUrl(dateKey, page);
+      let response = null;
+      try {
+        response = await fetchWithTimeout(pageUrl, {
+          timeout: 15000,
+          headers: { "user-agent": "Mozilla/5.0 Stock Signal TDnet disclosure checker" },
+        });
+      } catch (error) {
+        if (page === 1) warnings.push(`${tdnetDateToIso(dateKey)}のTDnet取得に失敗しました。`);
+        break;
+      }
+      if (!response?.ok) {
+        if (page === 1 && response?.status !== 404) warnings.push(`${tdnetDateToIso(dateKey)}のTDnetがHTTP ${response.status}でした。`);
+        break;
+      }
+      const html = await response.text();
+      const parsed = parseTdnetListPage(html, dateKey, pageUrl);
+      items.push(...parsed.items);
+      if (page >= parsed.totalPages || !parsed.items.length) break;
+    }
+  }
+  return { items: uniqueBy(items, (item) => item.id), warnings };
+}
+
+function parseTdnetListPage(html = "", dateKey = "", pageUrl = "") {
+  const items = [];
+  const rows = html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi);
+  for (const match of rows) {
+    const row = match[1] || "";
+    if (!/kjCode/i.test(row) || !/kjTitle/i.test(row)) continue;
+    const time = extractTdnetCell(row, "kjTime");
+    const code = normalizeTdnetCode(extractTdnetCell(row, "kjCode"));
+    const name = extractTdnetCell(row, "kjName");
+    const titleCell = extractTdnetCellHtml(row, "kjTitle");
+    const anchor = titleCell.match(/<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
+    const title = cleanText(anchor ? htmlToInlineText(anchor[2]) : htmlToInlineText(titleCell));
+    if (!code || !title) continue;
+    const href = anchor?.[1] || "";
+    const url = href ? absoluteTdnetUrl(href) : pageUrl;
+    items.push({
+      id: `${dateKey}:${code}:${href || title}`,
+      date: tdnetDateToIso(dateKey),
+      time,
+      code,
+      normalizedCode: code.replace(/0$/, ""),
+      name,
+      title,
+      url,
+      source: "TDnet",
+      pageUrl,
+    });
+  }
+  const totalText = cleanText(html);
+  const total = Number((totalText.match(/全\s*([0-9,]+)\s*件/)?.[1] || "").replace(/,/g, ""));
+  const totalPages = Number.isFinite(total) && total > 0 ? Math.ceil(total / 100) : 1;
+  return { items, totalPages };
+}
+
+function disclosureTitleAssessment(title = "") {
+  const criticalHits = DISCLOSURE_CRITICAL_WORDS.filter((word) => title.includes(word));
+  const growthReviewHits = DISCLOSURE_GROWTH_REVIEW_WORDS.filter((word) => title.includes(word));
+  const ignoreHits = DISCLOSURE_IGNORE_WORDS.filter((word) => title.includes(word));
+  if (!criticalHits.length && !growthReviewHits.length && ignoreHits.length) {
+    return { watch: false, severity: "ignore", keywords: [], ignored: ignoreHits };
+  }
+  const severe = ["上場廃止", "整理銘柄", "監理銘柄", "債務超過", "継続企業の前提", "不適切会計", "不正", "行政処分"]
+    .some((word) => title.includes(word));
+  return {
+    watch: Boolean(criticalHits.length || growthReviewHits.length),
+    severity: severe ? "critical" : criticalHits.length ? "important" : "ignore",
+    keywords: uniqueText([...criticalHits, ...growthReviewHits]),
+    ignored: ignoreHits,
+  };
+}
+
+async function aiDisclosureReviews(model, disclosures = []) {
+  const payload = disclosures.slice(0, 24).map((disclosure) => ({
+    id: disclosure.id,
+    symbol: disclosure.stock?.symbol || "",
+    company: disclosure.stock?.name || disclosure.name,
+    date: disclosure.date,
+    time: disclosure.time,
+    title: disclosure.title,
+    url: disclosure.url,
+    keywordHits: disclosure.assessment?.keywords || [],
+  }));
+  const prompt = `あなたは日本株の適時開示を保有者向けにふるい分けるアナリストです。
+次のTDnet開示タイトルを確認し、保有企業の根本的価値に関わる重大ニュースだけを important 以上にしてください。
+重大扱いの例: 業績下方修正、減配/無配、赤字転落、特別損失、減損、債務超過、継続企業の前提、上場廃止、不祥事、行政処分、事業撤退。
+決算短信・決算説明資料は確認対象だが、売上成長率の明確な鈍化、ガイダンス失望、需要/粗利/受注の構造悪化など、成長ストーリー崩壊が読み取れる場合だけ important 以上にしてください。
+通常は通知しない例: 役員人事、自己株式取得、月次、株主総会、コーポレートガバナンス、軽微な事務的開示。
+PDF本文がない場合は、タイトルだけで断定しすぎず「確認が必要」と書いてください。
+
+返答はこのJSONだけ:
+{"reviews":[{"id":"...","severity":"critical|important|monitor|ignore","fundamentalImpact":true,"category":"下方修正|減配|赤字/損失|減損|上場廃止|不祥事|その他","summary":"日本語で1文","whyNotify":"通知する/しない理由を1文","suggestedAction":"次に確認することを1文"}]}
+
+TDnet開示:
+${JSON.stringify(payload, null, 2)}`;
+  let raw = "";
+  try {
+    raw = await callLmStudioResponses(model, prompt, { maxOutputTokens: 4096 });
+  } catch {
+    raw = await callLmStudioChat(model, prompt, { maxTokens: 4096 });
+  }
+  const parsed = parseJsonObject(raw);
+  const reviews = Array.isArray(parsed.reviews) ? parsed.reviews : [];
+  const byId = new Map(reviews.map((review) => [String(review.id || ""), review]));
+  return disclosures.map((disclosure) => normalizeDisclosureReview(byId.get(disclosure.id), disclosure));
+}
+
+function normalizeDisclosureReview(review = {}, disclosure = {}) {
+  const fallback = fallbackDisclosureReview(disclosure);
+  const severity = ["critical", "important", "monitor", "ignore"].includes(review.severity) ? review.severity : fallback.severity;
+  return {
+    id: disclosure.id || review.id || "",
+    severity,
+    fundamentalImpact: typeof review.fundamentalImpact === "boolean" ? review.fundamentalImpact : fallback.fundamentalImpact,
+    category: String(review.category || fallback.category || "その他").slice(0, 40),
+    summary: String(review.summary || fallback.summary || disclosure.title || "").slice(0, 180),
+    whyNotify: String(review.whyNotify || fallback.whyNotify || "").slice(0, 180),
+    suggestedAction: String(review.suggestedAction || fallback.suggestedAction || "").slice(0, 180),
+    keywords: asStringArray(review.keywords || disclosure.assessment?.keywords || fallback.keywords).slice(0, 8),
+  };
+}
+
+function fallbackDisclosureReview(disclosure = {}) {
+  const assessment = disclosure.assessment || disclosureTitleAssessment(disclosure.title || "");
+  const keywords = assessment.keywords || [];
+  const category = disclosureCategory(disclosure.title || "", keywords);
+  return {
+    id: disclosure.id || "",
+    severity: assessment.severity || "monitor",
+    fundamentalImpact: Boolean(keywords.length),
+    category,
+    summary: `${disclosure.stock?.name || disclosure.name || disclosure.code}で「${disclosure.title || "適時開示"}」が出ています。`,
+    whyNotify: keywords.length ? `${keywords.slice(0, 2).join("、")}に該当し、保有理由の見直しが必要な可能性があります。` : "重大開示キーワードには該当しません。",
+    suggestedAction: "開示資料を開き、通期業績・配当・一過性要因かを確認してください。",
+    keywords,
+  };
+}
+
+function disclosureCategory(title = "", keywords = []) {
+  const text = `${title} ${keywords.join(" ")}`;
+  if (/減配|無配|配当/.test(text)) return "減配/配当";
+  if (/下方修正|業績予想|通期業績|連結業績/.test(text)) return "業績予想";
+  if (/赤字|損失|減損|特別損失/.test(text)) return "赤字/損失";
+  if (/上場廃止|監理銘柄|整理銘柄/.test(text)) return "上場廃止";
+  if (/不適切会計|不正|行政処分|訴訟|調査委員会|第三者委員会/.test(text)) return "不祥事/法務";
+  if (/事業撤退|事業休止|リコール/.test(text)) return "事業リスク";
+  return "その他";
+}
+
+function disclosureIsImportant(review = {}) {
+  return review.fundamentalImpact !== false && ["critical", "important"].includes(review.severity);
+}
+
+function compactDisclosure(disclosure = {}) {
+  return {
+    id: disclosure.id,
+    date: disclosure.date,
+    time: disclosure.time,
+    code: disclosure.code,
+    symbol: disclosure.stock?.symbol || "",
+    name: disclosure.stock?.name || disclosure.name || disclosure.code,
+    title: disclosure.title,
+    url: disclosure.url,
+    source: disclosure.source || "TDnet",
+    pageUrl: disclosure.pageUrl,
+    review: normalizeDisclosureReview(disclosure.review, disclosure),
+  };
+}
+
+async function notifyDisclosureSignals(result = {}, settings = {}) {
+  if (!settings.notificationsEnabled) return;
+  if (!settings.teamsWebhookUrl && !(settings.graphAccessToken && settings.graphChatId)) return;
+  const signals = (result.important || []).map((disclosure) => ({
+    key: `tdnet:${disclosure.id}`,
+    absoluteKey: true,
+    action: `重大開示/${disclosure.review?.category || "要確認"}`,
+    symbol: disclosure.symbol || disclosure.code,
+    name: disclosure.name || disclosure.symbol || disclosure.code,
+    confidence: disclosure.review?.severity === "critical" ? 96 : 88,
+    netEdgeYen: 0,
+    hideEdge: true,
+    reason: disclosure.review?.summary || disclosure.title,
+    points: [
+      `開示: ${disclosure.title}`,
+      `日時: ${disclosure.date} ${disclosure.time}`,
+      disclosure.review?.whyNotify,
+      disclosure.review?.suggestedAction,
+      disclosure.url,
+    ].filter(Boolean),
+  }));
+  await sendSignalsOnce(signals, settings);
+}
+
+function tdnetCodesForSymbol(symbol = "") {
+  const base = String(symbol).trim().toUpperCase().replace(/\.T$/, "");
+  if (!base) return [];
+  return uniqueText([base, `${base}0`]);
+}
+
+function recentJstDateKeys(days = 3) {
+  const parts = zonedParts(new Date(), "Asia/Tokyo");
+  if (!parts) return [];
+  const base = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  const count = clamp(Number(days || 3), 1, 7);
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(base);
+    date.setUTCDate(base.getUTCDate() - index);
+    return `${date.getUTCFullYear()}${String(date.getUTCMonth() + 1).padStart(2, "0")}${String(date.getUTCDate()).padStart(2, "0")}`;
+  });
+}
+
+function tdnetListUrl(dateKey, page) {
+  return `${TDNET_SOURCE_BASE}I_list_${String(page).padStart(3, "0")}_${dateKey}.html`;
+}
+
+function tdnetDateToIso(dateKey = "") {
+  const text = String(dateKey);
+  if (!/^\d{8}$/.test(text)) return "";
+  return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+}
+
+function normalizeTdnetCode(value = "") {
+  return String(value).trim().toUpperCase().replace(/[^0-9A-Z]/g, "");
+}
+
+function extractTdnetCell(row = "", className = "") {
+  return cleanText(htmlToInlineText(extractTdnetCellHtml(row, className)));
+}
+
+function extractTdnetCellHtml(row = "", className = "") {
+  const re = new RegExp(`<td[^>]*class=["'][^"']*${className}[^"']*["'][^>]*>([\\s\\S]*?)<\\/td>`, "i");
+  return row.match(re)?.[1] || "";
+}
+
+function htmlToInlineText(value = "") {
+  return String(value)
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ");
+}
+
+function absoluteTdnetUrl(href = "") {
+  try {
+    return new URL(href, TDNET_SOURCE_BASE).toString();
+  } catch {
+    return "";
+  }
+}
+
+function isJpDisclosureBusinessDay(value = new Date()) {
+  const parts = zonedParts(value, "Asia/Tokyo");
+  return Boolean(parts && isJpExchangeBusinessDay(parts));
 }
 
 async function searchDiagnostics() {
@@ -4845,7 +5523,7 @@ function positionMetrics(stock, price = {}) {
   const totalReturnPct = grossInvested && Number.isFinite(totalReturnAmount)
     ? (totalReturnAmount / grossInvested) * 100
     : null;
-  const minimumHoldQuantity = nullableNonNegativeNumber(stock.minimumHoldQuantity) || 0;
+  const minimumHoldQuantity = resolveMinimumHoldQuantity(stock, remainingQuantity);
   const sellableQuantity = Math.max(0, remainingQuantity - minimumHoldQuantity);
   return {
     positions,
@@ -5679,7 +6357,7 @@ async function notifyStrongAnalysisSignals(analyses = []) {
   const settings = await readSettings();
   if (!settings.notificationsEnabled || (!settings.teamsWebhookUrl && !(settings.graphAccessToken && settings.graphChatId))) return;
   const signals = analyses
-    .map((analysis) => analysisSignal(analysis, settings))
+    .flatMap((analysis) => analysisSignals(analysis, settings))
     .filter(Boolean);
   await sendSignalsOnce(signals, settings);
 }
@@ -5693,6 +6371,12 @@ async function notifyStrongDiscoverySignals(suggestions = []) {
     .map((candidate) => discoverySignal(candidate, settings))
     .filter(Boolean);
   await sendSignalsOnce(signals, settings);
+}
+
+function analysisSignals(analysis, settings) {
+  const exitSignals = exitPlanSignals(analysis);
+  const regular = analysisSignal(analysis, settings);
+  return [...exitSignals, regular].filter(Boolean);
 }
 
 function analysisSignal(analysis, settings) {
@@ -5735,6 +6419,26 @@ function analysisSignal(analysis, settings) {
     };
   }
   return null;
+}
+
+function exitPlanSignals(analysis = {}) {
+  const plan = analysis.exitPlan || {};
+  return (plan.alerts || []).map((alert) => ({
+    key: `${analysis.symbol}:EXIT:${alert.type}:${plan.highWaterPrice || ""}:${Math.round(plan.current || 0)}`,
+    action: alert.action,
+    symbol: analysis.symbol,
+    name: analysis.name,
+    confidence: alert.confidence || 85,
+    netEdgeYen: 0,
+    currency: plan.currency,
+    hideEdge: true,
+    reason: alert.summary,
+    points: [
+      `出口ルール: ${alert.label}`,
+      plan.summary,
+      ...(alert.points || []),
+    ].filter(Boolean).slice(0, 6),
+  }));
 }
 
 function discoverySignal(candidate, settings) {
@@ -5784,7 +6488,7 @@ async function sendSignalsOnce(signals, settings) {
   const sent = new Set((log.items || []).map((item) => item.key));
   const nextItems = [...(log.items || [])];
   for (const signal of signals) {
-    const key = `${today}:${signal.key}`;
+    const key = signal.absoluteKey ? signal.key : `${today}:${signal.key}`;
     if (sent.has(key)) continue;
     await sendTeamsSignal(settings, signal);
     nextItems.push({ key, sentAt: new Date().toISOString(), signal });
@@ -5797,7 +6501,7 @@ async function sendTeamsSignal(settings, signal) {
   const text = [
     `【Stock Signal】${signal.action}: ${signal.name} (${signal.symbol})`,
     `信頼度: ${Math.round(signal.confidence)}%`,
-    signal.currency === "USD" ? "" : `手数料後メリット目安: ${formatYen(signal.netEdgeYen)}`,
+    signal.hideEdge || signal.currency === "USD" ? "" : `手数料後メリット目安: ${formatYen(signal.netEdgeYen)}`,
     signal.reason,
     ...signal.points.map((item) => `・${item}`),
   ].filter(Boolean).join("\n");
@@ -5821,7 +6525,7 @@ function teamsAdaptiveCardPayload(signal, text) {
   const facts = [
     { title: "信頼度", value: `${Math.round(signal.confidence)}%` },
   ];
-  if (signal.currency !== "USD") {
+  if (!signal.hideEdge && signal.currency !== "USD") {
     facts.push({ title: "手数料後メリット", value: formatYen(signal.netEdgeYen) });
   }
   return {
@@ -5907,6 +6611,130 @@ async function saveNotificationLog(log) {
   await writeFile(NOTIFICATION_LOG_PATH, JSON.stringify({ items: log.items || [] }, null, 2));
 }
 
+async function readDisclosureCache() {
+  try {
+    const cached = JSON.parse(await readFile(TDNET_DISCLOSURE_CACHE_PATH, "utf8"));
+    return {
+      generatedAt: cached.generatedAt || "",
+      enabled: cached.enabled !== false,
+      source: cached.source || "TDnet適時開示情報閲覧サービス",
+      sourceUrl: cached.sourceUrl || TDNET_SOURCE_BASE,
+      lookbackDays: clamp(Number(cached.lookbackDays || defaultSettings.tdnetDisclosureLookbackDays), 1, 7),
+      holdings: Array.isArray(cached.holdings) ? cached.holdings.map((item) => ({
+        symbol: normalizeSymbol(item.symbol),
+        name: String(item.name || "").slice(0, 80),
+        codes: asStringArray(item.codes).slice(0, 4),
+      })).filter((item) => item.symbol) : [],
+      checkedCount: Number(cached.checkedCount || 0),
+      matchedCount: Number(cached.matchedCount || 0),
+      candidateCount: Number(cached.candidateCount || 0),
+      usedLmStudio: Boolean(cached.usedLmStudio),
+      warnings: asStringArray(cached.warnings).slice(0, 8),
+      important: normalizeCachedDisclosures(cached.important),
+      recent: normalizeCachedDisclosures(cached.recent),
+      message: String(cached.message || ""),
+    };
+  } catch {
+    return {
+      generatedAt: "",
+      enabled: true,
+      source: "TDnet適時開示情報閲覧サービス",
+      sourceUrl: TDNET_SOURCE_BASE,
+      lookbackDays: defaultSettings.tdnetDisclosureLookbackDays,
+      holdings: [],
+      checkedCount: 0,
+      matchedCount: 0,
+      candidateCount: 0,
+      usedLmStudio: false,
+      warnings: [],
+      important: [],
+      recent: [],
+      message: "",
+    };
+  }
+}
+
+function normalizeCachedDisclosures(items = []) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => ({
+    id: String(item.id || ""),
+    date: normalizeDate(item.date),
+    time: String(item.time || "").slice(0, 10),
+    code: normalizeTdnetCode(item.code),
+    symbol: normalizeSymbol(item.symbol),
+    name: String(item.name || "").slice(0, 100),
+    title: String(item.title || "").slice(0, 220),
+    url: normalizeUrl(item.url) || "",
+    source: String(item.source || "TDnet").slice(0, 30),
+    pageUrl: normalizeUrl(item.pageUrl) || "",
+    review: {
+      id: String(item.review?.id || item.id || ""),
+      severity: ["critical", "important", "monitor", "ignore"].includes(item.review?.severity) ? item.review.severity : "monitor",
+      fundamentalImpact: item.review?.fundamentalImpact !== false,
+      category: String(item.review?.category || "その他").slice(0, 40),
+      summary: String(item.review?.summary || "").slice(0, 180),
+      whyNotify: String(item.review?.whyNotify || "").slice(0, 180),
+      suggestedAction: String(item.review?.suggestedAction || "").slice(0, 180),
+      keywords: asStringArray(item.review?.keywords).slice(0, 8),
+    },
+  })).filter((item) => item.id && item.title);
+}
+
+async function saveDisclosureCache(result) {
+  await mkdir(path.dirname(TDNET_DISCLOSURE_CACHE_PATH), { recursive: true });
+  await writeFile(TDNET_DISCLOSURE_CACHE_PATH, JSON.stringify({
+    generatedAt: result.generatedAt || new Date().toISOString(),
+    enabled: result.enabled !== false,
+    source: result.source || "TDnet適時開示情報閲覧サービス",
+    sourceUrl: result.sourceUrl || TDNET_SOURCE_BASE,
+    lookbackDays: result.lookbackDays || defaultSettings.tdnetDisclosureLookbackDays,
+    holdings: result.holdings || [],
+    checkedCount: result.checkedCount || 0,
+    matchedCount: result.matchedCount || 0,
+    candidateCount: result.candidateCount || 0,
+    usedLmStudio: Boolean(result.usedLmStudio),
+    warnings: result.warnings || [],
+    important: result.important || [],
+    recent: result.recent || [],
+    message: result.message || "",
+  }, null, 2));
+}
+
+async function readExitState() {
+  try {
+    const state = JSON.parse(await readFile(EXIT_STATE_PATH, "utf8"));
+    return {
+      updatedAt: state.updatedAt || "",
+      items: Array.isArray(state.items) ? state.items.map(normalizeExitStateItem).filter(Boolean) : [],
+    };
+  } catch {
+    return { updatedAt: "", items: [] };
+  }
+}
+
+async function saveExitState(state) {
+  await mkdir(path.dirname(EXIT_STATE_PATH), { recursive: true });
+  await writeFile(EXIT_STATE_PATH, JSON.stringify({
+    updatedAt: state.updatedAt || new Date().toISOString(),
+    items: (state.items || []).map(normalizeExitStateItem).filter(Boolean),
+  }, null, 2));
+}
+
+function normalizeExitStateItem(item = {}) {
+  const rawSymbol = String(item.symbol || "").trim().toUpperCase();
+  const symbol = rawSymbol.includes(".") ? normalizeSymbol(rawSymbol) : normalizeUsSymbol(rawSymbol);
+  if (!symbol) return null;
+  return {
+    symbol,
+    name: String(item.name || symbol).slice(0, 100),
+    currency: item.currency === "USD" ? "USD" : "JPY",
+    highWaterPrice: nullablePositiveNumber(item.highWaterPrice),
+    highWaterDate: normalizeDate(item.highWaterDate),
+    trailingStopPct: clamp(Number(item.trailingStopPct || defaultSettings.trailingStopPct), 5, 60),
+    updatedAt: item.updatedAt || "",
+  };
+}
+
 async function readSettings() {
   try {
     const stored = JSON.parse(await readFile(SETTINGS_PATH, "utf8"));
@@ -5944,6 +6772,12 @@ function normalizeSettings(settings = {}) {
     dailyDiscoveryHour: clamp(Number(settings.dailyDiscoveryHour ?? defaultSettings.dailyDiscoveryHour), 0, 23),
     hourlyRefreshEnabled: settings.hourlyRefreshEnabled !== false,
     marketHoursOnlyRefresh: settings.marketHoursOnlyRefresh !== false,
+    tdnetDisclosureEnabled: settings.tdnetDisclosureEnabled !== false,
+    tdnetDisclosureLookbackDays: clamp(Number(settings.tdnetDisclosureLookbackDays || defaultSettings.tdnetDisclosureLookbackDays), 1, 7),
+    tdnetDisclosureUseLmStudio: settings.tdnetDisclosureUseLmStudio !== false,
+    growthExitEnabled: settings.growthExitEnabled !== false,
+    trailingStopPct: clamp(Number(settings.trailingStopPct || defaultSettings.trailingStopPct), 5, 60),
+    onkabuProfitPct: clamp(Number(settings.onkabuProfitPct || defaultSettings.onkabuProfitPct), 50, 300),
     notificationsEnabled: settings.notificationsEnabled === true,
     notificationMinConfidence: clamp(Number(settings.notificationMinConfidence || defaultSettings.notificationMinConfidence), 50, 100),
     notificationMinNetEdgeYen: clamp(Number(settings.notificationMinNetEdgeYen || defaultSettings.notificationMinNetEdgeYen), 0, 1000000),
@@ -5977,6 +6811,12 @@ function applySettingsPatch(current, body = {}) {
   if (body.dailyDiscoveryHour !== undefined) next.dailyDiscoveryHour = body.dailyDiscoveryHour;
   if (typeof body.hourlyRefreshEnabled === "boolean") next.hourlyRefreshEnabled = body.hourlyRefreshEnabled;
   if (typeof body.marketHoursOnlyRefresh === "boolean") next.marketHoursOnlyRefresh = body.marketHoursOnlyRefresh;
+  if (typeof body.tdnetDisclosureEnabled === "boolean") next.tdnetDisclosureEnabled = body.tdnetDisclosureEnabled;
+  if (body.tdnetDisclosureLookbackDays !== undefined) next.tdnetDisclosureLookbackDays = body.tdnetDisclosureLookbackDays;
+  if (typeof body.tdnetDisclosureUseLmStudio === "boolean") next.tdnetDisclosureUseLmStudio = body.tdnetDisclosureUseLmStudio;
+  if (typeof body.growthExitEnabled === "boolean") next.growthExitEnabled = body.growthExitEnabled;
+  if (body.trailingStopPct !== undefined) next.trailingStopPct = body.trailingStopPct;
+  if (body.onkabuProfitPct !== undefined) next.onkabuProfitPct = body.onkabuProfitPct;
   if (typeof body.notificationsEnabled === "boolean") next.notificationsEnabled = body.notificationsEnabled;
   if (body.notificationMinConfidence) next.notificationMinConfidence = body.notificationMinConfidence;
   if (body.notificationMinNetEdgeYen !== undefined) next.notificationMinNetEdgeYen = body.notificationMinNetEdgeYen;
@@ -6009,6 +6849,12 @@ function publicSettings(settings) {
     dailyDiscoveryHour: settings.dailyDiscoveryHour,
     hourlyRefreshEnabled: settings.hourlyRefreshEnabled,
     marketHoursOnlyRefresh: settings.marketHoursOnlyRefresh,
+    tdnetDisclosureEnabled: settings.tdnetDisclosureEnabled,
+    tdnetDisclosureLookbackDays: settings.tdnetDisclosureLookbackDays,
+    tdnetDisclosureUseLmStudio: settings.tdnetDisclosureUseLmStudio,
+    growthExitEnabled: settings.growthExitEnabled,
+    trailingStopPct: settings.trailingStopPct,
+    onkabuProfitPct: settings.onkabuProfitPct,
     notificationsEnabled: settings.notificationsEnabled,
     notificationMinConfidence: settings.notificationMinConfidence,
     notificationMinNetEdgeYen: settings.notificationMinNetEdgeYen,

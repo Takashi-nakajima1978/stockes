@@ -585,6 +585,53 @@
 
           <div class="settings-card">
             <div class="panel-title compact-title">
+              <h3>重大開示フィルタ</h3>
+              <span id="settingsDisclosureStatus">未確認</span>
+            </div>
+            <section class="control-strip" aria-label="重大開示フィルタ">
+              <label class="checkbox-line setting-check">
+                <input id="settingsTdnetDisclosureEnabled" type="checkbox">
+                <span>TDnet重大開示を監視</span>
+              </label>
+              <label class="checkbox-line setting-check">
+                <input id="settingsTdnetDisclosureUseLmStudio" type="checkbox">
+                <span>LM Studioで要約</span>
+              </label>
+              <label>
+                <span>見る日数</span>
+                <input id="settingsTdnetDisclosureLookbackDays" type="number" min="1" max="7" step="1" value="3">
+              </label>
+            </section>
+            <div class="diagnostics-actions">
+              <button id="disclosureCheckButton" type="button" class="secondary">重大開示を今すぐ確認</button>
+            </div>
+            <small class="settings-help">保有中の日本株だけを対象に、下方修正・減配・赤字・減損・上場廃止などを絞ってTeamsへ送ります。</small>
+          </div>
+
+          <div class="settings-card">
+            <div class="panel-title compact-title">
+              <h3>出口ルール</h3>
+              <span>10倍候補を握るための売り条件</span>
+            </div>
+            <section class="control-strip" aria-label="出口ルール">
+              <label class="checkbox-line setting-check">
+                <input id="settingsGrowthExitEnabled" type="checkbox">
+                <span>成長ストーリー崩壊だけ売りアラート</span>
+              </label>
+              <label>
+                <span>最高値から下落%</span>
+                <input id="settingsTrailingStopPct" type="number" min="5" max="60" step="1" value="25">
+              </label>
+              <label>
+                <span>恩株化%</span>
+                <input id="settingsOnkabuProfitPct" type="number" min="50" max="300" step="5" value="100">
+              </label>
+            </section>
+            <small class="settings-help">株価の20〜30%調整だけでは売らず、根拠崩壊・最高値からの下落・元本回収の3条件を分けて通知します。</small>
+          </div>
+
+          <div class="settings-card">
+            <div class="panel-title compact-title">
               <h3>Teams通知</h3>
               <span>強い判断だけ送信</span>
             </div>
@@ -642,6 +689,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260824-crypto-fx" type="module"></script>
+  <script src="/app.js?v=20260825-exit-rules" type="module"></script>
 </body>
 </html>
