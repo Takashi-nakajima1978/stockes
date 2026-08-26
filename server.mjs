@@ -35,6 +35,8 @@ const DISCOVERY_SCORING_VERSION = 4;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
+const FUNDAMENTAL_EXIT_MAX_AGE_DAYS = 540;
+const TRAILING_STOP_LOSS_PCT = 20;
 const PE_PRIORITY_MIN_SCORE = 45;
 const PE_STRONG_MIN_SCORE = 55;
 const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品|wholesale|food|grocery|consumer staples|packaged foods)/i;
@@ -837,6 +839,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
       const bySymbol = new Map(reviews.map((review) => [review.symbol, review]));
       rows.forEach((row) => {
         row.ai = bySymbol.get(row.symbol) || fallbackUsReview(row);
+        row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
         applyUsEvidenceTranslations(row);
       });
       usedLmStudio = reviews.length > 0;
@@ -844,12 +847,14 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
       warnings.push(`LM Studio: ${error.message || "米国株AI分析が返りませんでした"}`);
       rows.forEach((row) => {
         row.ai = fallbackUsReview(row);
+        row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
         applyUsEvidenceTranslations(row);
       });
     }
   } else {
     rows.forEach((row) => {
       row.ai = fallbackUsReview(row);
+      row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
       applyUsEvidenceTranslations(row);
     });
   }
@@ -933,15 +938,18 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
     try {
       const review = (await aiUsHoldingReviews([row]))[0] || null;
       row.ai = review || fallbackUsReview(row);
+      row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
       applyUsEvidenceTranslations(row);
       usedLmStudio = Boolean(review);
     } catch (error) {
       warnings.push(`LM Studio: ${error.message || "米国株AI分析が返りませんでした"}`);
       row.ai = fallbackUsReview(row);
+      row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
       applyUsEvidenceTranslations(row);
     }
   } else {
     row.ai = fallbackUsReview(row);
+    row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
     applyUsEvidenceTranslations(row);
   }
 
@@ -982,6 +990,7 @@ async function researchUsStock(stock, options = {}) {
       snippet: original,
       originalSnippet: original,
       summaryJa: "",
+      publishedDate: item.publishedDate || "",
       kind: "web",
     };
   });
@@ -1032,18 +1041,20 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       title: cleanText(item.title || "").slice(0, 140),
       source: item.source,
       url: item.url,
+      publishedDate: item.publishedDate || "",
       snippet: cleanText(item.originalSnippet || item.snippet || "").slice(0, 260),
     })),
   }));
   const prompt = [
     "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
     "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益、受取配当、年間配当目安、配当込み損益を分けて読み、利益保証をせず、保有継続の確認材料と注意点を分けてください。",
-    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"summary\":\"...\"}]}}]}。",
+    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]}}]}。",
     "stanceは HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED のいずれか。changeLevelは normal, watch, important のいずれか。",
     "NVIDIAのような10倍候補は20〜30%の株価下落だけではEXITにしません。売上成長の鈍化、guidanceがconsensusを下回る、需要・粗利・受注の構造悪化、成長投資テーマの破綻など、買った根拠が崩れた時だけgrowthExit.levelをexit_alertにしてください。",
+    `growthExit.exit_alertはpublishedDateが過去${FUNDAMENTAL_EXIT_MAX_AGE_DAYS}日以内の根拠がある時だけにしてください。日付不明、古い記事、過去の歴史記事は売りアラートの根拠にしないでください。`,
     "summaryJaは90字以内、goodとrisksは各3件まで、evidenceJaのsummaryは各80字以内にしてください。growthExit.evidenceは根拠にした記事や開示だけを最大3件入れてください。",
     "",
-    JSON.stringify({ stocks: items }),
+    JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
   const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 3500 }).catch(async (error) => {
     if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 3500 });
@@ -3633,6 +3644,7 @@ async function researchStock(stock, options) {
         url: item.url,
         source: hostOf(item.url),
         snippet: cleanText(item.snippet).slice(0, 260),
+        publishedDate: item.publishedDate || "",
         kind: item.topic === "sector" ? "sector" : "search",
         sector: stock.sector || stockSector(stock),
       })),
@@ -3641,6 +3653,7 @@ async function researchStock(stock, options) {
         url: item.url,
         source: hostOf(item.url),
         snippet: cleanText(item.text).slice(0, 260),
+        publishedDate: item.publishedDate || "",
         kind: `depth ${item.depth}`,
         sector: stock.sector || stockSector(stock),
       })),
@@ -3696,6 +3709,7 @@ async function fetchSearxngResults(query, { settings, categories, engines, timeo
       title: cleanText(item.title || item.url),
       url: item.url,
       snippet: cleanText(item.content || item.snippet || ""),
+      publishedDate: searchResultPublishedDate(item),
     }));
 }
 
@@ -3738,6 +3752,7 @@ async function searchGoogleCustom(query, { limit, settings }) {
         title: cleanText(item.title || item.link),
         url: item.link,
         snippet: cleanText(item.snippet || ""),
+        publishedDate: searchResultPublishedDate(item),
       }));
     if (!pageResults.length) break;
     results.push(...pageResults);
@@ -3786,7 +3801,7 @@ async function fetchPageText(url) {
   const html = await response.text();
   const title = cleanText((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || url);
   const text = htmlToText(html).slice(0, 1800);
-  return { title, text, html };
+  return { title, text, html, publishedDate: searchResultPublishedDate({ title, url, snippet: text, html }) };
 }
 
 async function fetchPriceHistory(symbol) {
@@ -4361,6 +4376,7 @@ async function aiBatchDecisions(rows, onProgress = null) {
       title: cleanText(item.title || "").slice(0, 140),
       source: item.source,
       url: item.url,
+      publishedDate: item.publishedDate || "",
       snippet: cleanText(item.snippet || "").slice(0, 220),
       kind: item.kind,
     })),
@@ -4395,9 +4411,10 @@ async function aiDecisionChunk(model, items) {
   const prompt = [
     "あなたは日本株のリサーチ補助AIです。将来利益を保証せず、売買判断の根拠とリスクを厳密に分けてください。",
     "注意点は、トレードのプロが最低限確認する観点で評価してください。業種環境も個社とは別の材料として読み込んでください。",
-    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"summary\":\"...\"}]}}]}。",
+    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]}}]}。",
     "actionは BUY, HOLD, SELL, WATCH のいずれか。SELLは即時売却ではなく、数週間から数か月の保有理由を見直す意味です。confidenceは0-100。",
     "NVIDIAのような10倍候補は20〜30%の株価下落だけではファンダ崩壊にしないでください。growthExitは、売上高成長率の明確な鈍化、ガイダンスが市場予想を下回る、需要・粗利・受注の構造悪化、減配/下方修正など、買った根拠そのものが崩れた時だけexit_alertにしてください。",
+    `growthExit.exit_alertはpublishedDateが過去${FUNDAMENTAL_EXIT_MAX_AGE_DAYS}日以内の根拠がある時だけにしてください。日付不明、古い記事、過去の歴史記事は売りアラートの根拠にしないでください。`,
     "riskChecksは必ずこの6項目にしてください: 業績・決算, 業種環境, 株価位置, 需給・流動性, 配当, 保有損益。levelは low, medium, high のいずれか。",
     "thesisは120字以内、reasonsとrisksは各3件まで、riskChecksのsummaryは各80字以内にしてください。growthExit.evidenceは根拠にした記事や開示だけを最大3件入れてください。",
     "ユーザーはデイトレーダーではありません。短期ノイズだけで売買を促さず、根拠不足、材料が古い、検索結果が薄い場合はWATCHを優先してください。",
@@ -4405,7 +4422,7 @@ async function aiDecisionChunk(model, items) {
     "配当利回り、配当の増減、購入日以降の配当込み損益を見てください。高配当だけでBUYにせず、株価下落で利回りが高く見える可能性をリスクに入れてください。",
     "短期売買ではなく、3年の価格傾向、1年買い場ライン、購入日、購入単価、残株数、売却済み株数、確定損益、含み損益、配当込み損益、直近モメンタム、出来高、悪材料、過熱感、業種環境、保有継続可否を総合評価してください。",
     "",
-    JSON.stringify({ stocks: items }),
+    JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
 
   const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 2800 }).catch(async (error) => {
@@ -4543,13 +4560,14 @@ function normalizeDecision(stock, price, research, decision) {
   const safety = decisionSafetyOverride(stock, price, initialAction, position);
   const action = safety.action;
   const fallbackGrowthExit = ruleGrowthExit(stock, research, price);
-  const growthExit = normalizeGrowthExit(decision.growthExit || fallbackGrowthExit);
+  let growthExit = normalizeGrowthExit(decision.growthExit || fallbackGrowthExit);
   if (!growthExit.evidence.length && fallbackGrowthExit.evidence?.length) {
     growthExit.evidence = normalizeGrowthExitEvidence(fallbackGrowthExit.evidence).slice(0, 3);
   }
   if (!growthExit.signals.length && fallbackGrowthExit.signals?.length) {
     growthExit.signals = asStringArray(fallbackGrowthExit.signals).slice(0, 5);
   }
+  growthExit = enforceRecentGrowthExit(growthExit, research, stock);
   const reasons = uniqueText([...asStringArray(decision.reasons), ...safety.reasons]).slice(0, 5);
   const risks = uniqueText([...asStringArray(decision.risks), ...safety.risks]).slice(0, 5);
   const riskChecks = mergeRiskChecks(
@@ -4578,8 +4596,10 @@ function normalizeDecision(stock, price, research, decision) {
 }
 
 function ruleGrowthExit(stock, research = {}, price = {}) {
-  const context = cleanText(research.contextText || "").toLowerCase();
-  const matchedEvidence = growthExitEvidenceFromResearch(research);
+  const matchedEvidence = growthExitEvidenceFromResearch(research, { requireRecent: true });
+  const staleEvidence = growthExitEvidenceFromResearch(research, { requireRecent: false })
+    .filter((item) => !isRecentEvidenceForExit(item));
+  const context = cleanText(matchedEvidence.map((item) => `${item.title}\n${item.summary}`).join("\n")).toLowerCase();
   const exitSignals = uniqueText([
     ...growthExitPatterns().filter(([, pattern]) => pattern.test(context)).map(([label]) => label),
     ...matchedEvidence.flatMap((item) => item.signals || []),
@@ -4598,6 +4618,14 @@ function ruleGrowthExit(stock, research = {}, price = {}) {
       reason: `${stock.name}に成長鈍化や損失関連の確認材料があります。`,
       signals: exitSignals,
       evidence: matchedEvidence,
+    };
+  }
+  if (staleEvidence.length) {
+    return {
+      level: "watch",
+      reason: `${stock.name}に悪材料らしい古い記事がありますが、最近の根拠ではないため売りアラートにはしません。`,
+      signals: uniqueText(staleEvidence.flatMap((item) => item.signals || [])).slice(0, 5),
+      evidence: staleEvidence.slice(0, 3),
     };
   }
   if (price.trend3y === "UP" && Number.isFinite(price.return3y) && price.return3y > 80) {
@@ -4620,7 +4648,7 @@ function growthExitPatterns() {
   ];
 }
 
-function growthExitEvidenceFromResearch(research = {}) {
+function growthExitEvidenceFromResearch(research = {}, options = {}) {
   const evidence = Array.isArray(research.evidence) ? research.evidence : [];
   return evidence.map((item) => {
     const text = cleanText(`${item.title || ""}\n${item.snippet || ""}\n${item.source || ""}`);
@@ -4628,14 +4656,32 @@ function growthExitEvidenceFromResearch(research = {}) {
       .filter(([, pattern]) => pattern.test(text))
       .map(([label]) => label);
     if (!signals.length) return null;
+    const publishedDate = item.publishedDate || searchResultPublishedDate(item);
+    if (options.requireRecent && !isRecentSearchDate(publishedDate, options.maxAgeDays || FUNDAMENTAL_EXIT_MAX_AGE_DAYS)) return null;
     return {
       title: cleanText(item.title || item.source || "検索結果").slice(0, 120),
       source: cleanText(item.source || hostOf(item.url || "") || "").slice(0, 80),
       url: normalizeUrl(item.url) || "",
+      publishedDate,
       summary: cleanText(item.snippet || "").slice(0, 180),
       signals: uniqueText(signals).slice(0, 5),
     };
   }).filter(Boolean).slice(0, 3);
+}
+
+function enforceRecentGrowthExit(growthExit = {}, research = {}, stock = {}) {
+  const normalized = normalizeGrowthExit(growthExit);
+  const recentExplicit = normalizeGrowthExitEvidence(normalized.evidence)
+    .filter((item) => isRecentEvidenceForExit(item));
+  const recentFallback = growthExitEvidenceFromResearch(research, { requireRecent: true });
+  const recentEvidence = recentExplicit.length ? recentExplicit : recentFallback;
+  if (recentEvidence.length) return { ...normalized, evidence: recentEvidence.slice(0, 3) };
+  if (normalized.level !== "exit_alert") return normalized;
+  return {
+    ...normalized,
+    level: "watch",
+    reason: `${stock.name || "この銘柄"}は悪材料らしい文言がありますが、最近の日付付き根拠がないため売り通知ではなく確認扱いにします。`,
+  };
 }
 
 function normalizeGrowthExit(value = {}) {
@@ -4656,6 +4702,7 @@ function normalizeGrowthExitEvidence(items = []) {
     title: cleanText(item.title || item.headline || "").slice(0, 120),
     source: cleanText(item.source || hostOf(item.url || "") || "").slice(0, 80),
     url: normalizeUrl(item.url) || "",
+    publishedDate: item.publishedDate || item.date || searchResultPublishedDate(item),
     summary: cleanText(item.summary || item.snippet || item.reason || "").slice(0, 180),
     signals: asStringArray(item.signals).slice(0, 5),
   })).filter((item) => item.title || item.summary || item.url);
@@ -4680,17 +4727,31 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
   const position = analysis.position || {};
   const currency = options.currency || price.currency || "JPY";
   const current = nullablePositiveNumber(price.current);
-  const highPoint = bestKnownHighPoint(price, current);
+  const trailingStartDate = trailingStartDateForPosition(position);
+  const highPoint = bestKnownHighPoint(price, current, { sinceDate: trailingStartDate });
   const previousHigh = nullablePositiveNumber(previous?.highWaterPrice);
-  const previousWins = previousHigh && (!highPoint.price || previousHigh >= highPoint.price);
+  const previousHighDate = normalizeDate(previous?.highWaterDate);
+  const previousEligible = Boolean(previousHigh && (!trailingStartDate || (previousHighDate && previousHighDate >= trailingStartDate)));
+  const previousWins = previousEligible && (!highPoint.price || previousHigh >= highPoint.price);
   const highWaterPrice = previousWins ? previousHigh : highPoint.price;
   const highWaterDate = previousWins ? previous.highWaterDate || "" : highPoint.date || "";
   const trailingStopPct = clamp(Number(settings.trailingStopPct || defaultSettings.trailingStopPct), 5, 60);
   const trailingStopPrice = highWaterPrice ? highWaterPrice * (1 - trailingStopPct / 100) : null;
   const drawdownFromHighPct = current && highWaterPrice ? ((current - highWaterPrice) / highWaterPrice) * 100 : null;
-  const hasShares = nullablePositiveNumber(position.quantity) > 0;
-  const trailingTriggered = Boolean(hasShares && current && trailingStopPrice && current <= trailingStopPrice);
-  const growthExit = normalizeGrowthExit(analysis.growthExit || analysis.ai?.growthExit);
+  const trailing = trailingStopAssessment(position, {
+    current,
+    highWaterPrice,
+    highWaterDate,
+    trailingStopPrice,
+    trailingStopPct,
+    currency,
+  });
+  const trailingTriggered = trailing.triggered;
+  const growthExit = enforceRecentGrowthExit(
+    normalizeGrowthExit(analysis.growthExit || analysis.ai?.growthExit),
+    { evidence: analysis.evidence || [] },
+    analysis,
+  );
   const onkabu = onkabuPlan(position, current, settings, currency);
   const alerts = [];
   if (settings.growthExitEnabled !== false && growthExit.level === "exit_alert") {
@@ -4707,13 +4768,14 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
     alerts.push({
       type: "TRAILING_STOP",
       label: "トレーリングストップ",
-      action: "利確/損切りアラート",
+      action: trailing.mode === "loss_stop" ? "損切り確認アラート" : "利確確認アラート",
       confidence: 88,
       summary: `最高値${formatMoney(highWaterPrice, currency)}から${Math.abs(drawdownFromHighPct).toFixed(1)}%下落し、${trailingStopPct}%下落ラインを割りました。`,
       points: [
         `最高値: ${formatMoney(highWaterPrice, currency)}${highWaterDate ? ` (${highWaterDate})` : ""}`,
         `確認ライン: ${formatMoney(trailingStopPrice, currency)}`,
         `現在値: ${formatMoney(current, currency)}`,
+        ...trailing.points,
       ],
     });
   }
@@ -4744,16 +4806,20 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
     currency,
     highWaterPrice: roundPrice(highWaterPrice),
     highWaterDate,
+    trailingStartDate,
     current: roundPrice(current),
     trailingStopPct,
     trailingStopPrice: roundPrice(trailingStopPrice),
     drawdownFromHighPct: Number.isFinite(drawdownFromHighPct) ? Math.round(drawdownFromHighPct * 10) / 10 : null,
+    trailingBelowLine: trailing.belowLine,
     trailingTriggered,
+    trailingSuppressedReason: trailing.suppressedReason,
+    trailingBasis: trailing.basis,
     growthExit,
     onkabu,
     alertLevel,
     alerts,
-    summary: exitPlanSummary(alertLevel, growthExit, onkabu, trailingStopPct, drawdownFromHighPct),
+    summary: exitPlanSummary(alertLevel, growthExit, onkabu, trailingStopPct, drawdownFromHighPct, trailing.suppressedReason),
   };
 }
 
@@ -4763,7 +4829,8 @@ function growthExitAlertPoints(growthExit = {}, analysis = {}) {
   if (signals.length) points.push(`検出材料: ${signals.join(" / ")}`);
   const evidence = growthExitEvidenceForAlert(growthExit, analysis).slice(0, 3);
   evidence.forEach((item, index) => {
-    points.push(`根拠${index + 1}: ${item.title || item.source || "確認元"}`);
+    const date = item.publishedDate ? `${item.publishedDate} ` : "";
+    points.push(`根拠${index + 1}: ${date}${item.title || item.source || "確認元"}`);
     if (item.summary) points.push(`内容: ${item.summary}`);
     if (item.url) points.push(`URL: ${item.url}`);
   });
@@ -4788,18 +4855,94 @@ function growthExitEvidenceForAlert(growthExit = {}, analysis = {}) {
       title: cleanText(item.title || item.source || "検索結果").slice(0, 120),
       source: cleanText(item.source || hostOf(item.url || "") || "").slice(0, 80),
       url: normalizeUrl(item.url) || "",
+      publishedDate: item.publishedDate || searchResultPublishedDate(item),
       summary: cleanText(item.summaryJa || item.snippet || "").slice(0, 180),
       signals: uniqueText(matchedSignals).slice(0, 5),
     };
   }).filter(Boolean);
 }
 
-function bestKnownHighPoint(price = {}, current = null) {
+function trailingStartDateForPosition(position = {}) {
+  const remainingLots = Array.isArray(position.remainingLots) ? position.remainingLots : [];
+  const dates = remainingLots
+    .map((lot) => normalizeDate(lot.purchaseDate))
+    .filter(Boolean)
+    .sort();
+  return dates[0] || normalizeDate(position.purchaseDate) || "";
+}
+
+function trailingStopAssessment(position = {}, options = {}) {
+  const current = nullablePositiveNumber(options.current);
+  const highWaterPrice = nullablePositiveNumber(options.highWaterPrice);
+  const trailingStopPrice = nullablePositiveNumber(options.trailingStopPrice);
+  const trailingStopPct = clamp(Number(options.trailingStopPct || defaultSettings.trailingStopPct), 5, 60);
+  const currency = options.currency || "JPY";
+  const quantity = nullablePositiveNumber(position.quantity) || 0;
+  const purchasePrice = nullablePositiveNumber(position.purchasePrice);
+  const totalReturnPct = Number.isFinite(position.totalReturnPct) ? position.totalReturnPct : position.pnlPct;
+  const unrealizedPnlPct = Number.isFinite(position.unrealizedPnlPct) ? position.unrealizedPnlPct : null;
+  const gainFromCostPct = current && purchasePrice ? ((current - purchasePrice) / purchasePrice) * 100 : null;
+  const highGainFromCostPct = highWaterPrice && purchasePrice ? ((highWaterPrice - purchasePrice) / purchasePrice) * 100 : null;
+  const belowLine = Boolean(quantity > 0 && current && trailingStopPrice && current <= trailingStopPrice);
+  const profitProtection = belowLine
+    && Number.isFinite(highGainFromCostPct)
+    && highGainFromCostPct >= Math.max(15, trailingStopPct)
+    && Number.isFinite(gainFromCostPct)
+    && gainFromCostPct >= 3;
+  const lossStop = belowLine && (
+    (Number.isFinite(totalReturnPct) && totalReturnPct <= -TRAILING_STOP_LOSS_PCT)
+    || (Number.isFinite(unrealizedPnlPct) && unrealizedPnlPct <= -TRAILING_STOP_LOSS_PCT)
+  );
+  const points = uniqueText([
+    purchasePrice ? `残り株の平均取得: ${formatMoney(purchasePrice, currency)}` : "",
+    Number.isFinite(gainFromCostPct) ? `平均取得から: ${formatSignedPercent(gainFromCostPct)}` : "",
+    Number.isFinite(totalReturnPct) ? `配当込み損益: ${formatSignedPercent(totalReturnPct)}` : "",
+    Number.isFinite(highGainFromCostPct) ? `保有後高値は平均取得から${formatSignedPercent(highGainFromCostPct)}` : "",
+  ].filter(Boolean)).slice(0, 5);
+
+  let suppressedReason = "";
+  if (belowLine && !profitProtection && !lossStop) {
+    suppressedReason = purchasePrice && Number.isFinite(gainFromCostPct)
+      ? `確認ラインは割っていますが、残り株の平均取得${formatMoney(purchasePrice, currency)}に対して現在は${formatSignedPercent(gainFromCostPct)}で、利確/損切り通知の条件ではありません。`
+      : "確認ラインは割っていますが、残り株の取得状況が不足しているためTeams通知は出しません。";
+  }
+
+  return {
+    triggered: Boolean(profitProtection || lossStop),
+    belowLine,
+    mode: lossStop ? "loss_stop" : profitProtection ? "profit_lock" : "suppressed",
+    suppressedReason,
+    points,
+    basis: {
+      purchasePrice: roundPrice(purchasePrice),
+      totalReturnPct: Number.isFinite(totalReturnPct) ? Math.round(totalReturnPct * 10) / 10 : null,
+      unrealizedPnlPct: Number.isFinite(unrealizedPnlPct) ? Math.round(unrealizedPnlPct * 10) / 10 : null,
+      gainFromCostPct: Number.isFinite(gainFromCostPct) ? Math.round(gainFromCostPct * 10) / 10 : null,
+      highGainFromCostPct: Number.isFinite(highGainFromCostPct) ? Math.round(highGainFromCostPct * 10) / 10 : null,
+    },
+  };
+}
+
+function bestKnownHighPoint(price = {}, current = null, options = {}) {
+  const sinceDate = normalizeDate(options.sinceDate);
+  const seriesHigh = (price.series || [])
+    .map((point) => ({
+      price: nullablePositiveNumber(point.close),
+      date: normalizeDate(point.date),
+      source: "保有後高値",
+    }))
+    .filter((point) => point.price && point.date && (!sinceDate || point.date >= sinceDate))
+    .reduce((best, item) => (!best || item.price > best.price ? item : best), null);
   const candidates = [
-    { price: nullablePositiveNumber(price.high3y), date: normalizeDate(price.high3yDate), source: "3年高値" },
-    { price: nullablePositiveNumber(price.high52), date: normalizeDate(price.high52Date), source: "52週高値" },
+    seriesHigh,
+    (!sinceDate || (normalizeDate(price.high3yDate) && normalizeDate(price.high3yDate) >= sinceDate))
+      ? { price: nullablePositiveNumber(price.high3y), date: normalizeDate(price.high3yDate), source: "3年高値" }
+      : null,
+    (!sinceDate || (normalizeDate(price.high52Date) && normalizeDate(price.high52Date) >= sinceDate))
+      ? { price: nullablePositiveNumber(price.high52), date: normalizeDate(price.high52Date), source: "52週高値" }
+      : null,
     { price: nullablePositiveNumber(current), date: normalizeDate(last(price.series || [])?.date), source: "現在値" },
-  ].filter((item) => item.price);
+  ].filter((item) => item && item.price);
   return candidates.reduce((best, item) => (!best || item.price > best.price ? item : best), { price: null, date: "", source: "" });
 }
 
@@ -4834,9 +4977,10 @@ function onkabuPlan(position = {}, current = null, settings = defaultSettings, c
   };
 }
 
-function exitPlanSummary(level, growthExit, onkabu, trailingStopPct, drawdownFromHighPct) {
+function exitPlanSummary(level, growthExit, onkabu, trailingStopPct, drawdownFromHighPct, trailingSuppressedReason = "") {
   if (level === "exit_alert") return "売る理由が出た時だけ通知します。ファンダ崩壊またはトレーリングストップを確認してください。";
   if (level === "partial_profit") return onkabu.summary;
+  if (trailingSuppressedReason) return trailingSuppressedReason;
   if (level === "watch") {
     const drawdown = Number.isFinite(drawdownFromHighPct) ? `最高値から${formatSignedPercent(drawdownFromHighPct)}。` : "";
     return `${drawdown}${trailingStopPct}%ライン接近、またはファンダ確認材料あり。`;
@@ -4856,6 +5000,7 @@ function mergeExitState(state = {}, analyses = []) {
       currency: plan.currency || previous.currency || "JPY",
       highWaterPrice: plan.highWaterPrice,
       highWaterDate: plan.highWaterDate || previous.highWaterDate || "",
+      trailingStartDate: plan.trailingStartDate || previous.trailingStartDate || "",
       trailingStopPct: plan.trailingStopPct,
       updatedAt: new Date().toISOString(),
     });
@@ -5597,22 +5742,22 @@ function positionMetrics(stock, price = {}) {
   const positions = normalizePositions(stock);
   const sales = normalizeSales(stock);
   const aggregate = aggregatePositions(positions);
-  const saleAggregate = aggregateSales(sales);
+  const lotState = positionLotState(positions, sales);
   const grossQuantity = aggregate.quantity || 0;
   const grossInvested = aggregate.invested || 0;
-  const purchasePrice = aggregate.purchasePrice;
-  const soldQuantity = Math.min(saleAggregate.quantity || 0, grossQuantity);
-  const remainingQuantity = Math.max(0, grossQuantity - soldQuantity);
-  const remainingInvested = purchasePrice && remainingQuantity ? purchasePrice * remainingQuantity : null;
-  const realizedProceeds = saleAggregate.quantity > 0 && soldQuantity < saleAggregate.quantity
-    ? saleAggregate.proceeds * (soldQuantity / saleAggregate.quantity)
-    : saleAggregate.proceeds;
-  const realizedCost = purchasePrice && soldQuantity ? purchasePrice * soldQuantity : 0;
-  const realizedPnlAmount = Number.isFinite(realizedProceeds) && realizedProceeds
+  const soldQuantity = lotState.soldQuantity || 0;
+  const remainingQuantity = lotState.remainingQuantity || Math.max(0, grossQuantity - soldQuantity);
+  const remainingInvested = lotState.remainingInvested || null;
+  const purchasePrice = remainingQuantity && remainingInvested
+    ? remainingInvested / remainingQuantity
+    : aggregate.purchasePrice;
+  const realizedProceeds = lotState.realizedProceeds || null;
+  const realizedCost = lotState.realizedCost || 0;
+  const realizedPnlAmount = Number.isFinite(realizedProceeds) && Number.isFinite(realizedCost) && soldQuantity
     ? realizedProceeds - realizedCost
-    : soldQuantity && purchasePrice ? -realizedCost : null;
+    : soldQuantity && realizedCost ? -realizedCost : null;
   const current = nullablePositiveNumber(price.current);
-  const firstPurchaseDate = aggregate.purchaseDate;
+  const firstPurchaseDate = lotState.remainingLots[0]?.purchaseDate || aggregate.purchaseDate;
   const holdingDays = firstPurchaseDate ? daysSince(firstPurchaseDate) : null;
   const unrealizedPnlAmount = purchasePrice && current && remainingQuantity ? (current - purchasePrice) * remainingQuantity : null;
   const unrealizedPnlPct = purchasePrice && current && remainingQuantity ? ((current - purchasePrice) / purchasePrice) * 100 : null;
@@ -5635,8 +5780,10 @@ function positionMetrics(stock, price = {}) {
   return {
     positions,
     sales,
+    remainingLots: lotState.remainingLots,
     purchaseDate: firstPurchaseDate,
     purchasePrice,
+    grossPurchasePrice: aggregate.purchasePrice,
     quantity: remainingQuantity || null,
     grossQuantity: grossQuantity || null,
     soldQuantity: soldQuantity || null,
@@ -5982,6 +6129,47 @@ function aggregateSales(sales) {
   };
 }
 
+function positionLotState(positions = [], sales = []) {
+  const remainingLots = positions.map((lot) => ({ ...lot }));
+  let soldQuantity = 0;
+  let realizedCost = 0;
+  let realizedProceeds = 0;
+  const grossQuantity = positions.reduce((sum, lot) => sum + lot.quantity, 0);
+
+  for (const sale of sales) {
+    let saleLeft = Math.min(sale.quantity, Math.max(0, grossQuantity - soldQuantity));
+    for (const lot of remainingLots) {
+      if (saleLeft <= 0) break;
+      if (!lot.quantity) continue;
+      const take = Math.min(lot.quantity, saleLeft);
+      lot.quantity = Math.max(0, lot.quantity - take);
+      soldQuantity += take;
+      saleLeft -= take;
+      realizedCost += take * lot.purchasePrice;
+      realizedProceeds += take * sale.sellPrice;
+    }
+  }
+
+  const openLots = remainingLots
+    .filter((lot) => lot.quantity > 0.000001)
+    .map((lot) => ({
+      purchaseDate: lot.purchaseDate,
+      purchasePrice: lot.purchasePrice,
+      quantity: Math.round(lot.quantity * 1000000) / 1000000,
+    }));
+  const remainingQuantity = openLots.reduce((sum, lot) => sum + lot.quantity, 0);
+  const remainingInvested = openLots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
+
+  return {
+    remainingLots: openLots,
+    soldQuantity: Math.round(soldQuantity * 1000000) / 1000000,
+    remainingQuantity: Math.round(remainingQuantity * 1000000) / 1000000,
+    remainingInvested,
+    realizedCost,
+    realizedProceeds,
+  };
+}
+
 function buildSectorEvidence(rows = []) {
   const bySector = new Map();
   for (const row of rows) {
@@ -5999,6 +6187,7 @@ function buildSectorEvidence(rows = []) {
         url: item.url,
         source: item.source,
         snippet: item.snippet,
+        publishedDate: item.publishedDate || "",
         sector,
       }));
     current.items.push(...sectorItems);
@@ -6061,6 +6250,7 @@ function normalizeSectorEvidence(value = []) {
       url: String(item.url || ""),
       source: String(item.source || ""),
       snippet: String(item.snippet || "").slice(0, 300),
+      publishedDate: normalizeDate(item.publishedDate) || searchResultPublishedDate(item),
       sector: String(item.sector || group.sector || "その他"),
     })).filter((item) => item.url || item.title).slice(0, 8) : [],
   })).filter((group) => group.items.length);
@@ -6099,6 +6289,11 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
   const initialAction = ["BUY", "HOLD", "SELL", "WATCH"].includes(analysis.action) ? analysis.action : "WATCH";
   const safety = decisionSafetyOverride(resolvedStock, price, initialAction, position);
   const action = safety.action;
+  const growthExit = enforceRecentGrowthExit(
+    normalizeGrowthExit(analysis.growthExit || analysis.ai?.growthExit),
+    { evidence: analysis.evidence || [] },
+    resolvedStock,
+  );
   return {
     ...analysis,
     symbol,
@@ -6108,6 +6303,8 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
     reasons: uniqueText([...asStringArray(analysis.reasons), ...safety.reasons]).slice(0, 5),
     risks: uniqueText([...asStringArray(analysis.risks), ...safety.risks]).slice(0, 5),
     position,
+    growthExit,
+    ai: analysis.ai ? { ...analysis.ai, growthExit } : analysis.ai,
     entryValue: evaluateEntryPrice(resolvedStock.targetBuyPrice, price),
   };
 }
@@ -6837,6 +7034,7 @@ function normalizeExitStateItem(item = {}) {
     currency: item.currency === "USD" ? "USD" : "JPY",
     highWaterPrice: nullablePositiveNumber(item.highWaterPrice),
     highWaterDate: normalizeDate(item.highWaterDate),
+    trailingStartDate: normalizeDate(item.trailingStartDate),
     trailingStopPct: clamp(Number(item.trailingStopPct || defaultSettings.trailingStopPct), 5, 60),
     updatedAt: item.updatedAt || "",
   };
@@ -7393,17 +7591,51 @@ async function saveCryptoHolding(holding) {
 async function readUsAnalysisCache() {
   try {
     const cached = JSON.parse(await readFile(US_ANALYSIS_CACHE_PATH, "utf8"));
+    const stocks = await readUsWatchlist().catch(() => []);
+    const bySymbol = new Map(stocks.map((stock) => [stock.symbol, stock]));
+    const analyses = Array.isArray(cached.analyses)
+      ? cached.analyses.map((analysis) => sanitizeCachedUsAnalysis(analysis, bySymbol.get(analysis.symbol))).filter(Boolean)
+      : [];
     return {
       generatedAt: cached.generatedAt || "",
       currency: "USD",
       usedLmStudio: Boolean(cached.usedLmStudio),
       warnings: asStringArray(cached.warnings).slice(0, 6),
-      analyses: Array.isArray(cached.analyses) ? cached.analyses : [],
-      summary: cached.summary || usPortfolioSummary(cached.analyses || []),
+      analyses,
+      summary: usPortfolioSummary(analyses),
     };
   } catch {
     return { generatedAt: "", currency: "USD", usedLmStudio: false, warnings: [], analyses: [], summary: usPortfolioSummary([]) };
   }
+}
+
+function sanitizeCachedUsAnalysis(analysis = {}, stock = null) {
+  const symbol = normalizeUsSymbol(analysis.symbol || stock?.symbol);
+  if (!symbol) return null;
+  const resolvedStock = stock || normalizeUsStock({
+    symbol,
+    name: analysis.name || symbol,
+    market: analysis.market || "NYSE",
+    holding: Boolean(analysis.position?.quantity),
+  });
+  const price = analysis.price || {};
+  const position = positionMetrics(resolvedStock, price);
+  const ai = analysis.ai
+    ? {
+      ...analysis.ai,
+      growthExit: enforceRecentGrowthExit(analysis.ai.growthExit, { evidence: analysis.evidence || [] }, analysis),
+    }
+    : null;
+  return {
+    ...analysis,
+    symbol,
+    name: resolvedStock.name || analysis.name || symbol,
+    market: resolvedStock.market || analysis.market || "NYSE",
+    holding: Boolean(resolvedStock.holding),
+    notes: resolvedStock.notes || analysis.notes || "",
+    position,
+    ai,
+  };
 }
 
 async function saveUsAnalysisCache(result) {
@@ -7687,6 +7919,147 @@ function normalizeUrl(value = "") {
   } catch {
     return "";
   }
+}
+
+function searchResultPublishedDate(item = {}) {
+  const metaTags = Array.isArray(item.pagemap?.metatags) ? item.pagemap.metatags : [];
+  const metaValues = metaTags.flatMap((tag) => [
+    tag["article:published_time"],
+    tag["article:modified_time"],
+    tag["og:updated_time"],
+    tag["datePublished"],
+    tag.datePublished,
+    tag.date,
+    tag.pubdate,
+    tag["parsely-pub-date"],
+    tag["sailthru.date"],
+    tag["dc.date"],
+    tag["citation_publication_date"],
+  ]);
+  const candidates = [
+    item.publishedDate,
+    item.published,
+    item.pubdate,
+    item.date,
+    item.datetime,
+    item.created,
+    item.updated,
+    ...metaValues,
+    item.title,
+    item.snippet,
+    item.content,
+    item.url || item.link,
+  ];
+  for (const value of candidates) {
+    const date = normalizeSearchDate(value);
+    if (date) return date;
+  }
+  return "";
+}
+
+function normalizeSearchDate(value = "") {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+  const text = cleanText(value);
+  if (!text) return "";
+  const relative = relativeSearchDate(text);
+  if (relative) return relative;
+  const absolute = absoluteSearchDate(text);
+  if (absolute) return absolute;
+  if (/\b(?:19|20)\d{2}\b/.test(text)) {
+    const parsed = new Date(text);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  }
+  return "";
+}
+
+function relativeSearchDate(text = "") {
+  const value = String(text).trim().toLowerCase();
+  const english = value.match(/\b(\d{1,3})\s*(minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)\s+ago\b/);
+  if (english) {
+    const amount = Number(english[1]);
+    const unit = english[2];
+    const days = unit.startsWith("minute") || unit.startsWith("hour")
+      ? 0
+      : unit.startsWith("week")
+      ? amount * 7
+      : unit.startsWith("month")
+      ? amount * 30
+      : unit.startsWith("year")
+      ? amount * 365
+      : amount;
+    return dateDaysAgo(days);
+  }
+  const japanese = value.match(/(\d{1,3})\s*(分|時間|日|週間|か月|ヶ月|年)前/);
+  if (japanese) {
+    const amount = Number(japanese[1]);
+    const unit = japanese[2];
+    const days = unit === "分" || unit === "時間"
+      ? 0
+      : unit === "週間"
+      ? amount * 7
+      : unit === "か月" || unit === "ヶ月"
+      ? amount * 30
+      : unit === "年"
+      ? amount * 365
+      : amount;
+    return dateDaysAgo(days);
+  }
+  if (/昨日|yesterday/.test(value)) return dateDaysAgo(1);
+  if (/今日|today/.test(value)) return dateDaysAgo(0);
+  return "";
+}
+
+function absoluteSearchDate(text = "") {
+  const value = String(text);
+  const numeric = value.match(/\b((?:19|20)\d{2})[年\/.-](\d{1,2})[月\/.-](\d{1,2})(?:日)?\b/);
+  if (numeric) return ymdFromNumbers(Number(numeric[1]), Number(numeric[2]), Number(numeric[3]));
+  const mdY = value.match(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-]((?:19|20)\d{2})\b/);
+  if (mdY) return ymdFromNumbers(Number(mdY[3]), Number(mdY[1]), Number(mdY[2]));
+  const months = {
+    jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
+    may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8, sep: 9, sept: 9,
+    september: 9, oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+  };
+  const english = value.match(/\b(January|February|March|April|May|June|July|August|September|Sept|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+(\d{1,2}),?\s+((?:19|20)\d{2})\b/i);
+  if (english) return ymdFromNumbers(Number(english[3]), months[english[1].toLowerCase().replace(".", "")], Number(english[2]));
+  const urlDate = value.match(/[\/_-]((?:19|20)\d{2})[\/_-](\d{1,2})[\/_-](\d{1,2})(?=[\/_.-]|$)/);
+  if (urlDate) return ymdFromNumbers(Number(urlDate[1]), Number(urlDate[2]), Number(urlDate[3]));
+  return "";
+}
+
+function ymdFromNumbers(year, month, day) {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return "";
+  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return "";
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+function dateDaysAgo(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - Math.max(0, Number(days) || 0));
+  return date.toISOString().slice(0, 10);
+}
+
+function isRecentEvidenceForExit(item = {}) {
+  return isRecentSearchDate(item.publishedDate || item.date || searchResultPublishedDate(item), FUNDAMENTAL_EXIT_MAX_AGE_DAYS);
+}
+
+function isRecentSearchDate(dateString = "", maxAgeDays = FUNDAMENTAL_EXIT_MAX_AGE_DAYS) {
+  const date = normalizeDate(dateString);
+  if (!date) return false;
+  const age = daysSinceSearchDate(date);
+  return Number.isFinite(age) && age >= -1 && age <= maxAgeDays;
+}
+
+function daysSinceSearchDate(dateString = "") {
+  const date = normalizeDate(dateString);
+  if (!date) return null;
+  const [year, month, day] = date.split("-").map(Number);
+  const target = Date.UTC(year, month - 1, day);
+  const now = new Date();
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.floor((today - target) / 86400000);
 }
 
 function normalizePositions(stock) {

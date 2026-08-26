@@ -819,7 +819,7 @@ function renderUsDetail() {
     <article class="evidence-item">
       <div>
         <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title || item.source || "source")}</a>
-        <p>${escapeHtml(item.source || "")}</p>
+        <p>${escapeHtml(evidenceMetaText(item))}</p>
       </div>
       <p>${escapeHtml(item.summaryJa || item.snippet || "")}</p>
       <span>日本語要約</span>
@@ -1509,7 +1509,7 @@ function renderSelection() {
     <article class="evidence-item">
       <div>
         <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title || item.source || "source")}</a>
-        <p>${escapeHtml(item.source || "")}</p>
+        <p>${escapeHtml(evidenceMetaText(item))}</p>
       </div>
       <p>${escapeHtml(item.snippet || "")}</p>
       <span>${escapeHtml(item.kind || "web")}</span>
@@ -1556,8 +1556,8 @@ function exitPlanHtml(plan = {}) {
     {
       label: "高値トレーリング",
       level: plan.trailingTriggered ? "high" : plan.alertLevel === "watch" ? "medium" : "low",
-      status: plan.trailingTriggered ? "割れ" : `${plan.trailingStopPct || 25}%`,
-      summary: `最高値 ${moneyByCurrency(plan.highWaterPrice, currency)}${plan.highWaterDate ? ` (${plan.highWaterDate})` : ""}、確認ライン ${moneyByCurrency(plan.trailingStopPrice, currency)}。現在は高値から ${signedPctText(plan.drawdownFromHighPct)}。`,
+      status: plan.trailingTriggered ? "通知対象" : plan.trailingBelowLine ? "通知なし" : `${plan.trailingStopPct || 25}%`,
+      summary: plan.trailingSuppressedReason || `最高値 ${moneyByCurrency(plan.highWaterPrice, currency)}${plan.highWaterDate ? ` (${plan.highWaterDate})` : ""}、確認ライン ${moneyByCurrency(plan.trailingStopPrice, currency)}。現在は高値から ${signedPctText(plan.drawdownFromHighPct)}。`,
     },
     {
       label: "恩株化",
@@ -2215,6 +2215,13 @@ function formatDate(value = "") {
     month: "2-digit",
     day: "2-digit",
   }).format(date);
+}
+
+function evidenceMetaText(item = {}) {
+  return [
+    item.source || "",
+    item.publishedDate ? formatDate(item.publishedDate) : "",
+  ].filter(Boolean).join(" / ");
 }
 
 function formatMonthDay(value = "") {
