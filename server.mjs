@@ -31,7 +31,7 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 4;
+const DISCOVERY_SCORING_VERSION = 5;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
@@ -41,9 +41,10 @@ const PE_PRIORITY_MIN_SCORE = 45;
 const PE_STRONG_MIN_SCORE = 55;
 const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品|wholesale|food|grocery|consumer staples|packaged foods)/i;
 const DISCOVERY_IT_VENTURE_PATTERN = /(情報|IT|ＳＩ|SI|ソフトウェア|クラウド|SaaS|アプリ|ネット|メディア|広告|ゲーム|DX|AI)/i;
-const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹|mature|enterprise|consulting|infrastructure|security)/i;
+const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|半導体|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹|mature|enterprise|consulting|infrastructure|security|cybersecurity|semiconductor|data center|platform|payments|mission critical|recurring revenue|automation|medical device)/i;
 const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "private equity", "buyout", "take private", "tender offer", "activist", "shareholder", "stake", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
 const PE_DIRECT_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "private equity", "buyout", "take private", "tender offer", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス"];
+const US_TICKER_STOPWORDS = new Set(["A", "AI", "API", "CEO", "CFO", "COO", "EPS", "ETF", "GDP", "IPO", "LLM", "MBO", "MOC", "NYSE", "PE", "PBR", "PER", "Q1", "Q2", "Q3", "Q4", "SEC", "TOB", "USA", "USD"]);
 const TDNET_SOURCE_BASE = "https://www.release.tdnet.info/inbs/";
 const DISCLOSURE_CRITICAL_WORDS = [
   "下方修正", "業績予想の修正", "業績予想修正", "通期業績予想", "連結業績予想", "減配", "無配",
@@ -268,6 +269,154 @@ const usDiscoveryUniverse = [
   { symbol: "MAR", name: "Marriott International", market: "NASDAQ", sector: "Travel services", notes: "asset-light hotels, recurring fee revenue", currency: "USD" },
   { symbol: "H", name: "Hyatt Hotels", market: "NYSE", sector: "Travel services", notes: "hotels, asset-light transition, cash flow", currency: "USD" },
   { symbol: "LUV", name: "Southwest Airlines", market: "NYSE", sector: "Airlines", notes: "airline turnaround, activist interest", currency: "USD" },
+  { symbol: "AMD", name: "Advanced Micro Devices", market: "NASDAQ", sector: "Semiconductors", notes: "AI accelerators, data center, semiconductor platform", currency: "USD" },
+  { symbol: "AVGO", name: "Broadcom", market: "NASDAQ", sector: "Semiconductors", notes: "AI networking, custom silicon, enterprise software cash flow", currency: "USD" },
+  { symbol: "QCOM", name: "Qualcomm", market: "NASDAQ", sector: "Semiconductors", notes: "mobile chips, automotive chips, edge AI, buybacks", currency: "USD" },
+  { symbol: "TXN", name: "Texas Instruments", market: "NASDAQ", sector: "Semiconductors", notes: "analog chips, industrial demand, cash flow", currency: "USD" },
+  { symbol: "MU", name: "Micron Technology", market: "NASDAQ", sector: "Semiconductors", notes: "memory cycle, HBM, data center AI demand", currency: "USD" },
+  { symbol: "AMAT", name: "Applied Materials", market: "NASDAQ", sector: "Semiconductor equipment", notes: "wafer equipment, AI chip capacity, cash flow", currency: "USD" },
+  { symbol: "LRCX", name: "Lam Research", market: "NASDAQ", sector: "Semiconductor equipment", notes: "wafer fabrication equipment, memory recovery, buybacks", currency: "USD" },
+  { symbol: "KLAC", name: "KLA", market: "NASDAQ", sector: "Semiconductor equipment", notes: "process control, semiconductor equipment, cash flow", currency: "USD" },
+  { symbol: "ASML", name: "ASML", market: "NASDAQ", sector: "Semiconductor equipment", notes: "lithography, semiconductor infrastructure, backlog", currency: "USD" },
+  { symbol: "TSM", name: "Taiwan Semiconductor", market: "NYSE", sector: "Semiconductors", notes: "advanced foundry, AI data center chips, cash flow", currency: "USD" },
+  { symbol: "ARM", name: "Arm Holdings", market: "NASDAQ", sector: "Semiconductors", notes: "processor IP, AI edge devices, licensing revenue", currency: "USD" },
+  { symbol: "ON", name: "ON Semiconductor", market: "NASDAQ", sector: "Semiconductors", notes: "automotive power chips, industrial demand, margin recovery", currency: "USD" },
+  { symbol: "NXPI", name: "NXP Semiconductors", market: "NASDAQ", sector: "Semiconductors", notes: "automotive chips, industrial semiconductors, cash flow", currency: "USD" },
+  { symbol: "MCHP", name: "Microchip Technology", market: "NASDAQ", sector: "Semiconductors", notes: "microcontrollers, industrial chips, dividend", currency: "USD" },
+  { symbol: "ADI", name: "Analog Devices", market: "NASDAQ", sector: "Semiconductors", notes: "analog chips, industrial automation, cash flow", currency: "USD" },
+  { symbol: "MRVL", name: "Marvell Technology", market: "NASDAQ", sector: "Semiconductors", notes: "AI networking, data center silicon, growth cycle", currency: "USD" },
+  { symbol: "MPWR", name: "Monolithic Power Systems", market: "NASDAQ", sector: "Semiconductors", notes: "power management chips, data center power, margins", currency: "USD" },
+  { symbol: "TER", name: "Teradyne", market: "NASDAQ", sector: "Semiconductor equipment", notes: "chip testing equipment, robotics, cycle recovery", currency: "USD" },
+  { symbol: "COHR", name: "Coherent", market: "NYSE", sector: "Optical components", notes: "optical networking, AI data center, restructuring", currency: "USD" },
+  { symbol: "LSCC", name: "Lattice Semiconductor", market: "NASDAQ", sector: "Semiconductors", notes: "low power FPGAs, industrial chips, margin recovery", currency: "USD" },
+  { symbol: "QRVO", name: "Qorvo", market: "NASDAQ", sector: "Semiconductors", notes: "RF chips, mobile recovery, activist interest potential", currency: "USD" },
+  { symbol: "SWKS", name: "Skyworks Solutions", market: "NASDAQ", sector: "Semiconductors", notes: "RF chips, mobile cycle recovery, dividend", currency: "USD" },
+  { symbol: "GFS", name: "GlobalFoundries", market: "NASDAQ", sector: "Semiconductors", notes: "specialty foundry, industrial chips, strategic capacity", currency: "USD" },
+  { symbol: "MSFT", name: "Microsoft", market: "NASDAQ", sector: "Enterprise software", notes: "cloud platform, AI infrastructure, recurring revenue", currency: "USD" },
+  { symbol: "GOOGL", name: "Alphabet", market: "NASDAQ", sector: "Digital platform", notes: "search platform, cloud, AI infrastructure, buybacks", currency: "USD" },
+  { symbol: "AMZN", name: "Amazon", market: "NASDAQ", sector: "Cloud and commerce", notes: "AWS cloud infrastructure, advertising, margin expansion", currency: "USD" },
+  { symbol: "META", name: "Meta Platforms", market: "NASDAQ", sector: "Digital platform", notes: "advertising platform, AI infrastructure, buybacks", currency: "USD" },
+  { symbol: "CRM", name: "Salesforce", market: "NYSE", sector: "Enterprise software", notes: "enterprise SaaS, margin expansion, activist history", currency: "USD" },
+  { symbol: "NOW", name: "ServiceNow", market: "NYSE", sector: "Enterprise software", notes: "workflow platform, recurring revenue, AI automation", currency: "USD" },
+  { symbol: "ADBE", name: "Adobe", market: "NASDAQ", sector: "Enterprise software", notes: "creative platform, AI products, recurring revenue", currency: "USD" },
+  { symbol: "INTU", name: "Intuit", market: "NASDAQ", sector: "Enterprise software", notes: "tax and accounting platform, recurring revenue, cash flow", currency: "USD" },
+  { symbol: "ADSK", name: "Autodesk", market: "NASDAQ", sector: "Design software", notes: "design platform, recurring revenue, margin improvement", currency: "USD" },
+  { symbol: "WDAY", name: "Workday", market: "NASDAQ", sector: "Enterprise software", notes: "HR and finance platform, recurring revenue, margin expansion", currency: "USD" },
+  { symbol: "CDNS", name: "Cadence Design Systems", market: "NASDAQ", sector: "Design software", notes: "chip design software, recurring revenue, AI semiconductor demand", currency: "USD" },
+  { symbol: "SNPS", name: "Synopsys", market: "NASDAQ", sector: "Design software", notes: "chip design software, semiconductor platform, cash flow", currency: "USD" },
+  { symbol: "PLTR", name: "Palantir Technologies", market: "NASDAQ", sector: "Data platform", notes: "government and enterprise data platform, AI deployment, cash flow", currency: "USD" },
+  { symbol: "MDB", name: "MongoDB", market: "NASDAQ", sector: "Data platform", notes: "database platform, enterprise recurring revenue, cloud usage", currency: "USD" },
+  { symbol: "DDOG", name: "Datadog", market: "NASDAQ", sector: "Observability platform", notes: "enterprise monitoring platform, recurring revenue, cloud infrastructure", currency: "USD" },
+  { symbol: "SNOW", name: "Snowflake", market: "NYSE", sector: "Data platform", notes: "data cloud platform, enterprise usage, AI data workloads", currency: "USD" },
+  { symbol: "PANW", name: "Palo Alto Networks", market: "NASDAQ", sector: "Cybersecurity", notes: "enterprise cybersecurity platform, recurring revenue, consolidation", currency: "USD" },
+  { symbol: "CRWD", name: "CrowdStrike", market: "NASDAQ", sector: "Cybersecurity", notes: "endpoint security platform, recurring revenue, enterprise security", currency: "USD" },
+  { symbol: "FTNT", name: "Fortinet", market: "NASDAQ", sector: "Cybersecurity", notes: "network security, appliances and software, cash flow", currency: "USD" },
+  { symbol: "ZS", name: "Zscaler", market: "NASDAQ", sector: "Cybersecurity", notes: "zero trust security platform, recurring revenue, enterprise security", currency: "USD" },
+  { symbol: "OKTA", name: "Okta", market: "NASDAQ", sector: "Cybersecurity", notes: "identity security platform, recurring revenue, margin recovery", currency: "USD" },
+  { symbol: "NET", name: "Cloudflare", market: "NYSE", sector: "Network platform", notes: "edge network platform, security, developer infrastructure", currency: "USD" },
+  { symbol: "ANET", name: "Arista Networks", market: "NYSE", sector: "Network equipment", notes: "AI data center networking, cloud customers, margins", currency: "USD" },
+  { symbol: "VRT", name: "Vertiv", market: "NYSE", sector: "Data center infrastructure", notes: "data center power and cooling, AI infrastructure, margin expansion", currency: "USD" },
+  { symbol: "PWR", name: "Quanta Services", market: "NYSE", sector: "Infrastructure services", notes: "power grid services, data center power, backlog", currency: "USD" },
+  { symbol: "HUBB", name: "Hubbell", market: "NYSE", sector: "Electrical equipment", notes: "grid equipment, electrification, data center power", currency: "USD" },
+  { symbol: "CEG", name: "Constellation Energy", market: "NASDAQ", sector: "Power generation", notes: "nuclear power, data center electricity demand, cash flow", currency: "USD" },
+  { symbol: "VST", name: "Vistra", market: "NYSE", sector: "Power generation", notes: "power generation, data center demand, capital returns", currency: "USD" },
+  { symbol: "NRG", name: "NRG Energy", market: "NYSE", sector: "Power generation", notes: "power generation, cash flow, activist history", currency: "USD" },
+  { symbol: "GEV", name: "GE Vernova", market: "NYSE", sector: "Power equipment", notes: "grid equipment, gas power, electrification turnaround", currency: "USD" },
+  { symbol: "APH", name: "Amphenol", market: "NYSE", sector: "Electronic components", notes: "connectors, data center and industrial demand, cash flow", currency: "USD" },
+  { symbol: "GLW", name: "Corning", market: "NYSE", sector: "Optical components", notes: "fiber optics, display glass, data center connectivity", currency: "USD" },
+  { symbol: "ROP", name: "Roper Technologies", market: "NASDAQ", sector: "Industrial software", notes: "vertical software, recurring revenue, cash flow", currency: "USD" },
+  { symbol: "ITW", name: "Illinois Tool Works", market: "NYSE", sector: "Industrial", notes: "industrial products, margin discipline, cash flow", currency: "USD" },
+  { symbol: "PH", name: "Parker-Hannifin", market: "NYSE", sector: "Industrial", notes: "motion control, aerospace, industrial automation", currency: "USD" },
+  { symbol: "ROK", name: "Rockwell Automation", market: "NYSE", sector: "Industrial automation", notes: "factory automation, cycle recovery, cash flow", currency: "USD" },
+  { symbol: "TEL", name: "TE Connectivity", market: "NYSE", sector: "Electronic components", notes: "connectors, automotive, industrial, cash flow", currency: "USD" },
+  { symbol: "TT", name: "Trane Technologies", market: "NYSE", sector: "HVAC equipment", notes: "commercial HVAC, data center cooling, margin expansion", currency: "USD" },
+  { symbol: "CARR", name: "Carrier Global", market: "NYSE", sector: "HVAC equipment", notes: "HVAC, portfolio reshaping, cash flow", currency: "USD" },
+  { symbol: "OTIS", name: "Otis Worldwide", market: "NYSE", sector: "Industrial services", notes: "elevator services, recurring maintenance revenue, cash flow", currency: "USD" },
+  { symbol: "IR", name: "Ingersoll Rand", market: "NYSE", sector: "Industrial", notes: "industrial equipment, services, margin improvement", currency: "USD" },
+  { symbol: "JCI", name: "Johnson Controls", market: "NYSE", sector: "Building systems", notes: "building automation, HVAC, portfolio changes", currency: "USD" },
+  { symbol: "XYL", name: "Xylem", market: "NYSE", sector: "Water infrastructure", notes: "water infrastructure, mission critical services, cash flow", currency: "USD" },
+  { symbol: "DOV", name: "Dover", market: "NYSE", sector: "Industrial", notes: "industrial equipment, cash flow, portfolio discipline", currency: "USD" },
+  { symbol: "UNH", name: "UnitedHealth Group", market: "NYSE", sector: "Healthcare services", notes: "managed care, healthcare services, cash flow", currency: "USD" },
+  { symbol: "ELV", name: "Elevance Health", market: "NYSE", sector: "Healthcare services", notes: "managed care, buybacks, stable cash flow", currency: "USD" },
+  { symbol: "HCA", name: "HCA Healthcare", market: "NYSE", sector: "Healthcare services", notes: "hospital operator, cash flow, buybacks", currency: "USD" },
+  { symbol: "THC", name: "Tenet Healthcare", market: "NYSE", sector: "Healthcare services", notes: "hospital operator, margin improvement, strategic assets", currency: "USD" },
+  { symbol: "DHR", name: "Danaher", market: "NYSE", sector: "Life sciences", notes: "life sciences tools, recurring consumables, cash flow", currency: "USD" },
+  { symbol: "TMO", name: "Thermo Fisher Scientific", market: "NYSE", sector: "Life sciences", notes: "life sciences tools, recurring consumables, cash flow", currency: "USD" },
+  { symbol: "ISRG", name: "Intuitive Surgical", market: "NASDAQ", sector: "Medical devices", notes: "robotic surgery platform, recurring instrument revenue, growth", currency: "USD" },
+  { symbol: "MDT", name: "Medtronic", market: "NYSE", sector: "Medical devices", notes: "medical device portfolio, dividend, margin recovery", currency: "USD" },
+  { symbol: "BSX", name: "Boston Scientific", market: "NYSE", sector: "Medical devices", notes: "medical device growth, margin expansion, cash flow", currency: "USD" },
+  { symbol: "SYK", name: "Stryker", market: "NYSE", sector: "Medical devices", notes: "medical devices, orthopedics, recurring procedure demand", currency: "USD" },
+  { symbol: "ABT", name: "Abbott Laboratories", market: "NYSE", sector: "Healthcare", notes: "medical devices and diagnostics, dividend, cash flow", currency: "USD" },
+  { symbol: "ABBV", name: "AbbVie", market: "NYSE", sector: "Pharmaceuticals", notes: "pharma portfolio, dividend, pipeline transition", currency: "USD" },
+  { symbol: "AMGN", name: "Amgen", market: "NASDAQ", sector: "Pharmaceuticals", notes: "biotech medicines, dividend, cash flow", currency: "USD" },
+  { symbol: "GILD", name: "Gilead Sciences", market: "NASDAQ", sector: "Pharmaceuticals", notes: "pharma cash flow, dividend, pipeline reset", currency: "USD" },
+  { symbol: "VRTX", name: "Vertex Pharmaceuticals", market: "NASDAQ", sector: "Biotechnology", notes: "rare disease medicines, cash flow, pipeline", currency: "USD" },
+  { symbol: "REGN", name: "Regeneron", market: "NASDAQ", sector: "Biotechnology", notes: "biotech platform, cash flow, pipeline", currency: "USD" },
+  { symbol: "ZBH", name: "Zimmer Biomet", market: "NYSE", sector: "Medical devices", notes: "orthopedic devices, margin improvement, buybacks", currency: "USD" },
+  { symbol: "V", name: "Visa", market: "NYSE", sector: "Payment services", notes: "payments network, recurring transaction revenue, margins", currency: "USD" },
+  { symbol: "MA", name: "Mastercard", market: "NYSE", sector: "Payment services", notes: "payments network, recurring transaction revenue, cash flow", currency: "USD" },
+  { symbol: "AXP", name: "American Express", market: "NYSE", sector: "Financial services", notes: "card network, affluent customers, buybacks", currency: "USD" },
+  { symbol: "COF", name: "Capital One", market: "NYSE", sector: "Financial services", notes: "credit cards, banking, scale and capital returns", currency: "USD" },
+  { symbol: "SYF", name: "Synchrony Financial", market: "NYSE", sector: "Financial services", notes: "consumer finance, buybacks, valuation discount", currency: "USD" },
+  { symbol: "ALLY", name: "Ally Financial", market: "NYSE", sector: "Financial services", notes: "auto finance, online bank, valuation discount", currency: "USD" },
+  { symbol: "ICE", name: "Intercontinental Exchange", market: "NYSE", sector: "Market infrastructure", notes: "exchange infrastructure, recurring data revenue, cash flow", currency: "USD" },
+  { symbol: "CME", name: "CME Group", market: "NASDAQ", sector: "Market infrastructure", notes: "exchange infrastructure, clearing, dividend", currency: "USD" },
+  { symbol: "CBOE", name: "Cboe Global Markets", market: "CBOE", sector: "Market infrastructure", notes: "options exchange, market data, cash flow", currency: "USD" },
+  { symbol: "NDAQ", name: "Nasdaq", market: "NASDAQ", sector: "Market infrastructure", notes: "exchange operator, data revenue, financial technology", currency: "USD" },
+  { symbol: "SPGI", name: "S&P Global", market: "NYSE", sector: "Financial data", notes: "ratings and index data, recurring revenue, margins", currency: "USD" },
+  { symbol: "MCO", name: "Moody's", market: "NYSE", sector: "Financial data", notes: "ratings data, recurring analytics revenue, cash flow", currency: "USD" },
+  { symbol: "MSCI", name: "MSCI", market: "NYSE", sector: "Financial data", notes: "index data, recurring revenue, high margins", currency: "USD" },
+  { symbol: "FDS", name: "FactSet", market: "NYSE", sector: "Financial data", notes: "financial data platform, recurring revenue, cash flow", currency: "USD" },
+  { symbol: "BLK", name: "BlackRock", market: "NYSE", sector: "Asset management", notes: "asset manager, scale, cash flow", currency: "USD" },
+  { symbol: "SCHW", name: "Charles Schwab", market: "NYSE", sector: "Financial services", notes: "brokerage platform, deposits, scale economics", currency: "USD" },
+  { symbol: "TROW", name: "T. Rowe Price", market: "NASDAQ", sector: "Asset management", notes: "asset management, net cash, dividend", currency: "USD" },
+  { symbol: "UBER", name: "Uber Technologies", market: "NYSE", sector: "Mobility platform", notes: "mobility platform, delivery scale, free cash flow", currency: "USD" },
+  { symbol: "ABNB", name: "Airbnb", market: "NASDAQ", sector: "Travel platform", notes: "travel platform, asset-light marketplace, cash flow", currency: "USD" },
+  { symbol: "EXPE", name: "Expedia Group", market: "NASDAQ", sector: "Travel platform", notes: "travel platform, buybacks, margin improvement", currency: "USD" },
+  { symbol: "RCL", name: "Royal Caribbean", market: "NYSE", sector: "Travel services", notes: "cruise demand, debt reduction, cash flow recovery", currency: "USD" },
+  { symbol: "CCL", name: "Carnival", market: "NYSE", sector: "Travel services", notes: "cruise recovery, debt reduction, cash flow", currency: "USD" },
+  { symbol: "NCLH", name: "Norwegian Cruise Line", market: "NYSE", sector: "Travel services", notes: "cruise recovery, pricing, debt reduction", currency: "USD" },
+  { symbol: "NKE", name: "Nike", market: "NYSE", sector: "Consumer products", notes: "brand assets, turnaround, margin recovery", currency: "USD" },
+  { symbol: "SBUX", name: "Starbucks", market: "NASDAQ", sector: "Consumer services", notes: "global brand, turnaround, activist history", currency: "USD" },
+  { symbol: "EL", name: "Estee Lauder", market: "NYSE", sector: "Consumer products", notes: "beauty brand assets, turnaround, margin recovery", currency: "USD" },
+  { symbol: "HAS", name: "Hasbro", market: "NASDAQ", sector: "Consumer products", notes: "brand portfolio, restructuring, cash flow recovery", currency: "USD" },
+  { symbol: "MAT", name: "Mattel", market: "NASDAQ", sector: "Consumer products", notes: "brand portfolio, licensing, strategic review potential", currency: "USD" },
+  { symbol: "OXY", name: "Occidental Petroleum", market: "NYSE", sector: "Energy", notes: "energy producer, debt reduction, capital returns", currency: "USD" },
+  { symbol: "FANG", name: "Diamondback Energy", market: "NASDAQ", sector: "Energy", notes: "oil producer, shale consolidation, cash returns", currency: "USD" },
+  { symbol: "COP", name: "ConocoPhillips", market: "NYSE", sector: "Energy", notes: "oil and gas producer, cash returns, low cost assets", currency: "USD" },
+  { symbol: "SLB", name: "SLB", market: "NYSE", sector: "Energy services", notes: "oilfield services, international cycle, cash flow", currency: "USD" },
+  { symbol: "HAL", name: "Halliburton", market: "NYSE", sector: "Energy services", notes: "oilfield services, cash flow, cycle recovery", currency: "USD" },
+  { symbol: "LNG", name: "Cheniere Energy", market: "NYSE", sector: "Energy infrastructure", notes: "LNG export infrastructure, contract cash flow, buybacks", currency: "USD" },
+  { symbol: "NEE", name: "NextEra Energy", market: "NYSE", sector: "Utilities", notes: "renewable power, grid investment, dividend", currency: "USD" },
+  { symbol: "ENPH", name: "Enphase Energy", market: "NASDAQ", sector: "Energy technology", notes: "solar inverters, cycle recovery, clean energy platform", currency: "USD" },
+  { symbol: "FSLR", name: "First Solar", market: "NASDAQ", sector: "Energy technology", notes: "solar modules, policy support, capacity expansion", currency: "USD" },
+  { symbol: "FCX", name: "Freeport-McMoRan", market: "NYSE", sector: "Materials", notes: "copper producer, electrification demand, cash flow", currency: "USD" },
+  { symbol: "NEM", name: "Newmont", market: "NYSE", sector: "Materials", notes: "gold miner, cash flow, portfolio optimization", currency: "USD" },
+  { symbol: "SCCO", name: "Southern Copper", market: "NYSE", sector: "Materials", notes: "copper producer, electrification demand, dividend", currency: "USD" },
+  { symbol: "NUE", name: "Nucor", market: "NYSE", sector: "Steel", notes: "steel producer, buybacks, infrastructure demand", currency: "USD" },
+  { symbol: "STLD", name: "Steel Dynamics", market: "NASDAQ", sector: "Steel", notes: "steel producer, cash returns, infrastructure cycle", currency: "USD" },
+  { symbol: "CMC", name: "Commercial Metals", market: "NYSE", sector: "Steel", notes: "rebar steel, infrastructure demand, cash flow", currency: "USD" },
+  { symbol: "CLF", name: "Cleveland-Cliffs", market: "NYSE", sector: "Steel", notes: "steel turnaround, automotive exposure, cash flow recovery", currency: "USD" },
+  { symbol: "RTX", name: "RTX", market: "NYSE", sector: "Aerospace and defense", notes: "defense backlog, aerospace aftermarket, cash flow", currency: "USD" },
+  { symbol: "LMT", name: "Lockheed Martin", market: "NYSE", sector: "Aerospace and defense", notes: "defense contracts, dividend, backlog", currency: "USD" },
+  { symbol: "NOC", name: "Northrop Grumman", market: "NYSE", sector: "Aerospace and defense", notes: "defense contracts, space systems, cash flow", currency: "USD" },
+  { symbol: "GD", name: "General Dynamics", market: "NYSE", sector: "Aerospace and defense", notes: "defense, aerospace, backlog, cash flow", currency: "USD" },
+  { symbol: "BA", name: "Boeing", market: "NYSE", sector: "Aerospace", notes: "aircraft backlog, turnaround, execution risk", currency: "USD" },
+  { symbol: "TDG", name: "TransDigm", market: "NYSE", sector: "Aerospace", notes: "aerospace parts, recurring aftermarket revenue, cash flow", currency: "USD" },
+  { symbol: "HEI", name: "HEICO", market: "NYSE", sector: "Aerospace", notes: "aerospace parts, aftermarket demand, margin expansion", currency: "USD" },
+  { symbol: "CBRE", name: "CBRE Group", market: "NYSE", sector: "Real estate services", notes: "commercial real estate services, recurring outsourcing, cash flow", currency: "USD" },
+  { symbol: "JLL", name: "Jones Lang LaSalle", market: "NYSE", sector: "Real estate services", notes: "real estate services, outsourcing, transaction recovery", currency: "USD" },
+  { symbol: "DLR", name: "Digital Realty", market: "NYSE", sector: "Data center REIT", notes: "data center infrastructure, recurring lease revenue, AI demand", currency: "USD" },
+  { symbol: "EQIX", name: "Equinix", market: "NASDAQ", sector: "Data center REIT", notes: "data center platform, recurring lease revenue, interconnection", currency: "USD" },
+  { symbol: "WDC", name: "Western Digital", market: "NASDAQ", sector: "Data storage", notes: "data storage, memory cycle, strategic separation", currency: "USD" },
+  { symbol: "STX", name: "Seagate Technology", market: "NASDAQ", sector: "Data storage", notes: "hard disk drives, data center storage cycle, cash flow", currency: "USD" },
+  { symbol: "EBAY", name: "eBay", market: "NASDAQ", sector: "Marketplace", notes: "online marketplace, buybacks, cash flow", currency: "USD" },
+  { symbol: "ETSY", name: "Etsy", market: "NASDAQ", sector: "Marketplace", notes: "online marketplace, activist interest, margin improvement", currency: "USD" },
+  { symbol: "BAX", name: "Baxter International", market: "NYSE", sector: "Medical devices", notes: "medical products, restructuring, debt reduction", currency: "USD" },
+  { symbol: "SWK", name: "Stanley Black & Decker", market: "NYSE", sector: "Industrial products", notes: "tools brand, restructuring, margin recovery", currency: "USD" },
+  { symbol: "WHR", name: "Whirlpool", market: "NYSE", sector: "Consumer products", notes: "appliances, restructuring, dividend, valuation discount", currency: "USD" },
+  { symbol: "CHTR", name: "Charter Communications", market: "NASDAQ", sector: "Telecom media", notes: "cable infrastructure, free cash flow, buybacks", currency: "USD" },
+  { symbol: "TMUS", name: "T-Mobile US", market: "NASDAQ", sector: "Telecom", notes: "wireless network, buybacks, free cash flow", currency: "USD" },
 ];
 
 const server = http.createServer(async (req, res) => {
@@ -808,6 +957,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
   const stocks = await readUsWatchlist();
   const settings = await readSettings();
   const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT);
+  const warnings = [];
   const rows = await mapLimit(stocks, 4, async (stock) => {
     const [price, research] = await Promise.all([
       fetchPriceHistory(stock.symbol),
@@ -829,9 +979,12 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
       ai: null,
     };
   });
+  await translateUsEvidenceRows(rows).catch((error) => {
+    warnings.push(`LM Studio: ${error.message || "米国ニュース翻訳が返りませんでした"}`);
+    applyBasicUsEvidenceTranslations(rows);
+  });
 
   let usedLmStudio = false;
-  const warnings = [];
   const lmStatus = await checkLmStudio();
   if (lmStatus.ok && rows.length) {
     try {
@@ -933,6 +1086,10 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
 
   let usedLmStudio = false;
   const warnings = [];
+  await translateUsEvidenceRows([row]).catch((error) => {
+    warnings.push(`LM Studio: ${error.message || "米国ニュース翻訳が返りませんでした"}`);
+    applyBasicUsEvidenceTranslations([row]);
+  });
   const lmStatus = await checkLmStudio(settings);
   if (lmStatus.ok) {
     try {
@@ -972,10 +1129,111 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
 
 function applyUsEvidenceTranslations(row = {}) {
   const translations = row.ai?.evidenceJa || [];
-  row.evidence = (row.evidence || []).map((item, index) => ({
+  row.evidence = (row.evidence || []).map((item, index) => ensureUsEvidenceJapanese({
     ...item,
-    summaryJa: translations[index]?.summary || item.summaryJa || item.snippet || item.originalSnippet || "",
+    summaryJa: translations[index]?.summary || item.summaryJa || "",
   }));
+}
+
+function applyBasicUsEvidenceTranslations(rows = []) {
+  rows.forEach((row) => {
+    row.evidence = (row.evidence || []).map(ensureUsEvidenceJapanese);
+  });
+}
+
+async function translateUsEvidenceRows(rows = []) {
+  const items = [];
+  for (const row of rows) {
+    for (const evidence of row.evidence || []) {
+      const text = `${evidence.title || ""}\n${evidence.originalSnippet || evidence.snippet || ""}`;
+      if (!isMostlyEnglish(text)) {
+        evidence.titleJa ||= evidence.title || "";
+        evidence.summaryJa ||= evidence.snippet || evidence.originalSnippet || "";
+        continue;
+      }
+      items.push({
+        evidence,
+        title: evidence.title || "",
+        snippet: evidence.originalSnippet || evidence.snippet || "",
+        source: evidence.source || "",
+      });
+    }
+  }
+  if (!items.length) {
+    applyBasicUsEvidenceTranslations(rows);
+    return;
+  }
+  const model = await getLmStudioModel();
+  for (const chunk of chunkArray(items, 8)) {
+    const translations = await translateUsEvidenceChunk(model, chunk);
+    translations.forEach((translation, index) => {
+      const target = chunk[index]?.evidence;
+      if (!target) return;
+      target.titleJa = cleanText(translation?.titleJa || target.titleJa || "");
+      target.summaryJa = cleanText(translation?.summaryJa || translation?.summary || target.summaryJa || "");
+      if (target.summaryJa) target.snippet = target.summaryJa;
+    });
+  }
+  applyBasicUsEvidenceTranslations(rows);
+}
+
+async function translateUsEvidenceChunk(model, items = []) {
+  const prompt = [
+    "英語の米国株ニュースを、日本語の表示用に短く訳してください。",
+    "投資助言ではなく、記事タイトルと断片の内容だけを要約してください。",
+    "出力はJSONのみ。形式は {\"items\":[{\"titleJa\":\"日本語タイトル\",\"summaryJa\":\"日本語要約\"}]}。入力と同じ順番、同じ件数で返してください。",
+    "titleJaは45字以内、summaryJaは90字以内。日付が古い・根拠が薄い場合は、その点も日本語で分かるようにしてください。",
+    "",
+    JSON.stringify({
+      items: items.map((item) => ({
+        source: item.source,
+        title: cleanText(item.title).slice(0, 180),
+        snippet: cleanText(item.snippet).slice(0, 320),
+      })),
+    }),
+  ].join("\n");
+  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 2400 }).catch(async (error) => {
+    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 2400 });
+    throw error;
+  });
+  const parsed = parseJsonObject(content);
+  const rows = Array.isArray(parsed) ? parsed : parsed.items || [];
+  return rows.slice(0, items.length).map((item) => ({
+    titleJa: String(item?.titleJa || item?.title || "").slice(0, 80),
+    summaryJa: String(item?.summaryJa || item?.summary || "").slice(0, 160),
+  }));
+}
+
+function ensureUsEvidenceJapanese(item = {}) {
+  return {
+    ...item,
+    titleJa: cleanText(item.titleJa || fallbackUsEvidenceTitle(item)),
+    summaryJa: cleanText(item.summaryJa || fallbackUsEvidenceSummary(item)),
+  };
+}
+
+function fallbackUsEvidenceTitle(item = {}) {
+  if (containsJapanese(item.title || "")) return item.title || "";
+  const source = item.source || hostOf(item.url || "");
+  return source ? `米国ニュース: ${source}` : "米国ニュース";
+}
+
+function fallbackUsEvidenceSummary(item = {}) {
+  const existing = cleanText(item.summaryJa || "");
+  if (existing) return existing;
+  const text = cleanText(`${item.title || ""} ${item.originalSnippet || item.snippet || ""}`);
+  if (!isMostlyEnglish(text)) return cleanText(item.snippet || item.originalSnippet || "").slice(0, 160);
+  const checks = [];
+  if (/\b(earnings|results|quarter|revenue|sales|profit|margin)\b/i.test(text)) checks.push("決算・売上");
+  if (/\b(guidance|forecast|outlook|estimate|consensus)\b/i.test(text)) checks.push("業績見通し");
+  if (/\b(analyst|rating|price target|upgrade|downgrade)\b/i.test(text)) checks.push("アナリスト評価");
+  if (/\b(dividend|buyback|share repurchase|cash flow|free cash flow)\b/i.test(text)) checks.push("配当・自社株買い");
+  if (/\b(activist|stake|shareholder|private equity|buyout|take private|tender offer)\b/i.test(text)) checks.push("株主・買収関連");
+  if (/\b(lawsuit|investigation|risk|cut|miss|decline|weak|loss)\b/i.test(text)) checks.push("注意材料");
+  const source = item.source || hostOf(item.url || "") || "英語記事";
+  return checks.length
+    ? `${source}の記事。${uniqueText(checks).join("、")}に関する内容です。リンクで原文を確認してください。`
+    : `${source}の記事を取得しました。LM Studio接続時に日本語要約を作り直します。`;
 }
 
 async function researchUsStock(stock, options = {}) {
@@ -1801,9 +2059,11 @@ async function discoverStocks(options = {}, job = null) {
     ? await withTimeout(aiMarketTrendBrief(search, primeUniverse.length), 45000).catch(() => null)
     : null;
   const performance = candidatePerformanceSummary(await readCandidateHistory());
-  const candidateUniverse = uniqueBy([...searchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse], (candidate) => candidate.symbol)
+  const baseCandidateUniverse = uniqueBy([...searchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse], (candidate) => candidate.symbol);
+  const candidateUniverse = baseCandidateUniverse
     .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
     .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate));
+  const universeStats = discoveryUniverseStats(baseCandidateUniverse, candidateUniverse, existing, excluded);
   const candidateLimit = fullScan
     ? candidateUniverse.length
     : Math.min(
@@ -1880,6 +2140,7 @@ async function discoverStocks(options = {}, job = null) {
         usedDiscoveryAi: false,
         fullScan,
         marketBrief,
+        universeStats,
       });
     }
     return enhancedCandidate;
@@ -1952,6 +2213,7 @@ async function discoverStocks(options = {}, job = null) {
       searchPositionUsed: true,
       marketBrief,
       performance,
+      ...universeStats,
     }),
     message: suggestions.length === 0
       ? "買い場ライン以下で条件に合う候補が見つかりませんでした。"
@@ -1964,6 +2226,30 @@ async function discoverStocks(options = {}, job = null) {
   await updateCandidateHistoryOutcomes({ maxUpdates: 20 }).catch(() => {});
   await notifyStrongDiscoverySignals(suggestions).catch(() => {});
   return result;
+}
+
+function discoveryUniverseStats(baseUniverse = [], candidateUniverse = [], existing = new Set(), excluded = new Set()) {
+  const base = uniqueBy(baseUniverse.filter((candidate) => candidate?.symbol), (candidate) => candidate.symbol);
+  const usBase = base.filter(isUsDiscoveryCandidate);
+  const jpBase = base.filter((candidate) => !isUsDiscoveryCandidate(candidate));
+  const available = candidateUniverse.filter((candidate) => candidate?.symbol);
+  const countBlocked = (items, predicate) => items.filter(predicate).length;
+  const notAlreadyBlocked = (candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol);
+  return {
+    discoveredCount: base.filter((candidate) => candidate.discoverySource).length,
+    jpDiscoveredCount: jpBase.filter((candidate) => candidate.discoverySource).length,
+    usDiscoveredCount: usBase.filter((candidate) => candidate.discoverySource).length,
+    jpUniverseTotal: jpBase.length,
+    usUniverseTotal: usBase.length,
+    jpCandidatePool: available.filter((candidate) => !isUsDiscoveryCandidate(candidate)).length,
+    usCandidatePool: available.filter(isUsDiscoveryCandidate).length,
+    jpExistingCount: countBlocked(jpBase, (candidate) => existing.has(candidate.symbol)),
+    usExistingCount: countBlocked(usBase, (candidate) => existing.has(candidate.symbol)),
+    jpExcludedCount: countBlocked(jpBase, (candidate) => excluded.has(candidate.symbol)),
+    usExcludedCount: countBlocked(usBase, (candidate) => excluded.has(candidate.symbol)),
+    jpAvoidedBusinessCount: countBlocked(jpBase, (candidate) => notAlreadyBlocked(candidate) && isDiscoveryAvoidedBusiness(candidate)),
+    usAvoidedBusinessCount: countBlocked(usBase, (candidate) => notAlreadyBlocked(candidate) && isDiscoveryAvoidedBusiness(candidate)),
+  };
 }
 
 function topDiscoverySuggestions(candidates = []) {
@@ -2237,6 +2523,7 @@ async function savePartialDiscovery({
   usedDiscoveryAi,
   fullScan,
   marketBrief,
+  universeStats = {},
 }) {
   const result = {
     generatedAt: new Date().toISOString(),
@@ -2256,6 +2543,7 @@ async function savePartialDiscovery({
       fullScan,
       searchPositionUsed: true,
       marketBrief,
+      ...universeStats,
     }),
     message: "候補検索の途中結果です。完了後に上位候補が更新されます。",
   };
@@ -2298,6 +2586,10 @@ async function discoverySearchResults(limit) {
     "高配当 低PBR 上方修正 日本株",
     "PEファンド 日本企業 買収 TOB MBO 傾向 株主",
     "大量保有報告書 物言う株主 TOB 候補 日本株",
+    `US stocks earnings beat raised guidance free cash flow buyback ${year}`,
+    "NYSE NASDAQ undervalued growth stocks pullback earnings beat",
+    "AI infrastructure semiconductor data center power stocks earnings guidance",
+    "activist investor stake private equity buyout candidate NYSE NASDAQ",
   ];
   const perQueryLimit = Math.max(4, Math.ceil(limit / queries.length));
   const results = [];
@@ -2305,7 +2597,7 @@ async function discoverySearchResults(limit) {
     const page = await searchGoogle(query, { limit: perQueryLimit }).catch(() => []);
     results.push(...page);
   }
-  return uniqueBy(results, (item) => item.url).slice(0, limit);
+  return uniqueBy(results, (item) => item.url).slice(0, Math.max(limit, queries.length * Math.min(perQueryLimit, 4)));
 }
 
 function extractDiscoveryCandidates(searchResults, existing = new Set(), excluded = new Set()) {
@@ -2334,6 +2626,31 @@ function extractDiscoveryCandidates(searchResults, existing = new Set(), exclude
       sourceEvidence: [evidence],
     });
   };
+  const addUs = (code, rawName, item, market = "NYSE") => {
+    const symbol = normalizeUsSymbol(code);
+    if (!symbol || US_TICKER_STOPWORDS.has(symbol) || existing.has(symbol) || excluded.has(symbol)) return;
+    const name = cleanUsCandidateName(rawName) || symbol;
+    const previous = found.get(symbol);
+    const evidence = {
+      title: item.title,
+      url: item.url,
+      snippet: item.snippet,
+    };
+    if (previous) {
+      previous.sourceEvidence = uniqueBy([...previous.sourceEvidence, evidence], (source) => source.url).slice(0, 4);
+      return;
+    }
+    found.set(symbol, {
+      symbol,
+      name,
+      market: ["NYSE", "NASDAQ", "AMEX"].includes(String(market || "").toUpperCase()) ? String(market).toUpperCase() : "NYSE",
+      sector: "US search discovery",
+      notes: "US search result, earnings, guidance, valuation, shareholder or buyout candidate",
+      discoverySource: "検索結果",
+      sourceEvidence: [evidence],
+      currency: "USD",
+    });
+  };
 
   for (const item of searchResults) {
     const text = cleanText(`${item.title} ${item.snippet}`);
@@ -2349,9 +2666,24 @@ function extractDiscoveryCandidates(searchResults, existing = new Set(), exclude
         else add(match[2], match[1], item);
       }
     }
+    const usExchangePattern = /\b(NYSE|NASDAQ|AMEX)\s*[:：]\s*([A-Z][A-Z0-9.-]{0,9})\b/gi;
+    let exchangeMatch;
+    while ((exchangeMatch = usExchangePattern.exec(text))) {
+      addUs(exchangeMatch[2], nameBeforeTicker(text, exchangeMatch.index), item, exchangeMatch[1]);
+    }
+    const usSuffixPattern = /\b([A-Z][A-Z0-9.-]{0,9})\s*[（(\[]\s*(NYSE|NASDAQ|AMEX)\s*[）)\]]/gi;
+    let suffixMatch;
+    while ((suffixMatch = usSuffixPattern.exec(text))) {
+      addUs(suffixMatch[1], nameBeforeTicker(text, suffixMatch.index), item, suffixMatch[2]);
+    }
+    const dollarTickerPattern = /\$([A-Z][A-Z0-9.-]{1,5})\b/g;
+    let dollarMatch;
+    while ((dollarMatch = dollarTickerPattern.exec(text))) {
+      addUs(dollarMatch[1], nameBeforeTicker(text, dollarMatch.index), item);
+    }
   }
 
-  return [...found.values()].slice(0, 40);
+  return [...found.values()].slice(0, 80);
 }
 
 function cleanCandidateName(value = "") {
@@ -2368,6 +2700,28 @@ function cleanCandidateName(value = "") {
     .trim();
   if (text.length > 24) text = text.slice(-24).trim();
   return text;
+}
+
+function cleanUsCandidateName(value = "") {
+  let text = cleanText(value)
+    .replace(/\b(?:NYSE|NASDAQ|AMEX)\b\s*[:：]?/gi, "")
+    .replace(/[$()[\]{}<>＜＞]/g, " ")
+    .replace(/^(?:stock|stocks|shares|watch|buy|sell|rating|news)\s+/i, "")
+    .replace(/.*[|｜:：]/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  text = text.split(/---|--|[.!?;；。！？、，]/).pop() || text;
+  text = text.trim();
+  if (text.length > 46) text = text.slice(-46).trim();
+  if (!text || /^[A-Z0-9.-]{1,8}$/.test(text)) return "";
+  if (/\b(?:ETF|index|futures|options|market|earnings calendar)\b/i.test(text)) return "";
+  return text;
+}
+
+function nameBeforeTicker(text = "", index = 0) {
+  const before = cleanText(text.slice(Math.max(0, index - 90), index));
+  const parts = before.split(/[.!?;；。！？、，|｜]/);
+  return cleanUsCandidateName(parts.at(-1) || before);
 }
 
 function isLikelyCandidateName(name = "") {
@@ -3665,15 +4019,16 @@ async function researchStock(stock, options) {
   };
 }
 
-async function searchGoogle(query, { limit }) {
+async function searchGoogle(query, { limit, language } = {}) {
   const settings = await readSettings();
+  const resolvedLanguage = language || (containsJapanese(query) ? "ja-JP" : "en-US");
   if (settings.searchProvider === "searxng") {
-    return searchSearxng(query, { limit, settings });
+    return searchSearxng(query, { limit, settings, language: resolvedLanguage });
   }
-  return searchGoogleCustom(query, { limit, settings });
+  return searchGoogleCustom(query, { limit, settings, language: resolvedLanguage });
 }
 
-async function searchSearxng(query, { limit, settings }) {
+async function searchSearxng(query, { limit, settings, language = "ja-JP" }) {
   if (!settings.searxngUrl) return [];
   const attempts = [
     { categories: "news", engines: "bing news", timeout: 18000 },
@@ -3688,6 +4043,7 @@ async function searchSearxng(query, { limit, settings }) {
       if (uniqueBy(results, (item) => item.url).length >= limit) break;
       const pageResults = await fetchSearxngResults(query, {
         settings,
+        language,
         categories: attempt.categories,
         engines: attempt.engines,
         timeout: attempt.timeout,
@@ -3701,8 +4057,8 @@ async function searchSearxng(query, { limit, settings }) {
   return uniqueBy(results, (item) => item.url).slice(0, limit);
 }
 
-async function fetchSearxngResults(query, { settings, categories, engines, timeout, pageno = 1 }) {
-  const data = await fetchSearxngData(query, { settings, categories, engines, timeout, pageno });
+async function fetchSearxngResults(query, { settings, language, categories, engines, timeout, pageno = 1 }) {
+  const data = await fetchSearxngData(query, { settings, language, categories, engines, timeout, pageno });
   return (data.results || [])
     .filter((item) => item.url && /^https?:\/\//.test(item.url))
     .map((item) => ({
@@ -3713,11 +4069,11 @@ async function fetchSearxngResults(query, { settings, categories, engines, timeo
     }));
 }
 
-async function fetchSearxngData(query, { settings, categories, engines, timeout, pageno = 1 }) {
+async function fetchSearxngData(query, { settings, language = "ja-JP", categories, engines, timeout, pageno = 1 }) {
   const url = new URL(settings.searxngUrl);
   url.searchParams.set("q", query);
   url.searchParams.set("format", "json");
-  url.searchParams.set("language", "ja-JP");
+  url.searchParams.set("language", language);
   url.searchParams.set("safesearch", "0");
   url.searchParams.set("categories", categories);
   url.searchParams.set("pageno", String(pageno));
@@ -3730,7 +4086,7 @@ async function fetchSearxngData(query, { settings, categories, engines, timeout,
   return response.json();
 }
 
-async function searchGoogleCustom(query, { limit, settings }) {
+async function searchGoogleCustom(query, { limit, settings, language = "ja-JP" }) {
   if (!settings.googleApiKey || !settings.googleCseId) return [];
   const results = [];
   for (let start = 1; results.length < limit && start <= 91; start += 10) {
@@ -3740,8 +4096,8 @@ async function searchGoogleCustom(query, { limit, settings }) {
     url.searchParams.set("q", query);
     url.searchParams.set("num", String(Math.min(10, limit - results.length)));
     url.searchParams.set("start", String(start));
-    url.searchParams.set("hl", "ja");
-    url.searchParams.set("gl", "jp");
+    url.searchParams.set("hl", language.startsWith("en") ? "en" : "ja");
+    url.searchParams.set("gl", language.startsWith("en") ? "us" : "jp");
     url.searchParams.set("safe", "off");
     const response = await fetchWithTimeout(url, { timeout: 15000 });
     if (!response.ok) throw new Error(`Google Search returned ${response.status}`);
@@ -7505,6 +7861,8 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     searchCount,
     candidateLimit,
     discoveredCount: budget.discoveredCount || 0,
+    jpDiscoveredCount: budget.jpDiscoveredCount || 0,
+    usDiscoveredCount: budget.usDiscoveredCount || 0,
     candidatePool: budget.candidatePool || candidateLimit,
     usedDiscoveryAi: Boolean(budget.usedDiscoveryAi),
     fullScan: Boolean(budget.fullScan),
@@ -7522,10 +7880,18 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     unitBudgetUnlimited,
     usUnitSize: US_DISCOVERY_UNIT_SIZE,
     usUnitBudget: US_DISCOVERY_UNIT_BUDGET,
+    jpUniverseTotal: budget.jpUniverseTotal || 0,
+    usUniverseTotal: budget.usUniverseTotal || 0,
     jpCandidatePool: budget.jpCandidatePool || 0,
     usCandidatePool: budget.usCandidatePool || 0,
+    jpExistingCount: budget.jpExistingCount || 0,
+    usExistingCount: budget.usExistingCount || 0,
+    jpExcludedCount: budget.jpExcludedCount || 0,
+    usExcludedCount: budget.usExcludedCount || 0,
+    jpAvoidedBusinessCount: budget.jpAvoidedBusinessCount || 0,
+    usAvoidedBusinessCount: budget.usAvoidedBusinessCount || 0,
     priceSource: "Yahoo Finance 5年日足",
-    universe: budget.fullScan ? "東証プライム全銘柄 + 米国大型株候補" : "事業好調・割安候補リスト",
+    universe: budget.fullScan ? "東証プライム全銘柄 + 米国大型・中型候補" : "事業好調・割安候補リスト",
   };
 }
 
@@ -7626,10 +7992,11 @@ function sanitizeCachedUsAnalysis(analysis = {}, stock = null) {
   });
   const price = analysis.price || {};
   const position = positionMetrics(resolvedStock, price);
+  const evidence = (analysis.evidence || []).map(ensureUsEvidenceJapanese);
   const ai = analysis.ai
     ? {
       ...analysis.ai,
-      growthExit: enforceRecentGrowthExit(analysis.ai.growthExit, { evidence: analysis.evidence || [] }, analysis),
+      growthExit: enforceRecentGrowthExit(analysis.ai.growthExit, { evidence }, analysis),
     }
     : null;
   return {
@@ -7640,6 +8007,7 @@ function sanitizeCachedUsAnalysis(analysis = {}, stock = null) {
     holding: Boolean(resolvedStock.holding),
     notes: resolvedStock.notes || analysis.notes || "",
     position,
+    evidence,
     ai,
   };
 }

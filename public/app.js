@@ -856,7 +856,7 @@ function renderUsDetail() {
   const evidence = (analysis?.evidence || []).map((item) => `
     <article class="evidence-item">
       <div>
-        <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title || item.source || "source")}</a>
+        <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.titleJa || item.title || item.source || "source")}</a>
         <p>${escapeHtml(evidenceMetaText(item))}</p>
       </div>
       <p>${escapeHtml(item.summaryJa || item.snippet || "")}</p>
@@ -3203,7 +3203,13 @@ function renderCandidateList() {
     const jpPool = Number.isFinite(source.jpCandidatePool) ? source.jpCandidatePool : totalPool;
     const usPool = Number.isFinite(source.usCandidatePool) ? source.usCandidatePool : 0;
     const poolText = `採点対象は日本${jpPool}件・米国${usPool}件、合計${totalPool}件です。`;
-    const discoveryText = `検索結果から銘柄コードとして拾えたのは${source.discoveredCount || 0}件です。検索抽出が少なくても、銘柄一覧は別で全件採点しています。`;
+    const discoveredText = Number.isFinite(source.jpDiscoveredCount) || Number.isFinite(source.usDiscoveredCount)
+      ? `検索結果から拾えた銘柄は日本${source.jpDiscoveredCount || 0}件・米国${source.usDiscoveredCount || 0}件です。`
+      : `検索結果から銘柄コードとして拾えたのは${source.discoveredCount || 0}件です。`;
+    const usUniverseText = source.usUniverseTotal
+      ? `米国候補元は${source.usUniverseTotal}件で、保有中${source.usExistingCount || 0}件・非表示${source.usExcludedCount || 0}件・除外業種${source.usAvoidedBusinessCount || 0}件を外しています。`
+      : "";
+    const discoveryText = `${discoveredText}${usUniverseText}検索抽出が少なくても、銘柄一覧は別で全件採点しています。`;
     const aiText = source.usedDiscoveryAi ? "最後にLM Studioで上位候補を再点検しています。" : "LM Studio再点検は未実行です。";
     const positionText = source.searchPositionUsed ? "検索順位に出る業績・割安材料も採点しています。" : "";
     const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
