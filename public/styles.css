@@ -414,6 +414,21 @@ progress {
   gap: 10px;
 }
 
+.profit-summary.is-refreshing::before {
+  content: attr(data-refresh-label);
+  grid-column: 1 / -1;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  border: 1px solid #b8d8cf;
+  border-radius: 8px;
+  background: #edf7f3;
+  color: var(--accent);
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .us-profit-summary {
   grid-template-columns: repeat(4, minmax(140px, 1fr));
 }
@@ -470,7 +485,7 @@ progress {
 
 .content-grid {
   display: grid;
-  grid-template-columns: minmax(520px, 0.95fr) minmax(380px, 1.05fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: start;
 }
@@ -504,6 +519,45 @@ table {
   min-width: 760px;
   border-collapse: collapse;
   font-size: 13px;
+}
+
+.watchlist-table {
+  min-width: 1110px;
+  table-layout: fixed;
+}
+
+.watchlist-table th:nth-child(1),
+.watchlist-table td:nth-child(1) {
+  width: 260px;
+}
+
+.watchlist-table th:nth-child(2),
+.watchlist-table td:nth-child(2) {
+  width: 140px;
+}
+
+.watchlist-table th:nth-child(3),
+.watchlist-table td:nth-child(3),
+.watchlist-table th:nth-child(4),
+.watchlist-table td:nth-child(4) {
+  width: 110px;
+}
+
+.watchlist-table th:nth-child(5),
+.watchlist-table td:nth-child(5) {
+  width: 90px;
+}
+
+.watchlist-table th:nth-child(6),
+.watchlist-table td:nth-child(6),
+.watchlist-table th:nth-child(7),
+.watchlist-table td:nth-child(7) {
+  width: 130px;
+}
+
+.watchlist-table th:nth-child(8),
+.watchlist-table td:nth-child(8) {
+  width: 140px;
 }
 
 .manage-table {

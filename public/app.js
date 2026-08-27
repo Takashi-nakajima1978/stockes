@@ -27,6 +27,9 @@ const state = {
   view: preferredView(),
   ideaView: "candidates",
   running: false,
+  jpRefreshing: false,
+  usRefreshing: false,
+  cryptoRefreshing: false,
 };
 
 const actionLabels = {
@@ -77,6 +80,8 @@ const els = {
   stockProgress: document.getElementById("stockProgress"),
   analyzeButton: document.getElementById("analyzeButton"),
   usAnalyzeButton: document.getElementById("usAnalyzeButton"),
+  profitSummary: document.querySelector('[data-view="analysis"] .profit-summary'),
+  usProfitSummary: document.querySelector('[data-view="us"] .us-profit-summary'),
   usStockForm: document.getElementById("usStockForm"),
   usStockName: document.getElementById("usStockName"),
   usStockSymbol: document.getElementById("usStockSymbol"),
@@ -95,6 +100,7 @@ const els = {
   usSelectedSymbol: document.getElementById("usSelectedSymbol"),
   usDetail: document.getElementById("usDetail"),
   cryptoAnalyzeButton: document.getElementById("cryptoAnalyzeButton"),
+  cryptoProfitSummary: document.querySelector('[data-view="crypto"] .crypto-profit-summary'),
   cryptoLastRun: document.getElementById("cryptoLastRun"),
   btcUsdPrice: document.getElementById("btcUsdPrice"),
   btcJpyPrice: document.getElementById("btcJpyPrice"),
@@ -386,8 +392,10 @@ async function loadCrypto() {
 }
 
 function applyUsAnalysisPayload(payload = {}) {
-  state.usAnalyses = Object.fromEntries((payload.analyses || []).map((item) => [item.symbol, item]));
-  state.usSummary = payload.summary || null;
+  if (Array.isArray(payload.analyses)) {
+    state.usAnalyses = Object.fromEntries(payload.analyses.map((item) => [item.symbol, item]));
+  }
+  if (payload.summary) state.usSummary = payload.summary;
   if (payload.generatedAt && els.usLastRun) {
     els.usLastRun.textContent = `保存済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
   }
@@ -395,12 +403,27 @@ function applyUsAnalysisPayload(payload = {}) {
 
 function applyCryptoPayload(payload = {}) {
   if (payload.holding) state.cryptoHolding = payload.holding;
-  if (payload.analysis) state.cryptoAnalysis = payload.analysis;
-  else if (payload.generatedAt || payload.btcUsd || payload.btcJpy) state.cryptoAnalysis = payload;
+  if (payload.analysis) state.cryptoAnalysis = mergeCryptoAnalysis(state.cryptoAnalysis, payload.analysis);
+  else if (payload.generatedAt || payload.btcUsd || payload.btcJpy || payload.usdJpy) {
+    state.cryptoAnalysis = mergeCryptoAnalysis(state.cryptoAnalysis, payload);
+  }
   const generatedAt = state.cryptoAnalysis?.generatedAt;
   if (generatedAt && els.cryptoLastRun) {
     els.cryptoLastRun.textContent = `保存済み ${new Date(generatedAt).toLocaleString("ja-JP")}`;
   }
+}
+
+function mergeCryptoAnalysis(previous = null, next = {}) {
+  const base = previous || {};
+  return {
+    ...base,
+    ...next,
+    btcUsd: next.btcUsd || base.btcUsd,
+    btcJpy: next.btcJpy || base.btcJpy,
+    usdJpy: next.usdJpy || base.usdJpy,
+    position: next.position || base.position,
+    timing: next.timing || base.timing,
+  };
 }
 
 async function loadAnalysisJob() {
@@ -409,15 +432,22 @@ async function loadAnalysisJob() {
   state.analysisJob = payload.job || null;
   if (payload.result) applyAnalysisPayload(payload.result, false);
   renderAnalysisJob();
-  if (state.analysisJob?.running) void pollAnalysisJob()
+  if (state.analysisJob?.running) {
+    state.jpRefreshing = true;
+    renderProfitSummary();
+    void pollAnalysisJob()
     .then((result) => {
       applyAnalysisPayload(result);
+      state.jpRefreshing = false;
       render();
     })
     .catch((error) => {
       toast(error.message);
       els.researchProgress.textContent = "失敗";
+      state.jpRefreshing = false;
+      renderProfitSummary();
     });
+  }
 }
 
 async function loadDiscoveryCache() {
@@ -509,7 +539,7 @@ function renderTable() {
   if (els.stockTable) {
     els.stockTable.innerHTML = state.stocks.length
       ? state.stocks.map((stock) => stockRow(stock, true)).join("")
-      : emptyStockRow(7);
+      : emptyStockRow(8);
     attachTableEvents(els.stockTable);
   }
 
@@ -553,6 +583,7 @@ function stockRow(stock, compact) {
         ${sectorCell}
         <td>${yen(analysis?.price?.current)}</td>
         <td>${yen(position.purchasePrice)}</td>
+        <td>${holdingQuantityCell(stock, position)}</td>
         <td>${positionPnl(position, true)}</td>
         <td>${dividendCell(position, analysis?.price)}</td>
         <td><span class="badge ${actionClasses[action] || "watch"}">${actionLabels[action] || "要確認"}</span></td>
@@ -585,6 +616,11 @@ function dividendCell(position, price = {}) {
   const incomeText = Number.isFinite(position?.annualDividendEstimate) ? yen(position.annualDividendEstimate) : "";
   if (yieldText === "-" && !incomeText) return "-";
   return `<span class="dividend-cell"><strong>${yieldText}</strong>${incomeText ? `<small>${incomeText}/年</small>` : ""}</span>`;
+}
+
+function holdingQuantityCell(stock, position = {}) {
+  if (!stock?.holding) return "-";
+  return Number.isFinite(position?.quantity) ? shareCount(position.quantity) : "保有";
 }
 
 function attachTableEvents(table) {
@@ -705,6 +741,7 @@ function renderSummary() {
 
 function renderProfitSummary() {
   const summary = portfolioSummary();
+  setRefreshingSummary(els.profitSummary, state.jpRefreshing, "更新中。表示中の数字は前回保存値");
   setMoneySummary(els.profitAmount, summary.pnlAmount, "profit-big");
   if (els.profitPct) {
     els.profitPct.innerHTML = Number.isFinite(summary.pnlPct)
@@ -735,6 +772,7 @@ function renderUsSummary() {
   const summary = Number.isFinite(state.usSummary?.totalReturnAmount) || Number.isFinite(state.usSummary?.dividendReceived)
     ? state.usSummary
     : computed;
+  setRefreshingSummary(els.usProfitSummary, state.usRefreshing, "更新中。表示中の数字は前回保存値");
   const totalAmount = Number.isFinite(summary.totalReturnAmount) ? summary.totalReturnAmount : summary.pnlAmount;
   const totalPct = Number.isFinite(summary.totalReturnPct) ? summary.totalReturnPct : summary.pnlPct;
   setMoneySummary(els.usProfitAmount, totalAmount, "profit-big", usd);
@@ -881,6 +919,7 @@ function renderCrypto() {
 function renderCryptoSummary() {
   const analysis = state.cryptoAnalysis || {};
   const position = analysis.position || cryptoPositionFallback(state.cryptoHolding || {});
+  setRefreshingSummary(els.cryptoProfitSummary, state.cryptoRefreshing, "更新中。表示中の数字は前回保存値");
   if (els.btcUsdPrice) els.btcUsdPrice.textContent = usd(analysis.btcUsd?.current);
   if (els.btcJpyPrice) els.btcJpyPrice.textContent = yen(analysis.btcJpy?.current);
   if (els.usdJpyRate) els.usdJpyRate.textContent = fxRate(analysis.usdJpy?.current);
@@ -1435,6 +1474,24 @@ function setMoneySummary(element, value, className = "", formatter = yen) {
   element.textContent = formatter(value);
   element.classList.add(value >= 0 ? "metric-pos" : "metric-neg");
   if (className) element.classList.add(className);
+}
+
+function setRefreshingSummary(element, active, label) {
+  if (!element) return;
+  element.classList.toggle("is-refreshing", Boolean(active));
+  if (active) {
+    element.dataset.refreshLabel = label;
+    element.setAttribute("aria-busy", "true");
+  } else {
+    delete element.dataset.refreshLabel;
+    element.removeAttribute("aria-busy");
+  }
+}
+
+function progressWithPrevious(message, previousText = "") {
+  const previous = String(previousText || "").trim();
+  if (!previous || previous === "未更新" || previous === "未分析") return message;
+  return `${message} / ${previous}`;
 }
 
 function renderSelection() {
@@ -2301,6 +2358,8 @@ function evidenceSummaryHtml(stock, analysis, position) {
 async function analyze(options = {}) {
   if (state.running) return;
   state.running = true;
+  state.jpRefreshing = true;
+  renderProfitSummary();
   els.analyzeButton.disabled = true;
   els.discoverButton.disabled = true;
   const originalText = els.analyzeButton.textContent;
@@ -2328,18 +2387,28 @@ async function analyze(options = {}) {
     els.researchProgress.textContent = "失敗";
   } finally {
     state.running = false;
+    state.jpRefreshing = false;
     els.analyzeButton.disabled = false;
     els.discoverButton.disabled = false;
     els.analyzeButton.textContent = originalText;
+    renderProfitSummary();
   }
 }
 
 async function analyzeUs(options = {}) {
   if (!els.usAnalyzeButton) return;
   els.usAnalyzeButton.disabled = true;
+  state.usRefreshing = true;
   const originalText = els.usAnalyzeButton.textContent;
+  const previousStatus = els.usLastRun?.textContent || "";
   els.usAnalyzeButton.textContent = "更新中";
-  if (els.usLastRun) els.usLastRun.textContent = options.source === "reload" ? "ブラウザ更新で米国株を確認中" : "米国株を確認中";
+  if (els.usLastRun) {
+    els.usLastRun.textContent = progressWithPrevious(
+      options.source === "reload" ? "ブラウザ更新中" : "更新中",
+      previousStatus,
+    );
+  }
+  renderUs();
   try {
     const payload = await request("/api/us-analyze", {
       method: "POST",
@@ -2355,21 +2424,29 @@ async function analyzeUs(options = {}) {
     renderUs();
   } catch (error) {
     toast(error.message);
-    if (els.usLastRun) els.usLastRun.textContent = "更新失敗";
+    if (els.usLastRun) els.usLastRun.textContent = progressWithPrevious("更新失敗", previousStatus);
   } finally {
+    state.usRefreshing = false;
     els.usAnalyzeButton.disabled = false;
     els.usAnalyzeButton.textContent = originalText;
+    renderUsSummary();
   }
 }
 
 async function analyzeCrypto(options = {}) {
   if (!els.cryptoAnalyzeButton) return;
   els.cryptoAnalyzeButton.disabled = true;
+  state.cryptoRefreshing = true;
   const originalText = els.cryptoAnalyzeButton.textContent;
+  const previousStatus = els.cryptoLastRun?.textContent || "";
   els.cryptoAnalyzeButton.textContent = "更新中";
   if (els.cryptoLastRun) {
-    els.cryptoLastRun.textContent = options.source === "reload" ? "ブラウザ更新でBTCを確認中" : "BTC・為替を確認中";
+    els.cryptoLastRun.textContent = progressWithPrevious(
+      options.source === "reload" ? "ブラウザ更新中" : "更新中",
+      previousStatus,
+    );
   }
+  renderCrypto();
   try {
     const payload = await request("/api/crypto-analyze", {
       method: "POST",
@@ -2382,10 +2459,12 @@ async function analyzeCrypto(options = {}) {
     renderCrypto();
   } catch (error) {
     toast(error.message);
-    if (els.cryptoLastRun) els.cryptoLastRun.textContent = "更新失敗";
+    if (els.cryptoLastRun) els.cryptoLastRun.textContent = progressWithPrevious("更新失敗", previousStatus);
   } finally {
+    state.cryptoRefreshing = false;
     els.cryptoAnalyzeButton.disabled = false;
     els.cryptoAnalyzeButton.textContent = originalText;
+    renderCryptoSummary();
   }
 }
 
@@ -2403,9 +2482,11 @@ async function pollAnalysisJob() {
 }
 
 function applyAnalysisPayload(payload, notifyWarnings = true) {
-  state.analyses = Object.fromEntries((payload.analyses || []).map((item) => [item.symbol, item]));
-  state.sectorEvidence = payload.sectorEvidence || [];
-  els.lastRun.textContent = payload.generatedAt ? new Date(payload.generatedAt).toLocaleString("ja-JP") : "-";
+  if (Array.isArray(payload.analyses)) {
+    state.analyses = Object.fromEntries(payload.analyses.map((item) => [item.symbol, item]));
+  }
+  if (Array.isArray(payload.sectorEvidence)) state.sectorEvidence = payload.sectorEvidence;
+  if (payload.generatedAt) els.lastRun.textContent = new Date(payload.generatedAt).toLocaleString("ja-JP");
   els.researchProgress.textContent = payload.usedLmStudio ? "更新済み LM Studio分析" : "更新済み ルール分析";
   if (notifyWarnings && payload.warnings?.length) toast(payload.warnings.join(" / "));
 }
