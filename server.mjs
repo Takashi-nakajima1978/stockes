@@ -35,7 +35,7 @@ const DISCOVERY_SCORING_VERSION = 4;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
-const FUNDAMENTAL_EXIT_MAX_AGE_DAYS = 540;
+const FUNDAMENTAL_EXIT_MAX_AGE_DAYS = 30;
 const TRAILING_STOP_LOSS_PCT = 20;
 const PE_PRIORITY_MIN_SCORE = 45;
 const PE_STRONG_MIN_SCORE = 55;
@@ -4623,7 +4623,7 @@ function ruleGrowthExit(stock, research = {}, price = {}) {
   if (staleEvidence.length) {
     return {
       level: "watch",
-      reason: `${stock.name}に悪材料らしい古い記事がありますが、最近の根拠ではないため売りアラートにはしません。`,
+      reason: `${stock.name}に悪材料らしい古い記事がありますが、${FUNDAMENTAL_EXIT_MAX_AGE_DAYS}日以内の根拠ではないため売りアラートにはしません。`,
       signals: uniqueText(staleEvidence.flatMap((item) => item.signals || [])).slice(0, 5),
       evidence: staleEvidence.slice(0, 3),
     };
@@ -4680,7 +4680,7 @@ function enforceRecentGrowthExit(growthExit = {}, research = {}, stock = {}) {
   return {
     ...normalized,
     level: "watch",
-    reason: `${stock.name || "この銘柄"}は悪材料らしい文言がありますが、最近の日付付き根拠がないため売り通知ではなく確認扱いにします。`,
+    reason: `${stock.name || "この銘柄"}は悪材料らしい文言がありますが、${FUNDAMENTAL_EXIT_MAX_AGE_DAYS}日以内の日付付き根拠がないため売り通知ではなく確認扱いにします。`,
   };
 }
 
@@ -6727,7 +6727,7 @@ function analysisSignal(analysis, settings) {
 
 function exitPlanSignals(analysis = {}) {
   const plan = analysis.exitPlan || {};
-  return (plan.alerts || []).map((alert) => ({
+  return (plan.alerts || []).filter((alert) => exitAlertCanNotify(alert, plan, analysis)).map((alert) => ({
     key: `${analysis.symbol}:EXIT:${alert.type}:${plan.highWaterPrice || ""}:${Math.round(plan.current || 0)}`,
     action: alert.action,
     symbol: analysis.symbol,
@@ -6743,6 +6743,12 @@ function exitPlanSignals(analysis = {}) {
       ...(alert.points || []),
     ].filter(Boolean).slice(0, 10),
   }));
+}
+
+function exitAlertCanNotify(alert = {}, plan = {}, analysis = {}) {
+  if (alert.type !== "FUNDAMENTAL_EXIT") return true;
+  const growthExit = normalizeGrowthExit(plan.growthExit || analysis.growthExit || analysis.ai?.growthExit);
+  return growthExitEvidenceForAlert(growthExit, analysis).some((item) => isRecentEvidenceForExit(item));
 }
 
 function discoverySignal(candidate, settings) {
