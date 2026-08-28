@@ -5083,6 +5083,8 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
   const position = analysis.position || {};
   const currency = options.currency || price.currency || "JPY";
   const current = nullablePositiveNumber(price.current);
+  const sellableQuantity = sellableExitQuantity(position);
+  const canNotifySellAlert = sellableQuantity > 0;
   const trailingStartDate = trailingStartDateForPosition(position);
   const highPoint = bestKnownHighPoint(price, current, { sinceDate: trailingStartDate });
   const previousHigh = nullablePositiveNumber(previous?.highWaterPrice);
@@ -5110,7 +5112,7 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
   );
   const onkabu = onkabuPlan(position, current, settings, currency);
   const alerts = [];
-  if (settings.growthExitEnabled !== false && growthExit.level === "exit_alert") {
+  if (canNotifySellAlert && settings.growthExitEnabled !== false && growthExit.level === "exit_alert") {
     alerts.push({
       type: "FUNDAMENTAL_EXIT",
       label: "ファンダ崩壊",
@@ -5120,7 +5122,7 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
       points: growthExitAlertPoints(growthExit, analysis),
     });
   }
-  if (trailingTriggered) {
+  if (canNotifySellAlert && trailingTriggered) {
     alerts.push({
       type: "TRAILING_STOP",
       label: "トレーリングストップ",
@@ -5179,6 +5181,13 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
   };
 }
 
+function sellableExitQuantity(position = {}) {
+  const quantity = nullablePositiveNumber(position.quantity) || 0;
+  if (!quantity) return 0;
+  if (Number.isFinite(position.sellableQuantity)) return Math.max(0, position.sellableQuantity);
+  return quantity;
+}
+
 function growthExitAlertPoints(growthExit = {}, analysis = {}) {
   const points = [];
   const signals = asStringArray(growthExit.signals).slice(0, 5);
@@ -5234,12 +5243,13 @@ function trailingStopAssessment(position = {}, options = {}) {
   const trailingStopPct = clamp(Number(options.trailingStopPct || defaultSettings.trailingStopPct), 5, 60);
   const currency = options.currency || "JPY";
   const quantity = nullablePositiveNumber(position.quantity) || 0;
+  const sellableQuantity = sellableExitQuantity(position);
   const purchasePrice = nullablePositiveNumber(position.purchasePrice);
   const totalReturnPct = Number.isFinite(position.totalReturnPct) ? position.totalReturnPct : position.pnlPct;
   const unrealizedPnlPct = Number.isFinite(position.unrealizedPnlPct) ? position.unrealizedPnlPct : null;
   const gainFromCostPct = current && purchasePrice ? ((current - purchasePrice) / purchasePrice) * 100 : null;
   const highGainFromCostPct = highWaterPrice && purchasePrice ? ((highWaterPrice - purchasePrice) / purchasePrice) * 100 : null;
-  const belowLine = Boolean(quantity > 0 && current && trailingStopPrice && current <= trailingStopPrice);
+  const belowLine = Boolean(sellableQuantity > 0 && current && trailingStopPrice && current <= trailingStopPrice);
   const profitProtection = belowLine
     && Number.isFinite(highGainFromCostPct)
     && highGainFromCostPct >= Math.max(15, trailingStopPct)
@@ -7083,6 +7093,7 @@ function analysisSignal(analysis, settings) {
 
 function exitPlanSignals(analysis = {}) {
   const plan = analysis.exitPlan || {};
+  if (sellableExitQuantity(analysis.position || {}) <= 0) return [];
   return (plan.alerts || []).filter((alert) => exitAlertCanNotify(alert, plan, analysis)).map((alert) => ({
     key: `${analysis.symbol}:EXIT:${alert.type}:${plan.highWaterPrice || ""}:${Math.round(plan.current || 0)}`,
     action: alert.action,
