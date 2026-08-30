@@ -856,11 +856,11 @@ function renderUsDetail() {
   const evidence = (analysis?.evidence || []).map((item) => `
     <article class="evidence-item">
       <div>
-        <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.titleJa || item.title || item.source || "source")}</a>
+        <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(usEvidenceTitleText(item))}</a>
         <p>${escapeHtml(evidenceMetaText(item))}</p>
       </div>
-      <p>${escapeHtml(item.summaryJa || item.snippet || "")}</p>
-      <span>日本語要約</span>
+      <p>${escapeHtml(usEvidenceSummaryText(item))}</p>
+      <span>${escapeHtml(usEvidenceTranslationLabel(item))}</span>
     </article>
   `).join("");
   els.usDetail.innerHTML = `
@@ -2279,6 +2279,22 @@ function evidenceMetaText(item = {}) {
     item.source || "",
     item.publishedDate ? formatDate(item.publishedDate) : "",
   ].filter(Boolean).join(" / ");
+}
+
+function usEvidenceTitleText(item = {}) {
+  if ((item.translationMethod === "lm_studio" || item.translationMethod === "source_ja") && item.titleJa) return item.titleJa;
+  return item.title || item.source || "source";
+}
+
+function usEvidenceSummaryText(item = {}) {
+  if ((item.translationMethod === "lm_studio" || item.translationMethod === "source_ja") && item.summaryJa) return item.summaryJa;
+  return item.translationError || "LM Studioで再分析すると日本語要約を作ります。";
+}
+
+function usEvidenceTranslationLabel(item = {}) {
+  if (item.translationMethod === "lm_studio") return "日本語要約";
+  if (item.translationMethod === "source_ja") return "日本語原文";
+  return "未翻訳";
 }
 
 function formatMonthDay(value = "") {

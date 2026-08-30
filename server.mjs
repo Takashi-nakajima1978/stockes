@@ -37,6 +37,7 @@ const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
 const FUNDAMENTAL_EXIT_MAX_AGE_DAYS = 30;
 const TRAILING_STOP_LOSS_PCT = 20;
+const US_EVIDENCE_TRANSLATION_LIMIT_PER_STOCK = 3;
 const PE_PRIORITY_MIN_SCORE = 45;
 const PE_STRONG_MIN_SCORE = 55;
 const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品|wholesale|food|grocery|consumer staples|packaged foods)/i;
@@ -127,7 +128,7 @@ const businessGoodWords = ["増収増益", "上方修正", "最高益", "過去�
 const valueGoodWords = ["割安", "低per", "低pbr", "pbr1倍割れ", "pbr", "per", "配当利回り", "高配当", "出遅れ", "undervalued", "low multiple", "cheap valuation", "dividend yield", "discount"];
 const businessBadWords = ["下方修正", "減益", "赤字", "減配", "不祥事", "行政処分", "訴訟", "guidance cut", "earnings miss", "loss", "dividend cut", "lawsuit", "investigation"];
 
-let lmModelCache = { url: "", model: "" };
+let lmModelCache = { configuredUrl: "", url: "", model: "" };
 let primeUniverseCache = null;
 let analysisJob = null;
 let discoveryJob = null;
@@ -452,7 +453,7 @@ async function handleApi(req, res, url) {
     const settings = await saveSettings(applySettingsPatch(previousSettings, body));
     const discoveryReset = previousDiscoveryKey !== discoverySettingsKey(settings);
     const discovery = discoveryReset ? await resetDiscoveryCacheForSettings(settings) : null;
-    lmModelCache = { url: "", model: "" };
+    lmModelCache = { configuredUrl: "", url: "", model: "" };
     return json(res, 200, {
       settings: publicSettings(settings),
       status: await status(),
@@ -749,7 +750,7 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/us-analyze" && req.method === "POST") {
     const body = await readJson(req);
-    return json(res, 200, await analyzeUsHoldings(body, { notify: true }));
+    return json(res, 200, await analyzeUsHoldings(body, { notify: body.notify !== false }));
   }
 
   if (url.pathname === "/api/discover" && req.method === "POST") {
@@ -981,10 +982,10 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
   });
   await translateUsEvidenceRows(rows).catch((error) => {
     warnings.push(`LM Studio: ${error.message || "米国ニュース翻訳が返りませんでした"}`);
-    applyBasicUsEvidenceTranslations(rows);
+    markUsEvidenceTranslationUnavailable(rows, error);
   });
 
-  let usedLmStudio = false;
+  let usedLmStudio = rows.some((row) => (row.evidence || []).some((item) => item.translationMethod === "lm_studio"));
   const lmStatus = await checkLmStudio();
   if (lmStatus.ok && rows.length) {
     try {
@@ -995,7 +996,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
         row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
         applyUsEvidenceTranslations(row);
       });
-      usedLmStudio = reviews.length > 0;
+      usedLmStudio = usedLmStudio || reviews.length > 0;
     } catch (error) {
       warnings.push(`LM Studio: ${error.message || "米国株AI分析が返りませんでした"}`);
       rows.forEach((row) => {
@@ -1084,12 +1085,12 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
     ai: null,
   };
 
-  let usedLmStudio = false;
   const warnings = [];
   await translateUsEvidenceRows([row]).catch((error) => {
     warnings.push(`LM Studio: ${error.message || "米国ニュース翻訳が返りませんでした"}`);
-    applyBasicUsEvidenceTranslations([row]);
+    markUsEvidenceTranslationUnavailable([row], error);
   });
+  let usedLmStudio = (row.evidence || []).some((item) => item.translationMethod === "lm_studio");
   const lmStatus = await checkLmStudio(settings);
   if (lmStatus.ok) {
     try {
@@ -1097,7 +1098,7 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
       row.ai = review || fallbackUsReview(row);
       row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
       applyUsEvidenceTranslations(row);
-      usedLmStudio = Boolean(review);
+      usedLmStudio = usedLmStudio || Boolean(review);
     } catch (error) {
       warnings.push(`LM Studio: ${error.message || "米国株AI分析が返りませんでした"}`);
       row.ai = fallbackUsReview(row);
@@ -1129,28 +1130,47 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
 
 function applyUsEvidenceTranslations(row = {}) {
   const translations = row.ai?.evidenceJa || [];
-  row.evidence = (row.evidence || []).map((item, index) => ensureUsEvidenceJapanese({
-    ...item,
-    summaryJa: translations[index]?.summary || item.summaryJa || "",
-  }));
+  row.evidence = (row.evidence || []).map((item, index) => {
+    const summary = cleanText(translations[index]?.summary || "");
+    return normalizeUsEvidenceTranslationState({
+      ...item,
+      summaryJa: summary || item.summaryJa || "",
+      translationMethod: summary ? "lm_studio" : item.translationMethod,
+    });
+  });
 }
 
-function applyBasicUsEvidenceTranslations(rows = []) {
+function markUsEvidenceTranslationUnavailable(rows = [], error = null) {
+  const message = error?.message
+    ? `LM Studio翻訳未完了: ${error.message}`
+    : "LM Studio翻訳未完了です。";
   rows.forEach((row) => {
-    row.evidence = (row.evidence || []).map(ensureUsEvidenceJapanese);
+    row.evidence = (row.evidence || []).map((item) => normalizeUsEvidenceTranslationState({
+      ...item,
+      translationMethod: item.translationMethod === "lm_studio" ? item.translationMethod : "untranslated",
+      translationError: item.translationError || message,
+    }));
   });
 }
 
 async function translateUsEvidenceRows(rows = []) {
   const items = [];
   for (const row of rows) {
+    let queuedForRow = 0;
     for (const evidence of row.evidence || []) {
       const text = `${evidence.title || ""}\n${evidence.originalSnippet || evidence.snippet || ""}`;
       if (!isMostlyEnglish(text)) {
         evidence.titleJa ||= evidence.title || "";
         evidence.summaryJa ||= evidence.snippet || evidence.originalSnippet || "";
+        evidence.translationMethod ||= containsJapanese(text) ? "source_ja" : "untranslated";
         continue;
       }
+      if (queuedForRow >= US_EVIDENCE_TRANSLATION_LIMIT_PER_STOCK) {
+        evidence.translationMethod ||= "untranslated";
+        evidence.translationError ||= `上位${US_EVIDENCE_TRANSLATION_LIMIT_PER_STOCK}件までLM Studioで要約します。`;
+        continue;
+      }
+      queuedForRow += 1;
       items.push({
         evidence,
         title: evidence.title || "",
@@ -1160,43 +1180,65 @@ async function translateUsEvidenceRows(rows = []) {
     }
   }
   if (!items.length) {
-    applyBasicUsEvidenceTranslations(rows);
+    markUsEvidenceTranslationUnavailable(rows);
     return;
   }
   const model = await getLmStudioModel();
-  for (const chunk of chunkArray(items, 8)) {
-    const translations = await translateUsEvidenceChunk(model, chunk);
+  const failures = [];
+  for (const chunk of chunkArray(items, 1)) {
+    const translations = await translateUsEvidenceChunk(model, chunk).catch((error) => {
+      failures.push(error);
+      return [];
+    });
     translations.forEach((translation, index) => {
       const target = chunk[index]?.evidence;
       if (!target) return;
-      target.titleJa = cleanText(translation?.titleJa || target.titleJa || "");
-      target.summaryJa = cleanText(translation?.summaryJa || translation?.summary || target.summaryJa || "");
+      const titleJa = cleanText(translation?.titleJa || "");
+      const summaryJa = cleanText(translation?.summaryJa || translation?.summary || "");
+      if (!summaryJa || !containsJapanese(`${titleJa} ${summaryJa}`)) {
+        target.translationMethod = "untranslated";
+        target.translationError = "LM Studio翻訳が空、または日本語ではありませんでした。";
+        return;
+      }
+      target.titleJa = titleJa || target.titleJa || "";
+      target.summaryJa = summaryJa;
+      target.translationMethod = "lm_studio";
       if (target.summaryJa) target.snippet = target.summaryJa;
     });
+    chunk.forEach((item) => {
+      if (item.evidence.translationMethod === "lm_studio") return;
+      item.evidence.translationMethod = "untranslated";
+      item.evidence.translationError = failures.at(-1)?.message
+        ? `LM Studio翻訳未完了: ${failures.at(-1).message}`
+        : "LM Studio翻訳が返りませんでした。";
+    });
   }
-  applyBasicUsEvidenceTranslations(rows);
+  rows.forEach((row) => {
+    row.evidence = (row.evidence || []).map(normalizeUsEvidenceTranslationState);
+  });
+  if (failures.length) throw failures[0];
 }
 
 async function translateUsEvidenceChunk(model, items = []) {
   const prompt = [
-    "英語の米国株ニュースを、日本語の表示用に短く訳してください。",
-    "投資助言ではなく、記事タイトルと断片の内容だけを要約してください。",
-    "出力はJSONのみ。形式は {\"items\":[{\"titleJa\":\"日本語タイトル\",\"summaryJa\":\"日本語要約\"}]}。入力と同じ順番、同じ件数で返してください。",
-    "titleJaは45字以内、summaryJaは90字以内。日付が古い・根拠が薄い場合は、その点も日本語で分かるようにしてください。",
+    "/no_think",
+    "英語の米国株ニュースを日本語に要約してください。投資助言ではなく記事内容だけ。",
+    "JSONのみ: {\"items\":[{\"titleJa\":\"45字以内\",\"summaryJa\":\"90字以内\"}]}。入力と同じ順番・件数。",
+    "古い日付や根拠が薄い場合はsummaryJaに短く含めてください。",
     "",
     JSON.stringify({
       items: items.map((item) => ({
         source: item.source,
-        title: cleanText(item.title).slice(0, 180),
-        snippet: cleanText(item.snippet).slice(0, 320),
+        title: cleanText(item.title).slice(0, 140),
+        snippet: cleanText(item.snippet).slice(0, 220),
       })),
     }),
   ].join("\n");
-  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 2400 }).catch(async (error) => {
-    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 2400 });
+  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 1400, timeoutMs: 30000 }).catch(async (error) => {
+    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 1400, timeoutMs: 30000 });
     throw error;
   });
-  const parsed = parseJsonObject(content);
+  const parsed = parseJsonObjectMatching(content, isUsEvidenceTranslationPayload);
   const rows = Array.isArray(parsed) ? parsed : parsed.items || [];
   return rows.slice(0, items.length).map((item) => ({
     titleJa: String(item?.titleJa || item?.title || "").slice(0, 80),
@@ -1204,36 +1246,66 @@ async function translateUsEvidenceChunk(model, items = []) {
   }));
 }
 
-function ensureUsEvidenceJapanese(item = {}) {
+function isUsEvidenceTranslationPayload(value) {
+  const rows = Array.isArray(value) ? value : value?.items;
+  return Array.isArray(rows) && rows.some((item) => (
+    cleanText(item?.titleJa || "").length > 0 || cleanText(item?.summaryJa || "").length > 0
+  ));
+}
+
+function normalizeUsEvidenceTranslationState(item = {}) {
+  const titleJa = cleanText(item.titleJa || "");
+  const summaryJa = cleanText(item.summaryJa || "");
+  const titleWeak = isWeakUsEvidenceTitle(titleJa);
+  const summaryWeak = isWeakUsEvidenceSummary(summaryJa);
+  const originalText = `${item.title || ""} ${item.originalSnippet || item.snippet || ""}`;
+  const inferredLmTranslation = item.translationMethod !== "source_ja"
+    && !summaryWeak
+    && containsJapanese(summaryJa)
+    && isMostlyEnglish(originalText);
+  const lmTranslated = (item.translationMethod === "lm_studio" || inferredLmTranslation)
+    && !summaryWeak
+    && containsJapanese(summaryJa);
+  const sourceJapanese = !lmTranslated
+    && !isMostlyEnglish(originalText)
+    && containsJapanese(originalText);
+  if (lmTranslated) {
+    return {
+      ...item,
+      titleJa: titleWeak ? "" : titleJa,
+      summaryJa,
+      translationMethod: "lm_studio",
+      translationError: "",
+    };
+  }
+  if (sourceJapanese) {
+    return {
+      ...item,
+      titleJa: titleWeak ? cleanText(item.title || "") : titleJa,
+      summaryJa: summaryWeak ? cleanText(item.snippet || item.originalSnippet || "") : summaryJa,
+      translationMethod: "source_ja",
+      translationError: "",
+    };
+  }
   return {
     ...item,
-    titleJa: cleanText(item.titleJa || fallbackUsEvidenceTitle(item)),
-    summaryJa: cleanText(item.summaryJa || fallbackUsEvidenceSummary(item)),
+    titleJa: "",
+    summaryJa: "",
+    translationMethod: "untranslated",
+    translationError: item.translationError || "LM Studioで再分析すると日本語要約を作ります。",
   };
 }
 
-function fallbackUsEvidenceTitle(item = {}) {
-  if (containsJapanese(item.title || "")) return item.title || "";
-  const source = item.source || hostOf(item.url || "");
-  return source ? `米国ニュース: ${source}` : "米国ニュース";
+function isWeakUsEvidenceTitle(value = "") {
+  const text = cleanText(value);
+  if (!text) return true;
+  return /^米国ニュース[:：]/.test(text) || /^US news[:：]/i.test(text);
 }
 
-function fallbackUsEvidenceSummary(item = {}) {
-  const existing = cleanText(item.summaryJa || "");
-  if (existing) return existing;
-  const text = cleanText(`${item.title || ""} ${item.originalSnippet || item.snippet || ""}`);
-  if (!isMostlyEnglish(text)) return cleanText(item.snippet || item.originalSnippet || "").slice(0, 160);
-  const checks = [];
-  if (/\b(earnings|results|quarter|revenue|sales|profit|margin)\b/i.test(text)) checks.push("決算・売上");
-  if (/\b(guidance|forecast|outlook|estimate|consensus)\b/i.test(text)) checks.push("業績見通し");
-  if (/\b(analyst|rating|price target|upgrade|downgrade)\b/i.test(text)) checks.push("アナリスト評価");
-  if (/\b(dividend|buyback|share repurchase|cash flow|free cash flow)\b/i.test(text)) checks.push("配当・自社株買い");
-  if (/\b(activist|stake|shareholder|private equity|buyout|take private|tender offer)\b/i.test(text)) checks.push("株主・買収関連");
-  if (/\b(lawsuit|investigation|risk|cut|miss|decline|weak|loss)\b/i.test(text)) checks.push("注意材料");
-  const source = item.source || hostOf(item.url || "") || "英語記事";
-  return checks.length
-    ? `${source}の記事。${uniqueText(checks).join("、")}に関する内容です。リンクで原文を確認してください。`
-    : `${source}の記事を取得しました。LM Studio接続時に日本語要約を作り直します。`;
+function isWeakUsEvidenceSummary(value = "") {
+  const text = cleanText(value);
+  if (!text) return true;
+  return /LM Studio接続時|記事を取得しました|に関する内容です|リンクで原文を確認/.test(text);
 }
 
 async function researchUsStock(stock, options = {}) {
@@ -1244,6 +1316,8 @@ async function researchUsStock(stock, options = {}) {
     return {
       title: item.title,
       url: item.url,
+      symbol: stock.symbol,
+      name: stock.name,
       source: hostOf(item.url),
       snippet: original,
       originalSnippet: original,
@@ -1295,15 +1369,16 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       totalReturnPct: row.position.totalReturnPct,
       holdingDays: row.position.holdingDays,
     },
-    evidence: row.evidence.slice(0, 5).map((item) => ({
+    evidence: row.evidence.slice(0, 3).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
       source: item.source,
       url: item.url,
       publishedDate: item.publishedDate || "",
-      snippet: cleanText(item.originalSnippet || item.snippet || "").slice(0, 260),
+      snippet: cleanText(item.summaryJa || item.originalSnippet || item.snippet || "").slice(0, 180),
     })),
   }));
   const prompt = [
+    "/no_think",
     "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
     "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益、受取配当、年間配当目安、配当込み損益を分けて読み、利益保証をせず、保有継続の確認材料と注意点を分けてください。",
     "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]}}]}。",
@@ -1314,11 +1389,11 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     "",
     JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
-  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 3500 }).catch(async (error) => {
-    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 3500 });
+  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 3500, timeoutMs: 60000 }).catch(async (error) => {
+    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 3500, timeoutMs: 60000 });
     throw error;
   });
-  const parsed = parseJsonObject(content);
+  const parsed = parseJsonObjectMatching(content, isUsHoldingReviewPayload);
   const reviews = Array.isArray(parsed) ? parsed : parsed.reviews || [];
   return reviews
     .filter((review) => review?.symbol)
@@ -1339,6 +1414,14 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       growthExit: normalizeGrowthExit(review.growthExit),
     }))
     .filter((review) => review.symbol);
+}
+
+function isUsHoldingReviewPayload(value) {
+  const rows = Array.isArray(value) ? value : value?.reviews;
+  return Array.isArray(rows) && rows.some((item) => (
+    normalizeUsSymbol(item?.symbol || "")
+    && (item?.summaryJa || item?.summary || item?.stance || item?.growthExit)
+  ));
 }
 
 async function translateResearchEvidenceRows(rows = []) {
@@ -4070,20 +4153,45 @@ async function fetchSearxngResults(query, { settings, language, categories, engi
 }
 
 async function fetchSearxngData(query, { settings, language = "ja-JP", categories, engines, timeout, pageno = 1 }) {
-  const url = new URL(settings.searxngUrl);
-  url.searchParams.set("q", query);
-  url.searchParams.set("format", "json");
-  url.searchParams.set("language", language);
-  url.searchParams.set("safesearch", "0");
-  url.searchParams.set("categories", categories);
-  url.searchParams.set("pageno", String(pageno));
-  if (engines) url.searchParams.set("engines", engines);
-  const response = await fetchWithTimeout(url, {
-    timeout,
-    headers: { accept: "application/json" },
-  });
-  if (!response.ok) throw new Error(`SearXNG returned ${response.status}`);
-  return response.json();
+  let lastError = null;
+  for (const base of searxngCandidateUrls(settings)) {
+    try {
+      const url = new URL(base);
+      url.searchParams.set("q", query);
+      url.searchParams.set("format", "json");
+      url.searchParams.set("language", language);
+      url.searchParams.set("safesearch", "0");
+      url.searchParams.set("categories", categories);
+      url.searchParams.set("pageno", String(pageno));
+      if (engines) url.searchParams.set("engines", engines);
+      const response = await fetchWithTimeout(url, {
+        timeout,
+        headers: { accept: "application/json" },
+      });
+      if (!response.ok) throw new Error(`SearXNG returned ${response.status}`);
+      return response.json();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("SearXNGに接続できません");
+}
+
+function searxngCandidateUrls(settings = defaultSettings) {
+  const configured = normalizeUrl(settings.searxngUrl) || defaultSettings.searxngUrl;
+  const urls = [configured];
+  try {
+    const parsed = new URL(configured);
+    if (parsed.hostname === "host.docker.internal") {
+      urls.push(configured.replace("host.docker.internal", "127.0.0.1"));
+      urls.push(configured.replace("host.docker.internal", "localhost"));
+    } else if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+      urls.push(configured.replace(parsed.hostname, "host.docker.internal"));
+    }
+  } catch {
+    // Keep the configured value as the only attempt.
+  }
+  return [...new Set(urls.map(normalizeUrl).filter(Boolean))];
 }
 
 async function searchGoogleCustom(query, { limit, settings, language = "ja-JP" }) {
@@ -4804,8 +4912,9 @@ async function aiDecisionChunk(model, items) {
 
 async function callLmStudioResponses(model, prompt, options = {}) {
   const settings = await readSettings();
-  const response = await fetchWithTimeout(`${settings.lmStudioUrl}/responses`, {
-    timeout: settings.lmStudioTimeoutMs,
+  const baseUrl = activeLmStudioUrl(settings);
+  const response = await fetchWithTimeout(`${baseUrl}/responses`, {
+    timeout: options.timeoutMs || settings.lmStudioTimeoutMs,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -4826,8 +4935,9 @@ async function callLmStudioResponses(model, prompt, options = {}) {
 
 async function callLmStudioChat(model, prompt, options = {}) {
   const settings = await readSettings();
-  const response = await fetchWithTimeout(`${settings.lmStudioUrl}/chat/completions`, {
-    timeout: settings.lmStudioTimeoutMs,
+  const baseUrl = activeLmStudioUrl(settings);
+  const response = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
+    timeout: options.timeoutMs || settings.lmStudioTimeoutMs,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -4848,11 +4958,46 @@ async function callLmStudioChat(model, prompt, options = {}) {
 
 async function getLmStudioModel() {
   const settings = await readSettings();
-  if (lmModelCache.url === settings.lmStudioUrl && lmModelCache.model) return lmModelCache.model;
-  const models = await fetchWithTimeout(`${settings.lmStudioUrl}/models`, { timeout: 5000 }).then((r) => r.json());
-  lmModelCache = { url: settings.lmStudioUrl, model: models?.data?.[0]?.id || "" };
-  if (!lmModelCache.model) throw new Error("LM Studio model not found");
-  return lmModelCache.model;
+  if (lmModelCache.configuredUrl === settings.lmStudioUrl && lmModelCache.model) return lmModelCache.model;
+  let lastError = null;
+  for (const url of lmStudioCandidateUrls(settings)) {
+    try {
+      const response = await fetchWithTimeout(`${url}/models`, { timeout: 5000 });
+      if (!response.ok) throw new Error(`LM Studio models returned ${response.status}`);
+      const models = await response.json();
+      const model = models?.data?.[0]?.id || "";
+      if (!model) throw new Error("LM Studio model not found");
+      lmModelCache = { configuredUrl: settings.lmStudioUrl, url, model };
+      return model;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  lmModelCache = { configuredUrl: settings.lmStudioUrl, url: "", model: "" };
+  throw lastError || new Error("LM Studio model not found");
+}
+
+function activeLmStudioUrl(settings = defaultSettings) {
+  return lmModelCache.configuredUrl === settings.lmStudioUrl && lmModelCache.url
+    ? lmModelCache.url
+    : settings.lmStudioUrl;
+}
+
+function lmStudioCandidateUrls(settings = defaultSettings) {
+  const configured = normalizeUrl(settings.lmStudioUrl) || defaultSettings.lmStudioUrl;
+  const urls = [configured];
+  try {
+    const parsed = new URL(configured);
+    if (parsed.hostname === "host.docker.internal") {
+      urls.push(configured.replace("host.docker.internal", "127.0.0.1"));
+      urls.push(configured.replace("host.docker.internal", "localhost"));
+    } else if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+      urls.push(configured.replace(parsed.hostname, "host.docker.internal"));
+    }
+  } catch {
+    // Invalid URLs are normalized earlier; keep the configured value as the only attempt.
+  }
+  return [...new Set(urls.map(normalizeUrl).filter(Boolean))];
 }
 
 function compactPrice(price) {
@@ -5977,24 +6122,23 @@ async function checkSearchEngine(settings = null) {
       let responseOk = false;
       let resultCount = 0;
       for (const check of checks) {
-        const url = new URL(resolved.searxngUrl);
-        url.searchParams.set("q", check.query);
-        url.searchParams.set("format", "json");
-        url.searchParams.set("language", "ja-JP");
-        url.searchParams.set("safesearch", "0");
-        url.searchParams.set("categories", check.categories);
-        url.searchParams.set("engines", check.engines);
-        const response = await fetchWithTimeout(url, { timeout: 10000, headers: { accept: "application/json" } });
-        const data = response.ok ? await response.json().catch(() => ({})) : {};
-        responseOk ||= response.ok;
+        const data = await fetchSearxngData(check.query, {
+          settings: resolved,
+          language: "ja-JP",
+          categories: check.categories,
+          engines: check.engines,
+          timeout: 10000,
+        });
+        responseOk = true;
         resultCount = Array.isArray(data.results) ? data.results.length : 0;
-        if (response.ok && resultCount > 0) break;
+        if (resultCount > 0) break;
       }
       return {
         ok: responseOk && resultCount > 0,
         provider: "SearXNG",
         configured: Boolean(resolved.searxngUrl),
         url: resolved.searxngUrl,
+        triedUrls: searxngCandidateUrls(resolved),
         resultCount,
       };
     } catch (error) {
@@ -6003,6 +6147,7 @@ async function checkSearchEngine(settings = null) {
         provider: "SearXNG",
         configured: Boolean(resolved.searxngUrl),
         url: resolved.searxngUrl,
+        triedUrls: searxngCandidateUrls(resolved),
         error: error.message,
       };
     }
@@ -6019,16 +6164,40 @@ async function checkSearchEngine(settings = null) {
 async function checkLmStudio(settings = null) {
   const resolved = settings || await readSettings();
   let lastError = null;
-  for (const timeout of [4500, 9000]) {
-    try {
-      const response = await fetchWithTimeout(`${resolved.lmStudioUrl}/models`, { timeout });
-      const data = response.ok ? await response.json() : {};
-      return { ok: response.ok, url: resolved.lmStudioUrl, model: data?.data?.[0]?.id || "" };
-    } catch (error) {
-      lastError = error;
+  for (const url of lmStudioCandidateUrls(resolved)) {
+    for (const timeout of [4500, 9000]) {
+      try {
+        const response = await fetchWithTimeout(`${url}/models`, { timeout });
+        const data = response.ok ? await response.json() : {};
+        if (!response.ok) {
+          lastError = new Error(`LM Studio models returned ${response.status}`);
+          continue;
+        }
+        if (response.ok) {
+          lmModelCache = {
+            configuredUrl: resolved.lmStudioUrl,
+            url,
+            model: data?.data?.[0]?.id || lmModelCache.model || "",
+          };
+        }
+        return {
+          ok: response.ok,
+          url,
+          configuredUrl: resolved.lmStudioUrl,
+          model: data?.data?.[0]?.id || "",
+        };
+      } catch (error) {
+        lastError = error;
+      }
     }
   }
-  return { ok: false, url: resolved.lmStudioUrl, error: lastError?.message || "LM Studioに接続できません" };
+  return {
+    ok: false,
+    url: resolved.lmStudioUrl,
+    configuredUrl: resolved.lmStudioUrl,
+    triedUrls: lmStudioCandidateUrls(resolved),
+    error: lastError?.message || "LM Studioに接続できません",
+  };
 }
 
 function normalizeStock(stock) {
@@ -8003,7 +8172,7 @@ function sanitizeCachedUsAnalysis(analysis = {}, stock = null) {
   });
   const price = analysis.price || {};
   const position = positionMetrics(resolvedStock, price);
-  const evidence = (analysis.evidence || []).map(ensureUsEvidenceJapanese);
+  const evidence = (analysis.evidence || []).map(normalizeUsEvidenceTranslationState);
   const ai = analysis.ai
     ? {
       ...analysis.ai,
@@ -8214,11 +8383,7 @@ function businessContextText(value = "") {
 
 function parseJsonObject(value) {
   const trimmed = String(value || "").trim();
-  const candidates = [trimmed];
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced) candidates.push(fenced[1].trim());
-  const jsonText = extractFirstJsonObject(trimmed);
-  if (jsonText) candidates.push(jsonText);
+  const candidates = jsonObjectTextCandidates(trimmed);
 
   let lastError = null;
   for (const candidate of candidates) {
@@ -8233,6 +8398,32 @@ function parseJsonObject(value) {
   throw lastError || new Error("No JSON object in model response");
 }
 
+function parseJsonObjectMatching(value, predicate) {
+  const trimmed = String(value || "").trim();
+  const candidates = jsonObjectTextCandidates(trimmed);
+
+  let lastError = null;
+  for (const candidate of candidates) {
+    for (const body of [candidate, repairJson(candidate)]) {
+      try {
+        const parsed = JSON.parse(body);
+        if (!predicate || predicate(parsed)) return parsed;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+  }
+  throw lastError || new Error("No matching JSON object in model response");
+}
+
+function jsonObjectTextCandidates(trimmed) {
+  const candidates = [trimmed];
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) candidates.push(fenced[1].trim());
+  candidates.push(...extractJsonObjects(trimmed));
+  return [...new Set(candidates.filter(Boolean))];
+}
+
 function repairJson(value = "") {
   return String(value)
     .replace(/^\uFEFF/, "")
@@ -8243,11 +8434,17 @@ function repairJson(value = "") {
 }
 
 function extractFirstJsonObject(value) {
+  return extractJsonObjects(value)[0] || "";
+}
+
+function extractJsonObjects(value) {
+  const objects = [];
   const start = value.indexOf("{");
-  if (start < 0) return "";
+  if (start < 0) return objects;
   let depth = 0;
   let inString = false;
   let escaped = false;
+  let objectStart = -1;
 
   for (let i = start; i < value.length; i += 1) {
     const char = value[i];
@@ -8263,14 +8460,17 @@ function extractFirstJsonObject(value) {
     }
 
     if (char === "\"") inString = true;
-    else if (char === "{") depth += 1;
+    else if (char === "{") {
+      if (depth === 0) objectStart = i;
+      depth += 1;
+    }
     else if (char === "}") {
       depth -= 1;
-      if (depth === 0) return value.slice(start, i + 1);
+      if (depth === 0 && objectStart >= 0) objects.push(value.slice(objectStart, i + 1));
     }
   }
 
-  return "";
+  return objects;
 }
 
 function normalizeSymbol(value = "") {
