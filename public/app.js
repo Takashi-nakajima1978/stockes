@@ -3230,7 +3230,7 @@ function renderCandidateList() {
     const positionText = source.searchPositionUsed ? "検索順位に出る業績・割安材料も採点しています。" : "";
     const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
     const avoidText = source.avoidedBusiness ? `${source.avoidedBusiness}。` : "";
-    const peText = source.peCriteria?.length ? "PE買収狙いと通常の株候補は別レポートで見ます。" : "";
+    const peText = source.peCriteria?.length ? "PE買収狙いは日本株だけを別レポートで見ます。" : "";
     const earlyText = "米国株は買い場以下・反発初動・短期非過熱を優先します。";
     const learnText = source.performance?.evaluated
       ? `過去候補は${source.performance.evaluated}件判定済み、当たり${Math.round((source.performance.hitRate || 0) * 100)}%です。`
@@ -3257,13 +3257,13 @@ function renderCandidateList() {
 }
 
 function candidateReportsHtml(items = []) {
-  const peItems = items.filter(isPeReportItem).sort(sortPeReportItems);
-  const stockItems = items.filter((item) => !isPeReportItem(item)).sort(sortStockReportItems);
+  const peItems = items.filter((item) => candidateTarget(item) === "jp" && isPeReportItem(item)).sort(sortPeReportItems);
+  const stockItems = items.filter((item) => candidateTarget(item) !== "jp" || !isPeReportItem(item)).sort(sortStockReportItems);
   return [
     reportSectionHtml({
       title: "PEが買いそうな候補",
       count: peItems.length,
-      description: "TOB・MBO・ファンド名・株主変化・低負債・割安放置など、買収されやすさを別軸で見ます。PE要素が薄いものはここには入れません。",
+      description: "日本株だけを対象に、TOB・MBO・ファンド名・株主変化・低負債・割安放置などを別軸で見ます。PE要素が薄いものはここには入れません。",
       empty: "今の条件では、PE買収狙いとして根拠が強い候補はありません。",
       items: peItems,
     }),
@@ -3436,7 +3436,7 @@ function suggestionItem(item, index) {
       ${buyPlanHtml(item.buyPlan, item)}
       ${earlySignalHtml(item.earlySignal)}
       ${sellPlanHtml(item.sellPlan, item)}
-      ${peSignalHtml(item.peSignal)}
+      ${target === "jp" ? peSignalHtml(item.peSignal) : ""}
       ${learningHtml(item.learning)}
       ${aiReviewHtml(item.aiReview)}
       ${processHtml(process)}
@@ -3447,10 +3447,11 @@ function suggestionItem(item, index) {
 }
 
 function suggestionScoreHtml(item = {}) {
+  const target = candidateTarget(item);
   const valueScore = Number.isFinite(item.businessValueScore) ? item.businessValueScore : item.score || "-";
   const priority = Number.isFinite(item.priorityScore) ? item.priorityScore : null;
   const pePriority = Number.isFinite(item.pePriorityScore) ? item.pePriorityScore : null;
-  const peScore = Number.isFinite(item.peSignal?.matchScore) ? item.peSignal.matchScore : null;
+  const peScore = target === "jp" && Number.isFinite(item.peSignal?.matchScore) ? item.peSignal.matchScore : null;
   const earlyScore = Number.isFinite(item.earlySignal?.score) ? item.earlySignal.score : null;
   const earlyText = earlyScore === null
     ? ""

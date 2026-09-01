@@ -2363,6 +2363,7 @@ function candidatePeScore(candidate = {}) {
 }
 
 function isPeReportCandidate(candidate = {}) {
+  if (isUsDiscoveryCandidate(candidate)) return false;
   const pe = candidatePeScore(candidate);
   if (pe >= PE_STRONG_MIN_SCORE) return true;
   if (pe < PE_PRIORITY_MIN_SCORE) return false;
@@ -6932,7 +6933,13 @@ function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = [])
   const suggestions = (result.suggestions || [])
     .filter((candidate) => !excluded.has(candidate.symbol))
     .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate))
-    .filter(isActionableDiscoveryCandidate);
+    .filter(isActionableDiscoveryCandidate)
+    .map((candidate) => ({
+      ...candidate,
+      priorityScore: discoveryPriorityScore(candidate),
+      pePriorityScore: pePriorityScore(candidate),
+      reportBucket: isPeReportCandidate(candidate) ? "pe" : "stock",
+    }));
   return {
     generatedAt: result.generatedAt || "",
     added: result.added || [],
