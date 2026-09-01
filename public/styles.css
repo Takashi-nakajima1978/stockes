@@ -643,7 +643,7 @@ tr.selected {
 
 .stock-name-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr);
   gap: 8px;
   align-items: center;
 }
@@ -666,28 +666,6 @@ tr:hover .drag-handle,
 
 .drag-handle:active {
   cursor: grabbing;
-}
-
-.move-actions {
-  display: inline-flex;
-  gap: 4px;
-  opacity: 0.58;
-}
-
-tr:hover .move-actions,
-.move-actions:focus-within {
-  opacity: 1;
-}
-
-.move-button {
-  width: 28px;
-  min-height: 28px;
-  padding: 0;
-  border-color: var(--line);
-  background: #fff;
-  color: var(--accent);
-  font-size: 13px;
-  line-height: 1;
 }
 
 .stock-name {

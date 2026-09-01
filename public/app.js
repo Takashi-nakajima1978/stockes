@@ -571,7 +571,6 @@ function stockRow(stock, compact) {
           <strong>${escapeHtml(stock.name)}</strong>
           <span>${escapeHtml(stock.symbol)}${stock.holding ? " / 保有" : ""}</span>
         </div>
-        ${stockMoveControls(stock.symbol, stock.name, "stock")}
       </div>
     </td>
   `;
@@ -612,17 +611,6 @@ function sectorBadge(sector) {
   return `<span class="sector-badge">${escapeHtml(sector || "その他")}</span>`;
 }
 
-function stockMoveControls(symbol, name, kind) {
-  const safeSymbol = escapeAttr(symbol);
-  const safeName = escapeAttr(name || symbol);
-  return `
-    <div class="move-actions">
-      <button type="button" class="move-button" data-move-${kind}="${safeSymbol}" data-move-direction="up" aria-label="${safeName}を上へ">↑</button>
-      <button type="button" class="move-button" data-move-${kind}="${safeSymbol}" data-move-direction="down" aria-label="${safeName}を下へ">↓</button>
-    </div>
-  `;
-}
-
 function dividendCell(position, price = {}, formatter = yen) {
   const yieldText = Number.isFinite(price?.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-";
   const incomeText = Number.isFinite(position?.annualDividendEstimate) ? formatter(position.annualDividendEstimate) : "";
@@ -644,10 +632,9 @@ function holdingQuantityCell(stock, position = {}) {
 
 function attachTableEvents(table) {
   attachReorderEvents(table);
-  attachStockMoveButtons(table);
   table.querySelectorAll("tr[data-symbol]").forEach((row) => {
     row.addEventListener("click", (event) => {
-      if (event.target.closest("[data-remove], [data-move-stock], [data-drag-handle]")) return;
+      if (event.target.closest("[data-remove], [data-drag-handle]")) return;
       if (reorderState.moved) return;
       state.selected = row.dataset.symbol;
       state.view = "analysis";
@@ -733,28 +720,6 @@ function attachReorderEvents(table, options = {}) {
   });
 }
 
-function attachStockMoveButtons(table) {
-  table.querySelectorAll("[data-move-stock]").forEach((button) => {
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const direction = button.dataset.moveDirection === "down" ? 1 : -1;
-      const moved = moveStockByStep(button.dataset.moveStock, direction);
-      reorderState.moved = moved;
-      if (!moved) return;
-      render();
-      try {
-        await saveStockOrder();
-        render();
-      } catch (error) {
-        toast(error.message);
-        await loadStocks();
-      } finally {
-        setTimeout(() => { reorderState.moved = false; }, 100);
-      }
-    });
-  });
-}
-
 function moveStock(sourceSymbol, targetSymbol, insertAfter = false) {
   return moveStockInList(state.stocks, sourceSymbol, targetSymbol, insertAfter);
 }
@@ -772,23 +737,6 @@ function moveStockInList(list, sourceSymbol, targetSymbol, insertAfter = false) 
   if (nextIndex < 0) return false;
   if (insertAfter) nextIndex += 1;
   list.splice(nextIndex, 0, item);
-  return true;
-}
-
-function moveStockByStep(symbol, direction) {
-  return moveStockByStepInList(state.stocks, symbol, direction);
-}
-
-function moveUsStockByStep(symbol, direction) {
-  return moveStockByStepInList(state.usStocks, symbol, direction);
-}
-
-function moveStockByStepInList(list, symbol, direction) {
-  const from = list.findIndex((stock) => stock.symbol === symbol);
-  const to = from + direction;
-  if (from < 0 || to < 0 || to >= list.length) return false;
-  const [item] = list.splice(from, 1);
-  list.splice(to, 0, item);
   return true;
 }
 
@@ -897,7 +845,6 @@ function renderUsTable() {
               <strong>${escapeHtml(stock.name)}</strong>
               <span>${escapeHtml(stock.symbol)} / ${escapeHtml(stock.market || "NYSE")}</span>
             </span>
-            ${stockMoveControls(stock.symbol, stock.name, "us")}
           </div>
         </td>
         <td>${usd(analysis?.price?.current)}</td>
@@ -918,7 +865,6 @@ function renderUsTable() {
     save: saveUsStockOrder,
     reload: loadUsStocks,
   });
-  attachUsMoveButtons(els.usStockTable);
   els.usStockTable.querySelectorAll("[data-us-symbol]").forEach((row) => {
     row.addEventListener("click", (event) => {
       if (event.target.closest("button")) return;
@@ -939,28 +885,6 @@ function renderUsTable() {
         renderUs();
       } catch (error) {
         toast(error.message);
-      }
-    });
-  });
-}
-
-function attachUsMoveButtons(table) {
-  table.querySelectorAll("[data-move-us]").forEach((button) => {
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const direction = button.dataset.moveDirection === "down" ? 1 : -1;
-      const moved = moveUsStockByStep(button.dataset.moveUs, direction);
-      reorderState.moved = moved;
-      if (!moved) return;
-      renderUs();
-      try {
-        await saveUsStockOrder();
-        renderUs();
-      } catch (error) {
-        toast(error.message);
-        await loadUsStocks();
-      } finally {
-        setTimeout(() => { reorderState.moved = false; }, 100);
       }
     });
   });
