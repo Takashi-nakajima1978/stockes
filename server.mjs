@@ -645,6 +645,29 @@ async function handleApi(req, res, url) {
     return json(res, 200, { stocks: ordered.map(normalizeStock) });
   }
 
+  if (url.pathname === "/api/us-stocks/reorder" && req.method === "POST") {
+    const body = await readJson(req);
+    const stocks = await readUsWatchlist();
+    const requested = Array.isArray(body.symbols)
+      ? body.symbols.map(normalizeUsSymbol).filter(Boolean)
+      : [];
+    if (!requested.length) return json(res, 400, { error: "並び替える米国株がありません。" });
+    const bySymbol = new Map(stocks.map((stock) => [stock.symbol, stock]));
+    const seen = new Set();
+    const ordered = [];
+    for (const symbol of requested) {
+      const stock = bySymbol.get(symbol);
+      if (!stock || seen.has(symbol)) continue;
+      ordered.push(stock);
+      seen.add(symbol);
+    }
+    for (const stock of stocks) {
+      if (!seen.has(stock.symbol)) ordered.push(stock);
+    }
+    await saveUsWatchlist(ordered);
+    return json(res, 200, { stocks: ordered.map(normalizeUsStock) });
+  }
+
   if (url.pathname === "/api/us-stocks" && req.method === "POST") {
     const body = await readJson(req);
     const stocks = await readUsWatchlist();
@@ -4291,13 +4314,13 @@ async function fetchPriceHistory(symbol) {
     }))
     .filter((item) => item.date && Number.isFinite(item.amount) && item.amount > 0)
     .sort((a, b) => a.date.localeCompare(b.date));
-  const series = timestamps
+  const series = cleanPriceSeries(timestamps
     .map((timestamp, index) => ({
       date: new Date(timestamp * 1000).toISOString().slice(0, 10),
       close: Number(closes[index]),
       volume: Number(volumes[index]),
     }))
-    .filter((point) => Number.isFinite(point.close));
+    .filter((point) => Number.isFinite(point.close)));
   return priceMetrics(series, {
     shortName: meta.shortName,
     longName: meta.longName,
@@ -4342,6 +4365,7 @@ function combineBtcJpySeries(btcSeries = [], fxSeries = []) {
 }
 
 function priceMetrics(series, meta = {}) {
+  series = cleanPriceSeries(series);
   if (series.length < 2) return emptyPrice(series, meta);
   const current = last(series).close;
   const closes = series.map((point) => point.close);
@@ -4407,8 +4431,46 @@ function priceMetrics(series, meta = {}) {
   };
 }
 
+function cleanPriceSeries(series = []) {
+  const byDate = new Map();
+  for (const point of series || []) {
+    const date = normalizeDate(point.date);
+    const close = nullablePositiveNumber(point.close);
+    if (!date || !close) continue;
+    byDate.set(date, {
+      date,
+      close,
+      volume: Number(point.volume),
+    });
+  }
+  const sorted = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  if (sorted.length < 5) return sorted;
+  return sorted.filter((point, index, points) => !isSuspiciousPricePoint(point, index, points));
+}
+
+function isSuspiciousPricePoint(point, index, points = []) {
+  const neighbors = [
+    ...points.slice(Math.max(0, index - 8), index),
+    ...points.slice(index + 1, index + 9),
+  ].map((item) => item.close).filter(Number.isFinite);
+  if (neighbors.length < 4) return false;
+  const localMedian = quantile(neighbors, 0.5);
+  if (!localMedian) return false;
+  const previous = nullablePositiveNumber(points[index - 1]?.close);
+  const next = nullablePositiveNumber(points[index + 1]?.close);
+  const tooLow = point.close < localMedian * 0.25;
+  const tooHigh = point.close > localMedian * 4;
+  if (tooLow) {
+    return Boolean((previous && previous > point.close * 2.8) || (next && next > point.close * 2.8));
+  }
+  if (tooHigh) {
+    return Boolean((previous && previous * 2.8 < point.close) || (next && next * 2.8 < point.close));
+  }
+  return false;
+}
+
 function priceBuyTiming(series = []) {
-  const clean = (series || [])
+  const clean = cleanPriceSeries(series)
     .map((point) => ({ date: normalizeDate(point.date), close: Number(point.close) }))
     .filter((point) => point.date && Number.isFinite(point.close))
     .sort((a, b) => a.date.localeCompare(b.date));

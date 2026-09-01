@@ -566,7 +566,7 @@ table {
 }
 
 .us-manage-table {
-  min-width: 940px;
+  min-width: 1020px;
 }
 
 .manage-table th:nth-child(1),
@@ -643,7 +643,7 @@ tr.selected {
 
 .stock-name-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
 }
@@ -656,7 +656,7 @@ tr.selected {
   background: #fff;
   color: var(--muted);
   cursor: grab;
-  opacity: 0;
+  opacity: 0.58;
 }
 
 tr:hover .drag-handle,
@@ -666,6 +666,28 @@ tr:hover .drag-handle,
 
 .drag-handle:active {
   cursor: grabbing;
+}
+
+.move-actions {
+  display: inline-flex;
+  gap: 4px;
+  opacity: 0.58;
+}
+
+tr:hover .move-actions,
+.move-actions:focus-within {
+  opacity: 1;
+}
+
+.move-button {
+  width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-color: var(--line);
+  background: #fff;
+  color: var(--accent);
+  font-size: 13px;
+  line-height: 1;
 }
 
 .stock-name {

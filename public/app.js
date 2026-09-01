@@ -566,11 +566,12 @@ function stockRow(stock, compact) {
   const nameCell = `
     <td>
       <div class="stock-name-row">
-        <button type="button" class="drag-handle" draggable="true" data-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>
+        <button type="button" class="drag-handle" draggable="true" data-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">↕</button>
         <div class="stock-name">
           <strong>${escapeHtml(stock.name)}</strong>
           <span>${escapeHtml(stock.symbol)}${stock.holding ? " / 保有" : ""}</span>
         </div>
+        ${stockMoveControls(stock.symbol, stock.name, "stock")}
       </div>
     </td>
   `;
@@ -611,11 +612,29 @@ function sectorBadge(sector) {
   return `<span class="sector-badge">${escapeHtml(sector || "その他")}</span>`;
 }
 
-function dividendCell(position, price = {}) {
+function stockMoveControls(symbol, name, kind) {
+  const safeSymbol = escapeAttr(symbol);
+  const safeName = escapeAttr(name || symbol);
+  return `
+    <div class="move-actions">
+      <button type="button" class="move-button" data-move-${kind}="${safeSymbol}" data-move-direction="up" aria-label="${safeName}を上へ">↑</button>
+      <button type="button" class="move-button" data-move-${kind}="${safeSymbol}" data-move-direction="down" aria-label="${safeName}を下へ">↓</button>
+    </div>
+  `;
+}
+
+function dividendCell(position, price = {}, formatter = yen) {
   const yieldText = Number.isFinite(price?.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-";
-  const incomeText = Number.isFinite(position?.annualDividendEstimate) ? yen(position.annualDividendEstimate) : "";
-  if (yieldText === "-" && !incomeText) return "-";
-  return `<span class="dividend-cell"><strong>${yieldText}</strong>${incomeText ? `<small>${incomeText}/年</small>` : ""}</span>`;
+  const incomeText = Number.isFinite(position?.annualDividendEstimate) ? formatter(position.annualDividendEstimate) : "";
+  const timingText = dividendTimingSummary(price);
+  if (yieldText === "-" && !incomeText && !timingText) return "-";
+  return `
+    <span class="dividend-cell">
+      <strong>${yieldText}</strong>
+      ${incomeText ? `<small>${incomeText}/年</small>` : ""}
+      ${timingText ? `<small>${escapeHtml(timingText)}</small>` : ""}
+    </span>
+  `;
 }
 
 function holdingQuantityCell(stock, position = {}) {
@@ -625,9 +644,10 @@ function holdingQuantityCell(stock, position = {}) {
 
 function attachTableEvents(table) {
   attachReorderEvents(table);
+  attachStockMoveButtons(table);
   table.querySelectorAll("tr[data-symbol]").forEach((row) => {
     row.addEventListener("click", (event) => {
-      if (event.target.closest("[data-remove]")) return;
+      if (event.target.closest("[data-remove], [data-move-stock], [data-drag-handle]")) return;
       if (reorderState.moved) return;
       state.selected = row.dataset.symbol;
       state.view = "analysis";
@@ -650,15 +670,21 @@ function attachTableEvents(table) {
   });
 }
 
-function attachReorderEvents(table) {
-  table.querySelectorAll("[data-drag-handle]").forEach((handle) => {
+function attachReorderEvents(table, options = {}) {
+  const rowSelector = options.rowSelector || "tr[data-symbol]";
+  const handleSelector = options.handleSelector || "[data-drag-handle]";
+  const symbolFromRow = options.symbolFromRow || ((row) => row.dataset.symbol);
+  const move = options.move || moveStock;
+  const save = options.save || saveStockOrder;
+  const reload = options.reload || loadStocks;
+  table.querySelectorAll(handleSelector).forEach((handle) => {
     handle.addEventListener("click", (event) => {
       event.stopPropagation();
     });
     handle.addEventListener("dragstart", (event) => {
-      const row = event.target.closest("tr[data-symbol]");
+      const row = event.target.closest(rowSelector);
       if (!row) return;
-      reorderState.symbol = row.dataset.symbol;
+      reorderState.symbol = symbolFromRow(row);
       reorderState.moved = false;
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", reorderState.symbol);
@@ -666,9 +692,10 @@ function attachReorderEvents(table) {
     });
   });
 
-  table.querySelectorAll("tr[data-symbol]").forEach((row) => {
+  table.querySelectorAll(rowSelector).forEach((row) => {
     row.addEventListener("dragover", (event) => {
-      if (!reorderState.symbol || reorderState.symbol === row.dataset.symbol) return;
+      const targetSymbol = symbolFromRow(row);
+      if (!reorderState.symbol || reorderState.symbol === targetSymbol) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = "move";
       row.classList.add("drag-over");
@@ -677,26 +704,22 @@ function attachReorderEvents(table) {
       row.classList.remove("drag-over");
     });
     row.addEventListener("drop", async (event) => {
-      if (!reorderState.symbol || reorderState.symbol === row.dataset.symbol) return;
+      const targetSymbol = symbolFromRow(row);
+      if (!reorderState.symbol || reorderState.symbol === targetSymbol) return;
       event.preventDefault();
       const rect = row.getBoundingClientRect();
       const insertAfter = event.clientY > rect.top + rect.height / 2;
-      const moved = moveStock(reorderState.symbol, row.dataset.symbol, insertAfter);
+      const moved = move(reorderState.symbol, targetSymbol, insertAfter);
       reorderState.moved = moved;
       clearDragClasses();
       if (!moved) return;
       render();
       try {
-        const result = await request("/api/stocks/reorder", {
-          method: "POST",
-          body: JSON.stringify({ symbols: state.stocks.map((stock) => stock.symbol) }),
-        });
-        state.stocks = result.stocks || state.stocks;
-        toast("表示順を保存しました。");
+        await save();
         render();
       } catch (error) {
         toast(error.message);
-        await loadStocks();
+        await reload();
       } finally {
         reorderState.symbol = "";
         setTimeout(() => { reorderState.moved = false; }, 100);
@@ -710,16 +733,84 @@ function attachReorderEvents(table) {
   });
 }
 
+function attachStockMoveButtons(table) {
+  table.querySelectorAll("[data-move-stock]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const direction = button.dataset.moveDirection === "down" ? 1 : -1;
+      const moved = moveStockByStep(button.dataset.moveStock, direction);
+      reorderState.moved = moved;
+      if (!moved) return;
+      render();
+      try {
+        await saveStockOrder();
+        render();
+      } catch (error) {
+        toast(error.message);
+        await loadStocks();
+      } finally {
+        setTimeout(() => { reorderState.moved = false; }, 100);
+      }
+    });
+  });
+}
+
 function moveStock(sourceSymbol, targetSymbol, insertAfter = false) {
-  const from = state.stocks.findIndex((stock) => stock.symbol === sourceSymbol);
-  const to = state.stocks.findIndex((stock) => stock.symbol === targetSymbol);
+  return moveStockInList(state.stocks, sourceSymbol, targetSymbol, insertAfter);
+}
+
+function moveUsStock(sourceSymbol, targetSymbol, insertAfter = false) {
+  return moveStockInList(state.usStocks, sourceSymbol, targetSymbol, insertAfter);
+}
+
+function moveStockInList(list, sourceSymbol, targetSymbol, insertAfter = false) {
+  const from = list.findIndex((stock) => stock.symbol === sourceSymbol);
+  const to = list.findIndex((stock) => stock.symbol === targetSymbol);
   if (from < 0 || to < 0 || from === to) return false;
-  const [item] = state.stocks.splice(from, 1);
-  let nextIndex = state.stocks.findIndex((stock) => stock.symbol === targetSymbol);
+  const [item] = list.splice(from, 1);
+  let nextIndex = list.findIndex((stock) => stock.symbol === targetSymbol);
   if (nextIndex < 0) return false;
   if (insertAfter) nextIndex += 1;
-  state.stocks.splice(nextIndex, 0, item);
+  list.splice(nextIndex, 0, item);
   return true;
+}
+
+function moveStockByStep(symbol, direction) {
+  return moveStockByStepInList(state.stocks, symbol, direction);
+}
+
+function moveUsStockByStep(symbol, direction) {
+  return moveStockByStepInList(state.usStocks, symbol, direction);
+}
+
+function moveStockByStepInList(list, symbol, direction) {
+  const from = list.findIndex((stock) => stock.symbol === symbol);
+  const to = from + direction;
+  if (from < 0 || to < 0 || to >= list.length) return false;
+  const [item] = list.splice(from, 1);
+  list.splice(to, 0, item);
+  return true;
+}
+
+async function saveStockOrder() {
+  const result = await request("/api/stocks/reorder", {
+    method: "POST",
+    body: JSON.stringify({ symbols: state.stocks.map((stock) => stock.symbol) }),
+  });
+  state.stocks = result.stocks || state.stocks;
+  toast("表示順を保存しました。");
+}
+
+async function saveUsStockOrder() {
+  const result = await request("/api/us-stocks/reorder", {
+    method: "POST",
+    body: JSON.stringify({ symbols: state.usStocks.map((stock) => stock.symbol) }),
+  });
+  state.usStocks = result.stocks || state.usStocks;
+  if (!state.usStocks.some((stock) => stock.symbol === state.usSelected)) {
+    state.usSelected = state.usStocks[0]?.symbol || null;
+  }
+  toast("米国株の表示順を保存しました。");
 }
 
 function clearDragClasses() {
@@ -790,7 +881,7 @@ function renderUsSummary() {
 function renderUsTable() {
   if (!els.usStockTable) return;
   if (!state.usStocks.length) {
-    els.usStockTable.innerHTML = "<tr><td colspan=\"7\">米国株はまだありません。</td></tr>";
+    els.usStockTable.innerHTML = "<tr><td colspan=\"8\">米国株はまだありません。</td></tr>";
     return;
   }
   els.usStockTable.innerHTML = state.usStocks.map((stock) => {
@@ -800,20 +891,34 @@ function renderUsTable() {
     return `
       <tr class="${selected}" data-us-symbol="${escapeAttr(stock.symbol)}">
         <td>
-          <span class="stock-name">
-            <strong>${escapeHtml(stock.name)}</strong>
-            <span>${escapeHtml(stock.symbol)} / ${escapeHtml(stock.market || "NYSE")}</span>
-          </span>
+          <div class="stock-name-row">
+            <button type="button" class="drag-handle" draggable="true" data-us-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">↕</button>
+            <span class="stock-name">
+              <strong>${escapeHtml(stock.name)}</strong>
+              <span>${escapeHtml(stock.symbol)} / ${escapeHtml(stock.market || "NYSE")}</span>
+            </span>
+            ${stockMoveControls(stock.symbol, stock.name, "us")}
+          </div>
         </td>
         <td>${usd(analysis?.price?.current)}</td>
         <td>${usd(position.purchasePrice)}</td>
         <td>${shareCount(position.quantity)}</td>
         <td>${positionPnlUsd(position)}</td>
+        <td>${dividendCell(position, analysis?.price, usd)}</td>
         <td>${usStanceBadge(analysis?.ai)}</td>
         <td><button type="button" class="icon" data-remove-us="${escapeAttr(stock.symbol)}" aria-label="${escapeAttr(stock.name)}を削除">×</button></td>
       </tr>
     `;
   }).join("");
+  attachReorderEvents(els.usStockTable, {
+    rowSelector: "tr[data-us-symbol]",
+    handleSelector: "[data-us-drag-handle]",
+    symbolFromRow: (row) => row.dataset.usSymbol,
+    move: moveUsStock,
+    save: saveUsStockOrder,
+    reload: loadUsStocks,
+  });
+  attachUsMoveButtons(els.usStockTable);
   els.usStockTable.querySelectorAll("[data-us-symbol]").forEach((row) => {
     row.addEventListener("click", (event) => {
       if (event.target.closest("button")) return;
@@ -834,6 +939,28 @@ function renderUsTable() {
         renderUs();
       } catch (error) {
         toast(error.message);
+      }
+    });
+  });
+}
+
+function attachUsMoveButtons(table) {
+  table.querySelectorAll("[data-move-us]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const direction = button.dataset.moveDirection === "down" ? 1 : -1;
+      const moved = moveUsStockByStep(button.dataset.moveUs, direction);
+      reorderState.moved = moved;
+      if (!moved) return;
+      renderUs();
+      try {
+        await saveUsStockOrder();
+        renderUs();
+      } catch (error) {
+        toast(error.message);
+        await loadUsStocks();
+      } finally {
+        setTimeout(() => { reorderState.moved = false; }, 100);
       }
     });
   });
@@ -887,6 +1014,7 @@ function renderUsDetail() {
         <span><strong>損益</strong>${positionPnlUsd(position)}</span>
         <span><strong>受取配当</strong>${usd(position.dividendReceived)}</span>
         <span><strong>配当利回り</strong>${Number.isFinite(analysis?.price?.dividendYield) ? `${analysis.price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(analysis?.price || {}, usd))}</span>
         <span><strong>1か月</strong>${pct(analysis?.price?.return1m)}</span>
         <span><strong>1年</strong>${pct(analysis?.price?.return1y)}</span>
       </div>
@@ -1406,6 +1534,7 @@ function usPositionEditor(stock, position, price = {}) {
         <span><strong>受取配当</strong>${usd(metrics.dividendReceived)}</span>
         <span><strong>年間配当目安</strong>${usd(metrics.annualDividendEstimate)}</span>
         <span><strong>配当利回り</strong>${Number.isFinite(price?.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(price || {}, usd))}</span>
         <span><strong>残り元本</strong>${usd(metrics.invested)}</span>
         <span><strong>評価額</strong>${usd(metrics.marketValue)}</span>
       </div>
@@ -1539,6 +1668,7 @@ function renderSelection() {
       <span><strong>配当込み損益</strong>${positionPnl(position)}</span>
       <span><strong>配当利回り</strong>${Number.isFinite(price.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
       <span><strong>年間配当</strong>${yen(position.annualDividendEstimate)}</span>
+      <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(price, yen))}</span>
       <span><strong>3年</strong>${pct(price.return3y)}</span>
       <span><strong>3年目安との差</strong>${trendGapBadge(price.distanceFromTrend3y)}</span>
       <span><strong>高値から</strong>${pct(price.distanceFromHigh3y)}</span>
@@ -1746,9 +1876,7 @@ function drawChart(series) {
   context.fillRect(0, 0, width, height);
 
   const pad = { top: 22, right: 18, bottom: 28, left: 56 };
-  const cleanSeries = (series || [])
-    .map((point) => ({ date: point.date, close: Number(point.close) }))
-    .filter((point) => point.date && Number.isFinite(point.close));
+  const cleanSeries = cleanChartSeries(series);
   const values = cleanSeries.map((point) => point.close);
   chartState.series = cleanSeries;
   chartState.points = [];
@@ -1935,9 +2063,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen) {
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, width, height);
     const pad = { top: 22, right: 18, bottom: 28, left: 64 };
-    const cleanSeries = (series || [])
-      .map((point) => ({ date: point.date, close: Number(point.close) }))
-      .filter((point) => point.date && Number.isFinite(point.close));
+    const cleanSeries = cleanChartSeries(series);
     state.series = cleanSeries;
     state.points = [];
     state.plot = null;
@@ -2143,9 +2269,7 @@ function renderChartTiming(price) {
 }
 
 function buyTimingFromSeries(series = [], formatter = yen) {
-  const clean = (series || [])
-    .map((point) => ({ date: point.date, close: Number(point.close) }))
-    .filter((point) => point.date && Number.isFinite(point.close))
+  const clean = cleanChartSeries(series)
     .sort((a, b) => a.date.localeCompare(b.date));
   if (clean.length < 40) return null;
   const latest = clean[clean.length - 1];
@@ -2272,6 +2396,118 @@ function formatDate(value = "") {
     month: "2-digit",
     day: "2-digit",
   }).format(date);
+}
+
+function cleanChartSeries(series = []) {
+  const byDate = new Map();
+  for (const point of series || []) {
+    const date = String(point?.date || "").slice(0, 10);
+    const close = Number(point?.close);
+    if (!date || !Number.isFinite(close) || close <= 0) continue;
+    byDate.set(date, { date, close });
+  }
+  const sorted = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  if (sorted.length < 5) return sorted;
+  return sorted.filter((point, index, points) => !isSuspiciousChartPoint(point, index, points));
+}
+
+function isSuspiciousChartPoint(point, index, points = []) {
+  const neighbors = [
+    ...points.slice(Math.max(0, index - 8), index),
+    ...points.slice(index + 1, index + 9),
+  ].map((item) => item.close).filter(Number.isFinite);
+  if (neighbors.length < 4) return false;
+  const localMedian = quantile(neighbors, 0.5);
+  if (!localMedian) return false;
+  const previous = Number(points[index - 1]?.close);
+  const next = Number(points[index + 1]?.close);
+  if (point.close < localMedian * 0.25) {
+    return Boolean((Number.isFinite(previous) && previous > point.close * 2.8)
+      || (Number.isFinite(next) && next > point.close * 2.8));
+  }
+  if (point.close > localMedian * 4) {
+    return Boolean((Number.isFinite(previous) && previous * 2.8 < point.close)
+      || (Number.isFinite(next) && next * 2.8 < point.close));
+  }
+  return false;
+}
+
+function dividendTiming(price = {}) {
+  const events = dividendEvents(price);
+  if (!events.length) return null;
+  const latest = events.at(-1);
+  const monthCounts = new Map();
+  events.slice(-12).forEach((event) => {
+    const month = Number(event.date.slice(5, 7));
+    if (month >= 1 && month <= 12) monthCounts.set(month, (monthCounts.get(month) || 0) + 1);
+  });
+  const months = [...monthCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .slice(0, 4)
+    .map(([month]) => month)
+    .sort((a, b) => a - b);
+  return {
+    latest,
+    months,
+    nextLabel: nextDividendLabel(months, latest.date),
+  };
+}
+
+function dividendEvents(price = {}) {
+  const events = Array.isArray(price?.dividendEvents) ? price.dividendEvents : [];
+  const normalized = events
+    .map((item) => ({
+      date: String(item?.date || "").slice(0, 10),
+      amount: Number(item?.amount),
+    }))
+    .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && Number.isFinite(item.amount) && item.amount > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (!normalized.length && price?.dividendLastDate) {
+    const amount = Number(price.dividendLastAmount);
+    return [{
+      date: String(price.dividendLastDate).slice(0, 10),
+      amount: Number.isFinite(amount) && amount > 0 ? amount : null,
+    }].filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.date));
+  }
+  return normalized;
+}
+
+function nextDividendLabel(months = [], latestDate = "") {
+  if (!months.length) return "";
+  const now = new Date();
+  const latestTime = dateToTime(latestDate) || 0;
+  const baseTime = Math.max(now.getTime(), latestTime);
+  const base = new Date(baseTime);
+  const baseYear = base.getFullYear();
+  for (let year = baseYear; year <= baseYear + 2; year += 1) {
+    for (const month of months) {
+      const candidate = new Date(year, month - 1, 15);
+      if (candidate.getTime() > baseTime + 7 * 86400000) {
+        return year === now.getFullYear() ? `${month}月頃` : `${year}/${month}頃`;
+      }
+    }
+  }
+  return `${months.map(monthLabel).join("・")}頃`;
+}
+
+function dividendTimingSummary(price = {}) {
+  const timing = dividendTiming(price);
+  if (!timing) return "";
+  return timing.nextLabel ? `次 ${timing.nextLabel}` : `直近 ${formatMonthDay(timing.latest.date)}`;
+}
+
+function dividendTimingDetail(price = {}, formatter = yen) {
+  const timing = dividendTiming(price);
+  if (!timing) return "-";
+  const amount = Number.isFinite(timing.latest.amount) ? formatter(timing.latest.amount) : "";
+  const latest = `直近 ${formatDate(timing.latest.date)}${amount ? ` ${amount}` : ""}`;
+  const next = timing.nextLabel ? ` / 次回目安 ${timing.nextLabel}` : "";
+  const months = timing.months.length ? ` / 実績月 ${timing.months.map(monthLabel).join("・")}` : "";
+  return `${latest}${next}${months}`;
+}
+
+function monthLabel(month) {
+  return `${month}月`;
 }
 
 function evidenceMetaText(item = {}) {
@@ -2999,6 +3235,7 @@ function positionEditor(stock, position, analysis) {
         <span><strong>残り元本</strong>${yen(metrics.invested)}</span>
         <span><strong>評価額</strong>${yen(metrics.marketValue)}</span>
         <span><strong>年間配当目安</strong>${yen(metrics.annualDividendEstimate)}</span>
+        <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(analysis?.price || {}, yen))}</span>
         <span><strong>残す株数</strong>${metrics.minimumHoldQuantity ? `${metrics.minimumHoldQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
         <span><strong>判定対象</strong>${metrics.sellableQuantity ? `${metrics.sellableQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
       </div>
