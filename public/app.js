@@ -566,7 +566,7 @@ function stockRow(stock, compact) {
   const nameCell = `
     <td>
       <div class="stock-name-row">
-        <button type="button" class="drag-handle" draggable="true" data-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">↕</button>
+        <button type="button" class="drag-handle" draggable="true" data-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>
         <div class="stock-name">
           <strong>${escapeHtml(stock.name)}</strong>
           <span>${escapeHtml(stock.symbol)}${stock.holding ? " / 保有" : ""}</span>
@@ -892,7 +892,7 @@ function renderUsTable() {
       <tr class="${selected}" data-us-symbol="${escapeAttr(stock.symbol)}">
         <td>
           <div class="stock-name-row">
-            <button type="button" class="drag-handle" draggable="true" data-us-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">↕</button>
+            <button type="button" class="drag-handle" draggable="true" data-us-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>
             <span class="stock-name">
               <strong>${escapeHtml(stock.name)}</strong>
               <span>${escapeHtml(stock.symbol)} / ${escapeHtml(stock.market || "NYSE")}</span>

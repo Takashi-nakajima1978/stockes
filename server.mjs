@@ -37,7 +37,7 @@ const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
 const FUNDAMENTAL_EXIT_MAX_AGE_DAYS = 30;
 const TRAILING_STOP_LOSS_PCT = 20;
-const US_EVIDENCE_TRANSLATION_LIMIT_PER_STOCK = 3;
+const US_EVIDENCE_TRANSLATION_CHUNK_SIZE = 3;
 const PE_PRIORITY_MIN_SCORE = 45;
 const PE_STRONG_MIN_SCORE = 55;
 const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品|wholesale|food|grocery|consumer staples|packaged foods)/i;
@@ -1164,9 +1164,7 @@ function applyUsEvidenceTranslations(row = {}) {
 }
 
 function markUsEvidenceTranslationUnavailable(rows = [], error = null) {
-  const message = error?.message
-    ? `LM Studio翻訳未完了: ${error.message}`
-    : "LM Studio翻訳未完了です。";
+  const message = lmStudioTranslationError(error);
   rows.forEach((row) => {
     row.evidence = (row.evidence || []).map((item) => normalizeUsEvidenceTranslationState({
       ...item,
@@ -1176,10 +1174,22 @@ function markUsEvidenceTranslationUnavailable(rows = [], error = null) {
   });
 }
 
+function lmStudioTranslationError(error = null) {
+  const message = cleanText(error?.message || "");
+  if (!message) return "LM Studio翻訳未完了です。";
+  if (/aborted|timed out|timeout/i.test(message)) {
+    return "LM Studio翻訳が時間内に終わりませんでした。接続設定のタイムアウトを長めにするか、軽いモデルで再実行してください。";
+  }
+  return `LM Studio翻訳未完了: ${message}`;
+}
+
+function shouldFallbackToLmStudioChat(error = null) {
+  return /responses returned (404|400|422)/i.test(String(error?.message || ""));
+}
+
 async function translateUsEvidenceRows(rows = []) {
   const items = [];
   for (const row of rows) {
-    let queuedForRow = 0;
     for (const evidence of row.evidence || []) {
       const text = `${evidence.title || ""}\n${evidence.originalSnippet || evidence.snippet || ""}`;
       if (!isMostlyEnglish(text)) {
@@ -1188,12 +1198,6 @@ async function translateUsEvidenceRows(rows = []) {
         evidence.translationMethod ||= containsJapanese(text) ? "source_ja" : "untranslated";
         continue;
       }
-      if (queuedForRow >= US_EVIDENCE_TRANSLATION_LIMIT_PER_STOCK) {
-        evidence.translationMethod ||= "untranslated";
-        evidence.translationError ||= `上位${US_EVIDENCE_TRANSLATION_LIMIT_PER_STOCK}件までLM Studioで要約します。`;
-        continue;
-      }
-      queuedForRow += 1;
       items.push({
         evidence,
         title: evidence.title || "",
@@ -1202,44 +1206,46 @@ async function translateUsEvidenceRows(rows = []) {
       });
     }
   }
-  if (!items.length) {
-    markUsEvidenceTranslationUnavailable(rows);
-    return;
-  }
+  if (!items.length) return;
   const model = await getLmStudioModel();
   const failures = [];
-  for (const chunk of chunkArray(items, 1)) {
-    const translations = await translateUsEvidenceChunk(model, chunk).catch((error) => {
+  for (const chunk of chunkArray(items, US_EVIDENCE_TRANSLATION_CHUNK_SIZE)) {
+    await applyUsEvidenceTranslationChunk(model, chunk).catch(async (error) => {
       failures.push(error);
-      return [];
-    });
-    translations.forEach((translation, index) => {
-      const target = chunk[index]?.evidence;
-      if (!target) return;
-      const titleJa = cleanText(translation?.titleJa || "");
-      const summaryJa = cleanText(translation?.summaryJa || translation?.summary || "");
-      if (!summaryJa || !containsJapanese(`${titleJa} ${summaryJa}`)) {
-        target.translationMethod = "untranslated";
-        target.translationError = "LM Studio翻訳が空、または日本語ではありませんでした。";
-        return;
+      for (const item of chunk) {
+        await applyUsEvidenceTranslationChunk(model, [item]).catch((singleError) => {
+          failures.push(singleError);
+          item.evidence.translationMethod = "untranslated";
+          item.evidence.translationError = lmStudioTranslationError(singleError);
+        });
       }
-      target.titleJa = titleJa || target.titleJa || "";
-      target.summaryJa = summaryJa;
-      target.translationMethod = "lm_studio";
-      if (target.summaryJa) target.snippet = target.summaryJa;
-    });
-    chunk.forEach((item) => {
-      if (item.evidence.translationMethod === "lm_studio") return;
-      item.evidence.translationMethod = "untranslated";
-      item.evidence.translationError = failures.at(-1)?.message
-        ? `LM Studio翻訳未完了: ${failures.at(-1).message}`
-        : "LM Studio翻訳が返りませんでした。";
     });
   }
   rows.forEach((row) => {
     row.evidence = (row.evidence || []).map(normalizeUsEvidenceTranslationState);
   });
-  if (failures.length) throw failures[0];
+  const translatedCount = items.filter((item) => item.evidence.translationMethod === "lm_studio").length;
+  if (!translatedCount && failures.length) throw failures[0];
+}
+
+async function applyUsEvidenceTranslationChunk(model, chunk = []) {
+  const translations = await translateUsEvidenceChunk(model, chunk);
+  chunk.forEach((item, index) => {
+    const target = item.evidence;
+    const translation = translations[index];
+    const titleJa = cleanText(translation?.titleJa || "");
+    const summaryJa = cleanText(translation?.summaryJa || translation?.summary || "");
+    if (!summaryJa || !containsJapanese(`${titleJa} ${summaryJa}`)) {
+      target.translationMethod = "untranslated";
+      target.translationError = "LM Studio翻訳が空、または日本語ではありませんでした。";
+      return;
+    }
+    target.titleJa = titleJa || target.titleJa || "";
+    target.summaryJa = summaryJa;
+    target.translationMethod = "lm_studio";
+    delete target.translationError;
+    if (target.summaryJa) target.snippet = target.summaryJa;
+  });
 }
 
 async function translateUsEvidenceChunk(model, items = []) {
@@ -1257,8 +1263,8 @@ async function translateUsEvidenceChunk(model, items = []) {
       })),
     }),
   ].join("\n");
-  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 1400, timeoutMs: 30000 }).catch(async (error) => {
-    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 1400, timeoutMs: 30000 });
+  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 2200 }).catch(async (error) => {
+    if (shouldFallbackToLmStudioChat(error)) return callLmStudioChat(model, prompt, { maxTokens: 2200 });
     throw error;
   });
   const parsed = parseJsonObjectMatching(content, isUsEvidenceTranslationPayload);
@@ -1412,8 +1418,8 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     "",
     JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
-  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 3500, timeoutMs: 60000 }).catch(async (error) => {
-    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 3500, timeoutMs: 60000 });
+  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 3500 }).catch(async (error) => {
+    if (shouldFallbackToLmStudioChat(error)) return callLmStudioChat(model, prompt, { maxTokens: 3500 });
     throw error;
   });
   const parsed = parseJsonObjectMatching(content, isUsHoldingReviewPayload);
@@ -8386,10 +8392,16 @@ function loadLocalEnv(filePath) {
 }
 
 async function fetchWithTimeout(url, options = {}) {
+  const timeoutMs = options.timeout || 10000;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeout || 10000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
