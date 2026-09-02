@@ -4144,7 +4144,6 @@ async function searchGoogle(query, { limit, language } = {}) {
 async function searchSearxng(query, { limit, settings, language = "ja-JP" }) {
   if (!settings.searxngUrl) return [];
   const attempts = [
-    { categories: "news", engines: "bing news", timeout: 18000 },
     { categories: "general", engines: "bing", timeout: 18000 },
   ];
   const results = [];
@@ -6117,9 +6116,9 @@ async function searchDiagnostics() {
 
   const checks = await Promise.all([
     diagnosticSearxngCheck(settings, {
-      label: "ニュース検索",
-      categories: "news",
-      engines: "bing news",
+      label: "ニュース語句検索",
+      categories: "general",
+      engines: "bing",
       query: "日本株 決算短信 上方修正 増配",
     }),
     diagnosticSearxngCheck(settings, {
@@ -6185,7 +6184,7 @@ async function checkSearchEngine(settings = null) {
   if (resolved.searchProvider === "searxng") {
     try {
       const checks = [
-        { query: "日本株 決算短信 上方修正 増配", categories: "news", engines: "bing news" },
+        { query: "日本株 決算短信 上方修正 増配", categories: "general", engines: "bing" },
         { query: "株探 決算速報 日本株", categories: "general", engines: "bing" },
       ];
       let responseOk = false;
