@@ -6385,7 +6385,7 @@ function positionMetrics(stock, price = {}) {
     : aggregate.purchasePrice;
   const realizedProceeds = lotState.realizedProceeds || null;
   const realizedCost = lotState.realizedCost || 0;
-  const salesAggregate = aggregateSales(sales);
+  const salesAggregate = aggregateSales(currentCycleSales(positions, sales, remainingQuantity));
   const averageSellPrice = salesAggregate.sellPrice;
   const realizedPnlAmount = Number.isFinite(realizedProceeds) && Number.isFinite(realizedCost) && soldQuantity
     ? realizedProceeds - realizedCost
@@ -6763,6 +6763,45 @@ function aggregateSales(sales) {
     quantity: quantity || null,
     proceeds: proceeds || null,
   };
+}
+
+function currentCycleSales(positions = [], sales = [], remainingQuantity = 0) {
+  if (!remainingQuantity) return [];
+  const resetDate = lastZeroPositionDate(positions, sales);
+  if (!resetDate) return sales;
+  return sales.filter((sale) => sale.sellDate && sale.sellDate > resetDate);
+}
+
+function lastZeroPositionDate(positions = [], sales = []) {
+  const transactions = [
+    ...positions.map((lot) => ({
+      date: lot.purchaseDate || "",
+      type: "buy",
+      quantity: lot.quantity,
+    })),
+    ...sales.map((lot) => ({
+      date: lot.sellDate || "",
+      type: "sell",
+      quantity: lot.quantity,
+    })),
+  ]
+    .filter((item) => item.quantity > 0)
+    .sort((a, b) => {
+      const dateCompare = (a.date || "9999-99-99").localeCompare(b.date || "9999-99-99");
+      if (dateCompare) return dateCompare;
+      return a.type === "sell" ? -1 : 1;
+    });
+
+  let quantity = 0;
+  let resetDate = "";
+  for (const item of transactions) {
+    quantity += item.type === "buy" ? item.quantity : -item.quantity;
+    if (quantity <= 0.000001) {
+      quantity = 0;
+      resetDate = item.date || "";
+    }
+  }
+  return resetDate;
 }
 
 function positionLotState(positions = [], sales = []) {
