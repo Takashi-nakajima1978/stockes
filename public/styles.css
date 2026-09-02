@@ -744,15 +744,39 @@ tr:hover .drag-handle,
 }
 
 .pnl-cell,
+.avg-price-cell,
 .dividend-cell {
   display: grid;
   gap: 2px;
 }
 
 .pnl-cell small,
+.avg-price-cell small,
 .dividend-cell small {
   color: var(--muted);
   font-size: 11px;
+  font-weight: 800;
+}
+
+.avg-price-cell > span {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.avg-price-cell em {
+  min-width: 25px;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.avg-price-cell strong {
+  color: var(--ink);
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -1069,6 +1093,11 @@ tr:hover .drag-handle,
   grid-template-columns: minmax(150px, 220px) minmax(140px, 220px) minmax(92px, 150px) 36px;
   gap: 8px;
   align-items: end;
+}
+
+.lot-head.has-account,
+.lot-row.has-account {
+  grid-template-columns: minmax(140px, 200px) minmax(110px, 150px) minmax(130px, 190px) minmax(86px, 130px) 36px;
 }
 
 .lot-head {

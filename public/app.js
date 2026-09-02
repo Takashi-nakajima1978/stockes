@@ -74,6 +74,7 @@ const els = {
   stockPurchaseDate: document.getElementById("stockPurchaseDate"),
   stockPurchasePrice: document.getElementById("stockPurchasePrice"),
   stockQuantity: document.getElementById("stockQuantity"),
+  stockAccountType: document.getElementById("stockAccountType"),
   stockMinimumHoldQuantity: document.getElementById("stockMinimumHoldQuantity"),
   stockTargetBuyPrice: document.getElementById("stockTargetBuyPrice"),
   stockCount: document.getElementById("stockCount"),
@@ -168,7 +169,12 @@ const els = {
   settingsShareholderUseLmStudio: document.getElementById("settingsShareholderUseLmStudio"),
   settingsShareholderChangeThresholdPct: document.getElementById("settingsShareholderChangeThresholdPct"),
   settingsNotificationsEnabled: document.getElementById("settingsNotificationsEnabled"),
-  settingsTradeFeeYen: document.getElementById("settingsTradeFeeYen"),
+  settingsDefaultJpAccountType: document.getElementById("settingsDefaultJpAccountType"),
+  settingsJpTaxableTradeFeeYen: document.getElementById("settingsJpTaxableTradeFeeYen"),
+  settingsJpNisaTradeFeeYen: document.getElementById("settingsJpNisaTradeFeeYen"),
+  settingsJpCapitalGainTaxPct: document.getElementById("settingsJpCapitalGainTaxPct"),
+  settingsUsTradeFeeUsd: document.getElementById("settingsUsTradeFeeUsd"),
+  settingsUsCapitalGainTaxPct: document.getElementById("settingsUsCapitalGainTaxPct"),
   settingsNotificationMinNetEdgeYen: document.getElementById("settingsNotificationMinNetEdgeYen"),
   settingsNotificationMinConfidence: document.getElementById("settingsNotificationMinConfidence"),
   settingsTeamsWebhookUrl: document.getElementById("settingsTeamsWebhookUrl"),
@@ -337,8 +343,14 @@ function applySettings(settings = {}) {
     setStatus(els.settingsShareholderStatus, settings.shareholderMonitorEnabled !== false, settings.shareholderMonitorEnabled !== false ? "監視中" : "停止中");
   }
   if (els.settingsNotificationsEnabled) els.settingsNotificationsEnabled.checked = settings.notificationsEnabled === true;
-  if (els.settingsTradeFeeYen) els.settingsTradeFeeYen.value = settings.tradeFeeYen || 0;
-  if (els.settingsNotificationMinNetEdgeYen) els.settingsNotificationMinNetEdgeYen.value = settings.notificationMinNetEdgeYen || 5000;
+  if (els.settingsDefaultJpAccountType) els.settingsDefaultJpAccountType.value = normalizeAccountType(settings.defaultJpAccountType || "taxable");
+  if (els.stockAccountType) els.stockAccountType.value = normalizeAccountType(settings.defaultJpAccountType || "taxable");
+  if (els.settingsJpTaxableTradeFeeYen) els.settingsJpTaxableTradeFeeYen.value = settings.jpTaxableTradeFeeYen || 0;
+  if (els.settingsJpNisaTradeFeeYen) els.settingsJpNisaTradeFeeYen.value = settings.jpNisaTradeFeeYen || 0;
+  if (els.settingsJpCapitalGainTaxPct) els.settingsJpCapitalGainTaxPct.value = Number.isFinite(settings.jpCapitalGainTaxPct) ? settings.jpCapitalGainTaxPct : 20.315;
+  if (els.settingsUsTradeFeeUsd) els.settingsUsTradeFeeUsd.value = Number.isFinite(settings.usTradeFeeUsd) ? settings.usTradeFeeUsd : 0;
+  if (els.settingsUsCapitalGainTaxPct) els.settingsUsCapitalGainTaxPct.value = Number.isFinite(settings.usCapitalGainTaxPct) ? settings.usCapitalGainTaxPct : 0;
+  if (els.settingsNotificationMinNetEdgeYen) els.settingsNotificationMinNetEdgeYen.value = Number.isFinite(settings.notificationMinNetEdgeYen) ? settings.notificationMinNetEdgeYen : 5000;
   if (els.settingsNotificationMinConfidence) els.settingsNotificationMinConfidence.value = settings.notificationMinConfidence || 78;
   if (els.settingsTeamsWebhookUrl) els.settingsTeamsWebhookUrl.placeholder = settings.hasTeamsWebhookUrl ? "保存済み。変更時だけ入力" : "Workflowsで作ったWebhook URL";
   if (els.settingsGraphChatId) els.settingsGraphChatId.value = settings.graphChatId || "";
@@ -546,7 +558,7 @@ function renderTable() {
   if (els.manageStockTable) {
     els.manageStockTable.innerHTML = state.stocks.length
       ? state.stocks.map((stock) => stockRow(stock, false)).join("")
-      : emptyStockRow(8);
+      : emptyStockRow(10);
     attachTableEvents(els.manageStockTable);
   }
 }
@@ -582,7 +594,7 @@ function stockRow(stock, compact) {
         ${nameCell}
         ${sectorCell}
         <td>${yen(analysis?.price?.current)}</td>
-        <td>${yen(position.purchasePrice)}</td>
+        <td>${averagePriceCell(position, yen)}</td>
         <td>${holdingQuantityCell(stock, position)}</td>
         <td>${positionPnl(position, true)}</td>
         <td>${dividendCell(position, analysis?.price)}</td>
@@ -596,7 +608,7 @@ function stockRow(stock, compact) {
       ${nameCell}
       ${sectorCell}
       <td>${yen(analysis?.price?.current)}</td>
-      <td>${yen(position.purchasePrice)}</td>
+      <td>${averagePriceCell(position, yen)}</td>
       <td>${positionPnl(position)}</td>
       <td>${dividendCell(position, analysis?.price)}</td>
       <td>${pct(analysis?.price?.return1y)}</td>
@@ -621,6 +633,15 @@ function dividendCell(position, price = {}, formatter = yen) {
       <strong>${yieldText}</strong>
       ${incomeText ? `<small>${incomeText}/年</small>` : ""}
       ${timingText ? `<small>${escapeHtml(timingText)}</small>` : ""}
+    </span>
+  `;
+}
+
+function averagePriceCell(position = {}, formatter = yen) {
+  return `
+    <span class="avg-price-cell">
+      <span><em>取得</em><strong>${formatter(position.purchasePrice)}</strong></span>
+      <span><em>売却</em><strong>${formatter(position.averageSellPrice)}</strong></span>
     </span>
   `;
 }
@@ -848,7 +869,7 @@ function renderUsTable() {
           </div>
         </td>
         <td>${usd(analysis?.price?.current)}</td>
-        <td>${usd(position.purchasePrice)}</td>
+        <td>${averagePriceCell(position, usd)}</td>
         <td>${shareCount(position.quantity)}</td>
         <td>${positionPnlUsd(position)}</td>
         <td>${dividendCell(position, analysis?.price, usd)}</td>
@@ -1448,7 +1469,9 @@ function usPositionEditor(stock, position, price = {}) {
         <button type="button" class="secondary add-lot" data-add-sale>売却明細を追加</button>
       </div>
       <div class="position-stats">
+        <span><strong>取引口座</strong>Revolut USA / USD</span>
         <span><strong>平均取得</strong>${usd(metrics.purchasePrice)}</span>
+        <span><strong>平均売却</strong>${usd(metrics.averageSellPrice)}</span>
         <span><strong>残株数</strong>${shareCount(metrics.quantity)}</span>
         <span><strong>売却済み</strong>${shareCount(metrics.soldQuantity)}</span>
         <span><strong>配当込み損益</strong>${positionPnlUsd(metrics)}</span>
@@ -3013,6 +3036,7 @@ function positionMetrics(stock, price = {}) {
   const remainingQuantity = Math.max(0, grossQuantity - soldQuantity);
   const remainingInvested = purchasePrice && remainingQuantity ? purchasePrice * remainingQuantity : null;
   const saleProceeds = sales.reduce((sum, lot) => sum + (lot.sellPrice * lot.quantity), 0);
+  const averageSellPrice = soldInputQuantity > 0 ? saleProceeds / soldInputQuantity : null;
   const realizedProceeds = soldInputQuantity > 0 && soldQuantity < soldInputQuantity
     ? saleProceeds * (soldQuantity / soldInputQuantity)
     : saleProceeds;
@@ -3054,6 +3078,7 @@ function positionMetrics(stock, price = {}) {
     unrealizedPnlAmount,
     unrealizedPnlPct,
     realizedProceeds: realizedProceeds || null,
+    averageSellPrice,
     invested: remainingInvested || null,
     grossInvested: grossInvested || null,
     marketValue,
@@ -3114,14 +3139,15 @@ function positionEditor(stock, position, analysis) {
       </div>
       <div class="position-lots" aria-label="購入明細">
         <div class="lot-section-title buy">購入明細</div>
-        <div class="lot-head">
+        <div class="lot-head has-account">
           <span>購入日</span>
+          <span>口座</span>
           <span>購入単価</span>
           <span>株数</span>
           <span></span>
         </div>
         <div class="lot-list">
-        ${lots.map((lot) => lotRow(lot)).join("")}
+        ${lots.map((lot) => lotRow(lot, { accountType: true })).join("")}
         </div>
         <button type="button" class="secondary add-lot" data-add-lot>明細を追加</button>
       </div>
@@ -3151,6 +3177,7 @@ function positionEditor(stock, position, analysis) {
       </div>
       <div class="position-stats">
         <span><strong>平均取得</strong>${yen(metrics.purchasePrice)}</span>
+        <span><strong>平均売却</strong>${yen(metrics.averageSellPrice)}</span>
         <span><strong>残株数</strong>${shareCount(metrics.quantity)}</span>
         <span><strong>売却済み</strong>${shareCount(metrics.soldQuantity)}</span>
         <span><strong>配当込み損益</strong>${positionPnl(metrics)}</span>
@@ -3173,7 +3200,7 @@ function attachPositionForm(symbol) {
   if (!form) return;
   form.querySelector("[data-add-lot]")?.addEventListener("click", () => {
     const list = form.querySelector(".lot-list");
-    list.insertAdjacentHTML("beforeend", lotRow({ purchaseDate: "", purchasePrice: null, quantity: null }));
+    list.insertAdjacentHTML("beforeend", lotRow({ purchaseDate: "", purchasePrice: null, quantity: null, accountType: defaultJpAccountType() }, { accountType: true }));
   });
   form.querySelector("[data-add-sale]")?.addEventListener("click", () => {
     const list = form.querySelector(".sale-list");
@@ -3193,6 +3220,8 @@ function attachPositionForm(symbol) {
       rows[0].querySelector('[name="purchaseDate"]').value = "";
       rows[0].querySelector('[name="purchasePrice"]').value = "";
       rows[0].querySelector('[name="quantity"]').value = "";
+      const accountType = rows[0].querySelector('[name="accountType"]');
+      if (accountType) accountType.value = defaultJpAccountType();
       return;
     }
     button.closest(".lot-row").remove();
@@ -3905,6 +3934,25 @@ function attachExcludedButtons() {
   });
 }
 
+function normalizeAccountType(value) {
+  return String(value || "").toLowerCase() === "nisa" ? "nisa" : "taxable";
+}
+
+function defaultJpAccountType() {
+  return normalizeAccountType(state.settings?.defaultJpAccountType || "taxable");
+}
+
+function accountTypeLabel(value) {
+  return normalizeAccountType(value) === "nisa" ? "NISA" : "一般/特定";
+}
+
+function accountTypeOptions(value) {
+  const current = normalizeAccountType(value);
+  return ["taxable", "nisa"]
+    .map((type) => `<option value="${type}" ${current === type ? "selected" : ""}>${accountTypeLabel(type)}</option>`)
+    .join("");
+}
+
 function positionLots(stock) {
   const source = Array.isArray(stock.positions) && stock.positions.length
     ? stock.positions
@@ -3912,12 +3960,14 @@ function positionLots(stock) {
       purchaseDate: stock.purchaseDate,
       purchasePrice: stock.purchasePrice,
       quantity: stock.quantity,
+      accountType: stock.accountType,
     }];
   return source
     .map((lot) => ({
       purchaseDate: String(lot.purchaseDate || ""),
       purchasePrice: finiteOrNull(lot.purchasePrice),
       quantity: finiteOrNull(lot.quantity),
+      accountType: normalizeAccountType(lot.accountType || stock.accountType || defaultJpAccountType()),
     }))
     .filter((lot) => lot.purchasePrice && lot.quantity)
     .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"));
@@ -3991,13 +4041,19 @@ function cryptoPnl(amount, ratio, formatter) {
   return `<span class="pnl-cell">${main}${sub}</span>`;
 }
 
-function lotRow(lot) {
+function lotRow(lot, options = {}) {
+  const showAccount = options.accountType === true;
   return `
-    <div class="lot-row">
+    <div class="lot-row${showAccount ? " has-account" : ""}">
       <label>
         <span>購入日</span>
         <input name="purchaseDate" type="date" value="${escapeAttr(lot.purchaseDate || "")}">
       </label>
+      ${showAccount ? `
+      <label>
+        <span>口座</span>
+        <select name="accountType">${accountTypeOptions(lot.accountType || defaultJpAccountType())}</select>
+      </label>` : ""}
       <label>
         <span>購入単価</span>
         <input name="purchasePrice" type="number" min="0" step="0.01" value="${numberValue(lot.purchasePrice)}">
@@ -4034,11 +4090,15 @@ function saleRow(lot) {
 function readLotRows(form) {
   return [...form.querySelectorAll(".lot-row")]
     .filter((row) => !row.classList.contains("sale-row"))
-    .map((row) => ({
-      purchaseDate: row.querySelector('[name="purchaseDate"]').value,
-      purchasePrice: valueOrNull(row.querySelector('[name="purchasePrice"]').value),
-      quantity: valueOrNull(row.querySelector('[name="quantity"]').value),
-    }))
+    .map((row) => {
+      const accountType = row.querySelector('[name="accountType"]')?.value;
+      return {
+        purchaseDate: row.querySelector('[name="purchaseDate"]').value,
+        purchasePrice: valueOrNull(row.querySelector('[name="purchasePrice"]').value),
+        quantity: valueOrNull(row.querySelector('[name="quantity"]').value),
+        ...(accountType ? { accountType: normalizeAccountType(accountType) } : {}),
+      };
+    })
     .filter((lot) => lot.purchasePrice && lot.quantity)
     .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"));
 }
@@ -4140,12 +4200,14 @@ els.stockForm.addEventListener("submit", async (event) => {
         purchaseDate: els.stockPurchaseDate.value,
         purchasePrice: valueOrNull(els.stockPurchasePrice.value),
         quantity: valueOrNull(els.stockQuantity.value),
+        accountType: normalizeAccountType(els.stockAccountType?.value || defaultJpAccountType()),
         minimumHoldQuantity: valueOrZero(els.stockMinimumHoldQuantity.value),
         positions: readNewStockLot(),
         targetBuyPrice: valueOrNull(els.stockTargetBuyPrice.value),
       }),
     });
     els.stockForm.reset();
+    if (els.stockAccountType) els.stockAccountType.value = defaultJpAccountType();
     await loadStocks();
   } catch (error) {
     toast(error.message);
@@ -4156,7 +4218,8 @@ function readNewStockLot() {
   const purchaseDate = els.stockPurchaseDate.value;
   const purchasePrice = valueOrNull(els.stockPurchasePrice.value);
   const quantity = valueOrNull(els.stockQuantity.value);
-  return purchasePrice && quantity ? [{ purchaseDate, purchasePrice, quantity }] : [];
+  const accountType = normalizeAccountType(els.stockAccountType?.value || defaultJpAccountType());
+  return purchasePrice && quantity ? [{ purchaseDate, purchasePrice, quantity, accountType }] : [];
 }
 
 els.usStockForm?.addEventListener("submit", async (event) => {
@@ -4225,7 +4288,12 @@ els.settingsForm.addEventListener("submit", async (event) => {
         shareholderUseLmStudio: els.settingsShareholderUseLmStudio?.checked !== false,
         shareholderChangeThresholdPct: valueOrNull(els.settingsShareholderChangeThresholdPct?.value),
         notificationsEnabled: els.settingsNotificationsEnabled?.checked === true,
-        tradeFeeYen: valueOrZero(els.settingsTradeFeeYen?.value),
+        defaultJpAccountType: normalizeAccountType(els.settingsDefaultJpAccountType?.value || "taxable"),
+        jpTaxableTradeFeeYen: valueOrZero(els.settingsJpTaxableTradeFeeYen?.value),
+        jpNisaTradeFeeYen: valueOrZero(els.settingsJpNisaTradeFeeYen?.value),
+        jpCapitalGainTaxPct: valueOrZero(els.settingsJpCapitalGainTaxPct?.value),
+        usTradeFeeUsd: valueOrZero(els.settingsUsTradeFeeUsd?.value),
+        usCapitalGainTaxPct: valueOrZero(els.settingsUsCapitalGainTaxPct?.value),
         notificationMinNetEdgeYen: valueOrZero(els.settingsNotificationMinNetEdgeYen?.value),
         notificationMinConfidence: valueOrNull(els.settingsNotificationMinConfidence?.value),
         teamsWebhookUrl: els.settingsTeamsWebhookUrl?.value || "",

@@ -102,6 +102,12 @@ const defaultSettings = {
   notificationMinConfidence: 78,
   notificationMinNetEdgeYen: 5000,
   tradeFeeYen: 0,
+  defaultJpAccountType: "taxable",
+  jpTaxableTradeFeeYen: 0,
+  jpNisaTradeFeeYen: 0,
+  jpCapitalGainTaxPct: 20.315,
+  usTradeFeeUsd: 0,
+  usCapitalGainTaxPct: 0,
   teamsWebhookUrl: process.env.TEAMS_WEBHOOK_URL || "",
   graphAccessToken: process.env.GRAPH_ACCESS_TOKEN || "",
   graphTenantId: process.env.GRAPH_TENANT_ID || "",
@@ -606,6 +612,7 @@ async function handleApi(req, res, url) {
       purchaseDate: body.purchaseDate,
       purchasePrice: body.purchasePrice,
       quantity: body.quantity,
+      accountType: body.accountType,
       positions: body.positions,
       sales: body.sales,
       minimumHoldQuantity: body.minimumHoldQuantity,
@@ -685,6 +692,7 @@ async function handleApi(req, res, url) {
       purchaseDate: body.purchaseDate,
       purchasePrice: body.purchasePrice,
       quantity: body.quantity,
+      accountType: body.accountType,
       positions: body.positions,
       sales: body.sales,
     });
@@ -1769,13 +1777,13 @@ async function notifyUsChangeSignals(result, previous) {
   const signals = [];
   for (const analysis of result.analyses || []) {
     signals.push(...exitPlanSignals(analysis));
-    const signal = usChangeSignal(analysis, previousBySymbol.get(analysis.symbol));
+    const signal = usChangeSignal(analysis, previousBySymbol.get(analysis.symbol), settings);
     if (signal) signals.push(signal);
   }
   await sendSignalsOnce(signals.slice(0, 6), settings);
 }
 
-function usChangeSignal(current = {}, previous = null) {
+function usChangeSignal(current = {}, previous = null, settings = {}) {
   const ai = current.ai || {};
   const position = current.position || {};
   const previousPosition = previous?.position || {};
@@ -1802,6 +1810,12 @@ function usChangeSignal(current = {}, previous = null) {
     name: current.name,
     confidence: ai.confidence || 60,
     netEdgeYen: 0,
+    currentPrice: current.price?.current,
+    averagePurchasePrice: position.purchasePrice,
+    averageSellPrice: position.averageSellPrice,
+    quantity: position.quantity,
+    accountText: accountTypeLabel("revolut_us"),
+    costText: costSummaryText(estimateOneWayTradeCost(position.pnlAmount || 0, settings, { currency: "USD", accountType: "revolut_us" }), "USD"),
     reason: ai.summaryJa || "米国株の保有状況に変化があります。",
     points,
   };
@@ -6014,24 +6028,36 @@ function compactDisclosure(disclosure = {}) {
 async function notifyDisclosureSignals(result = {}, settings = {}) {
   if (!settings.notificationsEnabled) return;
   if (!settings.teamsWebhookUrl && !(settings.graphAccessToken && settings.graphChatId)) return;
-  const signals = (result.important || []).map((disclosure) => ({
-    key: `tdnet:${disclosure.id}`,
-    absoluteKey: true,
-    action: `重大開示/${disclosure.review?.category || "要確認"}`,
-    symbol: disclosure.symbol || disclosure.code,
-    name: disclosure.name || disclosure.symbol || disclosure.code,
-    confidence: disclosure.review?.severity === "critical" ? 96 : 88,
-    netEdgeYen: 0,
-    hideEdge: true,
-    reason: disclosure.review?.summary || disclosure.title,
-    points: [
-      `開示: ${disclosure.title}`,
-      `日時: ${disclosure.date} ${disclosure.time}`,
-      disclosure.review?.whyNotify,
-      disclosure.review?.suggestedAction,
-      disclosure.url,
-    ].filter(Boolean),
-  }));
+  const cache = await readAnalysisCache().catch(() => ({ analyses: [] }));
+  const contextBySymbol = new Map((cache.analyses || []).map((analysis) => [analysis.symbol, analysis]));
+  const signals = (result.important || []).map((disclosure) => {
+    const symbol = disclosure.symbol || disclosure.code;
+    const context = contextBySymbol.get(symbol) || {};
+    return {
+      key: `tdnet:${disclosure.id}`,
+      absoluteKey: true,
+      action: `重大開示/${disclosure.review?.category || "要確認"}`,
+      symbol,
+      name: disclosure.name || disclosure.symbol || disclosure.code,
+      confidence: disclosure.review?.severity === "critical" ? 96 : 88,
+      netEdgeYen: 0,
+      currency: context.price?.currency || "JPY",
+      currentPrice: context.price?.current,
+      averagePurchasePrice: context.position?.purchasePrice,
+      averageSellPrice: context.position?.averageSellPrice,
+      quantity: Number(context.position?.sellableQuantity) > 0 ? context.position.sellableQuantity : undefined,
+      accountText: context.position?.accountType ? accountTypeLabel(context.position.accountType) : "",
+      hideEdge: true,
+      reason: disclosure.review?.summary || disclosure.title,
+      points: [
+        `開示: ${disclosure.title}`,
+        `日時: ${disclosure.date} ${disclosure.time}`,
+        disclosure.review?.whyNotify,
+        disclosure.review?.suggestedAction,
+        disclosure.url,
+      ].filter(Boolean),
+    };
+  });
   await sendSignalsOnce(signals, settings);
 }
 
@@ -6272,6 +6298,7 @@ function normalizeStock(stock) {
   const positions = normalizePositions(stock);
   const sales = normalizeSales(stock);
   const aggregate = aggregatePositions(positions);
+  const accountType = normalizeJpAccountType(stock.accountType || positions[0]?.accountType || defaultSettings.defaultJpAccountType);
   const purchaseDate = aggregate.purchaseDate || normalizeDate(stock.purchaseDate);
   const purchasePrice = aggregate.purchasePrice || nullablePositiveNumber(stock.purchasePrice);
   const soldQuantity = aggregateSales(sales).quantity || 0;
@@ -6288,6 +6315,7 @@ function normalizeStock(stock) {
     purchaseDate,
     purchasePrice,
     quantity,
+    accountType,
     positions,
     sales,
     minimumHoldQuantity,
@@ -6313,6 +6341,7 @@ function normalizeUsStock(stock) {
     purchaseDate,
     purchasePrice,
     quantity,
+    accountType: "revolut_us",
     positions,
     sales,
   };
@@ -6356,6 +6385,8 @@ function positionMetrics(stock, price = {}) {
     : aggregate.purchasePrice;
   const realizedProceeds = lotState.realizedProceeds || null;
   const realizedCost = lotState.realizedCost || 0;
+  const salesAggregate = aggregateSales(sales);
+  const averageSellPrice = salesAggregate.sellPrice;
   const realizedPnlAmount = Number.isFinite(realizedProceeds) && Number.isFinite(realizedCost) && soldQuantity
     ? realizedProceeds - realizedCost
     : soldQuantity && realizedCost ? -realizedCost : null;
@@ -6400,6 +6431,8 @@ function positionMetrics(stock, price = {}) {
     unrealizedPnlAmount,
     unrealizedPnlPct,
     realizedProceeds: realizedProceeds || null,
+    averageSellPrice,
+    accountType: dominantAccountType(lotState.remainingLots, stock.accountType),
     dividendReceived,
     annualDividendEstimate,
     totalReturnAmount,
@@ -6759,6 +6792,7 @@ function positionLotState(positions = [], sales = []) {
       purchaseDate: lot.purchaseDate,
       purchasePrice: lot.purchasePrice,
       quantity: Math.round(lot.quantity * 1000000) / 1000000,
+      accountType: lot.accountType,
     }));
   const remainingQuantity = openLots.reduce((sum, lot) => sum + lot.quantity, 0);
   const remainingInvested = openLots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
@@ -7296,17 +7330,28 @@ function analysisSignal(analysis, settings) {
   if (!analysis || Number(analysis.confidence || 0) < settings.notificationMinConfidence) return null;
   const price = analysis.price || {};
   const position = analysis.position || {};
+  const currency = analysis.currency || price.currency || "JPY";
   if (analysis.action === "BUY") {
     if (isHighChaseChart(price) || isNoUpsideChart(price)) return null;
-    const edge = estimateBuyEdgeYen(price, settings.unitSize) - settings.tradeFeeYen;
-    if (edge < settings.notificationMinNetEdgeYen) return null;
+    const opportunity = estimateBuyOpportunity(price, settings.unitSize, settings, {
+      currency,
+      accountType: position.accountType || settings.defaultJpAccountType,
+    });
+    if (opportunity.netAmount < minimumSignalEdge(settings, currency)) return null;
     return {
       key: `${analysis.symbol}:BUY`,
       action: "購入候補",
       symbol: analysis.symbol,
       name: analysis.name,
       confidence: analysis.confidence,
-      netEdgeYen: edge,
+      currency,
+      currentPrice: opportunity.currentPrice,
+      quantity: opportunity.quantity,
+      netEdgeYen: opportunity.netAmount,
+      netEdgeAmount: opportunity.netAmount,
+      netEdgeLabel: opportunity.label,
+      accountText: opportunity.accountText,
+      costText: opportunity.costText,
       reason: analysis.thesis,
       points: [...(analysis.reasons || []), ...(analysis.risks || []).map((item) => `注意: ${item}`)].slice(0, 5),
     };
@@ -7314,15 +7359,24 @@ function analysisSignal(analysis, settings) {
   if (analysis.action === "SELL") {
     const sellableQuantity = Number(position.sellableQuantity || 0);
     if (sellableQuantity <= 0) return null;
-    const edge = estimateSellEdgeYen(position, sellableQuantity) - settings.tradeFeeYen;
-    if (edge < settings.notificationMinNetEdgeYen) return null;
+    const sale = estimateSellOpportunity(analysis, sellableQuantity, settings, { currency });
+    if (Math.abs(sale.netAmount) < minimumSignalEdge(settings, currency)) return null;
     return {
       key: `${analysis.symbol}:SELL`,
       action: "追加分の見直し候補",
       symbol: analysis.symbol,
       name: analysis.name,
       confidence: analysis.confidence,
-      netEdgeYen: edge,
+      currency,
+      currentPrice: sale.currentPrice,
+      averagePurchasePrice: position.purchasePrice,
+      averageSellPrice: position.averageSellPrice,
+      quantity: sellableQuantity,
+      netEdgeYen: Math.abs(sale.netAmount),
+      netEdgeAmount: sale.netAmount,
+      netEdgeLabel: sale.label,
+      accountText: sale.accountText,
+      costText: sale.costText,
       reason: analysis.thesis,
       points: [
         `判定対象 ${sellableQuantity}株`,
@@ -7345,6 +7399,11 @@ function exitPlanSignals(analysis = {}) {
     confidence: alert.confidence || 85,
     netEdgeYen: 0,
     currency: plan.currency,
+    currentPrice: plan.current,
+    averagePurchasePrice: analysis.position?.purchasePrice,
+    averageSellPrice: analysis.position?.averageSellPrice,
+    quantity: sellableExitQuantity(analysis.position || {}),
+    accountText: accountTypeLabel(analysis.position?.accountType || (plan.currency === "USD" ? "revolut_us" : "taxable")),
     hideEdge: true,
     reason: alert.summary,
     points: [
@@ -7368,27 +7427,61 @@ function discoverySignal(candidate, settings) {
   const price = candidate.price || {};
   const plan = candidate.buyPlan || {};
   if (plan.stance !== "今すぐ検討") return null;
-  const edge = estimateBuyEdgeYen(price, candidate.unitSize || settings.unitSize) - settings.tradeFeeYen;
-  if (edge < settings.notificationMinNetEdgeYen) return null;
+  const currency = candidate.currency || price.currency || discoveryCurrency(candidate);
+  const opportunity = estimateBuyOpportunity(price, candidate.unitSize || settings.unitSize, settings, {
+    currency,
+    accountType: settings.defaultJpAccountType,
+  });
+  if (opportunity.netAmount < minimumSignalEdge(settings, currency)) return null;
   return {
     key: `${candidate.symbol}:BUY`,
     action: "購入候補",
     symbol: candidate.symbol,
     name: candidate.name,
     confidence,
-    netEdgeYen: edge,
+    currency,
+    currentPrice: opportunity.currentPrice,
+    quantity: opportunity.quantity,
+    netEdgeYen: opportunity.netAmount,
+    netEdgeAmount: opportunity.netAmount,
+    netEdgeLabel: opportunity.label,
+    accountText: opportunity.accountText,
+    costText: opportunity.costText,
     reason: plan.summary || candidate.aiReview?.summary || `${candidate.name}は候補スコアが高い銘柄です。`,
     points: [...(candidate.reasons || []), ...(candidate.risks || []).map((item) => `注意: ${item}`)].slice(0, 5),
   };
 }
 
-function estimateBuyEdgeYen(price = {}, unitSize = 100) {
+function estimateBuyOpportunity(price = {}, unitSize = 100, settings = {}, options = {}) {
   const current = nullablePositiveNumber(price.current);
-  if (!current) return 0;
+  const currency = options.currency || price.currency || "JPY";
+  const quantity = nullablePositiveNumber(unitSize) || 0;
+  if (!current || !quantity) {
+    return {
+      currentPrice: current,
+      quantity,
+      netAmount: 0,
+      label: "通知判定の余裕",
+      accountText: accountTypeLabel(options.accountType || (currency === "USD" ? "revolut_us" : settings.defaultJpAccountType)),
+      costText: costSummaryText({ total: 0, fee: 0, tax: 0 }, currency),
+    };
+  }
   const trend = nullablePositiveNumber(price.trendPrice3y);
-  const dividend = Number.isFinite(price.dividendPerShareTtm) ? price.dividendPerShareTtm * unitSize : 0;
-  const capitalEdge = trend && trend > current ? (trend - current) * unitSize : 0;
-  return Math.max(capitalEdge, dividend);
+  const dividend = Number.isFinite(price.dividendPerShareTtm) ? price.dividendPerShareTtm * quantity : 0;
+  const capitalEdge = trend && trend > current ? (trend - current) * quantity : 0;
+  const grossAmount = Math.max(capitalEdge, dividend);
+  const accountType = currency === "USD" ? "revolut_us" : normalizeJpAccountType(options.accountType || settings.defaultJpAccountType);
+  const cost = estimateRoundTripCost(grossAmount, settings, { currency, accountType });
+  const netAmount = Math.max(0, grossAmount - cost.total);
+  return {
+    currentPrice: current,
+    quantity,
+    grossAmount,
+    netAmount,
+    label: capitalEdge >= dividend ? "3年目安との差額(税/費用後)" : "年間配当目安(税/費用後)",
+    accountText: accountTypeLabel(accountType),
+    costText: costSummaryText(cost, currency),
+  };
 }
 
 function estimateSellEdgeYen(position = {}, sellableQuantity = 0) {
@@ -7399,6 +7492,72 @@ function estimateSellEdgeYen(position = {}, sellableQuantity = 0) {
     : position.pnlAmount;
   if (!Number.isFinite(total)) return 0;
   return Math.abs((total / quantity) * sellableQuantity);
+}
+
+function estimateSellOpportunity(analysis = {}, sellableQuantity = 0, settings = {}, options = {}) {
+  const position = analysis.position || {};
+  const price = analysis.price || {};
+  const currency = options.currency || price.currency || analysis.currency || "JPY";
+  const current = nullablePositiveNumber(price.current);
+  const purchasePrice = nullablePositiveNumber(position.purchasePrice);
+  const grossAmount = current && purchasePrice
+    ? (current - purchasePrice) * sellableQuantity
+    : estimateSellEdgeYen(position, sellableQuantity);
+  const accountType = currency === "USD" ? "revolut_us" : (position.accountType || "taxable");
+  const cost = estimateOneWayTradeCost(grossAmount, settings, { currency, accountType });
+  const netAmount = grossAmount >= 0
+    ? grossAmount - cost.total
+    : grossAmount - cost.fee;
+  return {
+    currentPrice: current,
+    netAmount,
+    label: grossAmount >= 0 ? "対象株の損益(税/費用後)" : "対象株の損益(費用後)",
+    accountText: accountTypeLabel(accountType),
+    costText: costSummaryText(cost, currency),
+  };
+}
+
+function minimumSignalEdge(settings = {}, currency = "JPY") {
+  const yenThreshold = clamp(Number(settings.notificationMinNetEdgeYen ?? defaultSettings.notificationMinNetEdgeYen), 0, 1000000);
+  return currency === "USD" && yenThreshold > 0 ? Math.max(10, Math.round(yenThreshold / 150)) : yenThreshold;
+}
+
+function estimateRoundTripCost(grossGain = 0, settings = {}, options = {}) {
+  const currency = options.currency || "JPY";
+  if (currency === "USD") {
+    const fee = clamp(Number(settings.usTradeFeeUsd || 0), 0, 1000) * 2;
+    const tax = Math.max(0, grossGain) * (clamp(Number(settings.usCapitalGainTaxPct || 0), 0, 60) / 100);
+    return { fee, tax, total: fee + tax };
+  }
+  const accountType = normalizeJpAccountType(options.accountType || settings.defaultJpAccountType);
+  const perTradeFee = accountType === "nisa"
+    ? clamp(Number(settings.jpNisaTradeFeeYen || 0), 0, 100000)
+    : clamp(Number(settings.jpTaxableTradeFeeYen ?? settings.tradeFeeYen ?? 0), 0, 100000);
+  const tax = accountType === "nisa" ? 0 : Math.max(0, grossGain) * (clamp(Number(settings.jpCapitalGainTaxPct ?? defaultSettings.jpCapitalGainTaxPct), 0, 60) / 100);
+  return { fee: perTradeFee * 2, tax, total: (perTradeFee * 2) + tax };
+}
+
+function estimateOneWayTradeCost(grossGain = 0, settings = {}, options = {}) {
+  const currency = options.currency || "JPY";
+  if (currency === "USD") {
+    const fee = clamp(Number(settings.usTradeFeeUsd || 0), 0, 1000);
+    const tax = Math.max(0, grossGain) * (clamp(Number(settings.usCapitalGainTaxPct || 0), 0, 60) / 100);
+    return { fee, tax, total: fee + tax };
+  }
+  const accountType = normalizeJpAccountType(options.accountType || settings.defaultJpAccountType);
+  const fee = accountType === "nisa"
+    ? clamp(Number(settings.jpNisaTradeFeeYen || 0), 0, 100000)
+    : clamp(Number(settings.jpTaxableTradeFeeYen ?? settings.tradeFeeYen ?? 0), 0, 100000);
+  const tax = accountType === "nisa" ? 0 : Math.max(0, grossGain) * (clamp(Number(settings.jpCapitalGainTaxPct ?? defaultSettings.jpCapitalGainTaxPct), 0, 60) / 100);
+  return { fee, tax, total: fee + tax };
+}
+
+function costSummaryText(cost = {}, currency = "JPY") {
+  const fee = Number.isFinite(cost.fee) ? cost.fee : 0;
+  const tax = Number.isFinite(cost.tax) ? cost.tax : 0;
+  const total = Number.isFinite(cost.total) ? cost.total : fee + tax;
+  const formatter = (value) => formatMoney(value, currency);
+  return `概算費用 ${formatter(total)}（手数料 ${formatter(fee)} / 税 ${formatter(tax)}）`;
 }
 
 async function sendSignalsOnce(signals, settings) {
@@ -7418,12 +7577,20 @@ async function sendSignalsOnce(signals, settings) {
 }
 
 async function sendTeamsSignal(settings, signal) {
+  const currency = signal.currency || "JPY";
+  const netAmount = signalNetAmount(signal);
   const text = [
     `【Stock Signal】${signal.action}: ${signal.name} (${signal.symbol})`,
     `信頼度: ${Math.round(signal.confidence)}%`,
-    signal.hideEdge || signal.currency === "USD" ? "" : `手数料後メリット目安: ${formatYen(signal.netEdgeYen)}`,
+    Number.isFinite(signal.currentPrice) ? `現在単価: ${formatMoney(signal.currentPrice, currency)}` : "",
+    Number.isFinite(signal.averagePurchasePrice) ? `平均取得単価: ${formatMoney(signal.averagePurchasePrice, currency)}` : "",
+    Number.isFinite(signal.averageSellPrice) ? `平均売却単価: ${formatMoney(signal.averageSellPrice, currency)}` : "",
+    Number.isFinite(signal.quantity) ? `判定数量: ${signal.quantity.toLocaleString("ja-JP")}株` : "",
+    signal.accountText ? `口座/通貨: ${signal.accountText}` : "",
+    signal.costText || "",
+    !signal.hideEdge && Number.isFinite(netAmount) ? `${signal.netEdgeLabel || "通知判定の余裕"}: ${formatMoney(netAmount, currency)}` : "",
     signal.reason,
-    ...signal.points.map((item) => `・${item}`),
+    ...(signal.points || []).map((item) => `・${item}`),
   ].filter(Boolean).join("\n");
   const tasks = [];
   if (settings.teamsWebhookUrl) tasks.push(sendTeamsWebhook(settings.teamsWebhookUrl, signal, text));
@@ -7442,12 +7609,18 @@ async function sendTeamsWebhook(url, signal, text) {
 }
 
 function teamsAdaptiveCardPayload(signal, text) {
+  const currency = signal.currency || "JPY";
+  const netAmount = signalNetAmount(signal);
   const facts = [
     { title: "信頼度", value: `${Math.round(signal.confidence)}%` },
   ];
-  if (!signal.hideEdge && signal.currency !== "USD") {
-    facts.push({ title: "手数料後メリット", value: formatYen(signal.netEdgeYen) });
-  }
+  if (Number.isFinite(signal.currentPrice)) facts.push({ title: "現在単価", value: formatMoney(signal.currentPrice, currency) });
+  if (Number.isFinite(signal.averagePurchasePrice)) facts.push({ title: "平均取得単価", value: formatMoney(signal.averagePurchasePrice, currency) });
+  if (Number.isFinite(signal.averageSellPrice)) facts.push({ title: "平均売却単価", value: formatMoney(signal.averageSellPrice, currency) });
+  if (Number.isFinite(signal.quantity)) facts.push({ title: "判定数量", value: `${signal.quantity.toLocaleString("ja-JP")}株` });
+  if (signal.accountText) facts.push({ title: "口座/通貨", value: signal.accountText });
+  if (signal.costText) facts.push({ title: "費用前提", value: signal.costText });
+  if (!signal.hideEdge && Number.isFinite(netAmount)) facts.push({ title: signal.netEdgeLabel || "通知判定の余裕", value: formatMoney(netAmount, currency) });
   return {
     type: "message",
     text,
@@ -7489,6 +7662,12 @@ function teamsAdaptiveCardPayload(signal, text) {
       },
     }],
   };
+}
+
+function signalNetAmount(signal = {}) {
+  if (Number.isFinite(signal.netEdgeAmount)) return signal.netEdgeAmount;
+  if (Number.isFinite(signal.netEdgeYen)) return signal.netEdgeYen;
+  return null;
 }
 
 async function sendGraphChatMessage(settings, text) {
@@ -7927,8 +8106,11 @@ function finalizeShareholderSnapshot(snapshot = {}, previous = null, settings = 
 async function notifyShareholderSignals(result = {}, settings = {}) {
   if (!settings.notificationsEnabled) return;
   if (!settings.teamsWebhookUrl && !(settings.graphAccessToken && settings.graphChatId)) return;
+  const cache = await readAnalysisCache().catch(() => ({ analyses: [] }));
+  const contextBySymbol = new Map((cache.analyses || []).map((analysis) => [analysis.symbol, analysis]));
   const signals = (result.changed || []).map((item) => {
     const direction = item.changePct > 0 ? "上昇" : "低下";
+    const context = contextBySymbol.get(item.symbol) || {};
     return {
       key: `shareholder:${item.symbol}:${formatPercentKey(item.previousInstitutionalOwnershipPct)}:${formatPercentKey(item.institutionalOwnershipPct)}:${item.asOfDate || ""}`,
       absoluteKey: true,
@@ -7937,6 +8119,12 @@ async function notifyShareholderSignals(result = {}, settings = {}) {
       name: item.name,
       confidence: Math.max(80, item.confidence || 0),
       netEdgeYen: 0,
+      currency: context.price?.currency || "JPY",
+      currentPrice: context.price?.current,
+      averagePurchasePrice: context.position?.purchasePrice,
+      averageSellPrice: context.position?.averageSellPrice,
+      quantity: Number(context.position?.quantity) > 0 ? context.position.quantity : undefined,
+      accountText: context.position?.accountType ? accountTypeLabel(context.position.accountType) : "",
       hideEdge: true,
       reason: `機関投資家比率が${formatPercentValue(item.previousInstitutionalOwnershipPct)}から${formatPercentValue(item.institutionalOwnershipPct)}へ${Math.abs(item.changePct).toFixed(1)}pt${direction}しました。`,
       points: [
@@ -8007,8 +8195,14 @@ function normalizeSettings(settings = {}) {
     shareholderUseLmStudio: settings.shareholderUseLmStudio !== false,
     notificationsEnabled: settings.notificationsEnabled === true,
     notificationMinConfidence: clamp(Number(settings.notificationMinConfidence || defaultSettings.notificationMinConfidence), 50, 100),
-    notificationMinNetEdgeYen: clamp(Number(settings.notificationMinNetEdgeYen || defaultSettings.notificationMinNetEdgeYen), 0, 1000000),
-    tradeFeeYen: clamp(Number(settings.tradeFeeYen || 0), 0, 100000),
+    notificationMinNetEdgeYen: clamp(Number(settings.notificationMinNetEdgeYen ?? defaultSettings.notificationMinNetEdgeYen), 0, 1000000),
+    tradeFeeYen: clamp(Number(settings.tradeFeeYen || settings.jpTaxableTradeFeeYen || 0), 0, 100000),
+    defaultJpAccountType: normalizeJpAccountType(settings.defaultJpAccountType || defaultSettings.defaultJpAccountType),
+    jpTaxableTradeFeeYen: clamp(Number(settings.jpTaxableTradeFeeYen ?? settings.tradeFeeYen ?? defaultSettings.jpTaxableTradeFeeYen), 0, 100000),
+    jpNisaTradeFeeYen: clamp(Number(settings.jpNisaTradeFeeYen ?? defaultSettings.jpNisaTradeFeeYen), 0, 100000),
+    jpCapitalGainTaxPct: clamp(Number(settings.jpCapitalGainTaxPct ?? defaultSettings.jpCapitalGainTaxPct), 0, 60),
+    usTradeFeeUsd: clamp(Number(settings.usTradeFeeUsd ?? defaultSettings.usTradeFeeUsd), 0, 1000),
+    usCapitalGainTaxPct: clamp(Number(settings.usCapitalGainTaxPct ?? defaultSettings.usCapitalGainTaxPct), 0, 60),
     teamsWebhookUrl: normalizeUrl(settings.teamsWebhookUrl) || "",
     graphAccessToken: String(settings.graphAccessToken || "").trim(),
     graphTenantId: String(settings.graphTenantId || "").trim(),
@@ -8051,6 +8245,12 @@ function applySettingsPatch(current, body = {}) {
   if (body.notificationMinConfidence) next.notificationMinConfidence = body.notificationMinConfidence;
   if (body.notificationMinNetEdgeYen !== undefined) next.notificationMinNetEdgeYen = body.notificationMinNetEdgeYen;
   if (body.tradeFeeYen !== undefined) next.tradeFeeYen = body.tradeFeeYen;
+  if (body.defaultJpAccountType !== undefined) next.defaultJpAccountType = body.defaultJpAccountType;
+  if (body.jpTaxableTradeFeeYen !== undefined) next.jpTaxableTradeFeeYen = body.jpTaxableTradeFeeYen;
+  if (body.jpNisaTradeFeeYen !== undefined) next.jpNisaTradeFeeYen = body.jpNisaTradeFeeYen;
+  if (body.jpCapitalGainTaxPct !== undefined) next.jpCapitalGainTaxPct = body.jpCapitalGainTaxPct;
+  if (body.usTradeFeeUsd !== undefined) next.usTradeFeeUsd = body.usTradeFeeUsd;
+  if (body.usCapitalGainTaxPct !== undefined) next.usCapitalGainTaxPct = body.usCapitalGainTaxPct;
   if (typeof body.teamsWebhookUrl === "string" && body.teamsWebhookUrl.trim()) next.teamsWebhookUrl = body.teamsWebhookUrl;
   if (typeof body.graphAccessToken === "string" && body.graphAccessToken.trim()) next.graphAccessToken = body.graphAccessToken;
   if (typeof body.graphTenantId === "string" && body.graphTenantId.trim()) next.graphTenantId = body.graphTenantId;
@@ -8092,6 +8292,12 @@ function publicSettings(settings) {
     notificationMinConfidence: settings.notificationMinConfidence,
     notificationMinNetEdgeYen: settings.notificationMinNetEdgeYen,
     tradeFeeYen: settings.tradeFeeYen,
+    defaultJpAccountType: settings.defaultJpAccountType,
+    jpTaxableTradeFeeYen: settings.jpTaxableTradeFeeYen,
+    jpNisaTradeFeeYen: settings.jpNisaTradeFeeYen,
+    jpCapitalGainTaxPct: settings.jpCapitalGainTaxPct,
+    usTradeFeeUsd: settings.usTradeFeeUsd,
+    usCapitalGainTaxPct: settings.usCapitalGainTaxPct,
     hasTeamsWebhookUrl: Boolean(settings.teamsWebhookUrl),
     graphChatId: settings.graphChatId,
     graphTenantId: settings.graphTenantId,
@@ -8727,6 +8933,34 @@ function daysSinceSearchDate(dateString = "") {
   return Math.floor((today - target) / 86400000);
 }
 
+function normalizeJpAccountType(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "nisa" || text.includes("nisa") || text.includes("ニーサ")) return "nisa";
+  return "taxable";
+}
+
+function normalizePositionAccountType(value, stock = {}) {
+  const symbol = String(stock.symbol || "").trim().toUpperCase();
+  if (symbol && !symbol.endsWith(".T")) return "revolut_us";
+  return normalizeJpAccountType(value || stock.accountType || defaultSettings.defaultJpAccountType);
+}
+
+function accountTypeLabel(value) {
+  const type = String(value || "").toLowerCase();
+  if (type === "revolut_us") return "Revolut USA / USD";
+  if (type === "nisa") return "NISA";
+  if (type === "mixed") return "NISA+一般/特定";
+  return "一般/特定";
+}
+
+function dominantAccountType(lots = [], fallback = "taxable") {
+  const types = new Set(lots.map((lot) => lot.accountType).filter(Boolean));
+  if (types.size === 1) return [...types][0];
+  if (types.size > 1) return "mixed";
+  if (String(fallback || "").toLowerCase() === "revolut_us") return "revolut_us";
+  return normalizePositionAccountType(fallback);
+}
+
 function normalizePositions(stock) {
   const raw = Array.isArray(stock.positions) && stock.positions.length
     ? stock.positions
@@ -8734,12 +8968,14 @@ function normalizePositions(stock) {
       purchaseDate: stock.purchaseDate,
       purchasePrice: stock.purchasePrice,
       quantity: stock.quantity,
+      accountType: stock.accountType,
     }];
   return raw
     .map((lot) => ({
       purchaseDate: normalizeDate(lot.purchaseDate),
       purchasePrice: nullablePositiveNumber(lot.purchasePrice),
       quantity: nullablePositiveNumber(lot.quantity),
+      accountType: normalizePositionAccountType(lot.accountType, stock),
     }))
     .filter((lot) => lot.purchasePrice && lot.quantity)
     .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"))
@@ -8985,7 +9221,8 @@ function chunkArray(values = [], size = 1) {
 
 function formatYen(value) {
   if (!Number.isFinite(value)) return "-";
-  return `¥${Math.round(value).toLocaleString("ja-JP")}`;
+  const sign = value < 0 ? "-" : "";
+  return `${sign}¥${Math.abs(Math.round(value)).toLocaleString("ja-JP")}`;
 }
 
 function formatUsd(value) {

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260902-drag-handle-only">
+  <link rel="stylesheet" href="/styles.css?v=20260902-sale-average-costs">
 </head>
 <body>
   <div class="app-shell">
@@ -132,7 +132,7 @@
                     <th>銘柄</th>
                     <th>業種</th>
                     <th>現在</th>
-                    <th>取得</th>
+                    <th>取得/売却</th>
                     <th>保有数</th>
                     <th>損益</th>
                     <th>配当</th>
@@ -207,6 +207,13 @@
               <input id="stockQuantity" name="quantity" type="number" min="0" step="1" placeholder="例: 100">
             </label>
             <label>
+              <span>口座</span>
+              <select id="stockAccountType" name="accountType">
+                <option value="taxable">一般/特定</option>
+                <option value="nisa">NISA</option>
+              </select>
+            </label>
+            <label>
               <span>必ず残す株数</span>
               <input id="stockMinimumHoldQuantity" name="minimumHoldQuantity" type="number" min="0" step="1" placeholder="例: 100">
             </label>
@@ -229,7 +236,7 @@
                     <th>銘柄</th>
                     <th>業種</th>
                     <th>価格</th>
-                    <th>取得</th>
+                    <th>取得/売却</th>
                     <th>損益</th>
                     <th>配当</th>
                     <th>1年</th>
@@ -326,7 +333,7 @@
                   <tr>
                     <th>銘柄</th>
                     <th>現在</th>
-                    <th>取得</th>
+                    <th>取得/売却</th>
                     <th>残株数</th>
                     <th>損益</th>
                     <th>配当</th>
@@ -668,16 +675,41 @@
                 <span>Teamsに通知する</span>
               </label>
               <label>
-                <span>手数料</span>
-                <input id="settingsTradeFeeYen" type="number" min="0" max="100000" step="10" value="0">
-              </label>
-              <label>
-                <span>最低メリット</span>
+                <span>通知する最小余裕</span>
                 <input id="settingsNotificationMinNetEdgeYen" type="number" min="0" max="1000000" step="1000" value="5000">
               </label>
               <label>
                 <span>最低信頼度</span>
                 <input id="settingsNotificationMinConfidence" type="number" min="50" max="100" step="1" value="78">
+              </label>
+            </section>
+            <section class="control-strip cost-strip" aria-label="費用と税金">
+              <label>
+                <span>日本株の標準口座</span>
+                <select id="settingsDefaultJpAccountType">
+                  <option value="taxable">一般/特定</option>
+                  <option value="nisa">NISA</option>
+                </select>
+              </label>
+              <label>
+                <span>楽天 一般/特定 手数料</span>
+                <input id="settingsJpTaxableTradeFeeYen" type="number" min="0" max="100000" step="10" value="0">
+              </label>
+              <label>
+                <span>楽天 NISA 手数料</span>
+                <input id="settingsJpNisaTradeFeeYen" type="number" min="0" max="100000" step="10" value="0">
+              </label>
+              <label>
+                <span>一般/特定 税率%</span>
+                <input id="settingsJpCapitalGainTaxPct" type="number" min="0" max="60" step="0.001" value="20.315">
+              </label>
+              <label>
+                <span>Revolut米国株 手数料USD</span>
+                <input id="settingsUsTradeFeeUsd" type="number" min="0" max="1000" step="0.01" value="0">
+              </label>
+              <label>
+                <span>米国株 税率%</span>
+                <input id="settingsUsCapitalGainTaxPct" type="number" min="0" max="60" step="0.001" value="0">
               </label>
             </section>
             <label>
@@ -716,6 +748,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260902-drag-handle-only" type="module"></script>
+  <script src="/app.js?v=20260902-sale-average-costs" type="module"></script>
 </body>
 </html>
