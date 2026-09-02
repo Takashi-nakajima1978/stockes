@@ -147,6 +147,7 @@ const els = {
   settingsForm: document.getElementById("settingsForm"),
   settingsSearchProvider: document.getElementById("settingsSearchProvider"),
   settingsSearxngUrl: document.getElementById("settingsSearxngUrl"),
+  settingsSearxngEngines: document.getElementById("settingsSearxngEngines"),
   settingsGoogleApiKey: document.getElementById("settingsGoogleApiKey"),
   settingsGoogleCseId: document.getElementById("settingsGoogleCseId"),
   settingsGoogleSearchUrl: document.getElementById("settingsGoogleSearchUrl"),
@@ -268,7 +269,8 @@ function searchStatusText(search = {}, options = {}) {
   if (!search.ok) return "未接続";
   const provider = options.provider ? `${search.provider || "検索"} ` : "";
   const checked = Number.isFinite(search.resultCount) ? `（確認${search.resultCount}件）` : "";
-  return `${provider}接続OK${checked}`;
+  const engines = search.engines ? ` / ${search.engines}` : "";
+  return `${provider}接続OK${checked}${engines}`;
 }
 
 function toast(message) {
@@ -312,6 +314,7 @@ function applySettings(settings = {}) {
   state.settings = settings;
   if (els.settingsSearchProvider) els.settingsSearchProvider.value = settings.searchProvider || "searxng";
   if (els.settingsSearxngUrl) els.settingsSearxngUrl.value = settings.searxngUrl || "http://127.0.0.1:8081/search";
+  if (els.settingsSearxngEngines) els.settingsSearxngEngines.value = settings.searxngEngines || "bing";
   if (els.settingsGoogleCseId) els.settingsGoogleCseId.value = settings.googleCseId || "";
   if (els.settingsGoogleSearchUrl) els.settingsGoogleSearchUrl.value = settings.googleSearchUrl || "https://www.googleapis.com/customsearch/v1";
   if (els.settingsLmStudioUrl) els.settingsLmStudioUrl.value = settings.lmStudioUrl || "http://127.0.0.1:1234/v1";
@@ -2873,7 +2876,7 @@ function renderDiagnostics() {
   if (!els.diagnosticsList || !state.diagnostics) return;
   const data = state.diagnostics;
   if (els.diagnosticsStatus) {
-    setStatus(els.diagnosticsStatus, data.ok, data.ok ? "検索できます" : "要確認");
+    setStatus(els.diagnosticsStatus, data.ok, data.ok ? `検索できます${data.engines ? ` / ${data.engines}` : ""}` : "要確認");
   }
   const checks = (data.checks || []).map((check) => `
     <article class="diagnostics-item">
@@ -3013,7 +3016,25 @@ function isHighChaseChart(price = {}) {
   const farFromTrend = Number.isFinite(price.distanceFromTrend3y) && price.distanceFromTrend3y >= 12;
   const farFromLow = Number.isFinite(price.distanceFromLow3y) && price.distanceFromLow3y >= 120;
   const notDeepPullback = !Number.isFinite(price.distanceFromHigh3y) || price.distanceFromHigh3y > -35;
-  return strongRun && notDeepPullback && (farFromTrend || farFromLow);
+  return (strongRun && notDeepPullback && (farFromTrend || farFromLow)) || isExtendedRunChart(price);
+}
+
+function isExtendedRunChart(price = {}) {
+  const return3y = price.return3y;
+  const return1y = price.return1y;
+  const return3m = price.return3m;
+  const distanceFromHigh3y = price.distanceFromHigh3y;
+  const distanceFromBuyLine1y = price.distanceFromBuyLine1y;
+  const deepReset = (Number.isFinite(distanceFromHigh3y) && distanceFromHigh3y <= -45)
+    || (Number.isFinite(return1y) && return1y <= -30);
+  if (deepReset) return false;
+  if (Number.isFinite(return3y) && return3y >= 300) return true;
+  if (Number.isFinite(return3y) && return3y >= 220 && Number.isFinite(return3m) && return3m >= 5) return true;
+  return Number.isFinite(return3y)
+    && return3y >= 180
+    && Number.isFinite(distanceFromBuyLine1y)
+    && distanceFromBuyLine1y <= 6
+    && (!Number.isFinite(return1y) || return1y > -20);
 }
 
 function isNoUpsideChart(price = {}) {
@@ -3472,11 +3493,12 @@ function renderCandidateList() {
       ? `表示候補は${source.suggestionCount}件です。`
       : `表示候補は${state.suggestions.length}件です。`;
     const excludedText = source.excludedCount ? `非表示は${source.excludedCount}件です。` : "";
+    const engineText = source.engines ? `使用エンジンは${source.engines}です。` : "";
     els.suggestionSource.textContent = source.settingsChanged
       ? `${source.message || "調査条件または採点ルールが変わりました。候補を探すで現在の条件に合わせて作り直してください。"}現在の日本株条件は${budgetText}、米国株条件は${usBudgetText}です。${earlyText}候補は自動追加されません。`
       : source.searchCount > 0
-      ? `${source.provider}で${source.searchCount}件確認しました。${discoveryText}${poolText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
-      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${poolText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${countText}${excludedText}`;
+      ? `${source.provider}で${source.searchCount}件確認しました。${engineText}${discoveryText}${poolText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
+      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${engineText}${poolText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${countText}${excludedText}`;
   }
   if (!state.suggestions.length) {
     els.candidateList.classList.add("empty-state");
@@ -3733,10 +3755,11 @@ function earlySignalHtml(signal) {
   const criteria = (signal.criteria || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
   const risks = (signal.risks || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
   const cls = Number(signal.score || 0) >= 75 ? "good" : Number(signal.score || 0) >= 60 ? "ok" : Number(signal.score || 0) >= 45 ? "watch" : "weak";
+  const title = signal.title || (Number(signal.score || 0) >= 45 ? "先回り初動" : "初動確認");
   return `
     <div class="early-signal ${cls}">
       <div>
-        <strong>先回り初動</strong>
+        <strong>${escapeHtml(title)}</strong>
         <span>${escapeHtml(signal.label || "確認")} ${Number.isFinite(signal.score) ? signal.score : "-"}</span>
       </div>
       <p>${escapeHtml(signal.summary || "買い場と初動条件を確認します。")}</p>
@@ -4305,6 +4328,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         searchProvider: els.settingsSearchProvider.value,
         searxngUrl: els.settingsSearxngUrl.value,
+        searxngEngines: els.settingsSearxngEngines.value,
         googleApiKey: els.settingsGoogleApiKey.value,
         googleCseId: els.settingsGoogleCseId.value,
         googleSearchUrl: els.settingsGoogleSearchUrl.value,

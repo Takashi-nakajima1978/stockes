@@ -9,6 +9,7 @@ services:
       - HOST=0.0.0.0
       - SEARCH_PROVIDER=${SEARCH_PROVIDER:-searxng}
       - SEARXNG_URL=${SEARXNG_URL:-http://host.docker.internal:8081/search}
+      - SEARXNG_ENGINES=${SEARXNG_ENGINES:-bing}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GOOGLE_CSE_ID=${GOOGLE_CSE_ID:-}
       - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234/v1}

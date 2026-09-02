@@ -31,7 +31,7 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 5;
+const DISCOVERY_SCORING_VERSION = 6;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
@@ -75,6 +75,7 @@ const PE_CRITERIA = [
 const defaultSettings = {
   searchProvider: process.env.SEARCH_PROVIDER || "searxng",
   searxngUrl: process.env.SEARXNG_URL || "http://127.0.0.1:8081/search",
+  searxngEngines: process.env.SEARXNG_ENGINES || "bing",
   googleApiKey: process.env.GOOGLE_API_KEY || "",
   googleCseId: process.env.GOOGLE_CSE_ID || "",
   googleSearchUrl: process.env.GOOGLE_SEARCH_URL || "https://www.googleapis.com/customsearch/v1",
@@ -2440,6 +2441,7 @@ function discoveryPriorityScore(candidate = {}) {
   const timingWeight = peAligned || early >= 60 ? 1 : 0.4;
   const peThinPenalty = pe < PE_PRIORITY_MIN_SCORE ? (pe < 30 ? 120 : 70) : 0;
   const overheatPenalty = Number.isFinite(candidate.price?.return3m) && candidate.price.return3m > 28 ? 60 : 0;
+  const extendedRunPenalty = isExtendedRunChart(candidate.price || {}) ? 220 : 0;
   return Math.max(0, Math.round(
     peTierBonus
     + earlyTierBonus
@@ -2449,7 +2451,8 @@ function discoveryPriorityScore(candidate = {}) {
     + ((timingBonus + buyLineBonus + planBonus) * timingWeight)
     + currencyBonus
     - peThinPenalty
-    - overheatPenalty,
+    - overheatPenalty
+    - extendedRunPenalty,
   ));
 }
 
@@ -2477,6 +2480,7 @@ function isActionableDiscoveryCandidate(candidate = {}) {
   const current = nullablePositiveNumber(price.current);
   const maxBuyPrice = nullablePositiveNumber(plan.maxBuyPrice);
   if (!current || !maxBuyPrice) return false;
+  if (isExtendedRunChart(price)) return false;
   if (current > maxBuyPrice * STRICT_BUY_TARGET_TOLERANCE) return false;
   if (price.buyLine1y && current > price.buyLine1y * 1.03) return false;
   if (candidate.inBudget === false) return false;
@@ -3045,6 +3049,24 @@ function earlyEntrySignal(candidate = {}, price = {}) {
     }
   }
 
+  if (isExtendedRunChart(price)) {
+    const bounded = Math.min(44, clamp(Math.round(score - 42), 0, 100));
+    const runText = extendedRunText(price);
+    return {
+      title: "高値追い警戒",
+      score: bounded,
+      label: "押し目待ち",
+      summary: `${runText}。買い場ラインに近くても、先回りではなく高値追いになりやすいです。`,
+      criteria: uniqueText(criteria).slice(0, 3),
+      risks: uniqueText([
+        runText,
+        "先回り初動ではなく、すでに走った後の形",
+        "深い押し目か決算の再確認まで待ちたい",
+        ...risks,
+      ]).slice(0, 4),
+    };
+  }
+
   const bounded = clamp(Math.round(score), 0, 100);
   const label = bounded >= 75 ? "先回り優先" : bounded >= 60 ? "初動候補" : bounded >= 45 ? "押し目監視" : "先回り弱い";
   const summary = criteria.length
@@ -3101,8 +3123,14 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
 
   if (Number.isFinite(price.return3y)) {
     if (price.return3y >= 120) {
-      score += 14;
-      businessScore += 8;
+      if (isExtendedRunChart(price)) {
+        score -= 10;
+        businessScore += 2;
+        risks.push(`${extendedRunText(price)}で、ここからは高値追いになりやすい`);
+      } else {
+        score += 14;
+        businessScore += 8;
+      }
       reasons.push("株価は3年で大きく伸びている");
       if (Number.isFinite(price.distanceFromHigh3y) && price.distanceFromHigh3y > -8) {
         score -= 4;
@@ -3297,7 +3325,13 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     valueHits: mentioned ? valueHits : [],
     badHits: mentioned ? badHits : [],
   });
-  if (earlySignal?.score >= 75) {
+  const extendedRun = isExtendedRunChart(price);
+  if (extendedRun) {
+    process = boostProcessStage(process, "買い時", -10, "3年で大きく上昇済み。初動ではなく押し目待ち");
+    process = boostProcessStage(process, "リスク", -6, "高値追いになりやすい");
+    score -= 24;
+    risks.push(`先回り候補ではなく押し目待ち: ${extendedRunText(price)}`);
+  } else if (earlySignal?.score >= 75) {
     process = boostProcessStage(process, "買い時", 6, "先回りで入りやすい初動条件");
     score += isUsDiscoveryCandidate(candidate) ? 12 : 8;
     reasons.push(`先回り初動: ${earlySignal.summary}`);
@@ -3800,6 +3834,12 @@ function buildDiscoveryProcess({
     timing += 4;
     notes.timing.push("1年ではプラス");
   }
+  if (isExtendedRunChart(price)) {
+    timing -= 10;
+    risk -= 6;
+    notes.timing.push("3年で上がりすぎており、初動ではない");
+    notes.risk.push("高値追いになりやすい");
+  }
 
   if (Number.isFinite(price.maxDrawdown3y)) {
     if (price.maxDrawdown3y > -35) {
@@ -3910,8 +3950,31 @@ function candidateBuyPlan(price, options = {}) {
   const trendPrice = nullablePositiveNumber(price.trendPrice3y);
   const unitBudget = nullablePositiveNumber(options.unitBudget);
   const currentUnitAmount = current * unitSize;
-  const nearTrendCap = trendPrice ? trendPrice * 1.02 : current * 0.98;
   const buyLine = nullablePositiveNumber(price.buyLine1y);
+  if (isExtendedRunChart(price)) {
+    const low1y = nullablePositiveNumber(price.low1y);
+    const waitCandidates = [
+      current * 0.92,
+      buyLine ? buyLine * 0.94 : null,
+      low1y ? low1y * 1.04 : null,
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    const maxBuyPrice = Math.max(1, Math.min(...waitCandidates));
+    const unitAmountAtMax = maxBuyPrice * unitSize;
+    const runText = extendedRunText(price);
+    return {
+      stance: "押し目待ち",
+      maxBuyPrice: Math.round(maxBuyPrice * 10) / 10,
+      unitAmountAtMax: Math.round(unitAmountAtMax),
+      summary: `${runText}。買い場ライン付近でも高値追いになりやすいので、${formatMoney(maxBuyPrice, currency)}以下まで待ちます。`,
+      checks: uniqueText([
+        runText,
+        "先回り初動ではない",
+        buyLine ? "1年買い場だけでは買い判定にしない" : "",
+        "大きな押し目待ち",
+      ]).filter(Boolean).slice(0, 4),
+    };
+  }
+  const nearTrendCap = trendPrice ? trendPrice * 1.02 : current * 0.98;
   const underBuyLine = buyLine && current <= buyLine;
   const pullbackCap = Number.isFinite(price.return3m) && price.return3m > 18
     ? current * 0.94
@@ -4157,8 +4220,9 @@ async function searchGoogle(query, { limit, language } = {}) {
 
 async function searchSearxng(query, { limit, settings, language = "ja-JP" }) {
   if (!settings.searxngUrl) return [];
+  const engines = normalizeSearxngEngines(settings.searxngEngines);
   const attempts = [
-    { categories: "general", engines: "bing", timeout: 18000 },
+    { categories: "general", engines, timeout: 18000 },
   ];
   const results = [];
   const maxPages = limit > 10 ? 3 : 1;
@@ -4235,6 +4299,18 @@ function searxngCandidateUrls(settings = defaultSettings) {
     // Keep the configured value as the only attempt.
   }
   return [...new Set(urls.map(normalizeUrl).filter(Boolean))];
+}
+
+function normalizeSearxngEngines(value) {
+  const blocked = new Set(["duckduckgo", "google cse", "reuters", "bing news"]);
+  const raw = Array.isArray(value) ? value.join(",") : String(value || "");
+  const engines = uniqueText(raw
+    .split(",")
+    .map((item) => cleanText(item).toLowerCase())
+    .filter(Boolean)
+    .filter((item) => !blocked.has(item))
+    .filter((item) => /^[a-z0-9 _.-]{2,40}$/.test(item)));
+  return engines.slice(0, 8).join(",") || "bing";
 }
 
 async function searchGoogleCustom(query, { limit, settings, language = "ja-JP" }) {
@@ -4896,7 +4972,35 @@ function isHighChaseChart(price = {}) {
   const farFromTrend = Number.isFinite(price.distanceFromTrend3y) && price.distanceFromTrend3y >= 12;
   const farFromLow = Number.isFinite(price.distanceFromLow3y) && price.distanceFromLow3y >= 120;
   const notDeepPullback = !Number.isFinite(price.distanceFromHigh3y) || price.distanceFromHigh3y > -35;
-  return strongRun && notDeepPullback && (farFromTrend || farFromLow);
+  return (strongRun && notDeepPullback && (farFromTrend || farFromLow)) || isExtendedRunChart(price);
+}
+
+function isExtendedRunChart(price = {}) {
+  const return3y = price.return3y;
+  const return1y = price.return1y;
+  const return3m = price.return3m;
+  const distanceFromHigh3y = price.distanceFromHigh3y;
+  const distanceFromBuyLine1y = price.distanceFromBuyLine1y;
+  const deepReset = (Number.isFinite(distanceFromHigh3y) && distanceFromHigh3y <= -45)
+    || (Number.isFinite(return1y) && return1y <= -30);
+  if (deepReset) return false;
+  if (Number.isFinite(return3y) && return3y >= 300) return true;
+  if (Number.isFinite(return3y) && return3y >= 220 && Number.isFinite(return3m) && return3m >= 5) return true;
+  if (
+    Number.isFinite(return3y)
+    && return3y >= 180
+    && Number.isFinite(distanceFromBuyLine1y)
+    && distanceFromBuyLine1y <= 6
+    && (!Number.isFinite(return1y) || return1y > -20)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function extendedRunText(price = {}) {
+  if (Number.isFinite(price.return3y)) return `3年で${formatSignedPercent(price.return3y)}上昇済み`;
+  return "過去3年で大きく上昇済み";
 }
 
 function isNoUpsideChart(price = {}) {
@@ -6127,6 +6231,7 @@ async function searchDiagnostics() {
   if (settings.searchProvider !== "searxng") {
     return {
       provider: "Google",
+      engines: "",
       ok: Boolean(settings.googleApiKey && settings.googleCseId),
       generatedAt: new Date().toISOString(),
       checks: [{
@@ -6144,19 +6249,20 @@ async function searchDiagnostics() {
     diagnosticSearxngCheck(settings, {
       label: "ニュース語句検索",
       categories: "general",
-      engines: "bing",
+      engines: normalizeSearxngEngines(settings.searxngEngines),
       query: "日本株 決算短信 上方修正 増配",
     }),
     diagnosticSearxngCheck(settings, {
       label: "通常検索",
       categories: "general",
-      engines: "bing",
+      engines: normalizeSearxngEngines(settings.searxngEngines),
       query: "株探 上方修正 決算短信 日本株",
     }),
   ]);
   const stopped = uniqueBy(checks.flatMap((check) => check.stopped || []), (item) => `${item.engine}:${item.reason}`);
   return {
     provider: "SearXNG",
+    engines: normalizeSearxngEngines(settings.searxngEngines),
     ok: checks.some((check) => check.ok),
     generatedAt: new Date().toISOString(),
     checks,
@@ -6210,8 +6316,8 @@ async function checkSearchEngine(settings = null) {
   if (resolved.searchProvider === "searxng") {
     try {
       const checks = [
-        { query: "日本株 決算短信 上方修正 増配", categories: "general", engines: "bing" },
-        { query: "株探 決算速報 日本株", categories: "general", engines: "bing" },
+        { query: "日本株 決算短信 上方修正 増配", categories: "general", engines: normalizeSearxngEngines(resolved.searxngEngines) },
+        { query: "株探 決算速報 日本株", categories: "general", engines: normalizeSearxngEngines(resolved.searxngEngines) },
       ];
       let responseOk = false;
       let resultCount = 0;
@@ -6230,6 +6336,7 @@ async function checkSearchEngine(settings = null) {
       return {
         ok: responseOk && resultCount > 0,
         provider: "SearXNG",
+        engines: normalizeSearxngEngines(resolved.searxngEngines),
         configured: Boolean(resolved.searxngUrl),
         url: resolved.searxngUrl,
         triedUrls: searxngCandidateUrls(resolved),
@@ -6239,6 +6346,7 @@ async function checkSearchEngine(settings = null) {
       return {
         ok: false,
         provider: "SearXNG",
+        engines: normalizeSearxngEngines(resolved.searxngEngines),
         configured: Boolean(resolved.searxngUrl),
         url: resolved.searxngUrl,
         triedUrls: searxngCandidateUrls(resolved),
@@ -7045,6 +7153,9 @@ async function resetDiscoveryCacheForSettings(settings) {
 function discoverySettingsKey(settings = {}) {
   const normalized = normalizeSettings(settings);
   return JSON.stringify({
+    searchProvider: normalized.searchProvider,
+    searxngUrl: normalized.searxngUrl,
+    searxngEngines: normalized.searxngEngines,
     unitSize: normalized.unitSize,
     unitBudget: normalized.unitBudget,
     unitBudgetUnlimited: normalized.unitBudgetUnlimited === true,
@@ -8208,6 +8319,7 @@ function normalizeSettings(settings = {}) {
   return {
     searchProvider: provider,
     searxngUrl: normalizeUrl(settings.searxngUrl) || defaultSettings.searxngUrl,
+    searxngEngines: normalizeSearxngEngines(settings.searxngEngines || defaultSettings.searxngEngines),
     googleApiKey: String(settings.googleApiKey || "").trim(),
     googleCseId: String(settings.googleCseId || "").trim(),
     googleSearchUrl: normalizeUrl(settings.googleSearchUrl) || defaultSettings.googleSearchUrl,
@@ -8255,6 +8367,7 @@ function applySettingsPatch(current, body = {}) {
   const next = { ...current };
   if (body.searchProvider) next.searchProvider = body.searchProvider;
   if (typeof body.searxngUrl === "string" && body.searxngUrl.trim()) next.searxngUrl = body.searxngUrl;
+  if (typeof body.searxngEngines === "string") next.searxngEngines = body.searxngEngines;
   if (typeof body.googleSearchUrl === "string" && body.googleSearchUrl.trim()) next.googleSearchUrl = body.googleSearchUrl;
   if (typeof body.googleCseId === "string" && body.googleCseId.trim()) next.googleCseId = body.googleCseId;
   if (typeof body.googleApiKey === "string" && body.googleApiKey.trim()) next.googleApiKey = body.googleApiKey;
@@ -8303,6 +8416,7 @@ function publicSettings(settings) {
   return {
     searchProvider: settings.searchProvider,
     searxngUrl: settings.searxngUrl,
+    searxngEngines: settings.searxngEngines,
     googleCseId: settings.googleCseId,
     googleSearchUrl: settings.googleSearchUrl,
     hasGoogleApiKey: Boolean(settings.googleApiKey),
@@ -8354,6 +8468,7 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
   const unitBudget = unitBudgetUnlimited ? null : (budget.unitBudget || settings.unitBudget);
   return {
     provider,
+    engines: settings.searchProvider === "searxng" ? normalizeSearxngEngines(settings.searxngEngines) : "",
     searchConfigured: settings.searchProvider === "searxng"
       ? Boolean(settings.searxngUrl)
       : Boolean(settings.googleApiKey && settings.googleCseId),

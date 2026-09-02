@@ -34,6 +34,7 @@
 ```bash
 SEARCH_PROVIDER=searxng
 SEARXNG_URL=http://127.0.0.1:8081/search
+SEARXNG_ENGINES=bing
 GOOGLE_API_KEY=
 GOOGLE_CSE_ID=
 LM_STUDIO_URL=http://127.0.0.1:1234/v1
@@ -42,7 +43,7 @@ PORT=5173
 HOST=127.0.0.1
 ```
 
-SearXNGを使う場合は `http://127.0.0.1:8081/search` を設定します。Google検索を使うには、Google Custom Search JSON APIのAPIキーとProgrammable Search Engine IDが必要です。アプリ内の「設定」メニューからも保存できます。
+SearXNGを使う場合は `http://127.0.0.1:8081/search` を設定します。`SEARXNG_ENGINES` は通常 `bing` のままにします。DuckDuckGo、Google CSE、Reuters、Bing News はタイムアウトや認証エラーが出やすいため、アプリ側の検索指定からは除外します。Google検索を使うには、Google Custom Search JSON APIのAPIキーとProgrammable Search Engine IDが必要です。アプリ内の「設定」メニューからも保存できます。
 
 ## ローカル起動
 
