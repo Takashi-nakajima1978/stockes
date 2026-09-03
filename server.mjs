@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { inflateRawSync } from "node:zlib";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 loadLocalEnv(path.join(__dirname, ".env"));
@@ -18,6 +19,7 @@ const DISCOVERY_CACHE_PATH = path.join(__dirname, "data", "discovery-cache.json"
 const CANDIDATE_HISTORY_PATH = path.join(__dirname, "data", "candidate-history.json");
 const EXIT_STATE_PATH = path.join(__dirname, "data", "exit-state.json");
 const SHAREHOLDER_CACHE_PATH = path.join(__dirname, "data", "shareholder-cache.json");
+const FINANCIAL_CACHE_PATH = path.join(__dirname, "data", "financial-cache.json");
 const PRIME_UNIVERSE_PATH = path.join(__dirname, "data", "prime-universe.json");
 const NOTIFICATION_LOG_PATH = path.join(__dirname, "data", "notification-log.json");
 const EXCLUDED_CANDIDATES_PATH = path.join(__dirname, "data", "excluded-candidates.json");
@@ -31,19 +33,23 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 6;
+const DISCOVERY_SCORING_VERSION = 7;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
 const FUNDAMENTAL_EXIT_MAX_AGE_DAYS = 30;
 const TRAILING_STOP_LOSS_PCT = 20;
-const US_EVIDENCE_TRANSLATION_CHUNK_SIZE = 12;
+const US_EVIDENCE_TRANSLATION_CHUNK_SIZE = 3;
 const PRICE_HISTORY_TIMEOUT_MS = 12000;
 const QUICK_PRICE_HISTORY_TIMEOUT_MS = 4000;
-const US_NEWS_MAX_AGE_DAYS = 180;
-const US_EVIDENCE_TRANSLATION_TIMEOUT_MS = 45000;
-const US_HOLDING_REVIEW_TIMEOUT_MS = 25000;
-const US_HOLDING_REVIEW_CHUNK_SIZE = 10;
+const US_NEWS_MAX_AGE_DAYS = 45;
+const US_EVIDENCE_TRANSLATION_TIMEOUT_MS = 180000;
+const US_HOLDING_REVIEW_TIMEOUT_MS = 180000;
+const US_HOLDING_REVIEW_CHUNK_SIZE = 2;
+const EDINET_API_BASE = "https://api.edinet-fsa.go.jp/api/v2";
+const EDINET_LOOKBACK_DAYS = 120;
+const JP_PE_MARKET_CAP_MIN = 5_000_000_000;
+const JP_PE_MARKET_CAP_MAX = 50_000_000_000;
 const US_FINANCE_NEWS_SOURCES = [
   ["finance.yahoo.com", 100],
   ["seekingalpha.com", 96],
@@ -129,6 +135,18 @@ const DISCOVERY_IT_VENTURE_PATTERN = /(情報|IT|ＳＩ|SI|ソフトウェア|�
 const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|半導体|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹|mature|enterprise|consulting|infrastructure|security|cybersecurity|semiconductor|data center|platform|payments|mission critical|recurring revenue|automation|medical device)/i;
 const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "private equity", "buyout", "take private", "tender offer", "activist", "shareholder", "stake", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
 const PE_DIRECT_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "private equity", "buyout", "take private", "tender offer", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス"];
+const PE_RECENT_TENDENCIES = [
+  "直近数年の国内PE・MBO案件は、低PBR、ネットキャッシュ、安定CF、株主還元余地、上場維持コストが重い中小型株に偏りやすい前提で採点",
+  "単なる大型優良株や高値圏のテーマ株は、PE買収狙いから外す",
+  "決算後に業績は悪くないのに還元不足で売られた銘柄を、アクティビスト/PEの入口候補として加点",
+];
+const PE_FINANCIAL_CRITERIA = [
+  { key: "market_cap", label: "時価総額50億-500億円", max: 25 },
+  { key: "net_cash", label: "ネットキャッシュ比率50%以上", max: 25 },
+  { key: "ev_ebitda", label: "EV/EBITDA 6倍以下または低PER", max: 20 },
+  { key: "pbr", label: "PBR1倍割れ", max: 15 },
+  { key: "operating_cf", label: "営業CFが継続プラス", max: 15 },
+];
 const US_TICKER_STOPWORDS = new Set(["A", "AI", "API", "CEO", "CFO", "COO", "EPS", "ETF", "GDP", "IPO", "LLM", "MBO", "MOC", "NYSE", "PE", "PBR", "PER", "Q1", "Q2", "Q3", "Q4", "SEC", "TOB", "USA", "USD"]);
 const TDNET_SOURCE_BASE = "https://www.release.tdnet.info/inbs/";
 const DISCLOSURE_CRITICAL_WORDS = [
@@ -183,6 +201,9 @@ const defaultSettings = {
   shareholderMonitorEnabled: true,
   shareholderChangeThresholdPct: 2,
   shareholderUseLmStudio: true,
+  edinetApiKey: process.env.EDINET_API_KEY || "",
+  rakutenAccountMemo: "",
+  revolutAccountMemo: "",
   notificationsEnabled: false,
   notificationMinConfidence: 78,
   notificationMinNetEdgeYen: 5000,
@@ -222,6 +243,7 @@ const businessBadWords = ["下方修正", "減益", "赤字", "減配", "不祥�
 let lmModelCache = { configuredUrl: "", url: "", model: "" };
 let primeUniverseCache = null;
 let analysisJob = null;
+let usAnalysisJob = null;
 let discoveryJob = null;
 let hourlyRefreshTimer = null;
 
@@ -571,7 +593,8 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/analysis" && req.method === "GET") {
     const [cached, settings] = await Promise.all([readAnalysisCache(), readSettings()]);
-    const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(cached.analyses, settings));
+    const withFinancials = await attachFinancialsToAnalyses(cached.analyses);
+    const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(withFinancials, settings));
     return json(res, 200, { ...cached, analyses });
   }
 
@@ -610,10 +633,25 @@ async function handleApi(req, res, url) {
     }));
   }
 
+  if (url.pathname === "/api/financials" && req.method === "GET") {
+    return json(res, 200, await readFinancialCache());
+  }
+
+  if (url.pathname === "/api/financials/check" && req.method === "POST") {
+    return json(res, 200, await updateFinancialSnapshots({ force: true }));
+  }
+
   if (url.pathname === "/api/analysis-job" && req.method === "GET") {
     return json(res, 200, {
       job: analysisJobSnapshot(),
       result: analysisJob?.result && !analysisJob.running ? analysisJob.result : null,
+    });
+  }
+
+  if (url.pathname === "/api/us-analysis-job" && req.method === "GET") {
+    return json(res, 200, {
+      job: usAnalysisJobSnapshot(),
+      result: usAnalysisJob?.result && !usAnalysisJob.running ? usAnalysisJob.result : null,
     });
   }
 
@@ -868,7 +906,12 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/us-analyze" && req.method === "POST") {
     const body = await readJson(req);
     if (body.quick) return json(res, 200, await refreshUsPrices(body));
-    return json(res, 200, await analyzeUsHoldings(body, { notify: body.notify !== false }));
+    if (body.sync) return json(res, 200, await analyzeUsHoldings(body, { notify: body.notify !== false }));
+    const job = startUsAnalysisJob(body);
+    return json(res, 202, {
+      job,
+      message: "米国株のニュース翻訳とAI確認を裏で開始しました。",
+    });
   }
 
   if (url.pathname === "/api/discover" && req.method === "POST") {
@@ -955,6 +998,74 @@ function analysisJobSnapshot() {
   return { ...snapshot, hasResult: Boolean(result) };
 }
 
+function startUsAnalysisJob(options = {}) {
+  if (usAnalysisJob?.running) return usAnalysisJobSnapshot();
+  const job = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    running: true,
+    phase: "米国株分析を準備中",
+    checked: 0,
+    total: 0,
+    aiDone: 0,
+    aiCurrent: 0,
+    aiTotal: 0,
+    generatedAt: "",
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    usedLmStudio: false,
+    error: "",
+    result: null,
+  };
+  usAnalysisJob = job;
+  void analyzeUsHoldings(options, { notify: options.notify !== false }, (patch) => updateUsAnalysisJob(job, patch))
+    .then((result) => {
+      updateUsAnalysisJob(job, {
+        running: false,
+        phase: "完了",
+        checked: result.analyses?.length || job.checked,
+        total: result.analyses?.length || job.total,
+        generatedAt: result.generatedAt,
+        usedLmStudio: Boolean(result.usedLmStudio),
+        result,
+      });
+    })
+    .catch((error) => {
+      updateUsAnalysisJob(job, {
+        running: false,
+        phase: "失敗",
+        error: error.message || "米国株分析に失敗しました",
+      });
+    });
+  return usAnalysisJobSnapshot();
+}
+
+function updateUsAnalysisJob(job, patch = {}) {
+  if (!job || usAnalysisJob?.id !== job.id) return;
+  Object.assign(job, patch, { updatedAt: new Date().toISOString() });
+}
+
+function usAnalysisJobSnapshot() {
+  if (!usAnalysisJob) {
+    return {
+      running: false,
+      phase: "待機中",
+      checked: 0,
+      total: 0,
+      aiDone: 0,
+      aiCurrent: 0,
+      aiTotal: 0,
+      generatedAt: "",
+      startedAt: "",
+      updatedAt: "",
+      usedLmStudio: false,
+      error: "",
+      hasResult: false,
+    };
+  }
+  const { result, ...snapshot } = usAnalysisJob;
+  return { ...snapshot, hasResult: Boolean(result) };
+}
+
 function usablePrice(price = {}) {
   return Boolean(nullablePositiveNumber(price.current));
 }
@@ -990,6 +1101,7 @@ function cachedDecisionFromAnalysis(analysis = null, fallback = {}) {
     risks: risks.length ? risks : fallback.risks,
     riskChecks: analysis.riskChecks || fallback.riskChecks,
     growthExit: analysis.growthExit || analysis.ai?.growthExit || fallback.growthExit,
+    sellForecast: analysis.sellForecast || analysis.ai?.sellForecast || fallback.sellForecast,
   };
 }
 
@@ -1020,7 +1132,8 @@ async function refreshWatchlistPrices(options = {}) {
       refreshedPriceOnlyAt: generatedAt,
     };
   });
-  const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(rows, settings));
+  const withFinancials = await attachFinancialsToAnalyses(rows);
+  const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(withFinancials, settings));
   const result = {
     generatedAt,
     fastRefresh: true,
@@ -1090,9 +1203,11 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
     onProgress?.({ phase: "価格ルールで整理中", aiDone: 0, aiCurrent: 0, aiTotal: 0 });
   }
 
-  const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(rows.map(({ stock, price, research, fallback }) => {
+  const normalizedRows = rows.map(({ stock, price, research, fallback }) => {
     return normalizeDecision(stock, price, research, aiBySymbol.get(stock.symbol) || fallback);
-  }), settings));
+  });
+  const withFinancials = await attachFinancialsToAnalyses(normalizedRows);
+  const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(withFinancials, settings));
 
   const result = {
     generatedAt: new Date().toISOString(),
@@ -1137,9 +1252,10 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
     }
   }
 
-  const analysis = (await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses([
+  const withFinancials = await attachFinancialsToAnalyses([
     normalizeDecision(stock, price, research, aiDecision || row.fallback),
-  ], settings)))[0];
+  ]);
+  const analysis = (await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(withFinancials, settings)))[0];
   const previous = await readAnalysisCache();
   const result = {
     generatedAt: new Date().toISOString(),
@@ -1205,7 +1321,7 @@ async function refreshUsPrices(options = {}) {
   return result;
 }
 
-async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
+async function analyzeUsHoldings(options = {}, { notify = false } = {}, onProgress = null) {
   const stocks = await readUsWatchlist();
   const settings = await readSettings();
   const recentPrices = options.reuseFreshPrices
@@ -1213,6 +1329,15 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
     : new Map();
   const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT);
   const warnings = [];
+  let checked = 0;
+  onProgress?.({
+    phase: "米国株の価格・ニュースを確認中",
+    checked,
+    total: stocks.length,
+    aiDone: 0,
+    aiCurrent: 0,
+    aiTotal: 0,
+  });
   const rows = await mapLimit(stocks, 4, async (stock) => {
     const cachedPrice = recentPrices.get(stock.symbol);
     const [price, research] = await Promise.all([
@@ -1221,6 +1346,8 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
     ]);
     if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
     const position = positionMetrics(stock, price);
+    checked += 1;
+    onProgress?.({ phase: "米国株の価格・ニュースを確認中", checked, total: stocks.length });
     return {
       symbol: stock.symbol,
       name: stock.name,
@@ -1238,6 +1365,14 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
   });
   const lmStatus = await checkLmStudio(settings).catch(() => ({ ok: false }));
   if (lmStatus.ok) {
+    onProgress?.({
+      phase: "LM Studioで米国ニュースを日本語要約中",
+      checked,
+      total: stocks.length,
+      aiDone: 0,
+      aiCurrent: 1,
+      aiTotal: Math.ceil(rows.reduce((sum, row) => sum + (row.evidence || []).filter((item) => isMostlyEnglish(`${item.title || ""} ${item.originalSnippet || item.snippet || ""}`)).length, 0) / US_EVIDENCE_TRANSLATION_CHUNK_SIZE),
+    });
     await translateUsEvidenceRows(rows).catch((error) => {
       warnings.push(`LM Studio: ${error.message || "米国ニュース翻訳が返りませんでした"}`);
       markUsEvidenceTranslationUnavailable(rows, error);
@@ -1249,6 +1384,14 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
   let usedLmStudio = rows.some((row) => (row.evidence || []).some((item) => item.translationMethod === "lm_studio"));
   if (lmStatus.ok && rows.length) {
     try {
+      onProgress?.({
+        phase: "LM Studioで米国株の売却見通しを整理中",
+        checked,
+        total: stocks.length,
+        aiDone: 0,
+        aiCurrent: 1,
+        aiTotal: Math.ceil(rows.length / US_HOLDING_REVIEW_CHUNK_SIZE),
+      });
       const reviews = await aiUsHoldingReviews(rows);
       const bySymbol = new Map(reviews.map((review) => [review.symbol, review]));
       rows.forEach((row) => {
@@ -1274,6 +1417,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
     });
   }
 
+  onProgress?.({ phase: "米国株の結果を保存中", checked: stocks.length, total: stocks.length });
   const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(rows, settings, { currency: "USD" }));
   const result = {
     generatedAt: new Date().toISOString(),
@@ -1422,7 +1566,7 @@ function lmStudioTranslationError(error = null) {
   const message = cleanText(error?.message || "");
   if (!message) return "LM Studio翻訳未完了です。";
   if (/aborted|timed out|timeout/i.test(message)) {
-    return "LM Studio翻訳が時間内に終わりませんでした。接続設定のタイムアウトを長めにするか、軽いモデルで再実行してください。";
+    return "LM Studio翻訳がまだ完了していません。設定で待ち時間を長めにするか、再実行してください。";
   }
   return `LM Studio翻訳未完了: ${message}`;
 }
@@ -1456,13 +1600,6 @@ async function translateUsEvidenceRows(rows = []) {
   for (const chunk of chunkArray(items, US_EVIDENCE_TRANSLATION_CHUNK_SIZE)) {
     await applyUsEvidenceTranslationChunk(model, chunk).catch(async (error) => {
       failures.push(error);
-      if (/aborted|timed out|timeout/i.test(String(error?.message || ""))) {
-        for (const item of chunk) {
-          item.evidence.translationMethod = "untranslated";
-          item.evidence.translationError = lmStudioTranslationError(error);
-        }
-        return;
-      }
       for (const item of chunk) {
         await applyUsEvidenceTranslationChunk(model, [item]).catch((singleError) => {
           failures.push(singleError);
@@ -1653,6 +1790,22 @@ async function searchUsFinanceNews(stock, limit = 8) {
     }));
 }
 
+async function searchUsCandidateEvidence(candidate = {}, limit = 8) {
+  const research = await researchUsStock({
+    symbol: normalizeUsSymbol(candidate.symbol),
+    name: candidate.name || candidate.symbol,
+    market: candidate.market || "NYSE",
+  }, { websiteLimit: limit });
+  return (research.evidence || []).map((item, index) => ({
+    title: item.title,
+    url: item.url,
+    sourceUrl: item.sourceUrl,
+    snippet: item.originalSnippet || item.snippet || item.summaryJa || "",
+    publishedDate: item.publishedDate,
+    rank: index + 1,
+  }));
+}
+
 function usFinanceNewsQueries(stock = {}) {
   const symbol = normalizeUsSymbol(stock.symbol);
   const name = cleanText(stock.name || symbol);
@@ -1660,10 +1813,11 @@ function usFinanceNewsQueries(stock = {}) {
     ? `"${name}" ${symbol}`
     : symbol;
   return [
-    `${nameQuery} stock earnings guidance analyst`,
-    `${nameQuery} shares revenue outlook dividend`,
-    `${nameQuery} price target results margin`,
-    `${nameQuery} acquisition lawsuit recall risk`,
+    `${nameQuery} stock earnings guidance analyst site:finance.yahoo.com`,
+    `${nameQuery} stock earnings guidance outlook site:seekingalpha.com`,
+    `${nameQuery} shares revenue margin dividend site:marketwatch.com`,
+    `${nameQuery} price target results analyst site:barrons.com`,
+    `${nameQuery} stock news revenue outlook site:cnbc.com`,
   ].filter(Boolean);
 }
 
@@ -1897,11 +2051,12 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     "/no_think",
     "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
     "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益、受取配当、年間配当目安、配当込み損益を分けて読み、利益保証をせず、保有継続の確認材料と注意点を分けてください。",
-    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"titleJa\":\"...\",\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]}}]}。",
+    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"titleJa\":\"...\",\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":123.45,\"reviewPrice\":111.11,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}。",
     "stanceは HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED のいずれか。changeLevelは normal, watch, important のいずれか。",
     "NVIDIAのような10倍候補は20〜30%の株価下落だけではEXITにしません。売上成長の鈍化、guidanceがconsensusを下回る、需要・粗利・受注の構造悪化、成長投資テーマの破綻など、買った根拠が崩れた時だけgrowthExit.levelをexit_alertにしてください。",
     `growthExit.exit_alertはpublishedDateが過去${FUNDAMENTAL_EXIT_MAX_AGE_DAYS}日以内の根拠がある時だけにしてください。日付不明、古い記事、過去の歴史記事は売りアラートの根拠にしないでください。`,
     "summaryJaは90字以内、goodとrisksは各3件まで、evidenceJaのsummaryは各80字以内にしてください。growthExit.evidenceは根拠にした記事や開示だけを最大3件入れてください。",
+    "sellForecastは保有中か残株がある銘柄だけに出してください。ニュース、決算、過去3年の価格、保有単価、トレーリングストップを合わせ、売却を検討する価格帯と時期を出してください。根拠が薄ければtargetPrice/null、horizon/未定。",
     "",
     JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
@@ -1934,6 +2089,7 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
         ? String(review.changeLevel).toLowerCase()
         : "normal",
       growthExit: normalizeGrowthExit(review.growthExit),
+      sellForecast: normalizeSellForecast(review.sellForecast),
     }))
     .filter((review) => review.symbol);
 }
@@ -2039,6 +2195,7 @@ function fallbackUsReview(row = {}) {
     })),
     changeLevel,
     growthExit: { level: "normal", reason: "ファンダ崩壊を示す材料は未検出です。", signals: [] },
+    sellForecast: ruleSellForecast(row, "USD"),
   };
 }
 
@@ -2077,6 +2234,17 @@ function compactUsPrice(price = {}) {
     dividendLastDate: price.dividendLastDate,
     dividendLastAmount: price.dividendLastAmount,
     dividendEvents: price.dividendEvents,
+    logReturn1d: price.logReturn1d,
+    histVol20: price.histVol20,
+    atr14: price.atr14,
+    atrPct: price.atrPct,
+    sma5: price.sma5,
+    sma5CrossUp: Boolean(price.sma5CrossUp),
+    rsi14: price.rsi14,
+    rsiCross30: Boolean(price.rsiCross30),
+    candlestickSignal: price.candlestickSignal || null,
+    technicalEntry: price.technicalEntry || technicalEntryFallback(),
+    regime: price.regime || null,
     shortName: price.shortName,
     longName: price.longName,
     yahooSymbol: price.yahooSymbol,
@@ -2108,6 +2276,17 @@ function compactFxPrice(price = {}) {
     trend3y: price.trend3y,
     buyLine1y: price.buyLine1y,
     distanceFromBuyLine1y: price.distanceFromBuyLine1y,
+    logReturn1d: price.logReturn1d,
+    histVol20: price.histVol20,
+    atr14: price.atr14,
+    atrPct: price.atrPct,
+    sma5: price.sma5,
+    sma5CrossUp: Boolean(price.sma5CrossUp),
+    rsi14: price.rsi14,
+    rsiCross30: Boolean(price.rsiCross30),
+    candlestickSignal: price.candlestickSignal || null,
+    technicalEntry: price.technicalEntry || technicalEntryFallback(),
+    regime: price.regime || null,
     shortName: price.shortName,
     longName: price.longName,
     yahooSymbol: price.yahooSymbol,
@@ -2672,6 +2851,8 @@ async function discoverStocks(options = {}, job = null) {
     ? await withTimeout(aiMarketTrendBrief(search, primeUniverse.length), 45000).catch(() => null)
     : null;
   const performance = candidatePerformanceSummary(await readCandidateHistory());
+  const financialCache = await readFinancialCache();
+  const financialBySymbol = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
   const baseCandidateUniverse = uniqueBy([...searchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse], (candidate) => candidate.symbol);
   const candidateUniverse = baseCandidateUniverse
     .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
@@ -2722,15 +2903,19 @@ async function discoverStocks(options = {}, job = null) {
   });
   const enhanced = await mapLimit(shortlist, 3, async (candidate) => {
     const code = candidate.symbol.replace(".T", "");
-    const query = isUsDiscoveryCandidate(candidate)
-      ? `${candidate.name} ${code} stock earnings guidance analyst rating dividend free cash flow valuation activist shareholder private equity buyout tender offer`
-      : `${candidate.name} ${code} 株価 評価 レーティング 目標株価 決算短信 業績 増収増益 上方修正 増配 割安 PER PBR TDnet PEファンド TOB MBO 大量保有 株主`;
-    const results = (await searchGoogle(query, {
-      limit: websiteLimit,
-    }).catch(() => [])).map((item, index) => ({ ...item, rank: index + 1 }));
-    const relevantResults = relevantSearchResults(candidate, uniqueBy([...(candidate.sourceEvidence || []), ...results], (item) => item.url));
+    const usCandidate = isUsDiscoveryCandidate(candidate);
+    const query = usCandidate
+      ? ""
+      : `${candidate.name} ${code} 決算後 失望売り 株主還元 自社株買い 増配なし ネットキャッシュ PBR PER EV EBITDA 営業CF TOB MBO PEファンド 大量保有 アクティビスト Yahoo 株探 TDnet`;
+    const results = usCandidate
+      ? await searchUsCandidateEvidence(candidate, websiteLimit).catch(() => [])
+      : (await searchGoogle(query, { limit: websiteLimit }).catch(() => [])).map((item, index) => ({ ...item, rank: index + 1 }));
+    const evidencePool = usCandidate
+      ? results
+      : uniqueBy([...(candidate.sourceEvidence || []), ...results], (item) => item.url);
+    const relevantResults = relevantSearchResults(candidate, evidencePool);
     const positionSignal = searchPositionSignal(candidate, results, relevantResults);
-    const peSignal = searchPeSignal(candidate, results, relevantResults);
+    const peSignal = searchPeSignal(candidate, results, relevantResults, financialBySymbol.get(candidate.symbol));
     individualSearchCount += results.length;
     const enhancedCandidate = applyCandidateLearning(enhanceBusinessCandidate(candidate, relevantResults, positionSignal, peSignal), performance);
     enhancedSoFar.push(enhancedCandidate);
@@ -2894,6 +3079,7 @@ function candidatePeScore(candidate = {}) {
 
 function isPeReportCandidate(candidate = {}) {
   if (isUsDiscoveryCandidate(candidate)) return false;
+  if (candidate.peSignal?.reportEligible === false) return false;
   const pe = candidatePeScore(candidate);
   if (pe >= PE_STRONG_MIN_SCORE) return true;
   if (pe < PE_PRIORITY_MIN_SCORE) return false;
@@ -2912,6 +3098,8 @@ function discoveryPriorityScore(candidate = {}) {
   const buyPlan = nullablePositiveNumber(candidate.buyPlan?.maxBuyPrice);
   const timingBonus = candidate.buyPlan?.stance === "今すぐ検討"
     ? 22
+    : candidate.buyPlan?.stance === "反転待ち"
+    ? 8
     : candidate.buyPlan?.stance === "指値で待つ"
     ? 10
     : 0;
@@ -2950,6 +3138,8 @@ function pePriorityScore(candidate = {}) {
   if (!isPeReportCandidate(candidate)) return Math.round(pe);
   const timingBonus = candidate.buyPlan?.stance === "今すぐ検討"
     ? 22
+    : candidate.buyPlan?.stance === "反転待ち"
+    ? 8
     : candidate.buyPlan?.stance === "指値で待つ"
     ? 10
     : 0;
@@ -3015,7 +3205,7 @@ function formatMoney(value, currency = "JPY") {
   return currency === "USD" ? formatUsd(value) : formatYen(value);
 }
 
-function searchPeSignal(candidate, allResults = [], relevantResults = []) {
+function searchPeSignal(candidate, allResults = [], relevantResults = [], financials = null) {
   const text = businessContextText([
     candidate.name,
     candidate.symbol,
@@ -3033,20 +3223,44 @@ function searchPeSignal(candidate, allResults = [], relevantResults = []) {
       score: criterion.weight,
     };
   }).filter(Boolean);
+  const financialCriteria = normalizeFinancialCriteria(financials?.criteria || []);
+  const financialScore = financialCriteriaScore(financialCriteria);
+  const financialPass = new Set(financialCriteria.filter((item) => item.status === "pass").map((item) => item.key));
+  const financialWatch = new Set(financialCriteria.filter((item) => item.status === "watch").map((item) => item.key));
+  const financialFail = new Set(financialCriteria.filter((item) => item.status === "fail").map((item) => item.key));
   const buyerHits = PE_BUYER_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 8);
   const directBuyerHits = PE_DIRECT_BUYER_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 6);
+  const disappointmentHits = ["決算後", "失望売り", "急落", "大幅安", "自社株買いなし", "増配なし", "株主還元", "還元不足", "earnings selloff", "disappointment", "no buyback", "capital allocation"]
+    .filter((word) => text.includes(word.toLowerCase()))
+    .slice(0, 6);
   const sector = candidate.sector || "";
   let score = criteria.reduce((sum, item) => sum + item.score, 0);
+  if (Number.isFinite(financialScore)) score += Math.round(financialScore * 0.8);
   if (/サービス|ヘルスケア|不動産|物流|人材|設備|メンテ|小売|生活用品|services|healthcare|logistics|industrial|maintenance|payment|telecom|media/i.test(sector)) score += 8;
   if (/銀行|保険|電力|資源|航空|鉄道|防衛|半導体|bank|insurance|utility|airline|aerospace|semiconductor/i.test(sector)) score -= 6;
   if (directBuyerHits.length) score += Math.min(20, directBuyerHits.length * 5);
   else if (buyerHits.length) score += Math.min(8, buyerHits.length * 2);
+  if (disappointmentHits.length && (financialPass.has("net_cash") || financialPass.has("pbr") || financialPass.has("ev_ebitda"))) {
+    score += Math.min(18, disappointmentHits.length * 4);
+  }
+  if (financialFail.has("market_cap")) score = Math.min(score, 34);
+  if (isHighChaseChart(candidate.price || {})) score = Math.min(score, 30);
   const positiveKeys = new Set(criteria.filter((item) => item.score > 0).map((item) => item.key));
   const hasHardSignal = directBuyerHits.length
     || positiveKeys.has("shareholder")
-    || positiveKeys.has("restructuring");
-  const hasLboBase = positiveKeys.has("cashflow")
-    && (positiveKeys.has("undervalued") || positiveKeys.has("debt_capacity") || positiveKeys.has("sector_fit"));
+    || positiveKeys.has("restructuring")
+    || disappointmentHits.length >= 2;
+  const hasFinancialBase = financialPass.has("market_cap")
+    && (financialPass.has("net_cash") || financialWatch.has("net_cash"))
+    && (financialPass.has("ev_ebitda") || financialPass.has("pbr") || positiveKeys.has("undervalued"))
+    && !financialFail.has("operating_cf");
+  const hasLboBase = hasFinancialBase || (
+    positiveKeys.has("cashflow")
+    && (positiveKeys.has("undervalued") || positiveKeys.has("debt_capacity") || positiveKeys.has("sector_fit"))
+  );
+  if (!financialCriteria.length || financialCriteria.every((item) => item.status === "unknown")) {
+    score = Math.min(score, 44);
+  }
   if (!hasHardSignal && !hasLboBase) score = Math.min(score, 34);
   else if (!hasHardSignal) score = Math.min(score, 54);
   const matchScore = clamp(Math.round(score), 0, 100);
@@ -3069,29 +3283,60 @@ function searchPeSignal(candidate, allResults = [], relevantResults = []) {
   return {
     matchScore,
     label,
-    criteria: criteria.filter((item) => item.score > 0).map((item) => ({
-      key: item.key,
-      label: item.label,
-      hits: item.hits,
-    })).slice(0, 5),
-    risks: criteria.filter((item) => item.score < 0).map((item) => item.hits[0]).slice(0, 3),
+    criteria: [
+      ...financialCriteria.filter((item) => item.status === "pass" || item.status === "watch").map((item) => ({
+        key: item.key,
+        label: item.label,
+        status: item.status,
+        summary: item.summary,
+      })),
+      ...criteria.filter((item) => item.score > 0).map((item) => ({
+        key: item.key,
+        label: item.label,
+        hits: item.hits,
+      })),
+    ].slice(0, 8),
+    financialCriteria,
+    financials: financials ? normalizeFinancialSnapshot(financials) : null,
+    tendencies: PE_RECENT_TENDENCIES,
+    risks: uniqueText([
+      ...financialCriteria.filter((item) => item.status === "fail").map((item) => `${item.label}: ${item.summary}`),
+      ...criteria.filter((item) => item.score < 0).map((item) => item.hits[0]),
+      isHighChaseChart(candidate.price || {}) ? "高値追いになりやすい" : "",
+    ].filter(Boolean)).slice(0, 5),
     buyerHits,
     directBuyerHits,
-    reportEligible: matchScore >= PE_PRIORITY_MIN_SCORE && (hasHardSignal || hasLboBase),
+    disappointmentHits,
+    reportEligible: matchScore >= PE_PRIORITY_MIN_SCORE && hasFinancialBase && (hasHardSignal || matchScore >= PE_STRONG_MIN_SCORE),
     evidence,
-    summary: peSignalSummary(label, criteria, buyerHits, { directBuyerHits, hasHardSignal, hasLboBase, matchScore }),
+    summary: peSignalSummary(label, criteria, buyerHits, {
+      directBuyerHits,
+      disappointmentHits,
+      hasHardSignal,
+      hasLboBase,
+      hasFinancialBase,
+      financialCriteria,
+      matchScore,
+    }),
   };
 }
 
 function peSignalSummary(label, criteria = [], buyerHits = [], options = {}) {
   const positives = criteria.filter((item) => item.score > 0).map((item) => item.label).slice(0, 3);
+  const financialHits = (options.financialCriteria || [])
+    .filter((item) => item.status === "pass")
+    .map((item) => item.label)
+    .slice(0, 3);
   const risk = criteria.find((item) => item.score < 0)?.label;
   const parts = [];
+  if (financialHits.length) parts.push(`財務条件: ${financialHits.join("・")}`);
   if (positives.length) parts.push(`${positives.join("・")}に該当`);
   if (options.directBuyerHits?.length) parts.push(`直接材料: ${options.directBuyerHits.slice(0, 3).join("、")}`);
+  if (options.disappointmentHits?.length) parts.push(`失望売り/還元不足材料: ${options.disappointmentHits.slice(0, 3).join("、")}`);
   else if (buyerHits.length) parts.push(`周辺語: ${buyerHits.slice(0, 3).join("、")}`);
   if (risk) parts.push(`注意: ${risk}`);
   if (Number(options.matchScore || 0) < PE_PRIORITY_MIN_SCORE) parts.push("PE買収狙いとしては優先しない");
+  else if (!options.hasFinancialBase) parts.push("指定した財務条件の根拠が不足");
   else if (!options.hasHardSignal) parts.push("直接の買収・株主変化は未確認");
   return `${label}${parts.length ? `。${parts.join("。")}` : "。PE買収候補としては根拠が薄い"}`;
 }
@@ -3497,6 +3742,35 @@ function earlyEntrySignal(candidate = {}, price = {}) {
       score -= 12;
       risks.push("200日線から離れすぎ");
     }
+  }
+
+  if (price.sma5CrossUp) {
+    score += 12;
+    criteria.push("5日線を上抜け");
+  }
+  if (price.rsiCross30) {
+    score += 12;
+    criteria.push("RSI30割れから反転");
+  }
+  if (price.candlestickSignal?.label) {
+    score += 9;
+    criteria.push(price.candlestickSignal.label);
+  }
+  if (Number.isFinite(price.atrPct)) {
+    if (price.atrPct >= 6) {
+      score -= 8;
+      risks.push("ATRが大きく指値を深くしたい");
+    } else if (price.atrPct <= 4) {
+      score += 4;
+      criteria.push("ATRは荒すぎない");
+    }
+  }
+  if (price.regime?.label === "調整/下落") {
+    score -= 6;
+    risks.push("レジームは調整寄り");
+  } else if (price.regime?.label === "安定上昇") {
+    score += 5;
+    criteria.push("レジームは安定上昇寄り");
   }
 
   if (Number.isFinite(price.volumeRatio20)) {
@@ -4437,10 +4711,13 @@ function candidateBuyPlan(price, options = {}) {
   const unitBudget = nullablePositiveNumber(options.unitBudget);
   const currentUnitAmount = current * unitSize;
   const buyLine = nullablePositiveNumber(price.buyLine1y);
+  const atrAdjustedBuyLine = nullablePositiveNumber(price.technicalEntry?.atrAdjustedBuyLine);
+  const atrPct = Number.isFinite(price.atrPct) ? price.atrPct : null;
   if (isExtendedRunChart(price)) {
     const low1y = nullablePositiveNumber(price.low1y);
     const waitCandidates = [
       current * 0.92,
+      atrAdjustedBuyLine,
       buyLine ? buyLine * 0.94 : null,
       low1y ? low1y * 1.04 : null,
     ].filter((value) => Number.isFinite(value) && value > 0);
@@ -4456,6 +4733,7 @@ function candidateBuyPlan(price, options = {}) {
         runText,
         "先回り初動ではない",
         buyLine ? "1年買い場だけでは買い判定にしない" : "",
+        Number.isFinite(atrPct) && atrPct >= 4 ? "ATRが大きいので深めに待つ" : "",
         "大きな押し目待ち",
       ]).filter(Boolean).slice(0, 4),
     };
@@ -4469,7 +4747,10 @@ function candidateBuyPlan(price, options = {}) {
     : current * 0.98;
   const budgetCap = unitBudget ? unitBudget / unitSize : current * 1.05;
   const buyLineCap = buyLine ? buyLine * 1.02 : current * 1.05;
-  const maxBuyPrice = Math.max(1, Math.min(nearTrendCap, pullbackCap, budgetCap, buyLineCap));
+  const volatilityCap = atrAdjustedBuyLine && Number.isFinite(atrPct) && atrPct >= 4
+    ? atrAdjustedBuyLine
+    : current * 1.05;
+  const maxBuyPrice = Math.max(1, Math.min(nearTrendCap, pullbackCap, budgetCap, buyLineCap, volatilityCap));
   const unitAmountAtMax = maxBuyPrice * unitSize;
   const checks = [];
 
@@ -4500,6 +4781,14 @@ function candidateBuyPlan(price, options = {}) {
     else checks.push("直近は弱め");
   }
 
+  if (Number.isFinite(atrPct)) {
+    checks.push(atrPct >= 4 ? "ATRで指値を深めに補正" : "ATRは通常範囲");
+  }
+  if (price.sma5CrossUp) checks.push("5日線上抜け");
+  if (price.rsiCross30) checks.push("RSI30復帰");
+  if (price.candlestickSignal?.label) checks.push(price.candlestickSignal.label);
+  if (price.regime?.label) checks.push(`相場: ${price.regime.label}`);
+
   const gapToMax = ((current - maxBuyPrice) / maxBuyPrice) * 100;
   const gapFromMaxAmount = maxBuyPrice - current;
   const gapFromMaxPct = (gapFromMaxAmount / current) * 100;
@@ -4507,9 +4796,10 @@ function candidateBuyPlan(price, options = {}) {
     ? `今は買い目安より${formatMoney(gapFromMaxAmount, currency)}安い`
     : `今は買い目安より${formatMoney(Math.abs(gapFromMaxAmount), currency)}高い`;
   const strongScore = Number(options.businessValueScore || 0) >= 65;
+  const technicalReady = price.technicalEntry?.ready === true;
   let stance = "待つ";
-  if (buyLine && current <= buyLine && strongScore) stance = "今すぐ検討";
-  else if (gapToMax <= 1 && strongScore) stance = "今すぐ検討";
+  if ((buyLine && current <= buyLine && strongScore && technicalReady) || (gapToMax <= 1 && strongScore && technicalReady)) stance = "今すぐ検討";
+  else if (gapToMax <= 1 && strongScore) stance = "反転待ち";
   else if (gapToMax <= 7) stance = "指値で待つ";
   else stance = "押し目待ち";
 
@@ -4517,8 +4807,8 @@ function candidateBuyPlan(price, options = {}) {
     stance,
     maxBuyPrice: Math.round(maxBuyPrice * 10) / 10,
     unitAmountAtMax: Math.round(unitAmountAtMax),
-    summary: `${formatMoney(maxBuyPrice, currency)}以下なら入口OK。${gapFromMaxText}（${formatSignedPercent(gapFromMaxPct)}）です。`,
-    checks: uniqueText(checks).slice(0, 4),
+    summary: `${formatMoney(maxBuyPrice, currency)}以下なら入口候補。${gapFromMaxText}（${formatSignedPercent(gapFromMaxPct)}）です。${technicalReady ? "反転確認あり。" : "反転確認は待ちます。"}`,
+    checks: uniqueText(checks).slice(0, 6),
   };
 }
 
@@ -4577,6 +4867,17 @@ function compactDiscoveryPrice(price, unitSize = 100, currency = "JPY") {
     averageVolume20: price.averageVolume20,
     averageVolume60: price.averageVolume60,
     volumeRatio20: price.volumeRatio20,
+    logReturn1d: price.logReturn1d,
+    histVol20: price.histVol20,
+    atr14: price.atr14,
+    atrPct: price.atrPct,
+    sma5: price.sma5,
+    sma5CrossUp: Boolean(price.sma5CrossUp),
+    rsi14: price.rsi14,
+    rsiCross30: Boolean(price.rsiCross30),
+    candlestickSignal: price.candlestickSignal || null,
+    technicalEntry: price.technicalEntry || technicalEntryFallback(),
+    regime: price.regime || null,
     dividendPerShareTtm: price.dividendPerShareTtm,
     dividendYield: price.dividendYield,
     dividendChangePct: price.dividendChangePct,
@@ -4636,10 +4937,12 @@ function stockSector(stock) {
 
 async function researchStock(stock, options) {
   const queries = [
-    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 株価 決算 業績 ニュース 投資判断 目標株価 レーティング`, topic: "company" },
-    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 中期経営計画 配当 リスク 決算短信 上方修正 下方修正`, topic: "company" },
-    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 信用倍率 空売り 需給`, topic: "company" },
-    { text: `${stock.sector || stockSector(stock)} 業界 見通し 日本株 リスク 好調 不調 需要`, topic: "sector" },
+    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 株価 Yahoo 株探 決算短信 業績 事業変化 ニュース`, topic: "company" },
+    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 決算後 急落 失望売り 自社株買いなし 増配なし 株主還元`, topic: "company" },
+    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 中期経営計画 受注 利益率 ガイダンス 上方修正 下方修正 TDnet`, topic: "company" },
+    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 時価総額 PBR PER EV EBITDA ネットキャッシュ 営業キャッシュフロー`, topic: "company" },
+    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 信用倍率 空売り 需給 大量保有 アクティビスト`, topic: "company" },
+    { text: `${stock.sector || stockSector(stock)} 業界 見通し 日本株 事業環境 需要 規制 価格転嫁`, topic: "sector" },
   ];
   const searchResults = [];
   const perQueryLimit = Math.max(5, Math.ceil(options.websiteLimit / queries.length));
@@ -4887,6 +5190,9 @@ async function fetchPriceHistory(symbol, options = {}) {
   const meta = result.meta || {};
   const quote = result.indicators?.quote?.[0] || {};
   const timestamps = result.timestamp || [];
+  const opens = quote.open || [];
+  const highs = quote.high || [];
+  const lows = quote.low || [];
   const closes = quote.close || [];
   const volumes = quote.volume || [];
   const dividends = Object.values(result.events?.dividends || {})
@@ -4899,6 +5205,9 @@ async function fetchPriceHistory(symbol, options = {}) {
   const series = cleanPriceSeries(timestamps
     .map((timestamp, index) => ({
       date: new Date(timestamp * 1000).toISOString().slice(0, 10),
+      open: Number(opens[index]),
+      high: Number(highs[index]),
+      low: Number(lows[index]),
       close: Number(closes[index]),
       volume: Number(volumes[index]),
     }))
@@ -4916,6 +5225,9 @@ function combineBtcJpySeries(btcSeries = [], fxSeries = []) {
     .map((point) => ({
       date: normalizeDate(point.date),
       close: nullablePositiveNumber(point.close),
+      open: nullablePositiveNumber(point.open),
+      high: nullablePositiveNumber(point.high),
+      low: nullablePositiveNumber(point.low),
       volume: Number(point.volume),
     }))
     .filter((point) => point.date && point.close)
@@ -4939,6 +5251,9 @@ function combineBtcJpySeries(btcSeries = [], fxSeries = []) {
     if (!lastRate) continue;
     combined.push({
       date: point.date,
+      open: (point.open || point.close) * lastRate,
+      high: (point.high || point.close) * lastRate,
+      low: (point.low || point.close) * lastRate,
       close: point.close * lastRate,
       volume: point.volume,
     });
@@ -4974,6 +5289,8 @@ function priceMetrics(series, meta = {}) {
   const trendPrice3y = trend.currentPrice;
   const dividend = dividendMetrics(meta.dividends || [], current);
   const buyTiming = priceBuyTiming(series);
+  const technical = technicalIndicators(series, buyTiming);
+  const regime = regimeAssessment(series);
   return {
     current,
     return1m: returnFrom(series, 21),
@@ -5004,6 +5321,17 @@ function priceMetrics(series, meta = {}) {
     averageVolume20,
     averageVolume60,
     volumeRatio20: latestVolume && averageVolume20 ? latestVolume / averageVolume20 : null,
+    logReturn1d: technical.logReturn1d,
+    histVol20: technical.histVol20,
+    atr14: technical.atr14,
+    atrPct: technical.atrPct,
+    sma5: technical.sma5,
+    sma5CrossUp: technical.sma5CrossUp,
+    rsi14: technical.rsi14,
+    rsiCross30: technical.rsiCross30,
+    candlestickSignal: technical.candlestickSignal,
+    technicalEntry: technical.entry,
+    regime,
     shortName: cleanText(meta.shortName || ""),
     longName: cleanText(meta.longName || ""),
     yahooSymbol: cleanText(meta.symbol || ""),
@@ -5021,6 +5349,9 @@ function cleanPriceSeries(series = []) {
     if (!date || !close) continue;
     byDate.set(date, {
       date,
+      open: nullablePositiveNumber(point.open) || close,
+      high: Math.max(nullablePositiveNumber(point.high) || close, close),
+      low: Math.min(nullablePositiveNumber(point.low) || close, close),
       close,
       volume: Number(point.volume),
     });
@@ -5042,12 +5373,19 @@ function isSuspiciousPricePoint(point, index, points = []) {
   const next = nullablePositiveNumber(points[index + 1]?.close);
   const tooLow = point.close < localMedian * 0.25;
   const tooHigh = point.close > localMedian * 4;
+  const isolatedLow = point.close < localMedian * 0.55
+    && ((previous && previous > point.close * 1.8) || (next && next > point.close * 1.8))
+    && (!previous || !next || Math.abs(previous - next) / localMedian < 0.25);
+  const isolatedHigh = point.close > localMedian * 1.8
+    && ((previous && previous * 1.8 < point.close) || (next && next * 1.8 < point.close))
+    && (!previous || !next || Math.abs(previous - next) / localMedian < 0.25);
   if (tooLow) {
     return Boolean((previous && previous > point.close * 2.8) || (next && next > point.close * 2.8));
   }
   if (tooHigh) {
     return Boolean((previous && previous * 2.8 < point.close) || (next && next * 2.8 < point.close));
   }
+  if (isolatedLow || isolatedHigh) return true;
   return false;
 }
 
@@ -5099,6 +5437,238 @@ function emptyBuyTiming() {
     distanceFromBuyLine1y: null,
     buyTiming1y: "UNKNOWN",
   };
+}
+
+function technicalIndicators(series = [], buyTiming = {}) {
+  const clean = cleanPriceSeries(series);
+  const closes = clean.map((point) => point.close).filter(Number.isFinite);
+  const latest = clean.at(-1) || {};
+  const previous = clean.at(-2) || {};
+  const current = nullablePositiveNumber(latest.close);
+  if (clean.length < 20 || !current) {
+    return {
+      logReturn1d: null,
+      histVol20: null,
+      atr14: null,
+      atrPct: null,
+      sma5: null,
+      sma5CrossUp: false,
+      rsi14: null,
+      rsiCross30: false,
+      candlestickSignal: null,
+      entry: technicalEntryFallback("価格データが不足しています。"),
+    };
+  }
+
+  const sma5 = average(closes.slice(-5));
+  const previousSma5 = clean.length >= 6 ? average(closes.slice(-6, -1)) : null;
+  const previousClose = nullablePositiveNumber(previous.close);
+  const sma5CrossUp = Boolean(previousClose && previousSma5 && sma5 && previousClose <= previousSma5 && current > sma5);
+  const rsiSeries = rsiValues(closes, 14);
+  const rsi14 = lastFinite(rsiSeries);
+  const previousRsi = previousFinite(rsiSeries);
+  const rsiCross30 = Boolean(Number.isFinite(previousRsi) && previousRsi <= 30 && Number.isFinite(rsi14) && rsi14 > 30);
+  const trueRanges = trueRangeValues(clean);
+  const atr14 = average(trueRanges.slice(-14));
+  const atrPct = atr14 && current ? (atr14 / current) * 100 : null;
+  const histVol20 = annualizedVolatility(closes.slice(-21));
+  const logReturn1d = previousClose ? Math.log(current / previousClose) : null;
+  const candlestickSignal = latestCandlestickSignal(clean);
+  const buyLine = nullablePositiveNumber(buyTiming.buyLine1y);
+  const atrBuffer = atr14 ? atr14 * (Number.isFinite(atrPct) && atrPct > 4 ? 1.0 : 0.5) : 0;
+  const atrAdjustedBuyLine = buyLine ? Math.max(0.01, buyLine - atrBuffer) : null;
+  const nearBuyLine = buyLine
+    ? current <= buyLine * 1.01 || (atrAdjustedBuyLine && current <= atrAdjustedBuyLine * 1.03)
+    : false;
+  const confirmationSignals = [
+    sma5CrossUp ? "終値が5日線を上抜け" : "",
+    rsiCross30 ? "RSIが30割れから再浮上" : "",
+    candlestickSignal ? candlestickSignal.label : "",
+  ].filter(Boolean);
+  const risks = [
+    buyLine && !nearBuyLine ? "買い場ラインまではまだ距離あり" : "",
+    Number.isFinite(atrPct) && atrPct >= 6 ? "ATRが大きく、指値を深めに置きたい" : "",
+    !confirmationSignals.length ? "反転サインはまだ未確認" : "",
+  ].filter(Boolean);
+  const ready = Boolean(nearBuyLine && confirmationSignals.length);
+  const score = clamp(Math.round(
+    35
+    + (nearBuyLine ? 25 : 0)
+    + (sma5CrossUp ? 15 : 0)
+    + (rsiCross30 ? 15 : 0)
+    + (candlestickSignal ? 10 : 0)
+    - (Number.isFinite(atrPct) && atrPct >= 6 ? 8 : 0),
+  ), 0, 100);
+  const summary = ready
+    ? "買い場付近で反転確認が出ています。翌営業日の失速を確認して入る候補です。"
+    : nearBuyLine
+    ? "買い場付近ですが、5日線・RSI・ローソク足の反転確認を待ちます。"
+    : "まだ買い場ラインから離れています。追わずに待つ前提です。";
+
+  return {
+    logReturn1d,
+    histVol20,
+    atr14,
+    atrPct,
+    sma5,
+    sma5CrossUp,
+    rsi14,
+    rsiCross30,
+    candlestickSignal,
+    entry: {
+      ready,
+      score,
+      buyLine,
+      atrAdjustedBuyLine,
+      signals: confirmationSignals,
+      risks,
+      summary,
+    },
+  };
+}
+
+function technicalEntryFallback(summary = "更新後に表示します。") {
+  return {
+    ready: false,
+    score: null,
+    buyLine: null,
+    atrAdjustedBuyLine: null,
+    signals: [],
+    risks: [],
+    summary,
+  };
+}
+
+function rsiValues(values = [], period = 14) {
+  return values.map((_, index) => {
+    if (index < period) return null;
+    let gains = 0;
+    let losses = 0;
+    for (let i = index - period + 1; i <= index; i += 1) {
+      const diff = values[i] - values[i - 1];
+      if (diff >= 0) gains += diff;
+      else losses += Math.abs(diff);
+    }
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    if (!avgLoss) return 100;
+    const rs = avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
+  });
+}
+
+function trueRangeValues(series = []) {
+  const values = [];
+  for (let i = 1; i < series.length; i += 1) {
+    const point = series[i];
+    const previousClose = nullablePositiveNumber(series[i - 1]?.close);
+    const high = nullablePositiveNumber(point.high) || point.close;
+    const low = nullablePositiveNumber(point.low) || point.close;
+    if (!previousClose || !high || !low) continue;
+    values.push(Math.max(high - low, Math.abs(high - previousClose), Math.abs(low - previousClose)));
+  }
+  return values;
+}
+
+function latestCandlestickSignal(series = []) {
+  const latest = series.at(-1);
+  const previous = series.at(-2);
+  if (!latest || !previous) return null;
+  const open = nullablePositiveNumber(latest.open) || latest.close;
+  const close = nullablePositiveNumber(latest.close);
+  const high = nullablePositiveNumber(latest.high) || close;
+  const low = nullablePositiveNumber(latest.low) || close;
+  const prevOpen = nullablePositiveNumber(previous.open) || previous.close;
+  const prevClose = nullablePositiveNumber(previous.close);
+  if (!open || !close || !high || !low || !prevOpen || !prevClose) return null;
+  const body = Math.abs(close - open);
+  const range = Math.max(0.000001, high - low);
+  const lowerShadow = Math.min(open, close) - low;
+  const upperShadow = high - Math.max(open, close);
+  const lowerShadowBullish = close > open && lowerShadow >= Math.max(body * 1.8, range * 0.35) && upperShadow <= range * 0.45;
+  if (lowerShadowBullish) return { key: "lower_shadow_bullish", label: "下ヒゲ陽線" };
+  const bullishEngulfing = prevClose < prevOpen && close > open && open <= prevClose && close >= prevOpen;
+  if (bullishEngulfing) return { key: "bullish_engulfing", label: "包み足" };
+  return null;
+}
+
+function regimeAssessment(series = []) {
+  const clean = cleanPriceSeries(series);
+  const closes = clean.map((point) => point.close).filter(Number.isFinite);
+  if (closes.length < 40) {
+    return {
+      label: "判定待ち",
+      stableUptrendPct: null,
+      panicPullbackPct: null,
+      rangePct: null,
+      summary: "価格履歴が不足しています。",
+      features: {},
+    };
+  }
+  const return20 = returnFrom(clean, Math.min(20, clean.length - 1));
+  const vol20 = annualizedVolatility(closes.slice(-21));
+  const sma20 = average(closes.slice(-20));
+  const sma60 = average(closes.slice(-60));
+  const maSpreadPct = sma20 && sma60 ? ((sma20 - sma60) / sma60) * 100 : 0;
+  const drawdown52 = maxDrawdown(closes.slice(-252));
+  let stable = 34;
+  let panic = 33;
+  let range = 33;
+  if (Number.isFinite(return20)) {
+    if (return20 > 2) stable += 18;
+    if (return20 < -4) panic += 22;
+    if (Math.abs(return20) <= 2) range += 12;
+  }
+  if (Number.isFinite(vol20)) {
+    if (vol20 < 28) stable += 10;
+    if (vol20 > 50) panic += 16;
+    if (vol20 >= 25 && vol20 <= 45) range += 8;
+  }
+  if (Number.isFinite(maSpreadPct)) {
+    if (maSpreadPct > 1) stable += 16;
+    if (maSpreadPct < -2) panic += 10;
+    if (Math.abs(maSpreadPct) <= 1.2) range += 14;
+  }
+  if (Number.isFinite(drawdown52) && drawdown52 < -20) panic += 8;
+  const total = Math.max(1, stable + panic + range);
+  const stablePct = Math.round((stable / total) * 100);
+  const panicPct = Math.round((panic / total) * 100);
+  const rangePct = Math.max(0, 100 - stablePct - panicPct);
+  const label = stablePct >= panicPct && stablePct >= rangePct
+    ? "安定上昇"
+    : panicPct >= rangePct
+    ? "調整/下落"
+    : "レンジ";
+  return {
+    label,
+    stableUptrendPct: stablePct,
+    panicPullbackPct: panicPct,
+    rangePct,
+    summary: `特徴量からHMM風に、安定上昇${stablePct}%・調整${panicPct}%・レンジ${rangePct}%で推定。`,
+    features: {
+      return20,
+      histVol20: vol20,
+      maSpreadPct,
+      maxDrawdown1y: drawdown52,
+    },
+  };
+}
+
+function lastFinite(values = []) {
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    if (Number.isFinite(values[i])) return values[i];
+  }
+  return null;
+}
+
+function previousFinite(values = []) {
+  let seen = false;
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    if (!Number.isFinite(values[i])) continue;
+    if (seen) return values[i];
+    seen = true;
+  }
+  return null;
 }
 
 function highestClosePoint(series = []) {
@@ -5548,7 +6118,7 @@ async function aiDecisionChunk(model, items) {
   const prompt = [
     "あなたは日本株のリサーチ補助AIです。将来利益を保証せず、売買判断の根拠とリスクを厳密に分けてください。",
     "注意点は、トレードのプロが最低限確認する観点で評価してください。業種環境も個社とは別の材料として読み込んでください。",
-    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]}}]}。",
+    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":2000,\"reviewPrice\":1600,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}。",
     "actionは BUY, HOLD, SELL, WATCH のいずれか。SELLは即時売却ではなく、数週間から数か月の保有理由を見直す意味です。confidenceは0-100。",
     "NVIDIAのような10倍候補は20〜30%の株価下落だけではファンダ崩壊にしないでください。growthExitは、売上高成長率の明確な鈍化、ガイダンスが市場予想を下回る、需要・粗利・受注の構造悪化、減配/下方修正など、買った根拠そのものが崩れた時だけexit_alertにしてください。",
     `growthExit.exit_alertはpublishedDateが過去${FUNDAMENTAL_EXIT_MAX_AGE_DAYS}日以内の根拠がある時だけにしてください。日付不明、古い記事、過去の歴史記事は売りアラートの根拠にしないでください。`,
@@ -5558,6 +6128,7 @@ async function aiDecisionChunk(model, items) {
     "3年で大きく上がった後、現在値が3年の流れや安値から見て高い位置にある場合はBUYにせず、WATCHかHOLDにしてください。",
     "配当利回り、配当の増減、購入日以降の配当込み損益を見てください。高配当だけでBUYにせず、株価下落で利回りが高く見える可能性をリスクに入れてください。",
     "短期売買ではなく、3年の価格傾向、1年買い場ライン、購入日、購入単価、残株数、売却済み株数、確定損益、含み損益、配当込み損益、直近モメンタム、出来高、悪材料、過熱感、業種環境、保有継続可否を総合評価してください。",
+    "sellForecastは保有中か残株がある銘柄だけに出してください。将来を断定せず、ニュースや過去の経緯から売却を検討する時期、利確候補価格、見直し価格、根拠を短く示してください。根拠が薄ければtargetPrice/null、horizon/未定。",
     "",
     JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
@@ -5580,6 +6151,7 @@ async function aiDecisionChunk(model, items) {
       risks: decision.risks,
       riskChecks: decision.riskChecks,
       growthExit: decision.growthExit,
+      sellForecast: decision.sellForecast,
     }));
 }
 
@@ -5707,6 +6279,17 @@ function compactPrice(price) {
     averageVolume20: price.averageVolume20,
     averageVolume60: price.averageVolume60,
     volumeRatio20: price.volumeRatio20,
+    logReturn1d: price.logReturn1d,
+    histVol20: price.histVol20,
+    atr14: price.atr14,
+    atrPct: price.atrPct,
+    sma5: price.sma5,
+    sma5CrossUp: Boolean(price.sma5CrossUp),
+    rsi14: price.rsi14,
+    rsiCross30: Boolean(price.rsiCross30),
+    candlestickSignal: price.candlestickSignal || null,
+    technicalEntry: price.technicalEntry || technicalEntryFallback(),
+    regime: price.regime || null,
     dividendPerShareTtm: price.dividendPerShareTtm,
     dividendYield: price.dividendYield,
     dividendChangePct: price.dividendChangePct,
@@ -5742,6 +6325,7 @@ function normalizeDecision(stock, price, research, decision) {
     growthExit.signals = asStringArray(fallbackGrowthExit.signals).slice(0, 5);
   }
   growthExit = enforceRecentGrowthExit(growthExit, research, stock);
+  const sellForecast = normalizeSellForecast(decision.sellForecast) || ruleSellForecast({ price, position }, "JPY");
   const reasons = uniqueText([...asStringArray(decision.reasons), ...safety.reasons]).slice(0, 5);
   const risks = uniqueText([...asStringArray(decision.risks), ...safety.risks]).slice(0, 5);
   const riskChecks = mergeRiskChecks(
@@ -5760,6 +6344,7 @@ function normalizeDecision(stock, price, research, decision) {
     price,
     position,
     growthExit,
+    sellForecast,
     entryValue: evaluateEntryPrice(stock.targetBuyPrice, price),
     evidence: research.evidence.slice(0, 12),
     researchStats: {
@@ -5870,6 +6455,60 @@ function normalizeGrowthExit(value = {}) {
   };
 }
 
+function normalizeSellForecast(value = {}) {
+  if (!value || typeof value !== "object") return null;
+  const horizon = cleanText(value.horizon || value.period || "").slice(0, 40);
+  const timing = cleanText(value.timing || "").slice(0, 120);
+  const reason = cleanText(value.reason || value.summary || "").slice(0, 220);
+  const targetPrice = nullablePositiveNumber(value.targetPrice);
+  const reviewPrice = nullablePositiveNumber(value.reviewPrice || value.stopPrice);
+  const confidence = Number.isFinite(Number(value.confidence)) ? clamp(Number(value.confidence), 0, 100) : null;
+  const catalysts = asStringArray(value.catalysts || value.triggers).slice(0, 4);
+  if (!horizon && !timing && !reason && !targetPrice && !reviewPrice && !catalysts.length) return null;
+  return {
+    horizon: horizon || "未定",
+    targetPrice,
+    reviewPrice,
+    timing: timing || "次の決算・主要ニュース後に見直し",
+    reason: reason || "根拠が薄いため、AI見通しは確認扱いです。",
+    confidence,
+    catalysts,
+  };
+}
+
+function ruleSellForecast(analysis = {}, currency = "JPY") {
+  const price = analysis.price || {};
+  const position = analysis.position || {};
+  const current = nullablePositiveNumber(price.current);
+  const quantity = nullablePositiveNumber(position.quantity);
+  if (!current || !quantity) return null;
+  const purchasePrice = nullablePositiveNumber(position.purchasePrice);
+  const high52 = nullablePositiveNumber(price.high52);
+  const trendPrice = nullablePositiveNumber(price.trendPrice3y);
+  const targetCandidates = [
+    current * 1.08,
+    high52 ? high52 * 0.96 : null,
+    trendPrice ? trendPrice * 1.08 : null,
+    purchasePrice ? purchasePrice * 1.25 : null,
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  const reviewCandidates = [
+    purchasePrice ? purchasePrice * 0.92 : null,
+    nullablePositiveNumber(price.buyLine1y) ? nullablePositiveNumber(price.buyLine1y) * 0.92 : null,
+    current * 0.88,
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  const targetPrice = targetCandidates.length ? Math.max(...targetCandidates) : null;
+  const reviewPrice = reviewCandidates.length ? Math.min(...reviewCandidates) : null;
+  return normalizeSellForecast({
+    horizon: "1-3か月",
+    targetPrice: roundPrice(targetPrice),
+    reviewPrice: roundPrice(reviewPrice),
+    timing: "次の決算・主要ニュース後、または5日線/RSIの失速時に見直し",
+    reason: `${formatMoney(targetPrice, currency)}前後で利確候補、${formatMoney(reviewPrice, currency)}割れで保有理由を再確認するルール目安です。AI材料が取れた場合はそちらを優先します。`,
+    confidence: 45,
+    catalysts: ["決算後の反応", "主要ニュース", "5日線割れ", "RSI失速"],
+  });
+}
+
 function normalizeGrowthExitEvidence(items = []) {
   if (!Array.isArray(items)) return [];
   return items.map((item) => ({
@@ -5928,6 +6567,8 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
     { evidence: analysis.evidence || [] },
     analysis,
   );
+  const aiSellForecast = normalizeSellForecast(analysis.sellForecast || analysis.ai?.sellForecast)
+    || ruleSellForecast(analysis, currency);
   const onkabu = onkabuPlan(position, current, settings, currency);
   const alerts = [];
   if (canNotifySellAlert && settings.growthExitEnabled !== false && growthExit.level === "exit_alert") {
@@ -5992,6 +6633,7 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
     trailingSuppressedReason: trailing.suppressedReason,
     trailingBasis: trailing.basis,
     growthExit,
+    aiSellForecast,
     onkabu,
     alertLevel,
     alerts,
@@ -7566,6 +8208,8 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
     { evidence: analysis.evidence || [] },
     resolvedStock,
   );
+  const sellForecast = normalizeSellForecast(analysis.sellForecast || analysis.ai?.sellForecast)
+    || ruleSellForecast({ price, position }, "JPY");
   return {
     ...analysis,
     symbol,
@@ -7576,7 +8220,9 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
     risks: uniqueText([...asStringArray(analysis.risks), ...safety.risks]).slice(0, 5),
     position,
     growthExit,
-    ai: analysis.ai ? { ...analysis.ai, growthExit } : analysis.ai,
+    sellForecast,
+    financials: analysis.financials ? normalizeFinancialSnapshot(analysis.financials) : analysis.financials,
+    ai: analysis.ai ? { ...analysis.ai, growthExit, sellForecast: normalizeSellForecast(analysis.ai.sellForecast) || sellForecast } : analysis.ai,
     entryValue: evaluateEntryPrice(resolvedStock.targetBuyPrice, price),
   };
 }
@@ -7691,7 +8337,8 @@ function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = [])
         ...result.sourceSummary,
         strictBuyTarget: true,
         avoidedBusiness: result.sourceSummary.avoidedBusiness || "卸売・食品、情報系ベンチャー寄りは候補から除外",
-        peCriteria: result.sourceSummary.peCriteria || PE_CRITERIA.filter((item) => item.weight > 0).map((item) => item.label),
+        peCriteria: result.sourceSummary.peCriteria || PE_FINANCIAL_CRITERIA.map((item) => item.label),
+        peTendencies: result.sourceSummary.peTendencies || PE_RECENT_TENDENCIES,
         excludedCount: excludedCandidates.length,
         suggestionCount: suggestions.length,
       }
@@ -8873,6 +9520,551 @@ function formatPercentValue(value) {
   return Number.isFinite(value) ? `${value.toFixed(1)}%` : "-";
 }
 
+async function readFinancialCache() {
+  try {
+    const cached = JSON.parse(await readFile(FINANCIAL_CACHE_PATH, "utf8"));
+    return {
+      generatedAt: cached.generatedAt || "",
+      enabled: cached.enabled !== false,
+      checkedCount: Number(cached.checkedCount || 0),
+      warningCount: Number(cached.warningCount || 0),
+      warnings: asStringArray(cached.warnings).slice(0, 12),
+      items: Array.isArray(cached.items) ? cached.items.map(normalizeFinancialSnapshot).filter(Boolean) : [],
+      message: String(cached.message || ""),
+    };
+  } catch {
+    return { generatedAt: "", enabled: true, checkedCount: 0, warningCount: 0, warnings: [], items: [], message: "" };
+  }
+}
+
+async function saveFinancialCache(result = {}) {
+  const normalized = {
+    generatedAt: result.generatedAt || new Date().toISOString(),
+    enabled: result.enabled !== false,
+    checkedCount: Number(result.checkedCount || result.items?.length || 0),
+    warningCount: Number(result.warningCount || result.warnings?.length || 0),
+    warnings: asStringArray(result.warnings).slice(0, 12),
+    items: Array.isArray(result.items) ? result.items.map(normalizeFinancialSnapshot).filter(Boolean) : [],
+    message: String(result.message || ""),
+  };
+  await mkdir(path.dirname(FINANCIAL_CACHE_PATH), { recursive: true });
+  await writeFile(FINANCIAL_CACHE_PATH, JSON.stringify(normalized, null, 2));
+  return normalized;
+}
+
+function normalizeFinancialSnapshot(item = {}) {
+  const symbol = normalizeSymbol(item.symbol);
+  if (!symbol) return null;
+  const criteria = normalizeFinancialCriteria(item.criteria || item.peCriteria);
+  return {
+    symbol,
+    name: cleanText(item.name || symbol).slice(0, 120),
+    status: ["ok", "missing_key", "not_found", "error", "partial"].includes(item.status) ? item.status : "partial",
+    source: cleanText(item.source || "EDINET / Yahoo Finance").slice(0, 80),
+    checkedAt: item.checkedAt || "",
+    asOfDate: normalizeDate(item.asOfDate) || "",
+    docID: cleanText(item.docID || "").slice(0, 80),
+    documentTitle: cleanText(item.documentTitle || "").slice(0, 160),
+    marketCap: numberOrNull(item.marketCap),
+    pbr: numberOrNull(item.pbr),
+    per: numberOrNull(item.per),
+    evEbitda: numberOrNull(item.evEbitda),
+    netCashRatio: numberOrNull(item.netCashRatio),
+    cashAndEquivalents: numberOrNull(item.cashAndEquivalents),
+    shortTermSecurities: numberOrNull(item.shortTermSecurities),
+    interestBearingDebt: numberOrNull(item.interestBearingDebt),
+    netCash: numberOrNull(item.netCash),
+    operatingCashFlow: numberOrNull(item.operatingCashFlow),
+    operatingCashFlowYears: nullableNonNegativeNumber(item.operatingCashFlowYears) || 0,
+    operatingCashFlowPositive: item.operatingCashFlowPositive === true,
+    ebitda: numberOrNull(item.ebitda),
+    netSales: numberOrNull(item.netSales),
+    operatingIncome: numberOrNull(item.operatingIncome),
+    netAssets: numberOrNull(item.netAssets),
+    totalAssets: numberOrNull(item.totalAssets),
+    criteria,
+    peScore: Number.isFinite(item.peScore) ? clamp(Math.round(item.peScore), 0, 100) : financialCriteriaScore(criteria),
+    warnings: asStringArray(item.warnings).slice(0, 8),
+  };
+}
+
+function normalizeFinancialCriteria(items = []) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => ({
+    key: String(item.key || "").slice(0, 40),
+    label: cleanText(item.label || "").slice(0, 80),
+    status: ["pass", "watch", "fail", "unknown"].includes(item.status) ? item.status : "unknown",
+    score: clamp(Number(item.score || 0), 0, Number(item.max || 25) || 25),
+    max: clamp(Number(item.max || 25), 1, 50),
+    summary: cleanText(item.summary || "").slice(0, 140),
+  })).filter((item) => item.key && item.label);
+}
+
+function financialCriteriaScore(criteria = []) {
+  const max = criteria.reduce((sum, item) => sum + (Number(item.max) || 0), 0);
+  if (!max) return null;
+  const score = criteria.reduce((sum, item) => sum + (Number(item.score) || 0), 0);
+  return clamp(Math.round((score / max) * 100), 0, 100);
+}
+
+async function attachFinancialsToAnalyses(analyses = [], cache = null) {
+  const financialCache = cache || await readFinancialCache();
+  const bySymbol = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
+  return analyses.map((analysis) => {
+    if (!/\.T$/.test(analysis?.symbol || "")) return analysis;
+    const financials = bySymbol.get(analysis.symbol) || financialSnapshotPlaceholder(analysis);
+    return { ...analysis, financials };
+  });
+}
+
+function financialSnapshotPlaceholder(stock = {}) {
+  return normalizeFinancialSnapshot({
+    symbol: stock.symbol,
+    name: stock.name || stock.symbol,
+    status: "missing_key",
+    source: "EDINET / Yahoo Finance",
+    checkedAt: "",
+    message: "EDINET APIキーを設定すると財務情報を取得します。",
+    criteria: buildPeFinancialCriteria({}),
+    warnings: ["EDINET APIキー未設定"],
+  });
+}
+
+async function updateFinancialSnapshots(options = {}) {
+  const settings = await readSettings();
+  const previous = await readFinancialCache();
+  const generatedAt = new Date().toISOString();
+  const stocks = (await readWatchlist()).filter((stock) => /\.T$/.test(stock.symbol));
+  if (!settings.edinetApiKey) {
+    const result = await saveFinancialCache({
+      generatedAt,
+      enabled: false,
+      checkedCount: stocks.length,
+      warnings: ["EDINET APIキー未設定。設定の財務/口座タブで追加してください。"],
+      items: stocks.map((stock) => financialSnapshotPlaceholder(stock)),
+      message: "EDINET APIキーが未設定です。",
+    });
+    return result;
+  }
+
+  if (!options.force && previous.generatedAt && !isOlderThan(cacheHourKey(previous.generatedAt), cacheHourKey(generatedAt))) {
+    return previous;
+  }
+
+  const warnings = [];
+  const quoteBySymbol = await fetchYahooQuoteSnapshots(stocks.map((stock) => stock.symbol)).catch((error) => {
+    warnings.push(`Yahoo Finance: ${error.message || "株価サイトの指標取得に失敗しました"}`);
+    return new Map();
+  });
+  const docLookup = await findLatestEdinetDocuments(stocks, settings.edinetApiKey).catch((error) => {
+    warnings.push(`EDINET: ${error.message || "書類一覧を取得できませんでした"}`);
+    return { bySymbol: new Map(), warnings: [] };
+  });
+  warnings.push(...asStringArray(docLookup.warnings));
+  const previousBySymbol = new Map((previous.items || []).map((item) => [item.symbol, item]));
+  const items = await mapLimit(stocks, 2, async (stock) => {
+    const previousItem = previousBySymbol.get(stock.symbol) || null;
+    const doc = docLookup.bySymbol?.get(stock.symbol) || null;
+    const quote = quoteBySymbol.get(stock.symbol) || {};
+    let facts = previousItem && previousItem.docID === doc?.docID
+      ? financialFactsFromSnapshot(previousItem)
+      : null;
+    if (doc?.docID && (!facts || options.force)) {
+      facts = await fetchEdinetFinancialFacts(doc.docID, settings.edinetApiKey).catch((error) => {
+        warnings.push(`${stock.name}: ${error.message || "XBRL財務抽出に失敗しました"}`);
+        return facts;
+      });
+    }
+    return buildFinancialSnapshot(stock, quote, doc, facts, previousItem);
+  });
+  return saveFinancialCache({
+    generatedAt,
+    enabled: true,
+    checkedCount: stocks.length,
+    warningCount: warnings.length,
+    warnings: uniqueText(warnings).slice(0, 12),
+    items,
+    message: items.some((item) => item.status === "ok" || item.status === "partial")
+      ? "EDINET財務情報を更新しました。"
+      : "EDINET財務情報を取得できませんでした。",
+  });
+}
+
+function buildFinancialSnapshot(stock = {}, quote = {}, doc = null, facts = null, previous = null) {
+  const cash = numberOrNull(facts?.cashAndEquivalents ?? previous?.cashAndEquivalents);
+  const shortTermSecurities = numberOrNull(facts?.shortTermSecurities ?? previous?.shortTermSecurities);
+  const debt = numberOrNull(facts?.interestBearingDebt ?? previous?.interestBearingDebt);
+  const marketCap = numberOrNull(quote.marketCap ?? previous?.marketCap);
+  const operatingIncome = numberOrNull(facts?.operatingIncome ?? previous?.operatingIncome);
+  const depreciation = numberOrNull(facts?.depreciationAndAmortization);
+  const ebitda = numberOrNull(facts?.ebitda ?? (Number.isFinite(operatingIncome) && Number.isFinite(depreciation) ? operatingIncome + depreciation : previous?.ebitda));
+  const netCash = Number.isFinite(cash) || Number.isFinite(shortTermSecurities) || Number.isFinite(debt)
+    ? (cash || 0) + (shortTermSecurities || 0) - (debt || 0)
+    : numberOrNull(previous?.netCash);
+  const netCashRatio = marketCap && Number.isFinite(netCash) ? netCash / marketCap : numberOrNull(previous?.netCashRatio);
+  const calculatedEvEbitda = marketCap && Number.isFinite(netCash) && ebitda
+    ? Math.max(0, marketCap - netCash) / ebitda
+    : null;
+  const evEbitda = numberOrNull(quote.enterpriseToEbitda ?? calculatedEvEbitda ?? previous?.evEbitda);
+  const snapshot = {
+    symbol: stock.symbol,
+    name: stock.name,
+    status: doc?.docID || Object.keys(quote).length ? "partial" : "not_found",
+    source: "EDINET / Yahoo Finance",
+    checkedAt: new Date().toISOString(),
+    asOfDate: normalizeDate(doc?.submitDateTime || doc?.submitDate || previous?.asOfDate) || "",
+    docID: doc?.docID || previous?.docID || "",
+    documentTitle: doc?.docDescription || previous?.documentTitle || "",
+    marketCap,
+    pbr: numberOrNull(quote.priceToBook ?? previous?.pbr),
+    per: numberOrNull(quote.trailingPE ?? quote.forwardPE ?? previous?.per),
+    evEbitda,
+    cashAndEquivalents: cash,
+    shortTermSecurities,
+    interestBearingDebt: debt,
+    netCash,
+    netCashRatio,
+    operatingCashFlow: numberOrNull(facts?.operatingCashFlow ?? previous?.operatingCashFlow),
+    operatingCashFlowYears: nullableNonNegativeNumber(previous?.operatingCashFlowYears) || (Number.isFinite(facts?.operatingCashFlow) && facts.operatingCashFlow > 0 ? 1 : 0),
+    operatingCashFlowPositive: Boolean(Number.isFinite(facts?.operatingCashFlow) ? facts.operatingCashFlow > 0 : previous?.operatingCashFlowPositive),
+    ebitda,
+    netSales: numberOrNull(facts?.netSales ?? previous?.netSales),
+    operatingIncome,
+    netAssets: numberOrNull(facts?.netAssets ?? previous?.netAssets),
+    totalAssets: numberOrNull(facts?.totalAssets ?? previous?.totalAssets),
+    warnings: [],
+  };
+  snapshot.criteria = buildPeFinancialCriteria(snapshot);
+  snapshot.peScore = financialCriteriaScore(snapshot.criteria);
+  if (snapshot.marketCap || snapshot.cashAndEquivalents || snapshot.pbr || snapshot.per) snapshot.status = doc?.docID ? "ok" : "partial";
+  if (!doc?.docID) snapshot.warnings.push("EDINET報告書は直近検索で未取得");
+  if (!Number.isFinite(snapshot.marketCap)) snapshot.warnings.push("時価総額未取得");
+  return normalizeFinancialSnapshot(snapshot);
+}
+
+function financialFactsFromSnapshot(item = {}) {
+  return {
+    cashAndEquivalents: item.cashAndEquivalents,
+    shortTermSecurities: item.shortTermSecurities,
+    interestBearingDebt: item.interestBearingDebt,
+    operatingCashFlow: item.operatingCashFlow,
+    ebitda: item.ebitda,
+    netSales: item.netSales,
+    operatingIncome: item.operatingIncome,
+    netAssets: item.netAssets,
+    totalAssets: item.totalAssets,
+  };
+}
+
+function buildPeFinancialCriteria(financials = {}) {
+  return PE_FINANCIAL_CRITERIA.map((criterion) => {
+    if (criterion.key === "market_cap") {
+      const marketCap = numberOrNull(financials.marketCap);
+      if (!Number.isFinite(marketCap)) return financialCriterion(criterion, "unknown", 0, "時価総額が未取得");
+      if (marketCap >= JP_PE_MARKET_CAP_MIN && marketCap <= JP_PE_MARKET_CAP_MAX) {
+        return financialCriterion(criterion, "pass", criterion.max, "50億-500億円の中小型レンジ");
+      }
+      if (marketCap < JP_PE_MARKET_CAP_MIN) return financialCriterion(criterion, "fail", 0, "小さすぎてPEの手間に見合いにくい");
+      return financialCriterion(criterion, "fail", 0, "大型すぎて買収資金のハードルが高い");
+    }
+    if (criterion.key === "net_cash") {
+      const ratio = numberOrNull(financials.netCashRatio);
+      if (!Number.isFinite(ratio)) return financialCriterion(criterion, "unknown", 0, "現金・負債または時価総額が未取得");
+      if (ratio >= 0.5) return financialCriterion(criterion, "pass", criterion.max, `ネットキャッシュ比率${Math.round(ratio * 100)}%`);
+      if (ratio >= 0.3) return financialCriterion(criterion, "watch", criterion.max * 0.45, `ネットキャッシュ比率${Math.round(ratio * 100)}%で惜しい`);
+      return financialCriterion(criterion, "fail", 0, `ネットキャッシュ比率${Math.round(ratio * 100)}%`);
+    }
+    if (criterion.key === "ev_ebitda") {
+      const evEbitda = numberOrNull(financials.evEbitda);
+      const per = numberOrNull(financials.per);
+      if (Number.isFinite(evEbitda) && evEbitda <= 6) return financialCriterion(criterion, "pass", criterion.max, `EV/EBITDA ${evEbitda.toFixed(1)}倍`);
+      if (Number.isFinite(per) && per <= 12) return financialCriterion(criterion, "pass", criterion.max * 0.8, `PER ${per.toFixed(1)}倍`);
+      if (Number.isFinite(evEbitda) || Number.isFinite(per)) return financialCriterion(criterion, "watch", criterion.max * 0.25, "回収倍率は強くない");
+      return financialCriterion(criterion, "unknown", 0, "EV/EBITDA/PERが未取得");
+    }
+    if (criterion.key === "pbr") {
+      const pbr = numberOrNull(financials.pbr);
+      if (!Number.isFinite(pbr)) return financialCriterion(criterion, "unknown", 0, "PBRが未取得");
+      if (pbr <= 0.8) return financialCriterion(criterion, "pass", criterion.max, `PBR ${pbr.toFixed(2)}倍`);
+      if (pbr < 1) return financialCriterion(criterion, "pass", criterion.max * 0.75, `PBR ${pbr.toFixed(2)}倍`);
+      if (pbr <= 1.2) return financialCriterion(criterion, "watch", criterion.max * 0.25, `PBR ${pbr.toFixed(2)}倍`);
+      return financialCriterion(criterion, "fail", 0, `PBR ${pbr.toFixed(2)}倍で資産割安ではない`);
+    }
+    if (criterion.key === "operating_cf") {
+      if (financials.operatingCashFlowPositive) return financialCriterion(criterion, "pass", criterion.max * 0.65, "直近営業CFはプラス");
+      const cashFlow = numberOrNull(financials.operatingCashFlow);
+      if (Number.isFinite(cashFlow)) return financialCriterion(criterion, cashFlow > 0 ? "pass" : "fail", cashFlow > 0 ? criterion.max * 0.65 : 0, cashFlow > 0 ? "営業CFプラス" : "営業CFマイナス");
+      return financialCriterion(criterion, "unknown", 0, "営業CFが未取得");
+    }
+    return financialCriterion(criterion, "unknown", 0, "未評価");
+  });
+}
+
+function financialCriterion(base, status, score, summary) {
+  return {
+    key: base.key,
+    label: base.label,
+    status,
+    score: Math.round(Number(score || 0)),
+    max: base.max,
+    summary,
+  };
+}
+
+async function fetchYahooQuoteSnapshots(symbols = []) {
+  const cleanSymbols = uniqueText(symbols.map(normalizeSymbol).filter(Boolean));
+  const quotes = new Map();
+  for (const chunk of chunkArray(cleanSymbols, 30)) {
+    const url = new URL("https://query1.finance.yahoo.com/v7/finance/quote");
+    url.searchParams.set("symbols", chunk.join(","));
+    url.searchParams.set("lang", "ja-JP");
+    url.searchParams.set("region", "JP");
+    const response = await fetchWithTimeout(url, {
+      timeout: 10000,
+      headers: { accept: "application/json", "user-agent": "Mozilla/5.0 Stock Signal" },
+    });
+    if (!response.ok) throw new Error(`Yahoo quote returned ${response.status}`);
+    const payload = await response.json().catch(() => null);
+    for (const item of payload?.quoteResponse?.result || []) {
+      const symbol = normalizeSymbol(item.symbol);
+      if (!symbol) continue;
+      quotes.set(symbol, {
+        marketCap: numberOrNull(item.marketCap),
+        priceToBook: numberOrNull(item.priceToBook),
+        trailingPE: numberOrNull(item.trailingPE),
+        forwardPE: numberOrNull(item.forwardPE),
+        enterpriseToEbitda: numberOrNull(item.enterpriseToEbitda),
+        regularMarketPrice: numberOrNull(item.regularMarketPrice),
+      });
+    }
+  }
+  return quotes;
+}
+
+async function findLatestEdinetDocuments(stocks = [], apiKey = "") {
+  const wanted = new Map(stocks.map((stock) => [stock.symbol.replace(".T", ""), stock]));
+  const bySymbol = new Map();
+  const warnings = [];
+  if (!wanted.size) return { bySymbol, warnings };
+  for (let offset = 0; offset < EDINET_LOOKBACK_DAYS && bySymbol.size < wanted.size; offset += 1) {
+    const date = isoDateDaysAgo(offset);
+    let documents = [];
+    try {
+      documents = await fetchEdinetDocumentsByDate(date, apiKey);
+    } catch (error) {
+      if (offset < 3) warnings.push(`${date}: ${error.message || "EDINET書類一覧取得失敗"}`);
+      continue;
+    }
+    for (const doc of documents) {
+      const normalized = normalizeEdinetDocument(doc);
+      if (!normalized || !isFinancialEdinetDocument(normalized)) continue;
+      const code = normalized.secCode.slice(0, 4);
+      const stock = wanted.get(code);
+      if (!stock || bySymbol.has(stock.symbol)) continue;
+      bySymbol.set(stock.symbol, normalized);
+    }
+  }
+  return { bySymbol, warnings };
+}
+
+function isoDateDaysAgo(offset = 0) {
+  const date = new Date(Date.now() - offset * 86400000);
+  return date.toISOString().slice(0, 10);
+}
+
+async function fetchEdinetDocumentsByDate(date, apiKey) {
+  const url = new URL(`${EDINET_API_BASE}/documents.json`);
+  url.searchParams.set("date", date);
+  url.searchParams.set("type", "2");
+  url.searchParams.set("Subscription-Key", apiKey);
+  const response = await fetchWithTimeout(url, {
+    timeout: 10000,
+    headers: {
+      accept: "application/json",
+      "Ocp-Apim-Subscription-Key": apiKey,
+      "Subscription-Key": apiKey,
+      "user-agent": "Mozilla/5.0 Stock Signal",
+    },
+  });
+  if (!response.ok) throw new Error(`EDINET documents returned ${response.status}`);
+  const payload = await response.json().catch(() => null);
+  return Array.isArray(payload?.results) ? payload.results : [];
+}
+
+function normalizeEdinetDocument(doc = {}) {
+  const docID = cleanText(doc.docID || doc.docId || "");
+  const secCode = cleanText(doc.secCode || "");
+  if (!docID || !secCode) return null;
+  return {
+    docID,
+    secCode,
+    filerName: cleanText(doc.filerName || ""),
+    docDescription: cleanText(doc.docDescription || ""),
+    submitDateTime: cleanText(doc.submitDateTime || doc.submitDate || ""),
+    formCode: cleanText(doc.formCode || ""),
+    ordinanceCode: cleanText(doc.ordinanceCode || ""),
+  };
+}
+
+function isFinancialEdinetDocument(doc = {}) {
+  const description = `${doc.docDescription || ""} ${doc.formCode || ""}`;
+  if (/訂正|変更報告書|大量保有|公開買付|臨時報告|発行登録|半期報告書の確認書/.test(description)) return false;
+  return /有価証券報告書|四半期報告書|半期報告書/.test(description);
+}
+
+async function fetchEdinetFinancialFacts(docID, apiKey) {
+  const url = new URL(`${EDINET_API_BASE}/documents/${encodeURIComponent(docID)}`);
+  url.searchParams.set("type", "1");
+  url.searchParams.set("Subscription-Key", apiKey);
+  const response = await fetchWithTimeout(url, {
+    timeout: 20000,
+    headers: {
+      accept: "application/zip,application/octet-stream,*/*",
+      "Ocp-Apim-Subscription-Key": apiKey,
+      "Subscription-Key": apiKey,
+      "user-agent": "Mozilla/5.0 Stock Signal",
+    },
+  });
+  if (!response.ok) throw new Error(`EDINET XBRL returned ${response.status}`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const entries = unzipTextEntries(buffer)
+    .filter((entry) => /\.xbrl$/i.test(entry.name) && !/AuditDoc|PublicDoc\/attach/i.test(entry.name))
+    .sort((a, b) => b.text.length - a.text.length);
+  const xbrl = entries[0]?.text || "";
+  if (!xbrl) throw new Error("EDINET XBRL本文が見つかりませんでした");
+  return extractFinancialFactsFromXbrl(xbrl);
+}
+
+function unzipTextEntries(buffer) {
+  const eocd = findZipEocd(buffer);
+  if (eocd < 0) return [];
+  const centralOffset = buffer.readUInt32LE(eocd + 16);
+  const entries = [];
+  let offset = centralOffset;
+  while (offset + 46 < buffer.length && buffer.readUInt32LE(offset) === 0x02014b50) {
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.toString("utf8", offset + 46, offset + 46 + nameLength);
+    const localNameLength = buffer.readUInt16LE(localOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    const data = buffer.subarray(dataStart, dataStart + compressedSize);
+    let text = "";
+    try {
+      if (method === 8) text = inflateRawSync(data).toString("utf8");
+      else if (method === 0) text = data.toString("utf8");
+    } catch {
+      text = "";
+    }
+    if (text) entries.push({ name, text });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function findZipEocd(buffer) {
+  for (let index = buffer.length - 22; index >= Math.max(0, buffer.length - 66000); index -= 1) {
+    if (buffer.readUInt32LE(index) === 0x06054b50) return index;
+  }
+  return -1;
+}
+
+function extractFinancialFactsFromXbrl(xbrl = "") {
+  const cash = extractBestXbrlFact(xbrl, [
+    "CashAndDeposits",
+    "CashAndCashEquivalents",
+    "CashAndCashEquivalentsIFRS",
+    "CashAndCashEquivalentsAtEndOfPeriod",
+  ], "instant");
+  const securities = extractBestXbrlFact(xbrl, [
+    "ShortTermInvestmentSecurities",
+    "Securities",
+    "SecuritiesCA",
+    "ShortTermInvestments",
+  ], "instant");
+  const debt = extractXbrlFactSum(xbrl, [
+    "ShortTermLoansPayable",
+    "CurrentPortionOfLongTermLoansPayable",
+    "CurrentPortionOfBonds",
+    "LongTermLoansPayable",
+    "BondsPayable",
+    "LeaseObligations",
+    "CommercialPapersLiabilities",
+  ]);
+  const operatingCashFlow = extractBestXbrlFact(xbrl, [
+    "NetCashProvidedByUsedInOperatingActivities",
+    "CashFlowsFromUsedInOperatingActivities",
+    "CashFlowsFromOperatingActivities",
+  ], "duration");
+  const netSales = extractBestXbrlFact(xbrl, ["NetSales", "Revenue", "OperatingRevenue"], "duration");
+  const operatingIncome = extractBestXbrlFact(xbrl, ["OperatingIncome", "OperatingProfitLoss"], "duration");
+  const depreciation = extractBestXbrlFact(xbrl, ["DepreciationAndAmortization", "Depreciation"], "duration");
+  const ebitda = extractBestXbrlFact(xbrl, ["EBITDA"], "duration");
+  const netAssets = extractBestXbrlFact(xbrl, ["NetAssets", "Equity"], "instant");
+  const totalAssets = extractBestXbrlFact(xbrl, ["Assets", "TotalAssets"], "instant");
+  return {
+    cashAndEquivalents: cash,
+    shortTermSecurities: securities,
+    interestBearingDebt: debt,
+    operatingCashFlow,
+    netSales,
+    operatingIncome,
+    depreciationAndAmortization: depreciation,
+    ebitda,
+    netAssets,
+    totalAssets,
+  };
+}
+
+function extractXbrlFactSum(xbrl = "", names = []) {
+  const values = names.map((name) => extractBestXbrlFact(xbrl, [name], "instant")).filter(Number.isFinite);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function extractBestXbrlFact(xbrl = "", names = [], periodHint = "") {
+  const facts = [];
+  for (const name of names) {
+    const re = new RegExp(`<(?:[A-Za-z0-9_.-]+:)?${escapeRegExp(name)}\\b([^>]*)>([^<]+)<\\/(?:[A-Za-z0-9_.-]+:)?${escapeRegExp(name)}>`, "gi");
+    let match;
+    while ((match = re.exec(xbrl))) {
+      const value = parseXbrlNumber(match[2]);
+      if (!Number.isFinite(value)) continue;
+      const attrs = match[1] || "";
+      const contextRef = cleanText(attrs.match(/contextRef=["']([^"']+)["']/i)?.[1] || "");
+      const unitRef = cleanText(attrs.match(/unitRef=["']([^"']+)["']/i)?.[1] || "");
+      if (unitRef && !/JPY|Yen|Pure|shares|Share/i.test(unitRef)) continue;
+      facts.push({ name, value, contextRef, score: xbrlFactScore(contextRef, periodHint) });
+    }
+  }
+  if (!facts.length) return null;
+  facts.sort((a, b) => b.score - a.score || Math.abs(b.value) - Math.abs(a.value));
+  return facts[0].value;
+}
+
+function parseXbrlNumber(value = "") {
+  const text = String(value || "").replace(/,/g, "").trim();
+  if (!/^[-+]?\d+(?:\.\d+)?$/.test(text)) return null;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : null;
+}
+
+function xbrlFactScore(contextRef = "", periodHint = "") {
+  const text = String(contextRef || "");
+  let score = 0;
+  if (/Current|当期|This/i.test(text)) score += 40;
+  if (/Prior|Previous|前期/i.test(text)) score -= 30;
+  if (/Consolidated|連結/i.test(text)) score += 16;
+  if (/NonConsolidated|個別/i.test(text)) score -= 10;
+  if (periodHint === "instant" && /Instant|AsOf/i.test(text)) score += 8;
+  if (periodHint === "duration" && /Duration|YTD|Year/i.test(text)) score += 8;
+  if (/Quarter|Q[1-4]/i.test(text)) score += 2;
+  return score;
+}
+
 async function readSettings() {
   try {
     const stored = JSON.parse(await readFile(SETTINGS_PATH, "utf8"));
@@ -8920,6 +10112,9 @@ function normalizeSettings(settings = {}) {
     shareholderMonitorEnabled: settings.shareholderMonitorEnabled !== false,
     shareholderChangeThresholdPct: clamp(Number(settings.shareholderChangeThresholdPct || defaultSettings.shareholderChangeThresholdPct), 0.1, 20),
     shareholderUseLmStudio: settings.shareholderUseLmStudio !== false,
+    edinetApiKey: String(settings.edinetApiKey || "").trim(),
+    rakutenAccountMemo: String(settings.rakutenAccountMemo || "").slice(0, 500),
+    revolutAccountMemo: String(settings.revolutAccountMemo || "").slice(0, 500),
     notificationsEnabled: settings.notificationsEnabled === true,
     notificationMinConfidence: clamp(Number(settings.notificationMinConfidence || defaultSettings.notificationMinConfidence), 50, 100),
     notificationMinNetEdgeYen: clamp(Number(settings.notificationMinNetEdgeYen ?? defaultSettings.notificationMinNetEdgeYen), 0, 1000000),
@@ -8969,6 +10164,10 @@ function applySettingsPatch(current, body = {}) {
   if (typeof body.shareholderMonitorEnabled === "boolean") next.shareholderMonitorEnabled = body.shareholderMonitorEnabled;
   if (body.shareholderChangeThresholdPct !== undefined) next.shareholderChangeThresholdPct = body.shareholderChangeThresholdPct;
   if (typeof body.shareholderUseLmStudio === "boolean") next.shareholderUseLmStudio = body.shareholderUseLmStudio;
+  if (typeof body.edinetApiKey === "string" && body.edinetApiKey.trim()) next.edinetApiKey = body.edinetApiKey;
+  if (body.clearEdinetApiKey) next.edinetApiKey = "";
+  if (typeof body.rakutenAccountMemo === "string") next.rakutenAccountMemo = body.rakutenAccountMemo;
+  if (typeof body.revolutAccountMemo === "string") next.revolutAccountMemo = body.revolutAccountMemo;
   if (typeof body.notificationsEnabled === "boolean") next.notificationsEnabled = body.notificationsEnabled;
   if (body.notificationMinConfidence) next.notificationMinConfidence = body.notificationMinConfidence;
   if (body.notificationMinNetEdgeYen !== undefined) next.notificationMinNetEdgeYen = body.notificationMinNetEdgeYen;
@@ -9017,6 +10216,9 @@ function publicSettings(settings) {
     shareholderMonitorEnabled: settings.shareholderMonitorEnabled,
     shareholderChangeThresholdPct: settings.shareholderChangeThresholdPct,
     shareholderUseLmStudio: settings.shareholderUseLmStudio,
+    hasEdinetApiKey: Boolean(settings.edinetApiKey),
+    rakutenAccountMemo: settings.rakutenAccountMemo,
+    revolutAccountMemo: settings.revolutAccountMemo,
     notificationsEnabled: settings.notificationsEnabled,
     notificationMinConfidence: settings.notificationMinConfidence,
     notificationMinNetEdgeYen: settings.notificationMinNetEdgeYen,
@@ -9064,7 +10266,8 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     message: String(budget.message || ""),
     strictBuyTarget: true,
     avoidedBusiness: "卸売・食品、情報系ベンチャー寄りは候補から除外",
-    peCriteria: PE_CRITERIA.filter((item) => item.weight > 0).map((item) => item.label),
+    peCriteria: PE_FINANCIAL_CRITERIA.map((item) => item.label),
+    peTendencies: PE_RECENT_TENDENCIES,
     unitSize,
     unitBudget,
     unitBudgetUnlimited,
@@ -9188,6 +10391,7 @@ function sanitizeCachedUsAnalysis(analysis = {}, stock = null) {
     ? {
       ...analysis.ai,
       growthExit: enforceRecentGrowthExit(analysis.ai.growthExit, { evidence }, analysis),
+      sellForecast: normalizeSellForecast(analysis.ai.sellForecast) || ruleSellForecast({ price, position }, "USD"),
     }
     : null;
   return {
@@ -9816,6 +11020,24 @@ function emptyPrice(series = [], meta = {}) {
     averageVolume20: null,
     averageVolume60: null,
     volumeRatio20: null,
+    logReturn1d: null,
+    histVol20: null,
+    atr14: null,
+    atrPct: null,
+    sma5: null,
+    sma5CrossUp: false,
+    rsi14: null,
+    rsiCross30: false,
+    candlestickSignal: null,
+    technicalEntry: technicalEntryFallback("価格データが不足しています。"),
+    regime: {
+      label: "判定待ち",
+      stableUptrendPct: null,
+      panicPullbackPct: null,
+      rangePct: null,
+      summary: "価格履歴が不足しています。",
+      features: {},
+    },
     dividendPerShareTtm: null,
     dividendYield: null,
     dividendPreviousPerShareTtm: null,

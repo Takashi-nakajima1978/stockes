@@ -18,6 +18,7 @@ const state = {
   sourceSummary: null,
   candidatePerformance: null,
   analysisJob: null,
+  usAnalysisJob: null,
   discoveryJob: null,
   discoveryGeneratedAt: "",
   diagnostics: null,
@@ -26,6 +27,7 @@ const state = {
   usSelected: null,
   view: preferredView(),
   ideaView: "candidates",
+  settingsTab: "search",
   running: false,
   jpRefreshing: false,
   usRefreshing: false,
@@ -63,6 +65,8 @@ const els = {
   viewPanels: [...document.querySelectorAll("[data-view]")],
   ideaTabButtons: [...document.querySelectorAll("[data-idea-tab]")],
   ideaPanels: [...document.querySelectorAll("[data-idea-panel]")],
+  settingsTabButtons: [...document.querySelectorAll("[data-settings-tab]")],
+  settingsPanels: [...document.querySelectorAll("[data-settings-panel]")],
   googleStatus: document.getElementById("googleStatus"),
   lmStatus: document.getElementById("lmStatus"),
   jpMarketStatus: document.getElementById("jpMarketStatus"),
@@ -169,6 +173,9 @@ const els = {
   settingsShareholderMonitorEnabled: document.getElementById("settingsShareholderMonitorEnabled"),
   settingsShareholderUseLmStudio: document.getElementById("settingsShareholderUseLmStudio"),
   settingsShareholderChangeThresholdPct: document.getElementById("settingsShareholderChangeThresholdPct"),
+  settingsEdinetApiKey: document.getElementById("settingsEdinetApiKey"),
+  settingsRakutenAccountMemo: document.getElementById("settingsRakutenAccountMemo"),
+  settingsRevolutAccountMemo: document.getElementById("settingsRevolutAccountMemo"),
   settingsNotificationsEnabled: document.getElementById("settingsNotificationsEnabled"),
   settingsDefaultJpAccountType: document.getElementById("settingsDefaultJpAccountType"),
   settingsJpTaxableTradeFeeYen: document.getElementById("settingsJpTaxableTradeFeeYen"),
@@ -188,9 +195,11 @@ const els = {
   settingsLmStatus: document.getElementById("settingsLmStatus"),
   settingsDisclosureStatus: document.getElementById("settingsDisclosureStatus"),
   settingsShareholderStatus: document.getElementById("settingsShareholderStatus"),
+  settingsFinancialStatus: document.getElementById("settingsFinancialStatus"),
   diagnosticsButton: document.getElementById("diagnosticsButton"),
   disclosureCheckButton: document.getElementById("disclosureCheckButton"),
   shareholderCheckButton: document.getElementById("shareholderCheckButton"),
+  financialCheckButton: document.getElementById("financialCheckButton"),
   testNotificationButton: document.getElementById("testNotificationButton"),
   diagnosticsStatus: document.getElementById("diagnosticsStatus"),
   diagnosticsList: document.getElementById("diagnosticsList"),
@@ -231,6 +240,20 @@ function usd(value) {
 
 function moneyByCurrency(value, currency = "JPY") {
   return currency === "USD" ? usd(value) : yen(value);
+}
+
+function largeYen(value) {
+  if (!Number.isFinite(value)) return "-";
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (abs >= 1_000_000_000_000) return `${sign}${(abs / 1_000_000_000_000).toFixed(2)}兆円`;
+  if (abs >= 100_000_000) return `${sign}${(abs / 100_000_000).toFixed(1)}億円`;
+  if (abs >= 10_000) return `${sign}${(abs / 10_000).toFixed(0)}万円`;
+  return yen(value);
+}
+
+function multipleText(value) {
+  return Number.isFinite(value) ? `${value.toFixed(value >= 10 ? 1 : 2)}倍` : "-";
 }
 
 function fxRate(value) {
@@ -345,6 +368,14 @@ function applySettings(settings = {}) {
   if (els.settingsShareholderStatus) {
     setStatus(els.settingsShareholderStatus, settings.shareholderMonitorEnabled !== false, settings.shareholderMonitorEnabled !== false ? "監視中" : "停止中");
   }
+  if (els.settingsFinancialStatus) {
+    setStatus(els.settingsFinancialStatus, settings.hasEdinetApiKey === true, settings.hasEdinetApiKey ? "キー保存済み" : "未設定");
+  }
+  if (els.settingsEdinetApiKey) {
+    els.settingsEdinetApiKey.placeholder = settings.hasEdinetApiKey ? "保存済み。変更時だけ入力" : "EDINET APIキー";
+  }
+  if (els.settingsRakutenAccountMemo) els.settingsRakutenAccountMemo.value = settings.rakutenAccountMemo || "";
+  if (els.settingsRevolutAccountMemo) els.settingsRevolutAccountMemo.value = settings.revolutAccountMemo || "";
   if (els.settingsNotificationsEnabled) els.settingsNotificationsEnabled.checked = settings.notificationsEnabled === true;
   if (els.settingsDefaultJpAccountType) els.settingsDefaultJpAccountType.value = normalizeAccountType(settings.defaultJpAccountType || "taxable");
   if (els.stockAccountType) els.stockAccountType.value = normalizeAccountType(settings.defaultJpAccountType || "taxable");
@@ -469,6 +500,30 @@ async function loadAnalysisJob() {
   }
 }
 
+async function loadUsAnalysisJob() {
+  const payload = await request("/api/us-analysis-job").catch(() => null);
+  if (!payload) return;
+  state.usAnalysisJob = payload.job || null;
+  if (payload.result) applyUsAnalysisPayload(payload.result);
+  renderUsAnalysisJob();
+  if (state.usAnalysisJob?.running) {
+    state.usRefreshing = true;
+    renderUsSummary();
+    void pollUsAnalysisJob()
+    .then((result) => {
+      applyUsAnalysisPayload(result);
+      state.usRefreshing = false;
+      renderUs();
+    })
+    .catch((error) => {
+      toast(error.message);
+      if (els.usLastRun) els.usLastRun.textContent = "失敗";
+      state.usRefreshing = false;
+      renderUsSummary();
+    });
+  }
+}
+
 async function loadDiscoveryCache() {
   const payload = await request("/api/discovery");
   state.suggestions = payload.suggestions || [];
@@ -485,6 +540,7 @@ async function loadDiscoveryCache() {
 function render() {
   safeRender("ナビゲーション", renderNavigation);
   safeRender("候補タブ", renderIdeaTabs);
+  safeRender("設定タブ", renderSettingsTabs);
   safeRender("銘柄一覧", renderTable);
   safeRender("損益サマリー", renderProfitSummary);
   safeRender("判定カウント", renderSummary);
@@ -493,6 +549,7 @@ function render() {
   safeRender("業種Evidence", renderSectorEvidence);
   safeRender("候補検索ジョブ", renderDiscoveryJob);
   safeRender("分析ジョブ", renderAnalysisJob);
+  safeRender("米国株分析ジョブ", renderUsAnalysisJob);
   safeRender("米国株", renderUs);
   safeRender("BTC・為替", renderCrypto);
 }
@@ -511,6 +568,7 @@ function setView(view) {
   rememberView(nextView);
   renderNavigation();
   renderIdeaTabs();
+  renderSettingsTabs();
   if (nextView === "analysis") renderSelection();
   if (nextView === "us") renderUs();
   if (nextView === "crypto") renderCrypto();
@@ -539,6 +597,15 @@ function renderIdeaTabs() {
   });
   els.ideaPanels.forEach((panel) => {
     panel.hidden = panel.dataset.ideaPanel !== state.ideaView;
+  });
+}
+
+function renderSettingsTabs() {
+  els.settingsTabButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.settingsTab === state.settingsTab);
+  });
+  els.settingsPanels.forEach((panel) => {
+    panel.hidden = panel.dataset.settingsPanel !== state.settingsTab;
   });
 }
 
@@ -588,7 +655,7 @@ function stockRow(stock, compact) {
         <button type="button" class="drag-handle" draggable="true" data-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>
         <div class="stock-name">
           <strong>${escapeHtml(stock.name)}</strong>
-          <span>${escapeHtml(stock.symbol)}${stock.holding ? " / 保有" : ""}</span>
+          <span>${symbolLinkHtml(stock.symbol, "jp")}${stock.holding ? " / 保有" : ""}</span>
         </div>
       </div>
     </td>
@@ -645,10 +712,11 @@ function dividendCell(position, price = {}, formatter = yen) {
 }
 
 function averagePriceCell(position = {}, formatter = yen) {
+  const showSell = Number.isFinite(position.averageSellPrice) && Number(position.quantity || 0) > 0;
   return `
     <span class="avg-price-cell">
       <span><em>取得</em><strong>${formatter(position.purchasePrice)}</strong></span>
-      <span><em>売却</em><strong>${formatter(position.averageSellPrice)}</strong></span>
+      ${showSell ? `<span><em>売却</em><strong>${formatter(position.averageSellPrice)}</strong></span>` : ""}
     </span>
   `;
 }
@@ -662,7 +730,7 @@ function attachTableEvents(table) {
   attachReorderEvents(table);
   table.querySelectorAll("tr[data-symbol]").forEach((row) => {
     row.addEventListener("click", (event) => {
-      if (event.target.closest("[data-remove], [data-drag-handle]")) return;
+      if (event.target.closest("[data-remove], [data-drag-handle], [data-symbol-link]")) return;
       if (reorderState.moved) return;
       state.selected = row.dataset.symbol;
       state.view = "analysis";
@@ -871,7 +939,7 @@ function renderUsTable() {
             <button type="button" class="drag-handle" draggable="true" data-us-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>
             <span class="stock-name">
               <strong>${escapeHtml(stock.name)}</strong>
-              <span>${escapeHtml(stock.symbol)} / ${escapeHtml(stock.market || "NYSE")}</span>
+              <span>${symbolLinkHtml(stock.symbol, "us")} / ${escapeHtml(stock.market || "NYSE")}</span>
             </span>
           </div>
         </td>
@@ -895,7 +963,7 @@ function renderUsTable() {
   });
   els.usStockTable.querySelectorAll("[data-us-symbol]").forEach((row) => {
     row.addEventListener("click", (event) => {
-      if (event.target.closest("button")) return;
+      if (event.target.closest("button, [data-symbol-link]")) return;
       state.usSelected = row.dataset.usSymbol;
       renderUs();
     });
@@ -929,7 +997,7 @@ function renderUsDetail() {
   const analysis = state.usAnalyses[stock.symbol];
   const position = analysis?.position || positionMetrics(stock, analysis?.price);
   const ai = analysis?.ai || null;
-  if (els.usSelectedSymbol) els.usSelectedSymbol.textContent = stock.symbol;
+  if (els.usSelectedSymbol) els.usSelectedSymbol.innerHTML = symbolLinkHtml(stock.symbol, "us");
   const good = (ai?.good || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const risks = (ai?.risks || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const evidence = (analysis?.evidence || []).map((item) => `
@@ -971,6 +1039,7 @@ function renderUsDetail() {
         <span><strong>1年</strong>${pct(analysis?.price?.return1y)}</span>
       </div>
       ${exitPlanHtml(analysis?.exitPlan)}
+      ${technicalEntryHtml(analysis?.price || {}, usd)}
       ${shareholderInfoHtml(analysis?.shareholders)}
       <div class="reason-columns">
         <section>
@@ -1054,6 +1123,11 @@ function renderCryptoDetail() {
     </section>
     ${cryptoTimingHtml(analysis)}
     ${fxTimingHtml(analysis)}
+    <section class="crypto-timing-cards">
+      ${technicalEntryHtml(analysis?.btcUsd || {}, usd)}
+      ${technicalEntryHtml(analysis?.btcJpy || {}, yen)}
+    </section>
+    ${technicalEntryHtml(analysis?.usdJpy || {}, fxRate)}
     ${cryptoPositionEditor(holding, position, analysis)}
   `;
   attachCryptoPositionForm();
@@ -1580,7 +1654,7 @@ function progressWithPrevious(message, previousText = "") {
 function renderSelection() {
   const stock = state.stocks.find((item) => item.symbol === state.selected);
   const analysis = stock ? state.analyses[stock.symbol] : null;
-  els.selectedSymbol.textContent = stock ? stock.symbol : "未選択";
+  els.selectedSymbol.innerHTML = stock ? symbolLinkHtml(stock.symbol, "jp") : "未選択";
 
   drawChart(analysis?.price?.series || []);
   renderChartTiming(analysis?.price || null);
@@ -1630,6 +1704,8 @@ function renderSelection() {
       <span><strong>判定対象株</strong>${position.sellableQuantity ? `${position.sellableQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
     </div>
     ${riskChecksHtml(analysis.riskChecks)}
+    ${technicalEntryHtml(price, yen)}
+    ${financialInfoHtml(analysis.financials)}
     ${exitPlanHtml(analysis.exitPlan)}
     ${shareholderInfoHtml(analysis.shareholders)}
     <div class="decision-columns">
@@ -1682,11 +1758,121 @@ function riskChecksHtml(checks = []) {
   `;
 }
 
+function technicalEntryHtml(price = {}, formatter = yen) {
+  const entry = price.technicalEntry || {};
+  const regime = price.regime || {};
+  const hasAny = Number.isFinite(entry.score)
+    || Number.isFinite(price.atrPct)
+    || Number.isFinite(price.rsi14)
+    || Boolean(entry.summary || regime.summary);
+  if (!hasAny) return "";
+  const signals = (entry.signals || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+  const risks = (entry.risks || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  const status = entry.ready ? "反転あり" : Number(entry.score || 0) >= 55 ? "反転待ち" : "待つ";
+  const level = entry.ready ? "low" : Number(entry.score || 0) >= 55 ? "medium" : "high";
+  return `
+    <section class="risk-checks technical-entry" aria-label="反転確認">
+      <div class="risk-check-title">
+        <strong>買い反転確認</strong>
+        <span>${escapeHtml(status)}${Number.isFinite(entry.score) ? ` ${Math.round(entry.score)}` : ""}</span>
+      </div>
+      <div class="risk-check-grid">
+        <article class="risk-check ${riskLevelClass(level)}">
+          <div>
+            <strong>エントリー条件</strong>
+            <span>${entry.ready ? "入口候補" : "未確定"}</span>
+          </div>
+          <p>${escapeHtml(entry.summary || "買い場ライン、5日線、RSI、ローソク足の反転を確認します。")}</p>
+          <div class="entry-points">${signals}${risks}</div>
+        </article>
+        <article class="risk-check ${Number.isFinite(price.atrPct) && price.atrPct >= 6 ? "medium" : "low"}">
+          <div>
+            <strong>ATR調整</strong>
+            <span>${Number.isFinite(price.atrPct) ? `${price.atrPct.toFixed(1)}%` : "未取得"}</span>
+          </div>
+          <p>買い場 ${formatter(entry.buyLine)} / 荒い時の指値 ${formatter(entry.atrAdjustedBuyLine)}</p>
+        </article>
+        <article class="risk-check ${price.sma5CrossUp || price.rsiCross30 ? "low" : "medium"}">
+          <div>
+            <strong>5日線・RSI</strong>
+            <span>${price.sma5CrossUp || price.rsiCross30 ? "反転あり" : "待ち"}</span>
+          </div>
+          <p>5日線 ${formatter(price.sma5)} / RSI ${Number.isFinite(price.rsi14) ? price.rsi14.toFixed(1) : "-"}</p>
+        </article>
+        <article class="risk-check ${regime.panicPullbackPct >= 55 ? "medium" : "low"}">
+          <div>
+            <strong>レジーム(HMM風)</strong>
+            <span>${escapeHtml(regime.label || "未判定")}</span>
+          </div>
+          <p>${escapeHtml(regime.summary || "日次リターン、20日ボラ、ATR、移動平均乖離から状態を推定します。")}</p>
+        </article>
+      </div>
+    </section>
+  `;
+}
+
+function financialInfoHtml(info = null) {
+  if (!info) return "";
+  const statusText = info.status === "ok"
+    ? "取得済み"
+    : info.status === "partial"
+    ? "一部取得"
+    : info.status === "missing_key"
+    ? "APIキー未設定"
+    : info.status === "not_found"
+    ? "未取得"
+    : "確認";
+  const criteria = (info.criteria || []).map((item) => `
+    <article class="risk-check ${financialCriterionClass(item.status)}">
+      <div>
+        <strong>${escapeHtml(item.label)}</strong>
+        <span>${escapeHtml(financialCriterionText(item.status))}</span>
+      </div>
+      <p>${escapeHtml(item.summary || "未評価")}</p>
+    </article>
+  `).join("");
+  const warnings = (info.warnings || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  return `
+    <section class="risk-checks financial-info" aria-label="財務情報">
+      <div class="risk-check-title">
+        <strong>財務情報</strong>
+        <span>${escapeHtml(statusText)}${info.checkedAt ? ` ${new Date(info.checkedAt).toLocaleString("ja-JP")}` : ""}</span>
+      </div>
+      <div class="metric-strip financial-metrics" aria-label="EDINET財務指標">
+        <span><strong>時価総額</strong>${largeYen(info.marketCap)}</span>
+        <span><strong>ネットキャッシュ比率</strong>${Number.isFinite(info.netCashRatio) ? `${(info.netCashRatio * 100).toFixed(1)}%` : "-"}</span>
+        <span><strong>ネットキャッシュ</strong>${largeYen(info.netCash)}</span>
+        <span><strong>EV/EBITDA</strong>${multipleText(info.evEbitda)}</span>
+        <span><strong>PBR</strong>${multipleText(info.pbr)}</span>
+        <span><strong>PER</strong>${multipleText(info.per)}</span>
+        <span><strong>営業CF</strong>${largeYen(info.operatingCashFlow)}</span>
+      </div>
+      ${criteria ? `<div class="risk-check-grid">${criteria}</div>` : ""}
+      ${info.documentTitle || info.docID ? `<p class="settings-help">確認元 ${escapeHtml(info.documentTitle || "EDINET書類")} ${escapeHtml(info.docID || "")}</p>` : ""}
+      ${warnings ? `<div class="entry-points">${warnings}</div>` : ""}
+    </section>
+  `;
+}
+
+function financialCriterionClass(status = "") {
+  if (status === "pass") return "low";
+  if (status === "watch" || status === "unknown") return "medium";
+  return "high";
+}
+
+function financialCriterionText(status = "") {
+  if (status === "pass") return "合格";
+  if (status === "watch") return "確認";
+  if (status === "fail") return "外れる";
+  return "未取得";
+}
+
 function exitPlanHtml(plan = {}) {
   if (!plan || !plan.highWaterPrice) return "";
   const currency = plan.currency || "JPY";
   const growth = plan.growthExit || {};
   const onkabu = plan.onkabu || {};
+  const aiForecast = sellForecastCardHtml(plan.aiSellForecast, currency);
   const cards = [
     {
       label: "ファンダ崩壊",
@@ -1733,9 +1919,32 @@ function exitPlanHtml(plan = {}) {
             <p>${escapeHtml(card.summary)}</p>
           </article>
         `).join("")}
+        ${aiForecast}
         ${alerts}
       </div>
     </section>
+  `;
+}
+
+function sellForecastCardHtml(forecast = null, currency = "JPY") {
+  if (!forecast || (!forecast.horizon && !forecast.reason && !Number.isFinite(forecast.targetPrice))) return "";
+  const confidence = Number.isFinite(forecast.confidence) ? `${Math.round(forecast.confidence)}%` : "確認";
+  const catalysts = (forecast.catalysts || []).slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  return `
+    <article class="risk-check medium sell-forecast-card">
+      <div>
+        <strong>AI売却目安</strong>
+        <span>${escapeHtml(forecast.horizon || confidence)}</span>
+      </div>
+      <p>${escapeHtml(forecast.timing || forecast.reason || "ニュースと過去の値動きから、売却を検討する時期と価格を見ます。")}</p>
+      <div class="forecast-lines">
+        <span><strong>利確候補</strong>${moneyByCurrency(forecast.targetPrice, currency)}</span>
+        <span><strong>見直し</strong>${moneyByCurrency(forecast.reviewPrice, currency)}</span>
+        <span><strong>信頼度</strong>${escapeHtml(confidence)}</span>
+      </div>
+      ${forecast.reason ? `<p>${escapeHtml(forecast.reason)}</p>` : ""}
+      ${catalysts ? `<ul class="compact-list">${catalysts}</ul>` : ""}
+    </article>
   `;
 }
 
@@ -2375,14 +2584,23 @@ function isSuspiciousChartPoint(point, index, points = []) {
   if (!localMedian) return false;
   const previous = Number(points[index - 1]?.close);
   const next = Number(points[index + 1]?.close);
+  const hasPrevious = Number.isFinite(previous) && previous > 0;
+  const hasNext = Number.isFinite(next) && next > 0;
+  const isolatedLow = point.close < localMedian * 0.55
+    && ((hasPrevious && previous > point.close * 1.8) || (hasNext && next > point.close * 1.8))
+    && (!hasPrevious || !hasNext || Math.abs(previous - next) / localMedian < 0.25);
+  const isolatedHigh = point.close > localMedian * 1.8
+    && ((hasPrevious && previous * 1.8 < point.close) || (hasNext && next * 1.8 < point.close))
+    && (!hasPrevious || !hasNext || Math.abs(previous - next) / localMedian < 0.25);
   if (point.close < localMedian * 0.25) {
-    return Boolean((Number.isFinite(previous) && previous > point.close * 2.8)
-      || (Number.isFinite(next) && next > point.close * 2.8));
+    return Boolean((hasPrevious && previous > point.close * 2.8)
+      || (hasNext && next > point.close * 2.8));
   }
   if (point.close > localMedian * 4) {
-    return Boolean((Number.isFinite(previous) && previous * 2.8 < point.close)
-      || (Number.isFinite(next) && next * 2.8 < point.close));
+    return Boolean((hasPrevious && previous * 2.8 < point.close)
+      || (hasNext && next * 2.8 < point.close));
   }
+  if (isolatedLow || isolatedHigh) return true;
   return false;
 }
 
@@ -2515,7 +2733,7 @@ function averageNumbers(values = []) {
 }
 
 function actionExplanation(action, stock, position) {
-  if (action === "BUY") return "買い候補です。ただし今すぐ成行で買う意味ではなく、買いたい価格と手数料後の余地を確認してから入る候補です。";
+  if (action === "BUY") return "買い候補です。ただし今すぐ成行で買う意味ではなく、買いたい価格と税金・手数料を引いた損益目安を確認してから入る候補です。";
   if (action === "HOLD") return stock.holding ? "保有継続です。今すぐ動く理由は弱く、次の決算や価格水準を待つ位置です。" : "まだ買い急がず、候補として様子を見る位置です。";
   if (action === "SELL") {
     return position.sellableQuantity > 0
@@ -2652,13 +2870,16 @@ async function analyzeUs(options = {}) {
       method: "POST",
       body: JSON.stringify({ ...body, reuseFreshPrices: priceUpdated }),
     });
-    applyUsAnalysisPayload(payload);
+    state.usAnalysisJob = payload.job || null;
+    renderUsAnalysisJob();
+    const result = payload.analyses ? payload : await pollUsAnalysisJob();
+    applyUsAnalysisPayload(result);
     if (els.usLastRun) {
-      els.usLastRun.textContent = payload.usedLmStudio
-        ? `更新済み AI ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`
-        : `更新済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
+      els.usLastRun.textContent = result.usedLmStudio
+        ? `更新済み AI ${new Date(result.generatedAt).toLocaleString("ja-JP")}`
+        : `更新済み ${new Date(result.generatedAt).toLocaleString("ja-JP")}`;
     }
-    if (payload.warnings?.length) toast(payload.warnings.join(" / "));
+    if (result.warnings?.length) toast(result.warnings.join(" / "));
     renderUs();
   } catch (error) {
     toast(error.message);
@@ -2719,6 +2940,19 @@ async function pollAnalysisJob() {
   throw new Error("一括分析が長引いています。保存済み結果を確認してください。");
 }
 
+async function pollUsAnalysisJob() {
+  for (let i = 0; i < 360; i += 1) {
+    const payload = await request("/api/us-analysis-job").catch(() => null);
+    if (!payload) throw new Error("米国株分析の進み具合を確認できませんでした。");
+    state.usAnalysisJob = payload.job || state.usAnalysisJob;
+    renderUsAnalysisJob();
+    if (payload.result) return payload.result;
+    if (state.usAnalysisJob?.error) throw new Error(state.usAnalysisJob.error);
+    await sleep(2500);
+  }
+  throw new Error("米国株分析が長引いています。保存済み結果を確認してください。");
+}
+
 function applyAnalysisPayload(payload, notifyWarnings = true) {
   if (Array.isArray(payload.analyses)) {
     state.analyses = Object.fromEntries(payload.analyses.map((item) => [item.symbol, item]));
@@ -2752,6 +2986,29 @@ function renderAnalysisJob() {
     details.push(aiText);
   }
   els.researchProgress.textContent = `${job.phase || "進行中"} ${details.join(" / ")}`.trim();
+}
+
+function renderUsAnalysisJob() {
+  const job = state.usAnalysisJob;
+  if (!els.usLastRun || !job) return;
+  if (!job.running) {
+    if (job.error) els.usLastRun.textContent = `失敗: ${job.error}`;
+    return;
+  }
+  const total = Number(job.total || 0);
+  const checked = Number(job.checked || 0);
+  const aiTotal = Number(job.aiTotal || 0);
+  const aiDone = Number(job.aiDone || 0);
+  const aiCurrent = Number(job.aiCurrent || 0);
+  const details = [];
+  if (total) details.push(`${Math.min(checked, total)}/${total}銘柄`);
+  if (aiTotal) {
+    const aiText = aiCurrent && aiDone < aiTotal
+      ? `AI ${Math.min(aiCurrent, aiTotal)}/${aiTotal} 生成中`
+      : `AI ${Math.min(aiDone, aiTotal)}/${aiTotal}`;
+    details.push(aiText);
+  }
+  els.usLastRun.textContent = `${job.phase || "進行中"} ${details.join(" / ")}`.trim();
 }
 
 async function discover() {
@@ -2899,7 +3156,7 @@ async function checkShareholders() {
     if (els.settingsShareholderStatus) {
       setStatus(els.settingsShareholderStatus, true, `確認済み ${changedCount}件`);
     }
-    await Promise.all([loadAnalysis(), loadUsAnalysis()]);
+    await Promise.all([loadAnalysisCache(), loadUsAnalysisCache()]);
     toast(changedCount ? `株主構成の変化 ${changedCount}件を確認しました。` : "通知対象の株主構成変化はありません。");
   } catch (error) {
     if (els.settingsShareholderStatus) setStatus(els.settingsShareholderStatus, false, "失敗");
@@ -2907,6 +3164,30 @@ async function checkShareholders() {
   } finally {
     els.shareholderCheckButton.disabled = false;
     els.shareholderCheckButton.textContent = originalText;
+  }
+}
+
+async function checkFinancials() {
+  if (!els.financialCheckButton) return;
+  const originalText = els.financialCheckButton.textContent;
+  els.financialCheckButton.disabled = true;
+  els.financialCheckButton.textContent = "確認中";
+  if (els.settingsFinancialStatus) els.settingsFinancialStatus.textContent = "確認中";
+  try {
+    const payload = await request("/api/financials/check", { method: "POST" });
+    const count = payload.checkedCount || payload.items?.length || 0;
+    const okCount = (payload.items || []).filter((item) => item.status === "ok" || item.status === "partial").length;
+    if (els.settingsFinancialStatus) {
+      setStatus(els.settingsFinancialStatus, okCount > 0, okCount ? `取得 ${okCount}/${count}` : "未取得");
+    }
+    await loadAnalysisCache();
+    toast(payload.message || (okCount ? `財務情報を${okCount}件更新しました。` : "財務情報を取得できませんでした。"));
+  } catch (error) {
+    if (els.settingsFinancialStatus) setStatus(els.settingsFinancialStatus, false, "失敗");
+    toast(error.message);
+  } finally {
+    els.financialCheckButton.disabled = false;
+    els.financialCheckButton.textContent = originalText;
   }
 }
 
@@ -2979,6 +3260,20 @@ function linkifyPlainText(value = "") {
   const before = text.slice(0, urlMatch.index);
   const after = text.slice((urlMatch.index || 0) + urlMatch[0].length);
   return `${escapeHtml(before)}<a href="${escapeAttr(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>${escapeHtml(after)}`;
+}
+
+function symbolLinkHtml(symbol = "", target = "jp") {
+  const text = String(symbol || "").trim();
+  if (!text) return "-";
+  const url = yahooSymbolUrl(text, target);
+  return `<a class="symbol-link" data-symbol-link href="${escapeAttr(url)}" target="_blank" rel="noreferrer">${escapeHtml(text)}</a>`;
+}
+
+function yahooSymbolUrl(symbol = "", target = "jp") {
+  const clean = String(symbol || "").trim().toUpperCase();
+  if (target === "us") return `https://finance.yahoo.com/quote/${encodeURIComponent(clean.replace(/\.T$/, ""))}`;
+  const yahooSymbol = clean.endsWith(".T") ? clean : `${clean}.T`;
+  return `https://finance.yahoo.co.jp/quote/${encodeURIComponent(yahooSymbol)}`;
 }
 
 function trendLabel(value) {
@@ -3521,7 +3816,9 @@ function renderCandidateList() {
     const positionText = source.searchPositionUsed ? "検索順位に出る業績・割安材料も採点しています。" : "";
     const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
     const avoidText = source.avoidedBusiness ? `${source.avoidedBusiness}。` : "";
-    const peText = source.peCriteria?.length ? "PE買収狙いは日本株だけを別レポートで見ます。" : "";
+    const peText = source.peCriteria?.length
+      ? `PE買収狙いは日本株だけを別レポートで見ます。${source.peCriteria.join("・")}を重視します。`
+      : "";
     const earlyText = "米国株は買い場以下・反発初動・短期非過熱を優先します。";
     const learnText = source.performance?.evaluated
       ? `過去候補は${source.performance.evaluated}件判定済み、当たり${Math.round((source.performance.hitRate || 0) * 100)}%です。`
@@ -3555,7 +3852,7 @@ function candidateReportsHtml(items = []) {
     reportSectionHtml({
       title: "PEが買いそうな候補",
       count: peItems.length,
-      description: "日本株だけを対象に、TOB・MBO・ファンド名・株主変化・低負債・割安放置などを別軸で見ます。PE要素が薄いものはここには入れません。",
+      description: "日本株だけを対象に、時価総額50億-500億円、ネットキャッシュ比率、EV/EBITDA、PBR、営業CF、決算後の失望売り、株主還元余地を別軸で見ます。PE要素が薄いものはここには入れません。",
       empty: "今の条件では、PE買収狙いとして根拠が強い候補はありません。",
       items: peItems,
     }),
@@ -3648,7 +3945,7 @@ function renderExcludedCandidates() {
   els.excludedCandidateList.innerHTML = excluded.map((item) => `
     <span class="excluded-chip">
       <strong>${escapeHtml(item.name || item.symbol)}</strong>
-      <small>${escapeHtml(item.symbol)}</small>
+      <small>${symbolLinkHtml(item.symbol, candidateTarget(item))}</small>
       <button type="button" data-restore-suggestion="${escapeAttr(item.symbol)}" aria-label="${escapeAttr(item.name || item.symbol)}を候補に戻す">戻す</button>
     </span>
   `).join("");
@@ -3706,7 +4003,7 @@ function suggestionItem(item, index) {
       <div class="suggestion-head">
         <div>
           <strong>${index + 1}. ${escapeHtml(item.name)}</strong>
-          <span>${escapeHtml(item.symbol)} / ${escapeHtml(marketLabel)} / ${escapeHtml(item.sector || "その他")} / ${escapeHtml(item.evidenceQuality || item.discoverySource || "価格中心")}</span>
+          <span>${symbolLinkHtml(item.symbol, target)} / ${escapeHtml(marketLabel)} / ${escapeHtml(item.sector || "その他")} / ${escapeHtml(item.evidenceQuality || item.discoverySource || "価格中心")}</span>
         </div>
         <div class="suggestion-actions">
           ${suggestionScoreHtml(item)}
@@ -3809,7 +4106,21 @@ function earlySignalHtml(signal) {
 function peSignalHtml(signal) {
   if (!signal) return "";
   const criteria = (signal.criteria || []).map((item) => `<span>${escapeHtml(item.label)}</span>`).join("");
+  const financialCriteria = (signal.financialCriteria || signal.financials?.criteria || []).map((item) => `
+    <span class="${item.status === "fail" ? "risk" : ""}">${escapeHtml(item.label)}: ${escapeHtml(financialCriterionText(item.status))}</span>
+  `).join("");
+  const financials = signal.financials || {};
+  const financialLine = signal.financials ? `
+    <div class="pe-financial-line">
+      <span><strong>時価総額</strong>${largeYen(financials.marketCap)}</span>
+      <span><strong>ネットキャッシュ</strong>${Number.isFinite(financials.netCashRatio) ? `${(financials.netCashRatio * 100).toFixed(1)}%` : "-"}</span>
+      <span><strong>EV/EBITDA</strong>${multipleText(financials.evEbitda)}</span>
+      <span><strong>PBR</strong>${multipleText(financials.pbr)}</span>
+      <span><strong>PER</strong>${multipleText(financials.per)}</span>
+    </div>
+  ` : "";
   const risks = (signal.risks || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  const tendencies = (signal.tendencies || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
   const evidence = (signal.evidence || []).map((item) => `
     <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.source || item.title || "source")}</a>
   `).join("");
@@ -3826,7 +4137,9 @@ function peSignalHtml(signal) {
       </div>
       <p>${escapeHtml(signal.summary || "")}</p>
       ${warning}
-      <div>${criteria}${risks}</div>
+      ${financialLine}
+      <div>${financialCriteria}${criteria}${risks}</div>
+      ${tendencies ? `<div class="pe-tendencies">${tendencies}</div>` : ""}
       ${evidence ? `<div class="pe-evidence">${evidence}</div>` : ""}
     </div>
   `;
@@ -4391,6 +4704,9 @@ els.settingsForm.addEventListener("submit", async (event) => {
         shareholderMonitorEnabled: els.settingsShareholderMonitorEnabled?.checked !== false,
         shareholderUseLmStudio: els.settingsShareholderUseLmStudio?.checked !== false,
         shareholderChangeThresholdPct: valueOrNull(els.settingsShareholderChangeThresholdPct?.value),
+        edinetApiKey: els.settingsEdinetApiKey?.value || "",
+        rakutenAccountMemo: els.settingsRakutenAccountMemo?.value || "",
+        revolutAccountMemo: els.settingsRevolutAccountMemo?.value || "",
         notificationsEnabled: els.settingsNotificationsEnabled?.checked === true,
         defaultJpAccountType: normalizeAccountType(els.settingsDefaultJpAccountType?.value || "taxable"),
         jpTaxableTradeFeeYen: valueOrZero(els.settingsJpTaxableTradeFeeYen?.value),
@@ -4416,6 +4732,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
       renderCandidateList();
     }
     els.settingsGoogleApiKey.value = "";
+    if (els.settingsEdinetApiKey) els.settingsEdinetApiKey.value = "";
     if (els.settingsTeamsWebhookUrl) els.settingsTeamsWebhookUrl.value = "";
     if (els.settingsGraphClientSecret) els.settingsGraphClientSecret.value = "";
     if (els.settingsGraphAccessToken) els.settingsGraphAccessToken.value = "";
@@ -4449,6 +4766,13 @@ els.ideaTabButtons.forEach((button) => {
   });
 });
 
+els.settingsTabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    state.settingsTab = button.dataset.settingsTab || "search";
+    renderSettingsTabs();
+  });
+});
+
 els.analyzeButton.addEventListener("click", analyze);
 els.usAnalyzeButton?.addEventListener("click", analyzeUs);
 els.cryptoAnalyzeButton?.addEventListener("click", analyzeCrypto);
@@ -4456,6 +4780,7 @@ els.discoverButton.addEventListener("click", discover);
 els.diagnosticsButton?.addEventListener("click", runDiagnostics);
 els.disclosureCheckButton?.addEventListener("click", checkDisclosures);
 els.shareholderCheckButton?.addEventListener("click", checkShareholders);
+els.financialCheckButton?.addEventListener("click", checkFinancials);
 els.testNotificationButton?.addEventListener("click", testNotification);
 els.chart?.addEventListener("pointermove", updateChartHover);
 els.chart?.addEventListener("pointerleave", clearChartHover);
@@ -4481,6 +4806,7 @@ async function loadInitialData() {
     safeLoad("分析ジョブ", loadAnalysisJob),
     safeLoad("米国株", loadUsStocks),
     safeLoad("米国株分析", loadUsAnalysisCache),
+    safeLoad("米国株分析ジョブ", loadUsAnalysisJob),
     safeLoad("BTC・為替", loadCrypto),
     safeLoad("候補検索", loadDiscoveryCache),
   ]);

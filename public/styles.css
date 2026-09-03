@@ -30,7 +30,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -214,7 +215,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 38px;
   border: 1px solid var(--line);
@@ -222,6 +224,12 @@ select {
   background: #fff;
   color: var(--ink);
   padding: 0 10px;
+}
+
+textarea {
+  min-height: 84px;
+  padding: 9px 10px;
+  resize: vertical;
 }
 
 .limit-meter {
@@ -323,6 +331,41 @@ progress {
 .settings-form {
   display: grid;
   gap: 14px;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 18px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+}
+
+.settings-tabs button {
+  min-height: 38px;
+  flex: 0 0 auto;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 2px 9px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.settings-tabs button.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
+.settings-tab-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-tab-panel[hidden] {
+  display: none;
 }
 
 .settings-card {
@@ -684,6 +727,17 @@ tr:hover .drag-handle,
   color: var(--muted);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.symbol-link {
+  color: inherit;
+  font: inherit;
+  text-decoration: none;
+}
+
+.symbol-link:hover {
+  color: var(--accent-2);
+  text-decoration: underline;
 }
 
 .sector-badge {
@@ -1476,6 +1530,10 @@ tr:hover .drag-handle,
   gap: 8px;
 }
 
+.financial-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
 .risk-check {
   display: grid;
   gap: 7px;
@@ -1541,6 +1599,28 @@ tr:hover .drag-handle,
 .compact-list a {
   color: var(--buy);
   word-break: break-all;
+}
+
+.forecast-lines {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.forecast-lines span {
+  display: grid;
+  gap: 2px;
+  border-radius: 7px;
+  background: #eef4f2;
+  padding: 7px 8px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.forecast-lines strong {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .reason-list,
@@ -1993,6 +2073,29 @@ tr:hover .drag-handle,
   color: var(--accent);
 }
 
+.pe-signal .pe-financial-line {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 6px;
+}
+
+.pe-signal .pe-financial-line span {
+  display: grid;
+  gap: 2px;
+  background: #fff;
+  color: var(--ink);
+}
+
+.pe-signal .pe-financial-line strong {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.pe-tendencies span {
+  background: #eef4f2;
+  color: var(--accent);
+}
+
 .early-signal .risk,
 .pe-signal .risk {
   background: #fff3d8;
@@ -2344,6 +2447,7 @@ tr:hover .drag-handle,
   .reason-columns,
   .evidence-summary-grid,
   .suggestion-metrics,
+  .forecast-lines,
   .sell-plan {
     grid-template-columns: 1fr;
   }
