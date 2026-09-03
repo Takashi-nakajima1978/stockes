@@ -37,9 +37,91 @@ const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
 const FUNDAMENTAL_EXIT_MAX_AGE_DAYS = 30;
 const TRAILING_STOP_LOSS_PCT = 20;
-const US_EVIDENCE_TRANSLATION_CHUNK_SIZE = 3;
+const US_EVIDENCE_TRANSLATION_CHUNK_SIZE = 12;
 const PRICE_HISTORY_TIMEOUT_MS = 12000;
 const QUICK_PRICE_HISTORY_TIMEOUT_MS = 4000;
+const US_NEWS_MAX_AGE_DAYS = 180;
+const US_EVIDENCE_TRANSLATION_TIMEOUT_MS = 45000;
+const US_HOLDING_REVIEW_TIMEOUT_MS = 25000;
+const US_HOLDING_REVIEW_CHUNK_SIZE = 10;
+const US_FINANCE_NEWS_SOURCES = [
+  ["finance.yahoo.com", 100],
+  ["seekingalpha.com", 96],
+  ["marketwatch.com", 94],
+  ["barrons.com", 94],
+  ["cnbc.com", 92],
+  ["reuters.com", 92],
+  ["nasdaq.com", 90],
+  ["zacks.com", 88],
+  ["benzinga.com", 86],
+  ["investing.com", 84],
+  ["fool.com", 82],
+  ["investors.com", 82],
+  ["morningstar.com", 80],
+  ["tipranks.com", 78],
+  ["stocktitan.net", 76],
+  ["investopedia.com", 76],
+  ["barchart.com", 74],
+  ["quiverquant.com", 74],
+  ["tikr.com", 72],
+  ["chartmill.com", 72],
+  ["tradingview.com", 72],
+  ["businesswire.com", 74],
+  ["prnewswire.com", 74],
+  ["stockanalysis.com", 74],
+  ["thestreet.com", 72],
+  ["apnews.com", 72],
+  ["businessinsider.com", 72],
+  ["markets.businessinsider.com", 72],
+  ["gurufocus.com", 70],
+  ["marketbeat.com", 70],
+  ["wallstreetzen.com", 70],
+  ["msn.com", 70],
+];
+const US_SHAREHOLDER_SOURCES = [
+  ["nasdaq.com", 100],
+  ["finance.yahoo.com", 96],
+  ["sec.gov", 94],
+  ["fintel.io", 92],
+  ["marketbeat.com", 90],
+  ["gurufocus.com", 88],
+  ["stockanalysis.com", 86],
+  ["wallstreetzen.com", 82],
+  ["morningstar.com", 80],
+  ["tipranks.com", 76],
+];
+const JP_SHAREHOLDER_SOURCES = [
+  ["nikkei.com", 100],
+  ["irbank.net", 96],
+  ["kabutan.jp", 94],
+  ["minkabu.jp", 90],
+  ["finance.yahoo.co.jp", 86],
+  ["jpx.co.jp", 84],
+  ["buffett-code.com", 80],
+];
+const US_NEWS_BLOCKED_HOSTS = [
+  "wikipedia.org",
+  "linkedin.com",
+  "facebook.com",
+  "instagram.com",
+  "x.com",
+  "twitter.com",
+  "youtube.com",
+  "glassdoor.com",
+  "indeed.com",
+  "ziprecruiter.com",
+  "simplyhired.com",
+];
+const US_NEWS_KEYWORDS = [
+  "stock", "stocks", "shares", "earnings", "revenue", "profit", "guidance", "forecast", "analyst",
+  "rating", "upgrade", "downgrade", "price target", "dividend", "buyback", "acquisition", "deal",
+  "lawsuit", "recall", "sec", "quarter", "results", "outlook", "margin",
+];
+const SHAREHOLDER_KEYWORDS = [
+  "institutional", "ownership", "holder", "holders", "shareholder", "shareholders", "major holders",
+  "13f", "13d", "13g", "stake", "fund holdings", "mutual fund", "機関投資家", "大株主", "株主構成",
+  "株主", "保有割合", "持株比率", "外国法人", "金融機関",
+];
 const PE_PRIORITY_MIN_SCORE = 45;
 const PE_STRONG_MIN_SCORE = 55;
 const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品|wholesale|food|grocery|consumer staples|packaged foods)/i;
@@ -1046,7 +1128,7 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
   await translateResearchEvidenceRows([row]).catch(() => {});
 
   let aiDecision = null;
-  const lmStatus = await checkLmStudio(settings);
+  const lmStatus = await checkLmStudio(settings).catch(() => ({ ok: false }));
   if (lmStatus.ok) {
     try {
       aiDecision = (await aiBatchDecisions([row]))[0] || null;
@@ -1137,6 +1219,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
       cachedPrice ? Promise.resolve(cachedPrice) : fetchPriceHistory(stock.symbol),
       researchUsStock(stock, { websiteLimit }),
     ]);
+    if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
     const position = positionMetrics(stock, price);
     return {
       symbol: stock.symbol,
@@ -1153,13 +1236,17 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
       ai: null,
     };
   });
-  await translateUsEvidenceRows(rows).catch((error) => {
-    warnings.push(`LM Studio: ${error.message || "米国ニュース翻訳が返りませんでした"}`);
-    markUsEvidenceTranslationUnavailable(rows, error);
-  });
+  const lmStatus = await checkLmStudio(settings).catch(() => ({ ok: false }));
+  if (lmStatus.ok) {
+    await translateUsEvidenceRows(rows).catch((error) => {
+      warnings.push(`LM Studio: ${error.message || "米国ニュース翻訳が返りませんでした"}`);
+      markUsEvidenceTranslationUnavailable(rows, error);
+    });
+  } else {
+    markUsEvidenceTranslationUnavailable(rows, new Error("LM Studioに接続できませんでした"));
+  }
 
   let usedLmStudio = rows.some((row) => (row.evidence || []).some((item) => item.translationMethod === "lm_studio"));
-  const lmStatus = await checkLmStudio();
   if (lmStatus.ok && rows.length) {
     try {
       const reviews = await aiUsHoldingReviews(rows);
@@ -1172,6 +1259,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
       usedLmStudio = usedLmStudio || reviews.length > 0;
     } catch (error) {
       warnings.push(`LM Studio: ${error.message || "米国株AI分析が返りませんでした"}`);
+      markUsEvidenceTranslationUnavailable(rows, error);
       rows.forEach((row) => {
         row.ai = fallbackUsReview(row);
         row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
@@ -1259,12 +1347,17 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
   };
 
   const warnings = [];
-  await translateUsEvidenceRows([row]).catch((error) => {
-    warnings.push(`LM Studio: ${error.message || "米国ニュース翻訳が返りませんでした"}`);
-    markUsEvidenceTranslationUnavailable([row], error);
-  });
+  if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
+  const lmStatus = await checkLmStudio(settings).catch(() => ({ ok: false }));
+  if (lmStatus.ok) {
+    await translateUsEvidenceRows([row]).catch((error) => {
+      warnings.push(`LM Studio: ${error.message || "米国ニュース翻訳が返りませんでした"}`);
+      markUsEvidenceTranslationUnavailable([row], error);
+    });
+  } else {
+    markUsEvidenceTranslationUnavailable([row], new Error("LM Studioに接続できませんでした"));
+  }
   let usedLmStudio = (row.evidence || []).some((item) => item.translationMethod === "lm_studio");
-  const lmStatus = await checkLmStudio(settings);
   if (lmStatus.ok) {
     try {
       const review = (await aiUsHoldingReviews([row]))[0] || null;
@@ -1274,6 +1367,7 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
       usedLmStudio = usedLmStudio || Boolean(review);
     } catch (error) {
       warnings.push(`LM Studio: ${error.message || "米国株AI分析が返りませんでした"}`);
+      markUsEvidenceTranslationUnavailable([row], error);
       row.ai = fallbackUsReview(row);
       row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
       applyUsEvidenceTranslations(row);
@@ -1362,6 +1456,13 @@ async function translateUsEvidenceRows(rows = []) {
   for (const chunk of chunkArray(items, US_EVIDENCE_TRANSLATION_CHUNK_SIZE)) {
     await applyUsEvidenceTranslationChunk(model, chunk).catch(async (error) => {
       failures.push(error);
+      if (/aborted|timed out|timeout/i.test(String(error?.message || ""))) {
+        for (const item of chunk) {
+          item.evidence.translationMethod = "untranslated";
+          item.evidence.translationError = lmStudioTranslationError(error);
+        }
+        return;
+      }
       for (const item of chunk) {
         await applyUsEvidenceTranslationChunk(model, [item]).catch((singleError) => {
           failures.push(singleError);
@@ -1413,8 +1514,11 @@ async function translateUsEvidenceChunk(model, items = []) {
       })),
     }),
   ].join("\n");
-  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 2200 }).catch(async (error) => {
-    if (shouldFallbackToLmStudioChat(error)) return callLmStudioChat(model, prompt, { maxTokens: 2200 });
+  const content = await callLmStudioResponses(model, prompt, {
+    maxOutputTokens: 2200,
+    timeoutMs: US_EVIDENCE_TRANSLATION_TIMEOUT_MS,
+  }).catch(async (error) => {
+    if (shouldFallbackToLmStudioChat(error)) return callLmStudioChat(model, prompt, { maxTokens: 2200, timeoutMs: US_EVIDENCE_TRANSLATION_TIMEOUT_MS });
     throw error;
   });
   const parsed = parseJsonObjectMatching(content, isUsEvidenceTranslationPayload);
@@ -1488,33 +1592,266 @@ function isWeakUsEvidenceSummary(value = "") {
 }
 
 async function researchUsStock(stock, options = {}) {
-  const query = `${stock.name} ${stock.symbol} stock earnings guidance analyst rating news dividend risk`;
-  const results = await searchGoogle(query, { limit: options.websiteLimit || 5 }).catch(() => []);
-  const evidence = results.slice(0, options.websiteLimit || 5).map((item) => {
-    const original = cleanText(item.snippet || "").slice(0, 360);
-    return {
-      title: item.title,
-      url: item.url,
-      symbol: stock.symbol,
-      name: stock.name,
-      source: hostOf(item.url),
-      snippet: original,
-      originalSnippet: original,
-      summaryJa: "",
-      publishedDate: item.publishedDate || "",
-      kind: "web",
-    };
-  });
+  const limit = clamp(Number(options.websiteLimit || 5), 1, 20);
+  const searchLimit = Math.max(limit * 2, 8);
+  const [yahooNews, searchedNews] = await Promise.all([
+    fetchYahooFinanceSearchNews(stock, searchLimit).catch(() => []),
+    searchUsFinanceNews(stock, searchLimit).catch(() => []),
+  ]);
+  const evidence = uniqueBy([...yahooNews, ...searchedNews]
+    .filter((item) => isUsFinanceNewsEvidence(item, stock))
+    .sort((a, b) => usFinanceNewsScore(b, stock) - usFinanceNewsScore(a, stock)), (item) => canonicalNewsUrl(item.url))
+    .slice(0, limit)
+    .map((item) => toUsEvidence(item, stock));
   return {
     searched: evidence.length,
     evidence,
+    warning: evidence.length ? "" : "米国金融ニュースを取得できませんでした",
   };
+}
+
+async function fetchYahooFinanceSearchNews(stock, limit = 8) {
+  const symbol = normalizeUsSymbol(stock.symbol);
+  if (!symbol) return [];
+  const url = new URL("https://query2.finance.yahoo.com/v1/finance/search");
+  url.searchParams.set("q", symbol);
+  url.searchParams.set("quotesCount", "0");
+  url.searchParams.set("newsCount", String(Math.min(Math.max(limit, 4), 20)));
+  url.searchParams.set("region", "US");
+  url.searchParams.set("lang", "en-US");
+  const response = await fetchWithTimeout(url, {
+    timeout: 8000,
+    headers: {
+      accept: "application/json",
+      "user-agent": "Mozilla/5.0 Stock Signal",
+    },
+  });
+  if (!response.ok) return [];
+  const data = await response.json().catch(() => null);
+  return (data?.news || []).map((item) => ({
+    title: cleanText(item.title || ""),
+    url: normalizeUrl(item.link || item.url || ""),
+    snippet: cleanText(item.summary || item.publisher || ""),
+    publishedDate: item.providerPublishTime
+      ? new Date(Number(item.providerPublishTime) * 1000).toISOString().slice(0, 10)
+      : searchResultPublishedDate(item),
+    source: hostOf(item.link || item.url || ""),
+    relatedTickers: asStringArray(item.relatedTickers),
+  })).filter((item) => item.title && item.url);
+}
+
+async function searchUsFinanceNews(stock, limit = 8) {
+  const queries = usFinanceNewsQueries(stock);
+  const rssPages = await mapLimit(queries, 2, async (query) => (
+    fetchGoogleNewsUsRss(stock, limit, query).catch(() => [])
+  ));
+  return uniqueBy(rssPages.flat(), (item) => canonicalNewsUrl(item.url))
+    .map((item) => ({
+      ...item,
+      source: item.source || hostOf(item.sourceUrl || item.url),
+      publishedDate: item.publishedDate || searchResultPublishedDate(item),
+    }));
+}
+
+function usFinanceNewsQueries(stock = {}) {
+  const symbol = normalizeUsSymbol(stock.symbol);
+  const name = cleanText(stock.name || symbol);
+  const nameQuery = name && !name.toLowerCase().includes(symbol.toLowerCase())
+    ? `"${name}" ${symbol}`
+    : symbol;
+  return [
+    `${nameQuery} stock earnings guidance analyst`,
+    `${nameQuery} shares revenue outlook dividend`,
+    `${nameQuery} price target results margin`,
+    `${nameQuery} acquisition lawsuit recall risk`,
+  ].filter(Boolean);
+}
+
+async function fetchGoogleNewsUsRss(stock, limit = 8, queryOverride = "") {
+  const symbol = normalizeUsSymbol(stock.symbol);
+  if (!symbol) return [];
+  const name = cleanText(stock.name || symbol);
+  const query = queryOverride || (name && !name.toLowerCase().includes(symbol.toLowerCase())
+    ? `"${name}" ${symbol} stock earnings guidance analyst`
+    : `${symbol} stock earnings guidance analyst`);
+  const url = new URL("https://news.google.com/rss/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("hl", "en-US");
+  url.searchParams.set("gl", "US");
+  url.searchParams.set("ceid", "US:en");
+  const response = await fetchWithTimeout(url, {
+    timeout: 10000,
+    headers: { accept: "application/rss+xml,text/xml;q=0.9,*/*;q=0.8" },
+  });
+  if (!response.ok) return [];
+  const xml = await response.text();
+  return parseGoogleNewsRssItems(xml).slice(0, Math.max(limit * 4, 20));
+}
+
+function parseGoogleNewsRssItems(xml = "") {
+  const items = [];
+  const re = /<item>([\s\S]*?)<\/item>/gi;
+  let match;
+  while ((match = re.exec(xml))) {
+    const block = match[1] || "";
+    const titleRaw = xmlDecode(extractXmlTag(block, "title"));
+    const link = normalizeUrl(xmlDecode(extractXmlTag(block, "link")));
+    const description = htmlToText(xmlDecode(extractXmlTag(block, "description")));
+    const pubDate = xmlDecode(extractXmlTag(block, "pubDate"));
+    const sourceMatch = block.match(/<source\b[^>]*url=["']([^"']+)["'][^>]*>([\s\S]*?)<\/source>/i);
+    const sourceUrl = normalizeUrl(xmlDecode(sourceMatch?.[1] || ""));
+    const publisher = cleanText(xmlDecode(sourceMatch?.[2] || ""));
+    const title = publisher
+      ? cleanText(titleRaw.replace(new RegExp(`\\s+-\\s+${escapeRegExp(publisher)}$`, "i"), ""))
+      : cleanText(titleRaw);
+    items.push({
+      title,
+      url: link,
+      sourceUrl,
+      source: hostOf(sourceUrl) || publisher || hostOf(link),
+      snippet: description,
+      publishedDate: normalizeSearchDate(pubDate),
+    });
+  }
+  return items.filter((item) => item.title && item.url);
+}
+
+function extractXmlTag(xml = "", tag = "") {
+  const match = xml.match(new RegExp(`<${escapeRegExp(tag)}\\b[^>]*>([\\s\\S]*?)<\\/${escapeRegExp(tag)}>`, "i"));
+  return match?.[1] || "";
+}
+
+function xmlDecode(value = "") {
+  return String(value || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function toUsEvidence(item = {}, stock = {}) {
+  const original = cleanText(item.snippet || item.summary || "").slice(0, 360);
+  const sourceUrl = normalizeUrl(item.sourceUrl);
+  return {
+    title: cleanText(item.title || "").slice(0, 180),
+    url: normalizeUrl(item.url),
+    sourceUrl,
+    symbol: stock.symbol,
+    name: stock.name,
+    source: hostOf(sourceUrl || item.url),
+    snippet: original,
+    originalSnippet: original,
+    summaryJa: "",
+    publishedDate: normalizeDate(item.publishedDate) || searchResultPublishedDate(item),
+    kind: "web",
+  };
+}
+
+function isUsFinanceNewsEvidence(item = {}, stock = {}) {
+  const url = normalizeUrl(item.url);
+  const sourceUrl = normalizeUrl(item.sourceUrl);
+  if (!url || isBlockedUsNewsUrl(url) || (sourceUrl && isBlockedUsNewsUrl(sourceUrl))) return false;
+  if (!usFinanceNewsSourceRank(url, sourceUrl)) return false;
+  if (!usEvidenceMentionsStock(item, stock)) return false;
+  if (isStaleUsNews(item, US_NEWS_MAX_AGE_DAYS)) return false;
+  const text = cleanText(`${item.title || ""} ${item.snippet || ""} ${url}`).toLowerCase();
+  if (/wikipedia|linkedin|careers?|jobs?|login|sign in|company profile|corporate page/.test(text)) return false;
+  return true;
+}
+
+function isBlockedUsNewsUrl(value = "") {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
+    const pathText = decodeURIComponent(url.pathname || "").toLowerCase();
+    if (US_NEWS_BLOCKED_HOSTS.some((blocked) => domainMatches(host, blocked))) return true;
+    if (/\/(?:careers?|jobs?|job-search|recruit|login|signin|signup|account|about|company|wiki)(?:\/|$)/i.test(pathText)) return true;
+    if (host === "finance.yahoo.com" && /^\/quote\/[^/]+\/?(?:news)?\/?$/.test(pathText)) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function usEvidenceMentionsStock(item = {}, stock = {}) {
+  const symbol = normalizeUsSymbol(stock.symbol);
+  const text = cleanText(`${item.title || ""} ${item.snippet || ""} ${item.url || ""}`).toLowerCase();
+  if (symbol) {
+    const escaped = escapeRegExp(symbol.toLowerCase());
+    const dashVariant = escapeRegExp(symbol.toLowerCase().replace(".", "-"));
+    if (new RegExp(`\\b${escaped}\\b`, "i").test(text) || new RegExp(`\\b${dashVariant}\\b`, "i").test(text)) return true;
+  }
+  const words = cleanText(stock.name || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length >= 4)
+    .filter((word) => !["inc", "corp", "corporation", "company", "limited", "holdings", "group", "plc"].includes(word));
+  return words.length ? words.every((word) => text.includes(word)) : false;
+}
+
+function isStaleUsNews(item = {}, maxAgeDays = US_NEWS_MAX_AGE_DAYS) {
+  const publishedDate = normalizeDate(item.publishedDate) || searchResultPublishedDate(item);
+  if (!publishedDate) return false;
+  const time = new Date(`${publishedDate}T00:00:00`).getTime();
+  if (!Number.isFinite(time)) return false;
+  return Date.now() - time > maxAgeDays * 86400000;
+}
+
+function usFinanceNewsScore(item = {}, stock = {}) {
+  let score = usFinanceNewsSourceRank(item.url, item.sourceUrl);
+  const publishedDate = normalizeDate(item.publishedDate) || searchResultPublishedDate(item);
+  if (publishedDate) {
+    const ageDays = Math.max(0, Math.floor((Date.now() - new Date(`${publishedDate}T00:00:00`).getTime()) / 86400000));
+    score += Math.max(0, 36 - ageDays);
+  } else {
+    score -= 12;
+  }
+  const text = cleanText(`${item.title || ""} ${item.snippet || ""}`).toLowerCase();
+  const keywordHits = US_NEWS_KEYWORDS.filter((word) => text.includes(word)).length;
+  score += Math.min(24, keywordHits * 4);
+  if (usEvidenceMentionsStock(item, stock)) score += 10;
+  return score;
+}
+
+function usFinanceNewsSourceRank(value = "", sourceUrl = "") {
+  const host = hostOf(sourceUrl || value).toLowerCase();
+  for (const [domain, rank] of US_FINANCE_NEWS_SOURCES) {
+    if (domain === "finance.yahoo.com" ? host === domain : domainMatches(host, domain)) return rank;
+  }
+  return 0;
+}
+
+function domainMatches(host = "", domain = "") {
+  const cleanHost = String(host || "").replace(/^www\./, "").toLowerCase();
+  const cleanDomain = String(domain || "").replace(/^www\./, "").toLowerCase();
+  return cleanHost === cleanDomain || cleanHost.endsWith(`.${cleanDomain}`);
+}
+
+function canonicalNewsUrl(value = "") {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(utm_|guccounter|fbclid|gclid|ocid|smid)/i.test(key)) url.searchParams.delete(key);
+    }
+    return url.href.replace(/\/$/, "");
+  } catch {
+    return normalizeUrl(value);
+  }
+}
+
+function escapeRegExp(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function aiUsHoldingReviews(rows = []) {
   const model = await getLmStudioModel();
   const reviews = [];
-  const chunks = chunkArray(rows, 3);
+  const chunks = chunkArray(rows, US_HOLDING_REVIEW_CHUNK_SIZE);
   for (const chunk of chunks) {
     reviews.push(...(await aiUsHoldingReviewChunk(model, chunk)));
   }
@@ -1560,7 +1897,7 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     "/no_think",
     "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
     "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益、受取配当、年間配当目安、配当込み損益を分けて読み、利益保証をせず、保有継続の確認材料と注意点を分けてください。",
-    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]}}]}。",
+    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"titleJa\":\"...\",\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]}}]}。",
     "stanceは HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED のいずれか。changeLevelは normal, watch, important のいずれか。",
     "NVIDIAのような10倍候補は20〜30%の株価下落だけではEXITにしません。売上成長の鈍化、guidanceがconsensusを下回る、需要・粗利・受注の構造悪化、成長投資テーマの破綻など、買った根拠が崩れた時だけgrowthExit.levelをexit_alertにしてください。",
     `growthExit.exit_alertはpublishedDateが過去${FUNDAMENTAL_EXIT_MAX_AGE_DAYS}日以内の根拠がある時だけにしてください。日付不明、古い記事、過去の歴史記事は売りアラートの根拠にしないでください。`,
@@ -1568,8 +1905,13 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     "",
     JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
-  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 3500 }).catch(async (error) => {
-    if (shouldFallbackToLmStudioChat(error)) return callLmStudioChat(model, prompt, { maxTokens: 3500 });
+  const content = await callLmStudioResponses(model, prompt, {
+    maxOutputTokens: 3500,
+    timeoutMs: US_HOLDING_REVIEW_TIMEOUT_MS,
+  }).catch(async (error) => {
+    if (shouldFallbackToLmStudioChat(error)) {
+      return callLmStudioChat(model, prompt, { maxTokens: 3500, timeoutMs: US_HOLDING_REVIEW_TIMEOUT_MS });
+    }
     throw error;
   });
   const parsed = parseJsonObjectMatching(content, isUsHoldingReviewPayload);
@@ -1584,8 +1926,9 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       good: asStringArray(review.good || review.reasons).slice(0, 3),
       risks: asStringArray(review.risks).slice(0, 3),
       evidenceJa: Array.isArray(review.evidenceJa) ? review.evidenceJa.map((item) => ({
+        titleJa: String(item.titleJa || item.title || "").slice(0, 100),
         source: String(item.source || ""),
-        summary: String(item.summary || "").slice(0, 140),
+        summary: String(item.summary || item.summaryJa || "").slice(0, 140),
       })).slice(0, 5) : [],
       changeLevel: ["normal", "watch", "important"].includes(String(review.changeLevel || "").toLowerCase())
         ? String(review.changeLevel).toLowerCase()
@@ -8226,8 +8569,36 @@ async function attachShareholderInfoToAnalyses(analyses = [], cache = null) {
   const bySymbol = new Map((shareholderCache.items || []).map((item) => [item.symbol, item]));
   return analyses.map((analysis) => ({
     ...analysis,
-    shareholders: bySymbol.get(analysis.symbol) || null,
+    shareholders: sanitizeShareholderItemForAnalysis(bySymbol.get(analysis.symbol), analysis),
   }));
+}
+
+function sanitizeShareholderItemForAnalysis(item = null, analysis = {}) {
+  if (!item) return null;
+  const stock = {
+    symbol: analysis.symbol || item.symbol,
+    name: analysis.name || item.name,
+    currency: item.currency || analysis.price?.currency || (String(analysis.symbol || "").includes(".T") ? "JPY" : "USD"),
+    shareholderMarket: String(analysis.symbol || item.symbol || "").includes(".T") ? "JP" : "US",
+  };
+  const rawEvidence = Array.isArray(item.evidence) ? item.evidence : [];
+  const evidence = rawEvidence.filter((source) => isShareholderEvidence(source, stock));
+  if (rawEvidence.length && !evidence.length) {
+    return normalizeShareholderItem({
+      ...item,
+      institutionalOwnershipPct: null,
+      foreignOwnershipPct: null,
+      previousInstitutionalOwnershipPct: null,
+      changePct: null,
+      changeAlert: false,
+      confidence: 0,
+      majorHolders: [],
+      evidence: [],
+      summaryJa: "信頼できる株主情報サイトで再取得が必要です。",
+      warning: "保存済みの確認元が信頼対象外だったため非表示にしました。",
+    });
+  }
+  return normalizeShareholderItem({ ...item, evidence });
 }
 
 async function updateShareholderSnapshots(options = {}) {
@@ -8273,7 +8644,10 @@ async function fetchShareholderSnapshot(stock, settings, options = {}) {
     const results = await searchGoogle(query, { limit: perQueryLimit }).catch(() => []);
     searchResults.push(...results.map((item) => ({ ...item, query })));
   }
-  const evidence = uniqueBy(searchResults, (item) => item.url).slice(0, 8).map((item) => ({
+  const filteredResults = uniqueBy(searchResults
+    .filter((item) => isShareholderEvidence(item, stock))
+    .sort((a, b) => shareholderEvidenceScore(b, stock) - shareholderEvidenceScore(a, stock)), (item) => canonicalNewsUrl(item.url));
+  const evidence = filteredResults.slice(0, 8).map((item) => ({
     title: item.title,
     url: item.url,
     source: hostOf(item.url),
@@ -8291,7 +8665,12 @@ async function fetchShareholderSnapshot(stock, settings, options = {}) {
       evidence,
     });
   }
-  return shareholderSnapshotFallback(stock, evidence, evidence.length ? "" : googleSearchWarning());
+  const warning = evidence.length
+    ? ""
+    : searchResults.length
+      ? "信頼できる株主情報サイトの根拠に絞ると0件でした。"
+      : googleSearchWarning();
+  return shareholderSnapshotFallback(stock, evidence, warning);
 }
 
 function shareholderQueries(stock = {}) {
@@ -8305,9 +8684,60 @@ function shareholderQueries(stock = {}) {
     ];
   }
   return [
-    `${symbol} institutional ownership percentage major holders`,
-    `${name} ${symbol} shareholders institutional holders ownership`,
+    `${symbol} institutional holdings site:nasdaq.com`,
+    `${symbol} major holders site:finance.yahoo.com/quote`,
+    `${symbol} institutional ownership site:marketbeat.com`,
+    `${symbol} 13F institutional ownership site:fintel.io`,
+    `${name} ${symbol} shareholders institutional ownership site:gurufocus.com`,
   ];
+}
+
+function isShareholderEvidence(item = {}, stock = {}) {
+  const url = normalizeUrl(item.url);
+  if (!url || isBlockedUsNewsUrl(url)) return false;
+  const rank = shareholderSourceRank(url, stock);
+  if (!rank) return false;
+  if (!shareholderEvidenceMentionsStock(item, stock)) return false;
+  const text = cleanText(`${item.title || ""} ${item.snippet || ""} ${url}`).toLowerCase();
+  if (/porn|casino|betting|download|crack|torrent|login|sign in|careers?|jobs?|wikipedia|linkedin/.test(text)) return false;
+  if (!SHAREHOLDER_KEYWORDS.some((word) => text.includes(word.toLowerCase()))) return rank >= 94;
+  return true;
+}
+
+function shareholderEvidenceScore(item = {}, stock = {}) {
+  const text = cleanText(`${item.title || ""} ${item.snippet || ""}`).toLowerCase();
+  const keywordHits = SHAREHOLDER_KEYWORDS.filter((word) => text.includes(word.toLowerCase())).length;
+  return shareholderSourceRank(item.url, stock) + Math.min(24, keywordHits * 4);
+}
+
+function shareholderSourceRank(url = "", stock = {}) {
+  const symbol = String(stock.symbol || "").trim().toUpperCase();
+  const sources = stock.shareholderMarket === "US" || (!symbol.includes(".T") && stock.currency === "USD")
+    ? US_SHAREHOLDER_SOURCES
+    : JP_SHAREHOLDER_SOURCES;
+  const host = hostOf(url).toLowerCase();
+  for (const [domain, rank] of sources) {
+    if (domainMatches(host, domain)) return rank;
+  }
+  return 0;
+}
+
+function shareholderEvidenceMentionsStock(item = {}, stock = {}) {
+  const symbol = String(stock.symbol || "").trim().toUpperCase();
+  const text = cleanText(`${item.title || ""} ${item.snippet || ""} ${item.url || ""}`).toLowerCase();
+  if (symbol.includes(".T")) {
+    const code = symbol.replace(".T", "");
+    if (code && new RegExp(`\\b${escapeRegExp(code)}\\b`).test(text)) return true;
+  } else {
+    const normalizedSymbol = normalizeUsSymbol(symbol);
+    if (normalizedSymbol && new RegExp(`\\b${escapeRegExp(normalizedSymbol.toLowerCase())}\\b`, "i").test(text)) return true;
+  }
+  const words = cleanText(stock.name || "")
+    .toLowerCase()
+    .split(/[^a-z0-9一-龥ぁ-んァ-ン]+/)
+    .filter((word) => word.length >= 3)
+    .filter((word) => !["inc", "corp", "corporation", "company", "limited", "holdings", "group", "plc"].includes(word));
+  return words.length ? words.some((word) => text.includes(word)) : false;
 }
 
 async function aiShareholderSnapshot(stock, evidence = []) {
