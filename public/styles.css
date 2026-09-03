@@ -1059,6 +1059,38 @@ tr:hover .drag-handle,
   margin: 0;
 }
 
+.financial-card > div:first-child span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.financial-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
+}
+
+.financial-grid > span {
+  min-height: 48px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8faf9;
+  padding: 8px 10px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.financial-grid strong {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
 .chart-note {
   display: grid;
   gap: 6px;

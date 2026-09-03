@@ -242,6 +242,7 @@ const businessBadWords = ["下方修正", "減益", "赤字", "減配", "不祥�
 
 let lmModelCache = { configuredUrl: "", url: "", model: "" };
 let primeUniverseCache = null;
+let secCompanyTickerCache = null;
 let analysisJob = null;
 let usAnalysisJob = null;
 let discoveryJob = null;
@@ -1340,12 +1341,17 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}, onProgre
   });
   const rows = await mapLimit(stocks, 4, async (stock) => {
     const cachedPrice = recentPrices.get(stock.symbol);
-    const [price, research] = await Promise.all([
+    const [price, rawFundamentals, research] = await Promise.all([
       cachedPrice ? Promise.resolve(cachedPrice) : fetchPriceHistory(stock.symbol),
+      fetchUsFundamentals(stock.symbol).catch((error) => {
+        warnings.push(`${stock.name}: ${error.message || "米国財務情報を取得できませんでした"}`);
+        return normalizeUsFundamentals();
+      }),
       researchUsStock(stock, { websiteLimit }),
     ]);
     if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
     const position = positionMetrics(stock, price);
+    const fundamentals = enrichUsFundamentals(rawFundamentals, price);
     checked += 1;
     onProgress?.({ phase: "米国株の価格・ニュースを確認中", checked, total: stocks.length });
     return {
@@ -1355,6 +1361,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}, onProgre
       holding: Boolean(stock.holding),
       notes: stock.notes || "",
       price: compactUsPrice(price),
+      fundamentals,
       position,
       researchStats: {
         searched: research.searched,
@@ -1471,10 +1478,16 @@ async function analyzeCryptoHolding() {
 async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}) {
   const settings = await readSettings();
   const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT);
-  const [price, research] = await Promise.all([
+  const warnings = [];
+  const [price, rawFundamentals, research] = await Promise.all([
     fetchPriceHistory(stock.symbol),
+    fetchUsFundamentals(stock.symbol).catch((error) => {
+      warnings.push(`${stock.name}: ${error.message || "米国財務情報を取得できませんでした"}`);
+      return normalizeUsFundamentals();
+    }),
     researchUsStock(stock, { websiteLimit }),
   ]);
+  const fundamentals = enrichUsFundamentals(rawFundamentals, price);
   const row = {
     symbol: stock.symbol,
     name: stock.name,
@@ -1482,6 +1495,7 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
     holding: Boolean(stock.holding),
     notes: stock.notes || "",
     price: compactUsPrice(price),
+    fundamentals,
     position: positionMetrics(stock, price),
     researchStats: {
       searched: research.searched,
@@ -1490,7 +1504,6 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
     ai: null,
   };
 
-  const warnings = [];
   if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
   const lmStatus = await checkLmStudio(settings).catch(() => ({ ok: false }));
   if (lmStatus.ok) {
@@ -2020,6 +2033,7 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     holding: row.holding,
     notes: row.notes,
     price: row.price,
+    fundamentals: row.fundamentals,
     position: {
       purchasePrice: row.position.purchasePrice,
       quantity: row.position.quantity,
@@ -2050,7 +2064,8 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
   const prompt = [
     "/no_think",
     "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
-    "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益、受取配当、年間配当目安、配当込み損益を分けて読み、利益保証をせず、保有継続の確認材料と注意点を分けてください。",
+    "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益、受取配当、年間配当目安、配当込み損益を分けて読み、財務サマリーのPER、EPS、売上成長、利益率、ROE、負債水準、次回決算も確認してください。",
+    "利益保証をせず、保有継続の確認材料と注意点を分けてください。財務データが不足している場合は、不足を注意点にしてください。",
     "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"titleJa\":\"...\",\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":123.45,\"reviewPrice\":111.11,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}。",
     "stanceは HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED のいずれか。changeLevelは normal, watch, important のいずれか。",
     "NVIDIAのような10倍候補は20〜30%の株価下落だけではEXITにしません。売上成長の鈍化、guidanceがconsensusを下回る、需要・粗利・受注の構造悪化、成長投資テーマの破綻など、買った根拠が崩れた時だけgrowthExit.levelをexit_alertにしてください。",
@@ -2156,6 +2171,7 @@ function isMostlyEnglish(value = "") {
 function fallbackUsReview(row = {}) {
   const position = row.position || {};
   const price = row.price || {};
+  const fundamentals = row.fundamentals || {};
   const risks = [];
   const good = [];
   let stance = "DATA_NEEDED";
@@ -2179,6 +2195,25 @@ function fallbackUsReview(row = {}) {
     } else if (price.return1m >= 10) {
       good.push(`直近1か月で${price.return1m.toFixed(1)}%上昇`);
     }
+  }
+  if (Number.isFinite(fundamentals.revenueGrowthPct)) {
+    if (fundamentals.revenueGrowthPct >= 8) {
+      good.push(`売上成長が${fundamentals.revenueGrowthPct.toFixed(1)}%あります`);
+    } else if (fundamentals.revenueGrowthPct < 0) {
+      risks.push(`売上成長が${fundamentals.revenueGrowthPct.toFixed(1)}%です`);
+      changeLevel = "watch";
+    }
+  }
+  if (Number.isFinite(fundamentals.profitMarginPct)) {
+    if (fundamentals.profitMarginPct >= 15) {
+      good.push(`純利益率が${fundamentals.profitMarginPct.toFixed(1)}%あります`);
+    } else if (fundamentals.profitMarginPct <= 0) {
+      risks.push("純利益率がマイナスです");
+      changeLevel = "watch";
+    }
+  }
+  if (Number.isFinite(fundamentals.trailingPe) && fundamentals.trailingPe >= 60) {
+    risks.push(`PERが${fundamentals.trailingPe.toFixed(1)}倍で高めです`);
   }
   return {
     symbol: row.symbol,
@@ -2387,6 +2422,235 @@ function roundMoney(value, currency = "JPY") {
   return currency === "USD"
     ? Math.round(value * 100) / 100
     : Math.round(value);
+}
+
+async function fetchUsFundamentals(symbol) {
+  const info = await secTickerInfo(symbol);
+  if (!info) return normalizeUsFundamentals();
+  const facts = await fetchSecCompanyFacts(info.cik).catch(() => null);
+  if (!facts?.facts) return normalizeUsFundamentals();
+  return normalizeUsFundamentalsFromSec(symbol, info, facts);
+}
+
+async function secTickerInfo(symbol) {
+  const ticker = normalizeUsSymbol(symbol);
+  if (!ticker) return null;
+  const tickers = await fetchSecCompanyTickers();
+  return tickers.find((item) => item.ticker === ticker) || null;
+}
+
+async function fetchSecCompanyTickers() {
+  if (secCompanyTickerCache) return secCompanyTickerCache;
+  const response = await fetchWithTimeout("https://www.sec.gov/files/company_tickers.json", {
+    timeout: 12000,
+    headers: secHeaders(),
+  });
+  if (!response.ok) throw new Error(`SEC tickers returned ${response.status}`);
+  const data = await response.json().catch(() => ({}));
+  secCompanyTickerCache = Object.values(data)
+    .map((item) => ({
+      cik: String(item.cik_str || "").padStart(10, "0"),
+      ticker: normalizeUsSymbol(item.ticker),
+      title: cleanText(item.title || ""),
+    }))
+    .filter((item) => item.cik && item.ticker);
+  return secCompanyTickerCache;
+}
+
+async function fetchSecCompanyFacts(cik) {
+  const response = await fetchWithTimeout(`https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`, {
+    timeout: 15000,
+    headers: secHeaders(),
+  });
+  if (!response.ok) throw new Error(`SEC companyfacts returned ${response.status}`);
+  return response.json();
+}
+
+function secHeaders() {
+  return {
+    accept: "application/json",
+    "user-agent": process.env.SEC_USER_AGENT || "StockSignal local app contact: local@example.com",
+  };
+}
+
+function normalizeUsFundamentalsFromSec(symbol, info, facts) {
+  const revenueValues = conceptValues(facts, ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"], ["USD"])
+    .filter(isAnnualFact)
+    .sort(compareFactDesc);
+  const revenue = revenueValues[0] || null;
+  const previousRevenue = revenueValues.find((item) => item.fy !== revenue?.fy && item.end !== revenue?.end) || null;
+  const grossProfit = latestAnnualFact(facts, ["GrossProfit"], ["USD"]);
+  const operatingIncome = latestAnnualFact(facts, ["OperatingIncomeLoss"], ["USD"]);
+  const netIncome = latestAnnualFact(facts, ["NetIncomeLoss", "ProfitLoss"], ["USD"]);
+  const eps = latestAnnualFact(facts, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], ["USD/shares"]);
+  const cash = latestInstantFact(facts, ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"], ["USD"]);
+  const assets = latestInstantFact(facts, ["Assets"], ["USD"]);
+  const assetsCurrent = latestInstantFact(facts, ["AssetsCurrent"], ["USD"]);
+  const liabilities = latestInstantFact(facts, ["Liabilities"], ["USD"]);
+  const liabilitiesCurrent = latestInstantFact(facts, ["LiabilitiesCurrent"], ["USD"]);
+  const equity = latestInstantFact(facts, ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"], ["USD"]);
+  const shares = latestInstantFact(facts, ["EntityCommonStockSharesOutstanding", "CommonStocksIncludingAdditionalPaidInCapital"], ["shares"]);
+
+  return normalizeUsFundamentals({
+    source: "SEC companyfacts",
+    fetchedAt: new Date().toISOString(),
+    symbol: normalizeUsSymbol(symbol),
+    companyName: info.title || facts.entityName || "",
+    cik: info.cik,
+    revenue: revenue?.value,
+    previousRevenue: previousRevenue?.value,
+    revenueGrowthPct: safePercentChange(revenue?.value, previousRevenue?.value),
+    grossProfit: grossProfit?.value,
+    operatingIncome: operatingIncome?.value,
+    netIncome: netIncome?.value,
+    grossMarginPct: safePercent(grossProfit?.value, revenue?.value),
+    operatingMarginPct: safePercent(operatingIncome?.value, revenue?.value),
+    profitMarginPct: safePercent(netIncome?.value, revenue?.value),
+    returnOnEquityPct: safePercent(netIncome?.value, equity?.value),
+    trailingEps: eps?.value,
+    totalCash: cash?.value,
+    totalAssets: assets?.value,
+    currentAssets: assetsCurrent?.value,
+    totalLiabilities: liabilities?.value,
+    currentLiabilities: liabilitiesCurrent?.value,
+    equity: equity?.value,
+    debtToEquityPct: safePercent(liabilities?.value, equity?.value),
+    currentRatio: safeRatio(assetsCurrent?.value, liabilitiesCurrent?.value),
+    sharesOutstanding: shares?.value,
+    periodEnd: revenue?.end || netIncome?.end || "",
+    balanceSheetDate: assets?.end || equity?.end || "",
+    fiscalYear: revenue?.fy || netIncome?.fy || null,
+    currency: "USD",
+  });
+}
+
+function normalizeUsFundamentals(input = {}) {
+  return {
+    source: cleanText(input.source || ""),
+    fetchedAt: cleanText(input.fetchedAt || ""),
+    symbol: normalizeUsSymbol(input.symbol),
+    companyName: cleanText(input.companyName || ""),
+    cik: cleanText(input.cik || ""),
+    marketCap: nullableNumber(input.marketCap),
+    enterpriseValue: nullableNumber(input.enterpriseValue),
+    trailingPe: nullableNumber(input.trailingPe),
+    forwardPe: nullableNumber(input.forwardPe),
+    pegRatio: nullableNumber(input.pegRatio),
+    priceToBook: nullableNumber(input.priceToBook),
+    trailingEps: nullableNumber(input.trailingEps),
+    forwardEps: nullableNumber(input.forwardEps),
+    revenue: nullableNumber(input.revenue),
+    previousRevenue: nullableNumber(input.previousRevenue),
+    revenueGrowthPct: nullableNumber(input.revenueGrowthPct),
+    grossProfit: nullableNumber(input.grossProfit),
+    operatingIncome: nullableNumber(input.operatingIncome),
+    netIncome: nullableNumber(input.netIncome),
+    grossMarginPct: nullableNumber(input.grossMarginPct),
+    operatingMarginPct: nullableNumber(input.operatingMarginPct),
+    profitMarginPct: nullableNumber(input.profitMarginPct),
+    returnOnEquityPct: nullableNumber(input.returnOnEquityPct),
+    totalCash: nullableNumber(input.totalCash),
+    totalAssets: nullableNumber(input.totalAssets),
+    currentAssets: nullableNumber(input.currentAssets),
+    totalLiabilities: nullableNumber(input.totalLiabilities),
+    currentLiabilities: nullableNumber(input.currentLiabilities),
+    equity: nullableNumber(input.equity),
+    debtToEquityPct: nullableNumber(input.debtToEquityPct),
+    currentRatio: nullableNumber(input.currentRatio),
+    sharesOutstanding: nullableNumber(input.sharesOutstanding),
+    analystTargetPrice: nullableNumber(input.analystTargetPrice),
+    analystRecommendation: cleanText(input.analystRecommendation || ""),
+    analystOpinions: nullableNumber(input.analystOpinions),
+    nextEarningsDate: normalizeDate(input.nextEarningsDate),
+    periodEnd: normalizeDate(input.periodEnd),
+    balanceSheetDate: normalizeDate(input.balanceSheetDate),
+    fiscalYear: nullableNumber(input.fiscalYear),
+    exchange: cleanText(input.exchange || ""),
+    currency: cleanText(input.currency || "USD"),
+  };
+}
+
+function enrichUsFundamentals(fundamentals = {}, price = {}) {
+  const normalized = normalizeUsFundamentals(fundamentals);
+  const current = nullablePositiveNumber(price.current);
+  if (!Number.isFinite(normalized.trailingPe) && current && normalized.trailingEps > 0) {
+    normalized.trailingPe = current / normalized.trailingEps;
+  }
+  if (!Number.isFinite(normalized.marketCap) && current && normalized.sharesOutstanding > 0) {
+    normalized.marketCap = current * normalized.sharesOutstanding;
+  }
+  return normalized;
+}
+
+function conceptValues(facts = {}, names = [], units = ["USD"]) {
+  const taxonomies = [facts.facts?.["us-gaap"] || {}, facts.facts?.dei || {}];
+  for (const taxonomy of taxonomies) {
+    for (const name of names) {
+      const concept = taxonomy[name];
+      if (!concept?.units) continue;
+      for (const unit of units) {
+        const values = (concept.units[unit] || [])
+          .map((item) => ({
+            value: nullableNumber(item.val),
+            end: normalizeDate(item.end),
+            start: normalizeDate(item.start),
+            filed: normalizeDate(item.filed),
+            form: cleanText(item.form || ""),
+            fp: cleanText(item.fp || ""),
+            fy: nullableNumber(item.fy),
+          }))
+          .filter((item) => Number.isFinite(item.value) && item.end);
+        if (values.length) return values;
+      }
+    }
+  }
+  return [];
+}
+
+function latestAnnualFact(facts, names, units) {
+  return conceptValues(facts, names, units).filter(isAnnualFact).sort(compareFactDesc)[0] || null;
+}
+
+function latestInstantFact(facts, names, units) {
+  return conceptValues(facts, names, units).filter(isInstantFact).sort(compareFactDesc)[0] || null;
+}
+
+function isAnnualFact(item) {
+  return item.form === "10-K" && (item.fp === "FY" || !item.fp) && item.start && item.end;
+}
+
+function isInstantFact(item) {
+  return ["10-K", "10-Q"].includes(item.form) && !item.start && item.end;
+}
+
+function compareFactDesc(a, b) {
+  const endCompare = String(b.end || "").localeCompare(String(a.end || ""));
+  if (endCompare) return endCompare;
+  return String(b.filed || "").localeCompare(String(a.filed || ""));
+}
+
+function safePercent(numerator, denominator) {
+  return Number.isFinite(numerator) && Number.isFinite(denominator) && denominator
+    ? (numerator / denominator) * 100
+    : null;
+}
+
+function safePercentChange(current, previous) {
+  return Number.isFinite(current) && Number.isFinite(previous) && previous
+    ? ((current - previous) / Math.abs(previous)) * 100
+    : null;
+}
+
+function safeRatio(numerator, denominator) {
+  return Number.isFinite(numerator) && Number.isFinite(denominator) && denominator
+    ? numerator / denominator
+    : null;
+}
+
+function nullableNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function usPortfolioSummary(rows = []) {
@@ -4936,14 +5200,17 @@ function stockSector(stock) {
 }
 
 async function researchStock(stock, options) {
+  const sector = stock.sector || stockSector(stock);
   const queries = [
     { text: `${stock.name} ${stock.symbol.replace(".T", "")} 株価 Yahoo 株探 決算短信 業績 事業変化 ニュース`, topic: "company" },
     { text: `${stock.name} ${stock.symbol.replace(".T", "")} 決算後 急落 失望売り 自社株買いなし 増配なし 株主還元`, topic: "company" },
     { text: `${stock.name} ${stock.symbol.replace(".T", "")} 中期経営計画 受注 利益率 ガイダンス 上方修正 下方修正 TDnet`, topic: "company" },
     { text: `${stock.name} ${stock.symbol.replace(".T", "")} 時価総額 PBR PER EV EBITDA ネットキャッシュ 営業キャッシュフロー`, topic: "company" },
     { text: `${stock.name} ${stock.symbol.replace(".T", "")} 信用倍率 空売り 需給 大量保有 アクティビスト`, topic: "company" },
-    { text: `${stock.sector || stockSector(stock)} 業界 見通し 日本株 事業環境 需要 規制 価格転嫁`, topic: "sector" },
   ];
+  if (sector && sector !== "その他") {
+    queries.push({ text: `${sector} 業界 市況 見通し 日本株 決算 業績 需要 リスク`, topic: "sector" });
+  }
   const searchResults = [];
   const perQueryLimit = Math.max(5, Math.ceil(options.websiteLimit / queries.length));
 
@@ -4953,7 +5220,9 @@ async function researchStock(stock, options) {
   }
 
   const companyResults = uniqueBy(searchResults.filter((item) => item.topic !== "sector"), (item) => item.url);
-  const sectorResults = uniqueBy(searchResults.filter((item) => item.topic === "sector"), (item) => item.url);
+  const sectorResults = uniqueBy(searchResults
+    .filter((item) => item.topic === "sector")
+    .filter((item) => isRelevantSectorEvidence(item, sector)), (item) => item.url);
   const sectorLimit = Math.min(6, Math.max(2, Math.ceil(options.websiteLimit / 3)));
   const deduped = uniqueBy([
     ...companyResults.slice(0, options.websiteLimit),
@@ -4979,7 +5248,7 @@ async function researchStock(stock, options) {
         snippet: cleanText(item.snippet).slice(0, 260),
         publishedDate: item.publishedDate || "",
         kind: item.topic === "sector" ? "sector" : "search",
-        sector: stock.sector || stockSector(stock),
+        sector,
       })),
       ...crawled.map((item) => ({
         title: item.title,
@@ -4988,7 +5257,7 @@ async function researchStock(stock, options) {
         snippet: cleanText(item.text).slice(0, 260),
         publishedDate: item.publishedDate || "",
         kind: `depth ${item.depth}`,
-        sector: stock.sector || stockSector(stock),
+        sector,
       })),
     ].slice(0, 30),
     contextText: [
@@ -8153,6 +8422,61 @@ function mergeSectorEvidence(existing = [], incoming = []) {
   })).filter((group) => group.items.length);
 }
 
+function isRelevantSectorEvidence(item = {}, sector = "") {
+  const normalizedSector = cleanText(sector);
+  if (!normalizedSector || normalizedSector === "その他") return false;
+  const text = businessContextText(`${item.title || ""} ${item.snippet || ""} ${item.url || ""}`);
+  if (!text) return false;
+  const hasSector = sectorEvidenceTerms(normalizedSector).some((term) => text.includes(term.toLowerCase()));
+  const hasMarketContext = [
+    "株", "日本株", "銘柄", "市場", "市況", "業界", "業績", "決算", "見通し", "需要", "供給",
+    "利益", "売上", "営業益", "増益", "減益", "配当", "投資", "証券", "経済", "景気", "レーティング",
+    "stock", "stocks", "market", "markets", "sector", "industry", "earnings", "revenue", "profit",
+    "guidance", "outlook", "analyst", "dividend",
+  ].some((term) => text.includes(term.toLowerCase()));
+  const looksConsumerOnly = [
+    "typing test", "typing speed", "wpm", "recipe", "salad", "wikipedia", "国語辞典", "英和辞典",
+    "意味や使い方", "とは何か", "jlpt", "play on", "cooking",
+  ].some((term) => text.includes(term.toLowerCase()));
+  return hasSector && hasMarketContext && !looksConsumerOnly;
+}
+
+function sectorEvidenceTerms(sector = "") {
+  const normalized = cleanText(sector);
+  const aliases = {
+    鉄道: ["鉄道", "鉄道株", "私鉄", "JR", "railway", "railroad"],
+    航空: ["航空", "航空株", "航空会社", "空運", "airline", "airlines", "aviation"],
+    通信: ["通信", "通信株", "通信会社", "携帯", "通信キャリア", "telecom", "telecommunications"],
+    自動車: ["自動車", "自動車株", "完成車", "automotive", "automaker"],
+    自動車部品: ["自動車部品", "車載", "自動車部品株", "automotive parts"],
+    半導体: ["半導体", "半導体株", "半導体製造装置", "semiconductor"],
+    電機: ["電機", "電気機器", "電機株", "electronics"],
+    電子部品: ["電子部品", "電子部品株", "electronics components"],
+    機械: ["機械", "機械株", "産業機械", "machinery"],
+    FA: ["FA", "ファクトリーオートメーション", "factory automation"],
+    銀行: ["銀行", "銀行株", "金融", "bank"],
+    金融: ["金融", "金融株", "finance", "financial"],
+    保険: ["保険", "保険株", "損保", "insurance"],
+    商社: ["商社", "総合商社", "trading company"],
+    不動産: ["不動産", "不動産株", "real estate"],
+    医薬品: ["医薬品", "製薬", "pharma", "pharmaceutical"],
+    小売: ["小売", "小売株", "retail"],
+    建設: ["建設", "ゼネコン", "construction"],
+    資源: ["資源", "原油", "天然ガス", "resource", "energy"],
+    エネルギー: ["エネルギー", "電力", "石油", "energy"],
+    電力: ["電力", "電力株", "電力会社", "utility", "utilities"],
+    素材: ["素材", "素材株", "化学", "materials"],
+    食品: ["食品", "食品株", "food"],
+    生活用品: ["生活用品", "日用品", "consumer staples"],
+    サービス: ["サービス", "サービス株", "service"],
+    IT: ["IT", "情報通信", "ソフトウェア", "technology"],
+    レジャー: ["レジャー", "テーマパーク", "旅行", "leisure"],
+    化粧品: ["化粧品", "化粧品株", "cosmetics"],
+    繊維製品: ["繊維製品", "繊維株", "アパレル", "textile"],
+  };
+  return uniqueText([normalized, ...(aliases[normalized] || [])]);
+}
+
 function normalizeSectorEvidence(value = []) {
   if (!Array.isArray(value)) return [];
   return value.map((group) => ({
@@ -8165,7 +8489,7 @@ function normalizeSectorEvidence(value = []) {
       snippet: String(item.snippet || "").slice(0, 300),
       publishedDate: normalizeDate(item.publishedDate) || searchResultPublishedDate(item),
       sector: String(item.sector || group.sector || "その他"),
-    })).filter((item) => item.url || item.title).slice(0, 8) : [],
+    })).filter((item) => (item.url || item.title) && isRelevantSectorEvidence(item, group.sector)).slice(0, 8) : [],
   })).filter((group) => group.items.length);
 }
 
@@ -10401,6 +10725,7 @@ function sanitizeCachedUsAnalysis(analysis = {}, stock = null) {
     market: resolvedStock.market || analysis.market || "NYSE",
     holding: Boolean(resolvedStock.holding),
     notes: resolvedStock.notes || analysis.notes || "",
+    fundamentals: normalizeUsFundamentals(analysis.fundamentals || {}),
     position,
     evidence,
     ai,
@@ -10415,9 +10740,17 @@ async function saveUsAnalysisCache(result) {
     fastRefresh: Boolean(result.fastRefresh),
     usedLmStudio: result.usedLmStudio,
     warnings: result.warnings || [],
-    analyses: result.analyses || [],
+    analyses: normalizeUsAnalyses(result.analyses),
     summary: result.summary || usPortfolioSummary(result.analyses || []),
   }, null, 2));
+}
+
+function normalizeUsAnalyses(value = []) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => ({
+    ...item,
+    fundamentals: normalizeUsFundamentals(item.fundamentals || {}),
+  }));
 }
 
 async function readCryptoAnalysisCache() {

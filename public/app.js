@@ -242,6 +242,16 @@ function moneyByCurrency(value, currency = "JPY") {
   return currency === "USD" ? usd(value) : yen(value);
 }
 
+function compactUsd(value) {
+  if (!Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
 function largeYen(value) {
   if (!Number.isFinite(value)) return "-";
   const abs = Math.abs(value);
@@ -925,12 +935,13 @@ function renderUsSummary() {
 function renderUsTable() {
   if (!els.usStockTable) return;
   if (!state.usStocks.length) {
-    els.usStockTable.innerHTML = "<tr><td colspan=\"8\">米国株はまだありません。</td></tr>";
+    els.usStockTable.innerHTML = "<tr><td colspan=\"10\">米国株はまだありません。</td></tr>";
     return;
   }
   els.usStockTable.innerHTML = state.usStocks.map((stock) => {
     const analysis = state.usAnalyses[stock.symbol];
     const position = analysis?.position || positionMetrics(stock, analysis?.price);
+    const fundamentals = analysis?.fundamentals || {};
     const selected = state.usSelected === stock.symbol ? "selected" : "";
     return `
       <tr class="${selected}" data-us-symbol="${escapeAttr(stock.symbol)}">
@@ -944,6 +955,8 @@ function renderUsTable() {
           </div>
         </td>
         <td>${usd(analysis?.price?.current)}</td>
+        <td>${multipleText(fundamentals.trailingPe)}</td>
+        <td>${pct(fundamentals.revenueGrowthPct)}</td>
         <td>${averagePriceCell(position, usd)}</td>
         <td>${shareCount(position.quantity)}</td>
         <td>${positionPnlUsd(position)}</td>
@@ -996,6 +1009,7 @@ function renderUsDetail() {
   }
   const analysis = state.usAnalyses[stock.symbol];
   const position = analysis?.position || positionMetrics(stock, analysis?.price);
+  const fundamentals = analysis?.fundamentals || {};
   const ai = analysis?.ai || null;
   if (els.usSelectedSymbol) els.usSelectedSymbol.innerHTML = symbolLinkHtml(stock.symbol, "us");
   const good = (ai?.good || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
@@ -1012,6 +1026,7 @@ function renderUsDetail() {
   `).join("");
   els.usDetail.innerHTML = `
     ${usPositionEditor(stock, position, analysis?.price)}
+    ${usFinancialCard(fundamentals)}
     <section class="decision-card">
       <div>
         <h4>3年チャート</h4>
@@ -1393,6 +1408,56 @@ function clearOrRemoveCryptoRow(form, button, selector, fieldNames = []) {
     return;
   }
   button.closest(".crypto-lot-row")?.remove();
+}
+
+function usFinancialCard(fundamentals = {}) {
+  const fields = [
+    ["時価総額", compactUsd(fundamentals.marketCap)],
+    ["売上", compactUsd(fundamentals.revenue)],
+    ["純利益", compactUsd(fundamentals.netIncome)],
+    ["営業利益", compactUsd(fundamentals.operatingIncome)],
+    ["売上成長", signedPct(fundamentals.revenueGrowthPct)],
+    ["純利益率", plainPct(fundamentals.profitMarginPct)],
+    ["営業利益率", plainPct(fundamentals.operatingMarginPct)],
+    ["ROE", plainPct(fundamentals.returnOnEquityPct)],
+    ["PER", multipleText(fundamentals.trailingPe)],
+    ["予想PER", multipleText(fundamentals.forwardPe)],
+    ["EPS", usd(fundamentals.trailingEps)],
+    ["予想EPS", usd(fundamentals.forwardEps)],
+    ["PBR", multipleText(fundamentals.priceToBook)],
+    ["PEG", numberText(fundamentals.pegRatio)],
+    ["現金", compactUsd(fundamentals.totalCash)],
+    ["総負債", compactUsd(fundamentals.totalDebt ?? fundamentals.totalLiabilities)],
+    ["自己資本", compactUsd(fundamentals.equity)],
+    ["負債/自己資本", plainPct(fundamentals.debtToEquityPct)],
+    ["流動比率", numberText(fundamentals.currentRatio)],
+    ["発行株式", compactNumber(fundamentals.sharesOutstanding)],
+    ["開示期末", fundamentals.periodEnd ? formatDate(fundamentals.periodEnd) : "-"],
+    ["次回決算", fundamentals.nextEarningsDate ? formatDate(fundamentals.nextEarningsDate) : "-"],
+  ];
+  const hasData = fields.some(([, value]) => value !== "-");
+  const fetchedDate = String(fundamentals.fetchedAt || "").slice(0, 10);
+  const sourceText = fundamentals.source
+    ? `${fundamentals.source}${fetchedDate ? ` / ${formatDate(fetchedDate)}` : ""}`
+    : "未取得";
+  return `
+    <section class="decision-card financial-card">
+      <div>
+        <h4>財務サマリー</h4>
+        <span>${escapeHtml(sourceText)}</span>
+      </div>
+      ${hasData
+        ? `<div class="financial-grid">
+          ${fields.map(([label, value]) => `
+            <span>
+              <strong>${escapeHtml(label)}</strong>
+              ${value}
+            </span>
+          `).join("")}
+        </div>`
+        : "<p>米国株を更新すると、取得できた財務情報をここに表示します。</p>"}
+    </section>
+  `;
 }
 
 function portfolioSummary() {
@@ -3286,6 +3351,24 @@ function trendLabel(value) {
 function signedPct(value) {
   if (!Number.isFinite(value)) return "-";
   return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
+}
+
+function plainPct(value) {
+  if (!Number.isFinite(value)) return "-";
+  return `${value.toFixed(1)}%`;
+}
+
+function numberText(value) {
+  if (!Number.isFinite(value)) return "-";
+  return value.toLocaleString("ja-JP", { maximumFractionDigits: 2 });
+}
+
+function compactNumber(value) {
+  if (!Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat("ja-JP", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
 }
 
 function currentGapText(value) {
