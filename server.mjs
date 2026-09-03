@@ -38,6 +38,8 @@ const STRICT_BUY_TARGET_TOLERANCE = 1;
 const FUNDAMENTAL_EXIT_MAX_AGE_DAYS = 30;
 const TRAILING_STOP_LOSS_PCT = 20;
 const US_EVIDENCE_TRANSLATION_CHUNK_SIZE = 3;
+const PRICE_HISTORY_TIMEOUT_MS = 12000;
+const QUICK_PRICE_HISTORY_TIMEOUT_MS = 4000;
 const PE_PRIORITY_MIN_SCORE = 45;
 const PE_STRONG_MIN_SCORE = 55;
 const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品|wholesale|food|grocery|consumer staples|packaged foods)/i;
@@ -772,6 +774,7 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/analyze" && req.method === "POST") {
     const body = await readJson(req);
+    if (body.quick) return json(res, 200, await refreshWatchlistPrices(body));
     if (body.sync) return json(res, 200, await analyzeWatchlist(body));
     const job = startAnalysisJob(body);
     return json(res, 202, {
@@ -782,6 +785,7 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/us-analyze" && req.method === "POST") {
     const body = await readJson(req);
+    if (body.quick) return json(res, 200, await refreshUsPrices(body));
     return json(res, 200, await analyzeUsHoldings(body, { notify: body.notify !== false }));
   }
 
@@ -869,9 +873,90 @@ function analysisJobSnapshot() {
   return { ...snapshot, hasResult: Boolean(result) };
 }
 
+function usablePrice(price = {}) {
+  return Boolean(nullablePositiveNumber(price.current));
+}
+
+function recentCachedPriceBySymbol(cache = {}, maxAgeMs = 5 * 60 * 1000) {
+  const generatedAt = new Date(cache.generatedAt || "").getTime();
+  if (!Number.isFinite(generatedAt) || Date.now() - generatedAt > maxAgeMs) return new Map();
+  return new Map((cache.analyses || [])
+    .filter((analysis) => analysis?.symbol && usablePrice(analysis.price))
+    .map((analysis) => [analysis.symbol, analysis.price]));
+}
+
+function cachedResearchFromAnalysis(analysis = null) {
+  const evidence = Array.isArray(analysis?.evidence) ? analysis.evidence : [];
+  return {
+    searched: Number(analysis?.researchStats?.searched || 0),
+    crawled: Number(analysis?.researchStats?.crawled || 0),
+    evidence,
+    contextText: cleanText(evidence.map((item) => `${item.title || ""}\n${item.summary || item.snippet || ""}`).join("\n")),
+    warning: "",
+  };
+}
+
+function cachedDecisionFromAnalysis(analysis = null, fallback = {}) {
+  if (!analysis) return fallback;
+  const reasons = asStringArray(analysis.reasons);
+  const risks = asStringArray(analysis.risks);
+  return {
+    action: ["BUY", "HOLD", "SELL", "WATCH"].includes(analysis.action) ? analysis.action : fallback.action,
+    confidence: Number.isFinite(Number(analysis.confidence)) ? Number(analysis.confidence) : fallback.confidence,
+    thesis: analysis.thesis || fallback.thesis,
+    reasons: reasons.length ? reasons : fallback.reasons,
+    risks: risks.length ? risks : fallback.risks,
+    riskChecks: analysis.riskChecks || fallback.riskChecks,
+    growthExit: analysis.growthExit || analysis.ai?.growthExit || fallback.growthExit,
+  };
+}
+
+async function refreshWatchlistPrices(options = {}) {
+  const stocks = await readWatchlist();
+  const settings = await readSettings();
+  const previous = await readAnalysisCache();
+  const previousBySymbol = new Map((previous.analyses || []).map((analysis) => [analysis.symbol, analysis]));
+  const generatedAt = new Date().toISOString();
+  const warnings = [];
+  const rows = await mapLimit(stocks, 8, async (stock) => {
+    const previousAnalysis = previousBySymbol.get(stock.symbol) || null;
+    let priceError = "";
+    const fetchedPrice = await fetchPriceHistory(stock.symbol, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch((error) => {
+      priceError = error.message || "価格を取得できませんでした";
+      return emptyPrice();
+    });
+    const price = usablePrice(fetchedPrice) ? fetchedPrice : previousAnalysis?.price || fetchedPrice;
+    if (!usablePrice(fetchedPrice)) {
+      warnings.push(`${stock.name}: ${priceError || "最新価格を取得できなかったため保存済み価格を使いました"}`);
+    }
+    const research = cachedResearchFromAnalysis(previousAnalysis);
+    const fallback = ruleBasedDecision(stock, price, research);
+    const decision = cachedDecisionFromAnalysis(previousAnalysis, fallback);
+    return {
+      ...(previousAnalysis || {}),
+      ...normalizeDecision(stock, price, research, decision),
+      refreshedPriceOnlyAt: generatedAt,
+    };
+  });
+  const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(rows, settings));
+  const result = {
+    generatedAt,
+    fastRefresh: true,
+    usedLmStudio: Boolean(previous.usedLmStudio),
+    warnings: uniqueText([...warnings, ...(previous.warnings || [])]).slice(0, 6),
+    analyses,
+    sectorEvidence: previous.sectorEvidence || [],
+  };
+  await saveAnalysisCache(result);
+  return result;
+}
+
 async function analyzeWatchlist(options = {}, onProgress = null) {
   const stocks = await readWatchlist();
   const settings = await readSettings();
+  const recentPrices = options.reuseFreshPrices
+    ? recentCachedPriceBySymbol(await readAnalysisCache())
+    : new Map();
   const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT);
   const depthLimit = clamp(Number(options.depthLimit || settings.depthLimit || defaultSettings.depthLimit), 1, MAX_DEPTH_LIMIT);
   const pagesPerSite = clamp(Number(options.pagesPerSite || settings.pagesPerSite || defaultSettings.pagesPerSite), 1, MAX_PAGES_PER_SITE);
@@ -889,8 +974,9 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
   });
 
   const rows = await mapLimit(stocks, 4, async (stock) => {
+    const cachedPrice = recentPrices.get(stock.symbol);
     const [price, research] = await Promise.all([
-      fetchPriceHistory(stock.symbol),
+      cachedPrice ? Promise.resolve(cachedPrice) : fetchPriceHistory(stock.symbol),
       researchStock(stock, { websiteLimit, depthLimit, pagesPerSite }),
     ]);
 
@@ -986,14 +1072,69 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
   return result;
 }
 
+async function refreshUsPrices(options = {}) {
+  const stocks = await readUsWatchlist();
+  const settings = await readSettings();
+  const previous = await readUsAnalysisCache();
+  const previousBySymbol = new Map((previous.analyses || []).map((analysis) => [analysis.symbol, analysis]));
+  const generatedAt = new Date().toISOString();
+  const warnings = [];
+  const rows = await mapLimit(stocks, 8, async (stock) => {
+    const previousAnalysis = previousBySymbol.get(stock.symbol) || null;
+    let priceError = "";
+    const fetchedPrice = await fetchPriceHistory(stock.symbol, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch((error) => {
+      priceError = error.message || "価格を取得できませんでした";
+      return emptyPrice();
+    });
+    const price = usablePrice(fetchedPrice) ? fetchedPrice : previousAnalysis?.price || fetchedPrice;
+    if (!usablePrice(fetchedPrice)) {
+      warnings.push(`${stock.name}: ${priceError || "最新価格を取得できなかったため保存済み価格を使いました"}`);
+    }
+    const row = {
+      ...(previousAnalysis || {}),
+      symbol: stock.symbol,
+      name: stock.name,
+      market: stock.market || previousAnalysis?.market || "NYSE",
+      currency: "USD",
+      holding: Boolean(stock.holding),
+      notes: stock.notes || previousAnalysis?.notes || "",
+      price: compactUsPrice(price),
+      position: positionMetrics(stock, price),
+      researchStats: previousAnalysis?.researchStats || { searched: 0 },
+      evidence: previousAnalysis?.evidence || [],
+      refreshedPriceOnlyAt: generatedAt,
+    };
+    row.ai = previousAnalysis?.ai ? { ...previousAnalysis.ai } : fallbackUsReview(row);
+    row.ai.growthExit = enforceRecentGrowthExit(row.ai.growthExit, { evidence: row.evidence }, row);
+    applyUsEvidenceTranslations(row);
+    return row;
+  });
+  const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(rows, settings, { currency: "USD" }));
+  const result = {
+    generatedAt,
+    currency: "USD",
+    fastRefresh: true,
+    usedLmStudio: Boolean(previous.usedLmStudio),
+    warnings: uniqueText([...warnings, ...(previous.warnings || [])]).slice(0, 6),
+    analyses,
+    summary: usPortfolioSummary(analyses),
+  };
+  await saveUsAnalysisCache(result);
+  return result;
+}
+
 async function analyzeUsHoldings(options = {}, { notify = false } = {}) {
   const stocks = await readUsWatchlist();
   const settings = await readSettings();
+  const recentPrices = options.reuseFreshPrices
+    ? recentCachedPriceBySymbol(await readUsAnalysisCache())
+    : new Map();
   const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT);
   const warnings = [];
   const rows = await mapLimit(stocks, 4, async (stock) => {
+    const cachedPrice = recentPrices.get(stock.symbol);
     const [price, research] = await Promise.all([
-      fetchPriceHistory(stock.symbol),
+      cachedPrice ? Promise.resolve(cachedPrice) : fetchPriceHistory(stock.symbol),
       researchUsStock(stock, { websiteLimit }),
     ]);
     const position = positionMetrics(stock, price);
@@ -1900,10 +2041,12 @@ async function runHourlyRefreshIfDue() {
   const jpOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("JP", now);
   const usOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("US", now);
   if (jpOpen && !analysisJob?.running && isOlderThan(cacheHourKey(analysisCache.generatedAt), cacheHourKey(now.toISOString()))) {
-    startAnalysisJob({ websiteLimit: 8, depthLimit: 1, pagesPerSite: 1 });
+    await refreshWatchlistPrices({ auto: true }).catch(() => null);
+    startAnalysisJob({ websiteLimit: 8, depthLimit: 1, pagesPerSite: 1, reuseFreshPrices: true });
   }
   if (usOpen && isOlderThan(cacheHourKey(usCache.generatedAt), cacheHourKey(now.toISOString()))) {
-    void analyzeUsHoldings({ websiteLimit: 5 }, { notify: true }).catch(() => {});
+    await refreshUsPrices({ auto: true }).catch(() => null);
+    void analyzeUsHoldings({ websiteLimit: 5, reuseFreshPrices: true }, { notify: true }).catch(() => {});
   }
   if (isOlderThan(cacheHourKey(cryptoCache.generatedAt), cacheHourKey(now.toISOString()))) {
     void analyzeCryptoHolding({ auto: true }).catch(() => {});
@@ -4387,12 +4530,13 @@ async function fetchPageText(url) {
   return { title, text, html, publishedDate: searchResultPublishedDate({ title, url, snippet: text, html }) };
 }
 
-async function fetchPriceHistory(symbol) {
+async function fetchPriceHistory(symbol, options = {}) {
   const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
   url.searchParams.set("range", "5y");
   url.searchParams.set("interval", "1d");
   url.searchParams.set("events", "dividends");
-  const response = await fetchWithTimeout(url, { timeout: 12000 }).catch(() => null);
+  const timeout = clamp(Number(options.timeout || options.timeoutMs || PRICE_HISTORY_TIMEOUT_MS), 1000, 30000);
+  const response = await fetchWithTimeout(url, { timeout }).catch(() => null);
   if (!response?.ok) return emptyPrice();
   const data = await response.json().catch(() => null);
   const result = data?.chart?.result?.[0];
@@ -4829,7 +4973,7 @@ function ruleBasedDecision(stock, price, research) {
     risks.push("価格変動が大きく、建玉サイズを落とすべき水準");
   }
 
-  const context = research.contextText.toLowerCase();
+  const context = String(research.contextText || "").toLowerCase();
   for (const word of ["増配", "自社株買い", "上方修正", "最高益", "営業益増"]) {
     if (context.includes(word.toLowerCase())) {
       score += 4;
@@ -7050,13 +7194,14 @@ async function readAnalysisCache() {
       : [];
     return {
       generatedAt: cached.generatedAt || "",
+      fastRefresh: Boolean(cached.fastRefresh),
       usedLmStudio: Boolean(cached.usedLmStudio),
       warnings: asStringArray(cached.warnings).slice(0, 6),
       analyses,
       sectorEvidence: normalizeSectorEvidence(cached.sectorEvidence),
     };
   } catch {
-    return { generatedAt: "", usedLmStudio: false, warnings: [], analyses: [], sectorEvidence: [] };
+    return { generatedAt: "", fastRefresh: false, usedLmStudio: false, warnings: [], analyses: [], sectorEvidence: [] };
   }
 }
 
@@ -7097,6 +7242,7 @@ async function saveAnalysisCache(result) {
   await mkdir(path.dirname(ANALYSIS_CACHE_PATH), { recursive: true });
   await writeFile(ANALYSIS_CACHE_PATH, JSON.stringify({
     generatedAt: result.generatedAt,
+    fastRefresh: Boolean(result.fastRefresh),
     usedLmStudio: result.usedLmStudio,
     warnings: result.warnings || [],
     analyses: result.analyses || [],
@@ -8585,13 +8731,14 @@ async function readUsAnalysisCache() {
     return {
       generatedAt: cached.generatedAt || "",
       currency: "USD",
+      fastRefresh: Boolean(cached.fastRefresh),
       usedLmStudio: Boolean(cached.usedLmStudio),
       warnings: asStringArray(cached.warnings).slice(0, 6),
       analyses,
       summary: usPortfolioSummary(analyses),
     };
   } catch {
-    return { generatedAt: "", currency: "USD", usedLmStudio: false, warnings: [], analyses: [], summary: usPortfolioSummary([]) };
+    return { generatedAt: "", currency: "USD", fastRefresh: false, usedLmStudio: false, warnings: [], analyses: [], summary: usPortfolioSummary([]) };
   }
 }
 
@@ -8631,6 +8778,7 @@ async function saveUsAnalysisCache(result) {
   await writeFile(US_ANALYSIS_CACHE_PATH, JSON.stringify({
     generatedAt: result.generatedAt,
     currency: "USD",
+    fastRefresh: Boolean(result.fastRefresh),
     usedLmStudio: result.usedLmStudio,
     warnings: result.warnings || [],
     analyses: result.analyses || [],

@@ -389,7 +389,9 @@ async function loadAnalysisCache() {
   state.sectorEvidence = payload.sectorEvidence || [];
   if (payload.generatedAt) {
     els.lastRun.textContent = `保存済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
-    els.researchProgress.textContent = payload.usedLmStudio ? "保存済み LM Studio分析" : "保存済みルール分析";
+    els.researchProgress.textContent = payload.fastRefresh
+      ? "保存済み 価格更新"
+      : payload.usedLmStudio ? "保存済み LM Studio分析" : "保存済みルール分析";
   }
   render();
 }
@@ -412,7 +414,9 @@ function applyUsAnalysisPayload(payload = {}) {
   }
   if (payload.summary) state.usSummary = payload.summary;
   if (payload.generatedAt && els.usLastRun) {
-    els.usLastRun.textContent = `保存済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
+    els.usLastRun.textContent = payload.fastRefresh
+      ? `保存済み 価格更新 ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`
+      : `保存済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
   }
 }
 
@@ -2566,18 +2570,33 @@ async function analyze(options = {}) {
   els.discoverButton.disabled = true;
   const originalText = els.analyzeButton.textContent;
   els.analyzeButton.textContent = "更新中";
-  els.researchProgress.textContent = options.source === "reload" ? "ブラウザ更新で再確認中" : "一括分析を開始中";
+  els.researchProgress.textContent = options.source === "reload" ? "ブラウザ更新で価格を確認中" : "価格を更新中";
 
   try {
+    const body = {
+      manual: true,
+      force: true,
+      websiteLimit: clampInput(els.websiteLimit),
+      depthLimit: clampInput(els.depthLimit),
+      pagesPerSite: clampInput(els.pagesPerSite),
+    };
+    let priceUpdated = false;
+    try {
+      const quickPayload = await request("/api/analyze", {
+        method: "POST",
+        body: JSON.stringify({ ...body, quick: true }),
+      });
+      applyAnalysisPayload(quickPayload, false);
+      els.researchProgress.textContent = "価格更新済み。AI分析を続行中";
+      priceUpdated = true;
+      render();
+    } catch (quickError) {
+      console.warn("価格だけの高速更新に失敗しました", quickError);
+      els.researchProgress.textContent = "価格更新に時間がかかっています。AI分析へ進みます";
+    }
     const payload = await request("/api/analyze", {
       method: "POST",
-      body: JSON.stringify({
-        manual: true,
-        force: true,
-        websiteLimit: clampInput(els.websiteLimit),
-        depthLimit: clampInput(els.depthLimit),
-        pagesPerSite: clampInput(els.pagesPerSite),
-      }),
+      body: JSON.stringify({ ...body, reuseFreshPrices: priceUpdated }),
     });
     state.analysisJob = payload.job || null;
     renderAnalysisJob();
@@ -2606,15 +2625,32 @@ async function analyzeUs(options = {}) {
   els.usAnalyzeButton.textContent = "更新中";
   if (els.usLastRun) {
     els.usLastRun.textContent = progressWithPrevious(
-      options.source === "reload" ? "ブラウザ更新中" : "更新中",
+      options.source === "reload" ? "ブラウザ更新で価格確認中" : "価格更新中",
       previousStatus,
     );
   }
   renderUs();
   try {
+    const body = { manual: true, force: true, websiteLimit: clampInput(els.websiteLimit) };
+    let priceUpdated = false;
+    try {
+      const quickPayload = await request("/api/us-analyze", {
+        method: "POST",
+        body: JSON.stringify({ ...body, quick: true }),
+      });
+      applyUsAnalysisPayload(quickPayload);
+      if (els.usLastRun) {
+        els.usLastRun.textContent = `価格更新済み。AI分析中 ${new Date(quickPayload.generatedAt).toLocaleString("ja-JP")}`;
+      }
+      priceUpdated = true;
+      renderUs();
+    } catch (quickError) {
+      console.warn("米国株の価格だけの高速更新に失敗しました", quickError);
+      if (els.usLastRun) els.usLastRun.textContent = progressWithPrevious("価格更新に時間がかかっています", previousStatus);
+    }
     const payload = await request("/api/us-analyze", {
       method: "POST",
-      body: JSON.stringify({ manual: true, force: true, websiteLimit: clampInput(els.websiteLimit) }),
+      body: JSON.stringify({ ...body, reuseFreshPrices: priceUpdated }),
     });
     applyUsAnalysisPayload(payload);
     if (els.usLastRun) {
@@ -2689,7 +2725,9 @@ function applyAnalysisPayload(payload, notifyWarnings = true) {
   }
   if (Array.isArray(payload.sectorEvidence)) state.sectorEvidence = payload.sectorEvidence;
   if (payload.generatedAt) els.lastRun.textContent = new Date(payload.generatedAt).toLocaleString("ja-JP");
-  els.researchProgress.textContent = payload.usedLmStudio ? "更新済み LM Studio分析" : "更新済み ルール分析";
+  els.researchProgress.textContent = payload.fastRefresh
+    ? "価格更新済み"
+    : payload.usedLmStudio ? "更新済み LM Studio分析" : "更新済み ルール分析";
   if (notifyWarnings && payload.warnings?.length) toast(payload.warnings.join(" / "));
 }
 
