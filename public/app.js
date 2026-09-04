@@ -1897,11 +1897,12 @@ function financialInfoHtml(info = null) {
     </article>
   `).join("");
   const warnings = (info.warnings || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  const yahooLink = info.symbol ? symbolLinkHtml(info.symbol, "jp") : "";
   return `
     <section class="risk-checks financial-info" aria-label="財務情報">
       <div class="risk-check-title">
         <strong>財務情報</strong>
-        <span>${escapeHtml(statusText)}${info.checkedAt ? ` ${new Date(info.checkedAt).toLocaleString("ja-JP")}` : ""}</span>
+        <span>${yahooLink ? `${yahooLink} / ` : ""}${escapeHtml(statusText)}${info.checkedAt ? ` ${new Date(info.checkedAt).toLocaleString("ja-JP")}` : ""}</span>
       </div>
       <div class="metric-strip financial-metrics" aria-label="EDINET財務指標">
         <span><strong>時価総額</strong>${largeYen(info.marketCap)}</span>
@@ -3331,7 +3332,8 @@ function symbolLinkHtml(symbol = "", target = "jp") {
   const text = String(symbol || "").trim();
   if (!text) return "-";
   const url = yahooSymbolUrl(text, target);
-  return `<a class="symbol-link" data-symbol-link href="${escapeAttr(url)}" target="_blank" rel="noreferrer">${escapeHtml(text)}</a>`;
+  const label = target === "us" ? "Yahoo Stockで開く" : "Yahoo株で開く";
+  return `<a class="symbol-link" data-symbol-link href="${escapeAttr(url)}" target="_blank" rel="noreferrer" title="${escapeAttr(label)}" aria-label="${escapeAttr(`${text}を${label}`)}">${escapeHtml(text)}</a>`;
 }
 
 function yahooSymbolUrl(symbol = "", target = "jp") {
@@ -3896,6 +3898,12 @@ function renderCandidateList() {
       : "";
     const discoveryText = `${discoveredText}${usUniverseText}検索抽出が少なくても、銘柄一覧は別で全件採点しています。`;
     const aiText = source.usedDiscoveryAi ? "最後にLM Studioで上位候補を再点検しています。" : "LM Studio再点検は未実行です。";
+    const edinetWarningText = source.edinetDiscoveryWarnings?.length
+      ? `注意: ${source.edinetDiscoveryWarnings.slice(0, 2).join(" / ")}。`
+      : "";
+    const edinetText = source.edinetDiscoveryEnabled
+      ? `日本株上位${source.edinetDiscoveryChecked || 0}件はEDINET財務を取得してから選別しています。`
+      : `候補探しのEDINET財務選別は未実行です。${edinetWarningText}`;
     const positionText = source.searchPositionUsed ? "検索順位に出る業績・割安材料も採点しています。" : "";
     const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
     const avoidText = source.avoidedBusiness ? `${source.avoidedBusiness}。` : "";
@@ -3915,8 +3923,8 @@ function renderCandidateList() {
     els.suggestionSource.textContent = source.settingsChanged
       ? `${source.message || "調査条件または採点ルールが変わりました。候補を探すで現在の条件に合わせて作り直してください。"}現在の日本株条件は${budgetText}、米国株条件は${usBudgetText}です。${earlyText}候補は自動追加されません。`
       : source.searchCount > 0
-      ? `${source.provider}で${source.searchCount}件確認しました。${engineText}${discoveryText}${poolText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
-      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${engineText}${poolText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${countText}${excludedText}`;
+      ? `${source.provider}で${source.searchCount}件確認しました。${engineText}${discoveryText}${poolText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${edinetText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
+      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${engineText}${poolText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${edinetText}${countText}${excludedText}`;
   }
   if (!state.suggestions.length) {
     els.candidateList.classList.add("empty-state");

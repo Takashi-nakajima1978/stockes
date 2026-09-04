@@ -33,7 +33,8 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 7;
+const DISCOVERY_SCORING_VERSION = 8;
+const DISCOVERY_FINANCIAL_REVIEW_LIMIT = 48;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
@@ -3116,7 +3117,7 @@ async function discoverStocks(options = {}, job = null) {
     : null;
   const performance = candidatePerformanceSummary(await readCandidateHistory());
   const financialCache = await readFinancialCache();
-  const financialBySymbol = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
+  let financialBySymbol = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
   const baseCandidateUniverse = uniqueBy([...searchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse], (candidate) => candidate.symbol);
   const candidateUniverse = baseCandidateUniverse
     .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
@@ -3157,7 +3158,18 @@ async function discoverStocks(options = {}, job = null) {
   const prelimPool = scored
     .filter((candidate) => candidate.nearBudget)
     .sort((a, b) => b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol));
-  const shortlist = fullScan ? prelimPool : prelimPool.slice(0, 24);
+  const rawShortlist = fullScan ? prelimPool : prelimPool.slice(0, 24);
+  const shortlist = uniqueBy([
+    ...rawShortlist.filter((candidate) => !isUsDiscoveryCandidate(candidate)).slice(0, DISCOVERY_FINANCIAL_REVIEW_LIMIT),
+    ...rawShortlist.filter(isUsDiscoveryCandidate),
+  ], (candidate) => candidate.symbol);
+  const discoveryFinancials = await refreshDiscoveryFinancials(shortlist, settings, financialCache, job);
+  financialBySymbol = discoveryFinancials.bySymbol;
+  const financialStats = {
+    edinetDiscoveryEnabled: discoveryFinancials.enabled,
+    edinetDiscoveryChecked: discoveryFinancials.checked,
+    edinetDiscoveryWarnings: discoveryFinancials.warnings,
+  };
   let individualSearchCount = 0;
   const enhancedSoFar = [];
   updateDiscoveryJob(job, {
@@ -3181,7 +3193,13 @@ async function discoverStocks(options = {}, job = null) {
     const positionSignal = searchPositionSignal(candidate, results, relevantResults);
     const peSignal = searchPeSignal(candidate, results, relevantResults, financialBySymbol.get(candidate.symbol));
     individualSearchCount += results.length;
-    const enhancedCandidate = applyCandidateLearning(enhanceBusinessCandidate(candidate, relevantResults, positionSignal, peSignal), performance);
+    const enhancedCandidate = applyCandidateLearning(
+      applyDiscoveryFinancialAdjustment(
+        enhanceBusinessCandidate(candidate, relevantResults, positionSignal, peSignal),
+        financialBySymbol.get(candidate.symbol),
+      ),
+      performance,
+    );
     enhancedSoFar.push(enhancedCandidate);
     if (enhancedSoFar.length % 20 === 0 || enhancedSoFar.length === shortlist.length) {
       updateDiscoveryJob(job, {
@@ -3203,16 +3221,19 @@ async function discoverStocks(options = {}, job = null) {
         fullScan,
         marketBrief,
         universeStats,
+        financialStats,
       });
     }
     return enhancedCandidate;
   });
-  const supported = enhanced
+  const edinetRequiredForJp = Boolean(settings.edinetApiKey);
+  const eligibleEnhanced = enhanced
     .filter(hasDiscoverySupport)
-    .filter((candidate) => candidate.evidenceQuality !== "悪材料あり")
-    .filter(isActionableDiscoveryCandidate);
+    .filter((candidate) => isUsDiscoveryCandidate(candidate) || !edinetRequiredForJp || hasCandidateFinancialBasis(candidate))
+    .filter((candidate) => candidate.evidenceQuality !== "悪材料あり");
+  const supported = eligibleEnhanced.filter(isActionableDiscoveryCandidate);
   const viable = supported.filter((candidate) => candidate.businessValueScore >= 55);
-  const fallbackPool = supported.length ? supported : enhanced.filter((candidate) => candidate.evidenceQuality !== "悪材料あり");
+  const fallbackPool = supported.length ? supported : eligibleEnhanced;
   const suggestionPool = viable.length ? viable : fallbackPool.filter((candidate) => candidate.businessValueScore >= 45);
   let suggestions = topDiscoverySuggestions(suggestionPool);
   let usedDiscoveryAi = false;
@@ -3275,6 +3296,7 @@ async function discoverStocks(options = {}, job = null) {
       searchPositionUsed: true,
       marketBrief,
       performance,
+      ...financialStats,
       ...universeStats,
     }),
     message: suggestions.length === 0
@@ -3469,6 +3491,142 @@ function formatMoney(value, currency = "JPY") {
   return currency === "USD" ? formatUsd(value) : formatYen(value);
 }
 
+async function refreshDiscoveryFinancials(candidates = [], settings = null, financialCache = null, job = null) {
+  const previous = financialCache || await readFinancialCache();
+  const bySymbol = new Map((previous.items || []).map((item) => [item.symbol, item]));
+  const jpCandidates = uniqueBy(candidates
+    .filter((candidate) => !isUsDiscoveryCandidate(candidate))
+    .slice(0, DISCOVERY_FINANCIAL_REVIEW_LIMIT)
+    .map(candidateToStock), (stock) => stock.symbol);
+  if (!jpCandidates.length) {
+    return { bySymbol, checked: 0, enabled: Boolean(settings?.edinetApiKey), warnings: [] };
+  }
+  if (!settings?.edinetApiKey) {
+    return { bySymbol, checked: 0, enabled: false, warnings: ["EDINET APIキー未設定"] };
+  }
+  updateDiscoveryJob(job, {
+    phase: "EDINET財務で日本株候補を確認中",
+    checked: 0,
+    total: jpCandidates.length,
+  });
+  const collected = await collectFinancialSnapshotsForStocks(jpCandidates, {
+    settings,
+    previous,
+    force: true,
+  }).catch((error) => ({
+    generatedAt: new Date().toISOString(),
+    enabled: false,
+    checkedCount: 0,
+    warningCount: 1,
+    warnings: [`EDINET: ${error.message || "候補財務を取得できませんでした"}`],
+    items: [],
+    message: "候補財務を取得できませんでした。",
+  }));
+  const checkedCount = Number.isFinite(collected.checkedCount) ? collected.checkedCount : jpCandidates.length;
+  const mergedItems = mergeFinancialSnapshotItems(previous.items, collected.items);
+  for (const item of mergedItems) bySymbol.set(item.symbol, item);
+  if (collected.items?.length) {
+    await saveFinancialCache({
+      ...collected,
+      checkedCount,
+      items: mergedItems,
+    }).catch(() => {});
+  }
+  updateDiscoveryJob(job, {
+    phase: "EDINET財務で日本株候補を確認中",
+    checked: checkedCount,
+    total: jpCandidates.length,
+  });
+  return {
+    bySymbol,
+    checked: checkedCount,
+    enabled: collected.enabled !== false,
+    warnings: asStringArray(collected.warnings),
+  };
+}
+
+function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null) {
+  if (!candidate || isUsDiscoveryCandidate(candidate)) return candidate;
+  const snapshot = financials ? normalizeFinancialSnapshot(financials) : null;
+  if (!snapshot) return candidate;
+  const criteria = normalizeFinancialCriteria(snapshot.criteria || []);
+  let scoreDelta = 0;
+  let process = candidate.process;
+  const reasons = [];
+  const risks = [];
+  const statusByKey = new Map(criteria.map((item) => [item.key, item]));
+  const marketCap = statusByKey.get("market_cap");
+  const netCash = statusByKey.get("net_cash");
+  const valuation = statusByKey.get("ev_ebitda");
+  const pbr = statusByKey.get("pbr");
+  const operatingCf = statusByKey.get("operating_cf");
+
+  if (operatingCf?.status === "pass") {
+    scoreDelta += 7;
+    process = boostProcessStage(process, "事業", 4, "EDINETで営業CFプラス");
+    process = boostProcessStage(process, "リスク", 3, "本業の現金創出は確認済み");
+    reasons.push("EDINETで営業CFがプラス");
+  } else if (operatingCf?.status === "fail") {
+    scoreDelta -= 14;
+    process = boostProcessStage(process, "リスク", -7, "EDINETで営業CFマイナス");
+    risks.push("EDINETで営業CFがマイナス");
+  }
+
+  if (netCash?.status === "pass") {
+    scoreDelta += 7;
+    process = boostProcessStage(process, "割安", 4, "EDINETでネットキャッシュ厚め");
+    reasons.push(netCash.summary || "ネットキャッシュ比率が高い");
+  } else if (netCash?.status === "fail" && Number.isFinite(snapshot.netCashRatio) && snapshot.netCashRatio < 0) {
+    scoreDelta -= 8;
+    process = boostProcessStage(process, "リスク", -4, "ネットキャッシュはマイナス");
+    risks.push("ネットキャッシュはマイナス");
+  }
+
+  if (valuation?.status === "pass" || pbr?.status === "pass") {
+    scoreDelta += 8;
+    process = boostProcessStage(process, "割安", 5, "EDINET/Yahooで倍率面の割安を確認");
+    reasons.push([valuation, pbr].filter((item) => item?.status === "pass").map((item) => item.summary).filter(Boolean).join(" / ") || "倍率面で割安");
+  } else if (valuation?.status === "fail" && pbr?.status === "fail") {
+    scoreDelta -= 10;
+    process = boostProcessStage(process, "割安", -6, "倍率面の割安さが弱い");
+    risks.push("EDINET/Yahooで見ると倍率面の割安さが弱い");
+  }
+
+  if (marketCap?.status === "pass") {
+    process = boostProcessStage(process, "再編", 3, "PEが扱いやすい時価総額レンジ");
+  } else if (marketCap?.status === "fail") {
+    scoreDelta -= 6;
+    process = boostProcessStage(process, "再編", -5, "PE狙いの時価総額レンジから外れる");
+    risks.push(marketCap.summary || "PE狙いの時価総額レンジから外れる");
+  }
+
+  const finalized = finalizeDiscoveryProcess(process);
+  const businessValueScore = clamp(Math.round(finalized.totalScore), 0, 100);
+  const score = clamp(Math.round(Number(candidate.score || 0) + scoreDelta), 0, 100);
+  const buyPlan = candidateBuyPlan(candidate.price || {}, {
+    unitSize: candidate.unitSize,
+    unitBudget: candidate.unitBudget,
+    unitAmount: candidate.unitAmount,
+    businessValueScore,
+    currency: candidate.currency || candidate.price?.currency || discoveryCurrency(candidate),
+  });
+  return {
+    ...candidate,
+    financials: snapshot,
+    score,
+    businessValueScore,
+    rankLabel: discoveryRankLabel(businessValueScore),
+    process: finalized,
+    buyPlan,
+    sellPlan: candidateExitPlan(candidate.price || {}, buyPlan, { currency: candidate.currency || candidate.price?.currency || discoveryCurrency(candidate) }),
+    evidenceQuality: candidate.evidenceQuality && !candidate.evidenceQuality.includes("EDINET")
+      ? `${candidate.evidenceQuality}・EDINET財務`
+      : candidate.evidenceQuality || "EDINET財務",
+    reasons: uniqueText([...(candidate.reasons || []), ...reasons].filter(Boolean)).slice(0, 5),
+    risks: uniqueText([...(candidate.risks || []), ...risks].filter(Boolean)).slice(0, 4),
+  };
+}
+
 function searchPeSignal(candidate, allResults = [], relevantResults = [], financials = null) {
   const text = businessContextText([
     candidate.name,
@@ -3650,6 +3808,7 @@ async function savePartialDiscovery({
   fullScan,
   marketBrief,
   universeStats = {},
+  financialStats = {},
 }) {
   const result = {
     generatedAt: new Date().toISOString(),
@@ -3669,6 +3828,7 @@ async function savePartialDiscovery({
       fullScan,
       searchPositionUsed: true,
       marketBrief,
+      ...financialStats,
       ...universeStats,
     }),
     message: "候補検索の途中結果です。完了後に上位候補が更新されます。",
@@ -3910,6 +4070,21 @@ function hasDiscoverySupport(candidate) {
     || candidate.sourceEvidence?.length
     || candidate.evidenceQuality === "業績根拠あり",
   );
+}
+
+function hasCandidateFinancialBasis(candidate = {}) {
+  const financials = normalizeFinancialSnapshot(candidate.financials || candidate.peSignal?.financials || {});
+  if (!financials) return false;
+  const hasEdinetDocument = Boolean(financials.docID);
+  const hasUsefulMetric = [
+    financials.marketCap,
+    financials.netCash,
+    financials.operatingCashFlow,
+    financials.pbr,
+    financials.per,
+    financials.evEbitda,
+  ].some(Number.isFinite);
+  return hasEdinetDocument && hasUsefulMetric;
 }
 
 function earlyEntrySignal(candidate = {}, price = {}) {
@@ -8621,6 +8796,7 @@ function discoverySettingsKey(settings = {}) {
     websiteLimit: normalized.websiteLimit,
     depthLimit: normalized.depthLimit,
     pagesPerSite: normalized.pagesPerSite,
+    hasEdinetApiKey: Boolean(normalized.edinetApiKey),
     scoringVersion: DISCOVERY_SCORING_VERSION,
   });
 }
@@ -9889,6 +10065,8 @@ function normalizeFinancialSnapshot(item = {}) {
     asOfDate: normalizeDate(item.asOfDate) || "",
     docID: cleanText(item.docID || "").slice(0, 80),
     documentTitle: cleanText(item.documentTitle || "").slice(0, 160),
+    currentPrice: numberOrNull(item.currentPrice),
+    sharesOutstanding: numberOrNull(item.sharesOutstanding),
     marketCap: numberOrNull(item.marketCap),
     pbr: numberOrNull(item.pbr),
     per: numberOrNull(item.per),
@@ -9904,6 +10082,7 @@ function normalizeFinancialSnapshot(item = {}) {
     ebitda: numberOrNull(item.ebitda),
     netSales: numberOrNull(item.netSales),
     operatingIncome: numberOrNull(item.operatingIncome),
+    netIncome: numberOrNull(item.netIncome),
     netAssets: numberOrNull(item.netAssets),
     totalAssets: numberOrNull(item.totalAssets),
     criteria,
@@ -9959,37 +10138,60 @@ async function updateFinancialSnapshots(options = {}) {
   const previous = await readFinancialCache();
   const generatedAt = new Date().toISOString();
   const stocks = (await readWatchlist()).filter((stock) => /\.T$/.test(stock.symbol));
-  if (!settings.edinetApiKey) {
-    const result = await saveFinancialCache({
-      generatedAt,
-      enabled: false,
-      checkedCount: stocks.length,
-      warnings: ["EDINET APIキー未設定。設定の財務/口座タブで追加してください。"],
-      items: stocks.map((stock) => financialSnapshotPlaceholder(stock)),
-      message: "EDINET APIキーが未設定です。",
-    });
-    return result;
-  }
-
   if (!options.force && previous.generatedAt && !isOlderThan(cacheHourKey(previous.generatedAt), cacheHourKey(generatedAt))) {
     return previous;
   }
 
+  const collected = await collectFinancialSnapshotsForStocks(stocks, {
+    settings,
+    previous,
+    force: options.force,
+  });
+  return saveFinancialCache({
+    ...collected,
+    generatedAt,
+    checkedCount: stocks.length,
+    items: mergeFinancialSnapshotItems(previous.items, collected.items),
+  });
+}
+
+async function collectFinancialSnapshotsForStocks(stocks = [], options = {}) {
+  const settings = options.settings || await readSettings();
+  const previous = options.previous || await readFinancialCache();
+  const generatedAt = options.generatedAt || new Date().toISOString();
+  const jpStocks = uniqueBy((stocks || [])
+    .map((stock) => normalizeStock(stock))
+    .filter((stock) => /\.T$/.test(stock.symbol)), (stock) => stock.symbol);
+  if (!settings.edinetApiKey) {
+    return {
+      generatedAt,
+      enabled: false,
+      checkedCount: jpStocks.length,
+      warnings: ["EDINET APIキー未設定。設定の財務/口座タブで追加してください。"],
+      items: jpStocks.map((stock) => financialSnapshotPlaceholder(stock)),
+      message: "EDINET APIキーが未設定です。",
+    };
+  }
+
   const warnings = [];
-  const quoteBySymbol = await fetchYahooQuoteSnapshots(stocks.map((stock) => stock.symbol)).catch((error) => {
+  const quoteBySymbol = await fetchYahooQuoteSnapshots(jpStocks.map((stock) => stock.symbol)).catch((error) => {
     warnings.push(`Yahoo Finance: ${error.message || "株価サイトの指標取得に失敗しました"}`);
     return new Map();
   });
-  const docLookup = await findLatestEdinetDocuments(stocks, settings.edinetApiKey).catch((error) => {
+  const docLookup = await findLatestEdinetDocuments(jpStocks, settings.edinetApiKey).catch((error) => {
     warnings.push(`EDINET: ${error.message || "書類一覧を取得できませんでした"}`);
     return { bySymbol: new Map(), warnings: [] };
   });
   warnings.push(...asStringArray(docLookup.warnings));
   const previousBySymbol = new Map((previous.items || []).map((item) => [item.symbol, item]));
-  const items = await mapLimit(stocks, 2, async (stock) => {
+  const items = await mapLimit(jpStocks, 2, async (stock) => {
     const previousItem = previousBySymbol.get(stock.symbol) || null;
     const doc = docLookup.bySymbol?.get(stock.symbol) || null;
-    const quote = quoteBySymbol.get(stock.symbol) || {};
+    let quote = quoteBySymbol.get(stock.symbol) || {};
+    if (!nullablePositiveNumber(quote.currentPrice ?? quote.regularMarketPrice)) {
+      const chartQuote = await fetchYahooCurrentQuoteFromChart(stock.symbol).catch(() => null);
+      if (chartQuote) quote = { ...quote, ...chartQuote };
+    }
     let facts = previousItem && previousItem.docID === doc?.docID
       ? financialFactsFromSnapshot(previousItem)
       : null;
@@ -10001,27 +10203,59 @@ async function updateFinancialSnapshots(options = {}) {
     }
     return buildFinancialSnapshot(stock, quote, doc, facts, previousItem);
   });
-  return saveFinancialCache({
+  return {
     generatedAt,
     enabled: true,
-    checkedCount: stocks.length,
+    checkedCount: jpStocks.length,
     warningCount: warnings.length,
     warnings: uniqueText(warnings).slice(0, 12),
     items,
     message: items.some((item) => item.status === "ok" || item.status === "partial")
       ? "EDINET財務情報を更新しました。"
       : "EDINET財務情報を取得できませんでした。",
-  });
+  };
+}
+
+function mergeFinancialSnapshotItems(previousItems = [], nextItems = []) {
+  const bySymbol = new Map();
+  for (const item of previousItems || []) {
+    const normalized = normalizeFinancialSnapshot(item);
+    if (normalized) bySymbol.set(normalized.symbol, normalized);
+  }
+  for (const item of nextItems || []) {
+    const normalized = normalizeFinancialSnapshot(item);
+    if (normalized) bySymbol.set(normalized.symbol, normalized);
+  }
+  return [...bySymbol.values()];
 }
 
 function buildFinancialSnapshot(stock = {}, quote = {}, doc = null, facts = null, previous = null) {
   const cash = numberOrNull(facts?.cashAndEquivalents ?? previous?.cashAndEquivalents);
   const shortTermSecurities = numberOrNull(facts?.shortTermSecurities ?? previous?.shortTermSecurities);
   const debt = numberOrNull(facts?.interestBearingDebt ?? previous?.interestBearingDebt);
-  const marketCap = numberOrNull(quote.marketCap ?? previous?.marketCap);
+  const currentPrice = nullablePositiveNumber(quote.currentPrice ?? quote.regularMarketPrice ?? previous?.currentPrice);
+  const sharesOutstanding = nullablePositiveNumber(facts?.sharesOutstanding ?? quote.sharesOutstanding ?? previous?.sharesOutstanding);
+  const marketCap = numberOrNull(quote.marketCap ?? (currentPrice && sharesOutstanding ? currentPrice * sharesOutstanding : null) ?? previous?.marketCap);
   const operatingIncome = numberOrNull(facts?.operatingIncome ?? previous?.operatingIncome);
   const depreciation = numberOrNull(facts?.depreciationAndAmortization);
   const ebitda = numberOrNull(facts?.ebitda ?? (Number.isFinite(operatingIncome) && Number.isFinite(depreciation) ? operatingIncome + depreciation : previous?.ebitda));
+  const netIncome = numberOrNull(facts?.netIncome ?? previous?.netIncome);
+  const netAssets = numberOrNull(facts?.netAssets ?? previous?.netAssets);
+  const bookValue = numberOrNull(quote.bookValue);
+  const eps = numberOrNull(quote.epsTrailingTwelveMonths ?? quote.epsForward);
+  const pbr = numberOrNull(
+    quote.priceToBook
+      ?? (currentPrice && bookValue ? currentPrice / bookValue : null)
+      ?? (marketCap && netAssets ? marketCap / netAssets : null)
+      ?? previous?.pbr,
+  );
+  const per = numberOrNull(
+    quote.trailingPE
+      ?? quote.forwardPE
+      ?? (currentPrice && eps && eps > 0 ? currentPrice / eps : null)
+      ?? (marketCap && netIncome && netIncome > 0 ? marketCap / netIncome : null)
+      ?? previous?.per,
+  );
   const netCash = Number.isFinite(cash) || Number.isFinite(shortTermSecurities) || Number.isFinite(debt)
     ? (cash || 0) + (shortTermSecurities || 0) - (debt || 0)
     : numberOrNull(previous?.netCash);
@@ -10039,9 +10273,11 @@ function buildFinancialSnapshot(stock = {}, quote = {}, doc = null, facts = null
     asOfDate: normalizeDate(doc?.submitDateTime || doc?.submitDate || previous?.asOfDate) || "",
     docID: doc?.docID || previous?.docID || "",
     documentTitle: doc?.docDescription || previous?.documentTitle || "",
+    currentPrice,
+    sharesOutstanding,
     marketCap,
-    pbr: numberOrNull(quote.priceToBook ?? previous?.pbr),
-    per: numberOrNull(quote.trailingPE ?? quote.forwardPE ?? previous?.per),
+    pbr,
+    per,
     evEbitda,
     cashAndEquivalents: cash,
     shortTermSecurities,
@@ -10049,12 +10285,15 @@ function buildFinancialSnapshot(stock = {}, quote = {}, doc = null, facts = null
     netCash,
     netCashRatio,
     operatingCashFlow: numberOrNull(facts?.operatingCashFlow ?? previous?.operatingCashFlow),
-    operatingCashFlowYears: nullableNonNegativeNumber(previous?.operatingCashFlowYears) || (Number.isFinite(facts?.operatingCashFlow) && facts.operatingCashFlow > 0 ? 1 : 0),
+    operatingCashFlowYears: nullableNonNegativeNumber(facts?.operatingCashFlowYears)
+      || nullableNonNegativeNumber(previous?.operatingCashFlowYears)
+      || (Number.isFinite(facts?.operatingCashFlow) && facts.operatingCashFlow > 0 ? 1 : 0),
     operatingCashFlowPositive: Boolean(Number.isFinite(facts?.operatingCashFlow) ? facts.operatingCashFlow > 0 : previous?.operatingCashFlowPositive),
     ebitda,
     netSales: numberOrNull(facts?.netSales ?? previous?.netSales),
     operatingIncome,
-    netAssets: numberOrNull(facts?.netAssets ?? previous?.netAssets),
+    netIncome,
+    netAssets,
     totalAssets: numberOrNull(facts?.totalAssets ?? previous?.totalAssets),
     warnings: [],
   };
@@ -10072,11 +10311,14 @@ function financialFactsFromSnapshot(item = {}) {
     shortTermSecurities: item.shortTermSecurities,
     interestBearingDebt: item.interestBearingDebt,
     operatingCashFlow: item.operatingCashFlow,
+    operatingCashFlowYears: item.operatingCashFlowYears,
     ebitda: item.ebitda,
     netSales: item.netSales,
     operatingIncome: item.operatingIncome,
+    netIncome: item.netIncome,
     netAssets: item.netAssets,
     totalAssets: item.totalAssets,
+    sharesOutstanding: item.sharesOutstanding,
   };
 }
 
@@ -10115,8 +10357,10 @@ function buildPeFinancialCriteria(financials = {}) {
       return financialCriterion(criterion, "fail", 0, `PBR ${pbr.toFixed(2)}倍で資産割安ではない`);
     }
     if (criterion.key === "operating_cf") {
-      if (financials.operatingCashFlowPositive) return financialCriterion(criterion, "pass", criterion.max * 0.65, "直近営業CFはプラス");
+      const years = nullableNonNegativeNumber(financials.operatingCashFlowYears);
+      if (Number.isFinite(years) && years >= 3) return financialCriterion(criterion, "pass", criterion.max, `営業CFは直近${years}期分プラス`);
       const cashFlow = numberOrNull(financials.operatingCashFlow);
+      if (Number.isFinite(cashFlow) && cashFlow > 0) return financialCriterion(criterion, "watch", criterion.max * 0.45, "直近営業CFはプラス、連続年数は確認中");
       if (Number.isFinite(cashFlow)) return financialCriterion(criterion, cashFlow > 0 ? "pass" : "fail", cashFlow > 0 ? criterion.max * 0.65 : 0, cashFlow > 0 ? "営業CFプラス" : "営業CFマイナス");
       return financialCriterion(criterion, "unknown", 0, "営業CFが未取得");
     }
@@ -10143,6 +10387,18 @@ async function fetchYahooQuoteSnapshots(symbols = []) {
     url.searchParams.set("symbols", chunk.join(","));
     url.searchParams.set("lang", "ja-JP");
     url.searchParams.set("region", "JP");
+    url.searchParams.set("fields", [
+      "regularMarketPrice",
+      "marketCap",
+      "sharesOutstanding",
+      "priceToBook",
+      "trailingPE",
+      "forwardPE",
+      "enterpriseToEbitda",
+      "bookValue",
+      "epsTrailingTwelveMonths",
+      "epsForward",
+    ].join(","));
     const response = await fetchWithTimeout(url, {
       timeout: 10000,
       headers: { accept: "application/json", "user-agent": "Mozilla/5.0 Stock Signal" },
@@ -10154,15 +10410,44 @@ async function fetchYahooQuoteSnapshots(symbols = []) {
       if (!symbol) continue;
       quotes.set(symbol, {
         marketCap: numberOrNull(item.marketCap),
+        currentPrice: numberOrNull(item.regularMarketPrice),
+        sharesOutstanding: numberOrNull(item.sharesOutstanding),
         priceToBook: numberOrNull(item.priceToBook),
         trailingPE: numberOrNull(item.trailingPE),
         forwardPE: numberOrNull(item.forwardPE),
         enterpriseToEbitda: numberOrNull(item.enterpriseToEbitda),
         regularMarketPrice: numberOrNull(item.regularMarketPrice),
+        bookValue: numberOrNull(item.bookValue),
+        epsTrailingTwelveMonths: numberOrNull(item.epsTrailingTwelveMonths),
+        epsForward: numberOrNull(item.epsForward),
       });
     }
   }
   return quotes;
+}
+
+async function fetchYahooCurrentQuoteFromChart(symbol = "") {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return null;
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(normalized)}`);
+  url.searchParams.set("range", "5d");
+  url.searchParams.set("interval", "1d");
+  const response = await fetchWithTimeout(url, {
+    timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS,
+    headers: { accept: "application/json", "user-agent": "Mozilla/5.0 Stock Signal" },
+  });
+  if (!response.ok) return null;
+  const payload = await response.json().catch(() => null);
+  const result = payload?.chart?.result?.[0];
+  const meta = result?.meta || {};
+  const closes = result?.indicators?.quote?.[0]?.close || [];
+  const latestClose = [...closes].reverse().find((value) => nullablePositiveNumber(value));
+  const currentPrice = nullablePositiveNumber(meta.regularMarketPrice ?? meta.previousClose ?? latestClose);
+  if (!currentPrice) return null;
+  return {
+    currentPrice,
+    regularMarketPrice: currentPrice,
+  };
 }
 
 async function findLatestEdinetDocuments(stocks = [], apiKey = "") {
@@ -10324,24 +10609,74 @@ function extractFinancialFactsFromXbrl(xbrl = "") {
     "CashFlowsFromUsedInOperatingActivities",
     "CashFlowsFromOperatingActivities",
   ], "duration");
+  const operatingCashFlowSeries = extractXbrlFactValues(xbrl, [
+    "NetCashProvidedByUsedInOperatingActivities",
+    "CashFlowsFromUsedInOperatingActivities",
+    "CashFlowsFromOperatingActivities",
+  ], "duration").map((item) => item.value);
+  const operatingCashFlowYears = operatingCashFlowSeries.filter((value) => value > 0).length;
   const netSales = extractBestXbrlFact(xbrl, ["NetSales", "Revenue", "OperatingRevenue"], "duration");
   const operatingIncome = extractBestXbrlFact(xbrl, ["OperatingIncome", "OperatingProfitLoss"], "duration");
+  const netIncome = extractBestXbrlFact(xbrl, [
+    "ProfitLoss",
+    "ProfitLossAttributableToOwnersOfParent",
+    "ProfitLossAttributableToOwnersOfParentIFRS",
+    "NetIncome",
+    "NetIncomeLoss",
+    "NetIncomeLossAttributableToOwnersOfParent",
+    "ProfitAttributableToOwnersOfParent",
+    "ProfitLossSummaryOfBusinessResults",
+  ], "duration");
   const depreciation = extractBestXbrlFact(xbrl, ["DepreciationAndAmortization", "Depreciation"], "duration");
   const ebitda = extractBestXbrlFact(xbrl, ["EBITDA"], "duration");
   const netAssets = extractBestXbrlFact(xbrl, ["NetAssets", "Equity"], "instant");
   const totalAssets = extractBestXbrlFact(xbrl, ["Assets", "TotalAssets"], "instant");
+  const sharesOutstanding = extractBestXbrlFact(xbrl, [
+    "TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+    "TotalNumberOfIssuedShares",
+    "NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock",
+    "NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYear",
+    "NumberOfIssuedShares",
+    "IssuedSharesTotalNumberOfSharesEtc",
+    "TotalNumberOfIssuedSharesCommonStocks",
+  ], "instant");
   return {
     cashAndEquivalents: cash,
     shortTermSecurities: securities,
     interestBearingDebt: debt,
     operatingCashFlow,
+    operatingCashFlowYears,
     netSales,
     operatingIncome,
+    netIncome,
     depreciationAndAmortization: depreciation,
     ebitda,
     netAssets,
     totalAssets,
+    sharesOutstanding,
   };
+}
+
+function extractXbrlFactValues(xbrl = "", names = [], periodHint = "") {
+  const facts = [];
+  const seen = new Set();
+  for (const name of names) {
+    const re = new RegExp(`<(?:[A-Za-z0-9_.-]+:)?${escapeRegExp(name)}\\b([^>]*)>([^<]+)<\\/(?:[A-Za-z0-9_.-]+:)?${escapeRegExp(name)}>`, "gi");
+    let match;
+    while ((match = re.exec(xbrl))) {
+      const value = parseXbrlNumber(match[2]);
+      if (!Number.isFinite(value)) continue;
+      const attrs = match[1] || "";
+      const contextRef = cleanText(attrs.match(/contextRef=["']([^"']+)["']/i)?.[1] || "");
+      const unitRef = cleanText(attrs.match(/unitRef=["']([^"']+)["']/i)?.[1] || "");
+      if (unitRef && !/JPY|Yen|Pure|shares|Share/i.test(unitRef)) continue;
+      const key = `${name}:${contextRef}:${value}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      facts.push({ name, value, contextRef, score: xbrlFactScore(contextRef, periodHint) });
+    }
+  }
+  return facts.sort((a, b) => b.score - a.score || Math.abs(b.value) - Math.abs(a.value)).slice(0, 5);
 }
 
 function extractXbrlFactSum(xbrl = "", names = []) {
@@ -10581,6 +10916,9 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     usDiscoveredCount: budget.usDiscoveredCount || 0,
     candidatePool: budget.candidatePool || candidateLimit,
     usedDiscoveryAi: Boolean(budget.usedDiscoveryAi),
+    edinetDiscoveryEnabled: Boolean(budget.edinetDiscoveryEnabled),
+    edinetDiscoveryChecked: Number(budget.edinetDiscoveryChecked || 0),
+    edinetDiscoveryWarnings: asStringArray(budget.edinetDiscoveryWarnings).slice(0, 5),
     fullScan: Boolean(budget.fullScan),
     searchPositionUsed: Boolean(budget.searchPositionUsed),
     marketBrief: budget.marketBrief || null,
