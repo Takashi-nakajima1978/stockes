@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260905-nisa-sale-summary">
+  <link rel="stylesheet" href="/styles.css?v=20260905-copy-guides">
 </head>
 <body>
   <div class="app-shell">
@@ -69,7 +69,7 @@
 
         <section class="profit-summary" aria-live="polite">
           <article class="profit-card primary">
-            <span>今の儲け</span>
+            <span>現在の損益</span>
             <strong id="profitAmount">-</strong>
             <small id="profitPct">分析待ち</small>
           </article>
@@ -81,12 +81,12 @@
           <article class="profit-card">
             <span>投下額</span>
             <strong id="investedTotal">-</strong>
-            <small>買った金額</small>
+            <small>購入金額</small>
           </article>
           <article class="profit-card">
             <span>評価額</span>
             <strong id="marketTotal">-</strong>
-            <small>今売った場合の目安</small>
+            <small>現在値ベース</small>
           </article>
           <article class="profit-card">
             <span>年間配当目安</span>
@@ -141,7 +141,7 @@
                     <th>保有数</th>
                     <th>損益</th>
                     <th>配当</th>
-                    <th>判定</th>
+                    <th>判断</th>
                   </tr>
                 </thead>
                 <tbody id="stockTable"></tbody>
@@ -246,7 +246,7 @@
                     <th>配当</th>
                     <th>1年</th>
                     <th>3年</th>
-                    <th>判定</th>
+                    <th>判断</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -277,7 +277,7 @@
           <article class="profit-card">
             <span>投下額</span>
             <strong id="usInvestedTotal">-</strong>
-            <small>買った金額</small>
+            <small>購入金額</small>
           </article>
           <article class="profit-card">
             <span>評価額</span>
@@ -818,6 +818,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260905-financial-price-reconcile" type="module"></script>
+  <script src="/app.js?v=20260905-copy-guides" type="module"></script>
 </body>
 </html>

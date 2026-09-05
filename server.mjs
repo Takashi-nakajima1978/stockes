@@ -50,7 +50,9 @@ const US_HOLDING_REVIEW_CHUNK_SIZE = 2;
 const EDINET_API_BASE = "https://api.edinet-fsa.go.jp/api/v2";
 const EDINET_LOOKBACK_DAYS = 120;
 const JP_PE_MARKET_CAP_MIN = 5_000_000_000;
-const JP_PE_MARKET_CAP_MAX = 50_000_000_000;
+const JP_PE_MARKET_CAP_CORE_MAX = 50_000_000_000;
+const JP_PE_MARKET_CAP_MAX = 300_000_000_000;
+const JP_PE_MARKET_CAP_LARGE_WATCH_MAX = 1_000_000_000_000;
 const US_FINANCE_NEWS_SOURCES = [
   ["finance.yahoo.com", 100],
   ["seekingalpha.com", 96],
@@ -137,12 +139,13 @@ const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|
 const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "private equity", "buyout", "take private", "tender offer", "activist", "shareholder", "stake", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
 const PE_DIRECT_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "private equity", "buyout", "take private", "tender offer", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス"];
 const PE_RECENT_TENDENCIES = [
-  "直近数年の国内PE・MBO案件は、低PBR、ネットキャッシュ、安定CF、株主還元余地、上場維持コストが重い中小型株に偏りやすい前提で採点",
-  "単なる大型優良株や高値圏のテーマ株は、PE買収狙いから外す",
+  "直近数年の国内PE・MBO案件は、低PBR、ネットキャッシュ、安定CF、株主還元余地、上場維持コストが重い会社を重視して採点",
+  "時価総額は50億-500億円を強い条件、500億-3000億円を大型PEでも検討し得る範囲、3000億-1兆円をJSR級の大型・特殊案件として扱う",
+  "単なる大型優良株や高値圏のテーマ株は、直接の買収・MBO・株主変化がなければPE候補から外す",
   "決算後に業績は悪くないのに還元不足で売られた銘柄を、アクティビスト/PEの入口候補として加点",
 ];
 const PE_FINANCIAL_CRITERIA = [
-  { key: "market_cap", label: "時価総額50億-500億円", max: 25 },
+  { key: "market_cap", label: "時価総額50億-3000億円中心", max: 25 },
   { key: "net_cash", label: "ネットキャッシュ比率50%以上", max: 25 },
   { key: "ev_ebitda", label: "EV/EBITDA 6倍以下または低PER", max: 20 },
   { key: "pbr", label: "PBR1倍割れ", max: 15 },
@@ -166,14 +169,14 @@ const DISCLOSURE_IGNORE_WORDS = [
   "議決権", "ETF", "投資法人", "REIT",
 ];
 const PE_CRITERIA = [
-  { key: "undervalued", label: "割安放置", words: ["低PBR", "PBR1倍割れ", "低PER", "割安", "資産価値", "純資産", "undervalued", "low multiple", "cheap valuation", "sum-of-the-parts"], weight: 18 },
+  { key: "undervalued", label: "割安に見える材料", words: ["低PBR", "PBR1倍割れ", "低PER", "割安", "資産価値", "純資産", "undervalued", "low multiple", "cheap valuation", "sum-of-the-parts"], weight: 18 },
   { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益", "キャッシュフロー", "高配当", "営業CF", "ストック収益", "継続課金", "cash flow", "free cash flow", "recurring revenue", "stable revenue", "dividend"], weight: 14 },
   { key: "debt_capacity", label: "低負債・借入余地", words: ["無借金", "ネットキャッシュ", "財務健全", "自己資本比率", "低負債", "debt capacity", "low debt", "net cash", "strong balance sheet"], weight: 14 },
-  { key: "governance", label: "株主還元・統治余地", words: ["自社株買い", "増配", "政策保有株", "ROE", "資本効率", "中期経営計画", "buyback", "capital allocation", "margin improvement", "ROIC", "shareholder return"], weight: 13 },
+  { key: "governance", label: "株主還元・経営改善の余地", words: ["自社株買い", "増配", "政策保有株", "ROE", "資本効率", "中期経営計画", "buyback", "capital allocation", "margin improvement", "ROIC", "shareholder return"], weight: 13 },
   { key: "shareholder", label: "株主変化", words: ["大量保有", "保有割合", "株主", "物言う株主", "アクティビスト", "エフィッシモ", "Oasis", "旧村上", "activist", "shareholder", "stake", "13D", "13G"], weight: 18 },
   { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化", "事業売却", "構造改革", "再編", "親子上場", "buyout", "take private", "spin off", "divestiture", "strategic review", "tender offer"], weight: 18 },
   { key: "sector_fit", label: "PEが扱いやすい業態", words: ["サービス", "ヘルスケア", "ソフトウェア", "不動産", "物流", "人材", "設備保守", "services", "healthcare", "industrial", "maintenance", "logistics", "consumer staples"], weight: 9 },
-  { key: "risk", label: "買収阻害リスク", words: ["規制", "国策", "赤字", "訴訟", "不祥事", "過大債務", "景気敏感", "regulatory", "litigation", "loss", "high debt", "cyclical"], weight: -12 },
+  { key: "risk", label: "買収されにくい要因", words: ["規制", "国策", "赤字", "訴訟", "不祥事", "過大債務", "景気敏感", "regulatory", "litigation", "loss", "high debt", "cyclical"], weight: -12 },
 ];
 const defaultSettings = {
   searchProvider: process.env.SEARCH_PROVIDER || "searxng",
@@ -2408,13 +2411,13 @@ function cryptoTradeTiming(price = {}, currency = "USD") {
   const stopLine = Math.max(1, Math.min(buyLine * 0.88, current * 0.82));
   const gapFromSell = sellLine ? ((sellLine - current) / current) * 100 : null;
   let sellLabel = "上振れ待ち";
-  let sellSummary = `${formatMoney(sellLine, currency)} 前後は利確・売却検討ラインです。${formatMoney(stopLine, currency)} を割る場合は、下落理由を再確認します。`;
+  let sellSummary = `${formatMoney(sellLine, currency)} 前後は利益確定・売却検討ラインです。${formatMoney(stopLine, currency)} を割る場合は、下落理由を再確認します。`;
   if (Number.isFinite(gapFromSell) && gapFromSell <= 0) {
-    sellLabel = "利確検討";
+    sellLabel = "利益確定検討";
     sellSummary = `売り場ラインに到達しています。保有量がある場合は、利益確定か一部売却を検討する位置です。`;
   } else if (Number.isFinite(gapFromSell) && gapFromSell <= 8) {
-    sellLabel = "利確準備";
-    sellSummary = `売り場ラインが近いです。${formatMoney(sellLine, currency)} 付近では欲張らず一部利確を検討します。`;
+    sellLabel = "利益確定準備";
+    sellSummary = `売り場ラインが近いです。${formatMoney(sellLine, currency)} 付近では欲張らず一部利益確定を検討します。`;
   }
 
   return {
@@ -2433,7 +2436,7 @@ function cryptoTradeTiming(price = {}, currency = "USD") {
       currentGapPct: Number.isFinite(gapFromSell) ? gapFromSell : null,
       summary: sellSummary,
       checks: uniqueText([
-        high52 ? "52週高値に近い位置を利確目安に含める" : "",
+        high52 ? "52週高値に近い位置を利益確定目安に含める" : "",
         trendPrice ? "3年トレンドから上振れた位置を売り場に含める" : "",
         "買い場ライン割れは確認ラインに使う",
       ].filter(Boolean)).slice(0, 4),
@@ -3615,8 +3618,8 @@ function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null) {
     process = boostProcessStage(process, "再編", 3, "PEが扱いやすい時価総額レンジ");
   } else if (marketCap?.status === "fail") {
     scoreDelta -= 6;
-    process = boostProcessStage(process, "再編", -5, "PE狙いの時価総額レンジから外れる");
-    risks.push(marketCap.summary || "PE狙いの時価総額レンジから外れる");
+    process = boostProcessStage(process, "再編", -5, "PEが対象にしやすい時価総額から外れる");
+    risks.push(marketCap.summary || "PEが対象にしやすい時価総額から外れる");
   }
 
   const finalized = finalizeDiscoveryProcess(process);
@@ -3684,14 +3687,15 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
   if (disappointmentHits.length && (financialPass.has("net_cash") || financialPass.has("pbr") || financialPass.has("ev_ebitda"))) {
     score += Math.min(18, disappointmentHits.length * 4);
   }
-  if (financialFail.has("market_cap")) score = Math.min(score, 34);
   if (isHighChaseChart(candidate.price || {})) score = Math.min(score, 30);
   const positiveKeys = new Set(criteria.filter((item) => item.score > 0).map((item) => item.key));
   const hasHardSignal = directBuyerHits.length
     || positiveKeys.has("shareholder")
     || positiveKeys.has("restructuring")
     || disappointmentHits.length >= 2;
-  const hasFinancialBase = financialPass.has("market_cap")
+  if (financialFail.has("market_cap")) score = Math.min(score, 34);
+  const marketCapAccepted = financialPass.has("market_cap") || (financialWatch.has("market_cap") && hasHardSignal);
+  const hasFinancialBase = marketCapAccepted
     && (financialPass.has("net_cash") || financialWatch.has("net_cash"))
     && (financialPass.has("ev_ebitda") || financialPass.has("pbr") || positiveKeys.has("undervalued"))
     && !financialFail.has("operating_cf");
@@ -3776,10 +3780,10 @@ function peSignalSummary(label, criteria = [], buyerHits = [], options = {}) {
   if (options.disappointmentHits?.length) parts.push(`失望売り/還元不足材料: ${options.disappointmentHits.slice(0, 3).join("、")}`);
   else if (buyerHits.length) parts.push(`周辺語: ${buyerHits.slice(0, 3).join("、")}`);
   if (risk) parts.push(`注意: ${risk}`);
-  if (Number(options.matchScore || 0) < PE_PRIORITY_MIN_SCORE) parts.push("PE買収狙いとしては優先しない");
+  if (Number(options.matchScore || 0) < PE_PRIORITY_MIN_SCORE) parts.push("PE候補としては優先しない");
   else if (!options.hasFinancialBase) parts.push("指定した財務条件の根拠が不足");
   else if (!options.hasHardSignal) parts.push("直接の買収・株主変化は未確認");
-  return `${label}${parts.length ? `。${parts.join("。")}` : "。PE買収候補としては根拠が薄い"}`;
+  return `${label}${parts.length ? `。${parts.join("。")}` : "。PE候補としては根拠が薄い"}`;
 }
 
 function applyCandidateLearning(candidate, performance = {}) {
@@ -4278,7 +4282,7 @@ function earlyEntrySignal(candidate = {}, price = {}) {
       criteria: uniqueText(criteria).slice(0, 3),
       risks: uniqueText([
         runText,
-        "先回り初動ではなく、すでに走った後の形",
+        "早めに入る局面ではなく、すでに上がった後の形",
         "深い押し目か決算の再確認まで待ちたい",
         ...risks,
       ]).slice(0, 4),
@@ -4545,21 +4549,21 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
   });
   const extendedRun = isExtendedRunChart(price);
   if (extendedRun) {
-    process = boostProcessStage(process, "買い時", -10, "3年で大きく上昇済み。初動ではなく押し目待ち");
+    process = boostProcessStage(process, "買い時", -10, "3年で大きく上昇済み。早めに入る局面ではなく押し目待ち");
     process = boostProcessStage(process, "リスク", -6, "高値追いになりやすい");
     score -= 24;
-    risks.push(`先回り候補ではなく押し目待ち: ${extendedRunText(price)}`);
+    risks.push(`早めに入る候補ではなく押し目待ち: ${extendedRunText(price)}`);
   } else if (earlySignal?.score >= 75) {
-    process = boostProcessStage(process, "買い時", 6, "先回りで入りやすい初動条件");
+    process = boostProcessStage(process, "買い時", 6, "早めに入りやすい条件");
     score += isUsDiscoveryCandidate(candidate) ? 12 : 8;
-    reasons.push(`先回り初動: ${earlySignal.summary}`);
+    reasons.push(`早めに入る条件: ${earlySignal.summary}`);
   } else if (earlySignal?.score >= 60) {
     process = boostProcessStage(process, "買い時", 4, "上昇前の条件を一部満たす");
     score += isUsDiscoveryCandidate(candidate) ? 7 : 4;
     reasons.push(`初動候補: ${earlySignal.summary}`);
   } else if (earlySignal?.score && earlySignal.score < 45) {
     score -= isUsDiscoveryCandidate(candidate) ? 8 : 4;
-    risks.push(`先回り条件は弱い: ${earlySignal.summary}`);
+    risks.push(`早めに入る条件は弱い: ${earlySignal.summary}`);
   }
   const businessValueScore = process.totalScore;
   const buyPlan = candidateBuyPlan(price, { unitSize, unitBudget: budget.unitBudget, unitAmount, businessValueScore, currency });
@@ -4662,13 +4666,13 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
     score += bonus;
     businessValueScore += bonus * 2;
     candidate.process = boostProcessStage(candidate.process, "再編", Math.min(8, bonus + 2), "PE買収・再編の項目に合う");
-    reasons.push(`PE買収マッチ: ${peSignal.summary}`);
+    reasons.push(`PE候補チェック: ${peSignal.summary}`);
   } else if (peSignal?.matchScore >= PE_PRIORITY_MIN_SCORE && peSignal.reportEligible !== false) {
     score += 2;
     businessValueScore += 2;
     candidate.process = boostProcessStage(candidate.process, "再編", 3, "PE買収の一部項目に合う");
   } else if (peSignal?.matchScore) {
-    risks.push("PE買収狙いとしては根拠が薄い");
+    risks.push("PE候補としては根拠が薄い");
   }
 
   const process = finalizeDiscoveryProcess(candidate.process);
@@ -4763,11 +4767,12 @@ async function aiDiscoveryReviewChunk(model, items) {
   const prompt = [
     "あなたは日本株・米国株の候補発掘レビュー担当です。将来の利益を保証せず、根拠不足を厳しく扱ってください。",
     "目的は「事業として好調そうなのに、株価が高すぎず、買い場ラインや買い目安以下で検討できる候補」を上に残すことです。",
-    "米国株は特に、すでに急騰した後ではなく、買い場以下・3年目安付近・1か月反発・3か月非過熱・出来高増のような先回り初動を重視してください。",
-    "過去3年の流れに対する現在価格、1年買い場ライン、先回り初動スコア、配当利回り、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
+    "米国株は特に、すでに急騰した後ではなく、買い場以下・3年目安付近・1か月反発・3か月非過熱・出来高増のような、早めに入る条件を重視してください。",
+    "過去3年の流れに対する現在価格、1年買い場ライン、早めに入る条件のスコア、配当利回り、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
     "1年買い場ラインを下回っていて、事業材料も良いものはプラス評価してください。上がり切った高値圏はマイナス評価してください。",
-    "PEファンドが買いそうな会社かは、割安放置、安定キャッシュフロー、株主変化、再編余地、阻害リスクに分けて評価してください。ただしPE要素だけで高値づかみを肯定しないでください。",
-    "adjustmentは-8から8の整数。根拠が薄い場合は0以下、悪材料や高値づかみ懸念が強い場合はマイナスにしてください。",
+    "PEファンドが買いそうな会社かは、割安に見える材料、安定キャッシュフロー、株主変化、再編余地、買収されにくい要因に分けて評価してください。ただしPE要素だけで高い価格で買う判断を肯定しないでください。",
+    "日本語は一般的な投資メモの表現にしてください。買収妙味、割安放置、PEの中小型狙いのような不自然な言い方は使わず、理由と買う時の影響が分かる言葉で書いてください。",
+    "adjustmentは-8から8の整数。根拠が薄い場合は0以下、悪材料や高い価格で買ってしまう懸念が強い場合はマイナスにしてください。",
     "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"]}]}。米国株は IBM のようにティッカーをそのまま返してください。",
     "",
     JSON.stringify({ candidates: items }),
@@ -5330,7 +5335,7 @@ function candidateBuyPlan(price, options = {}) {
       summary: `${runText}。買い場ライン付近でも高値追いになりやすいので、${formatMoney(maxBuyPrice, currency)}以下まで待ちます。`,
       checks: uniqueText([
         runText,
-        "先回り初動ではない",
+        "早めに入る局面ではない",
         buyLine ? "1年買い場だけでは買い判定にしない" : "",
         Number.isFinite(atrPct) && atrPct >= 4 ? "ATRが大きいので深めに待つ" : "",
         "大きな押し目待ち",
@@ -5436,7 +5441,7 @@ function candidateExitPlan(price = {}, buyPlan = {}, options = {}) {
   return {
     targetPrice: Math.round(targetPrice * 10) / 10,
     stopPrice: Math.round(stopPrice * 10) / 10,
-    summary: `${formatMoney(targetPrice, currency)}前後で利確・見直し、${formatMoney(stopPrice, currency)}割れで理由を再確認。`,
+    summary: `${formatMoney(targetPrice, currency)}前後で利益確定・見直し、${formatMoney(stopPrice, currency)}割れで理由を再確認。`,
   };
 }
 
@@ -6396,7 +6401,7 @@ function ruleBasedDecision(stock, price, research) {
   if (Number.isFinite(price.return3y)) {
     if (price.return3y > 120) {
       score += 2;
-      reasons.push("3年リターンは強いが、上がりすぎ後の高値づかみに注意");
+      reasons.push("3年リターンは強いが、上がりすぎ後に高い価格で買ってしまう点に注意");
     } else if (price.return3y > 45) {
       score += 8;
       reasons.push("3年リターンが強く、長期の上昇傾向がある");
@@ -6425,7 +6430,7 @@ function ruleBasedDecision(stock, price, research) {
       reasons.push("3年の流れから見た目安価格より安い");
     } else if (price.distanceFromTrend3y > 30) {
       score -= 16;
-      risks.push("3年の流れから見た目安価格よりかなり高く、高値づかみに注意");
+      risks.push("3年の流れから見た目安価格よりかなり高く、高い価格で買ってしまう点に注意");
     } else if (price.distanceFromTrend3y > 18) {
       score -= 11;
       risks.push("3年の流れから見た目安価格より高く、買い急ぎに注意");
@@ -6730,8 +6735,9 @@ async function aiDecisionChunk(model, items) {
     "3年で大きく上がった後、現在値が3年の流れや安値から見て高い位置にある場合はBUYにせず、WATCHかHOLDにしてください。",
     "配当利回り、配当の増減、購入日以降の配当込み損益を見てください。高配当だけでBUYにせず、株価下落で利回りが高く見える可能性をリスクに入れてください。",
     "短期売買ではなく、3年の価格傾向、1年買い場ライン、購入日、購入単価、残株数、売却済み株数、確定損益、含み損益、配当込み損益、直近モメンタム、出来高、悪材料、過熱感、業種環境、保有継続可否を総合評価してください。",
-    "financialsにはEDINET有価証券報告書とYahoo株から取れた財務指標、未取得項目、決算書からの示唆が入ります。未取得は推測せず、取得できた財務情報だけを根拠にしてください。",
-    "sellForecastは保有中か残株がある銘柄だけに出してください。将来を断定せず、ニュースや過去の経緯から売却を検討する時期、利確候補価格、見直し価格、根拠を短く示してください。根拠が薄ければtargetPrice/null、horizon/未定。",
+    "financialsにはEDINET有価証券報告書とYahoo株から取れた財務指標、未取得項目、決算書から分かることが入ります。未取得は推測せず、取得できた財務情報だけを根拠にしてください。",
+    "日本語は一般的な投資メモの表現にしてください。買収妙味、割安放置、PEの中小型狙いのような不自然な言い方は使わず、理由と売買判断への影響が分かる言葉で書いてください。",
+    "sellForecastは保有中か残株がある銘柄だけに出してください。将来を断定せず、ニュースや過去の経緯から売却を検討する時期、利益確定候補価格、見直し価格、根拠を短く示してください。根拠が薄ければtargetPrice/null、horizon/未定。",
     "",
     JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
@@ -7140,7 +7146,7 @@ function ruleSellForecast(analysis = {}, currency = "JPY") {
     targetPrice: roundPrice(targetPrice),
     reviewPrice: roundPrice(reviewPrice),
     timing: "次の決算・主要ニュース後、または5日線/RSIの失速時に見直し",
-    reason: `${formatMoney(targetPrice, currency)}前後で利確候補、${formatMoney(reviewPrice, currency)}割れで保有理由を再確認するルール目安です。AI材料が取れた場合はそちらを優先します。`,
+    reason: `${formatMoney(targetPrice, currency)}前後で利益確定候補、${formatMoney(reviewPrice, currency)}割れで保有理由を再確認するルール目安です。AI材料が取れた場合はそちらを優先します。`,
     confidence: 45,
     catalysts: ["決算後の反応", "主要ニュース", "5日線割れ", "RSI失速"],
   });
@@ -7222,7 +7228,7 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
     alerts.push({
       type: "TRAILING_STOP",
       label: "トレーリングストップ",
-      action: trailing.mode === "loss_stop" ? "損切り確認アラート" : "利確確認アラート",
+      action: trailing.mode === "loss_stop" ? "損切り確認アラート" : "利益確定確認アラート",
       confidence: 88,
       summary: `最高値${formatMoney(highWaterPrice, currency)}から${Math.abs(drawdownFromHighPct).toFixed(1)}%下落し、${trailingStopPct}%下落ラインを割りました。`,
       points: [
@@ -7237,7 +7243,7 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
     alerts.push({
       type: "ONKABU",
       label: "恩株化",
-      action: "部分利確候補",
+      action: "部分利益確定候補",
       confidence: 84,
       summary: onkabu.summary,
       points: [
@@ -7366,7 +7372,7 @@ function trailingStopAssessment(position = {}, options = {}) {
   let suppressedReason = "";
   if (belowLine && !profitProtection && !lossStop) {
     suppressedReason = purchasePrice && Number.isFinite(gainFromCostPct)
-      ? `確認ラインは割っていますが、残り株の平均取得${formatMoney(purchasePrice, currency)}に対して現在は${formatSignedPercent(gainFromCostPct)}で、利確/損切り通知の条件ではありません。`
+      ? `確認ラインは割っていますが、残り株の平均取得${formatMoney(purchasePrice, currency)}に対して現在は${formatSignedPercent(gainFromCostPct)}で、利益確定/損切り通知の条件ではありません。`
       : "確認ラインは割っていますが、残り株の取得状況が不足しているためTeams通知は出しません。";
   }
 
@@ -7433,7 +7439,7 @@ function onkabuPlan(position = {}, current = null, settings = defaultSettings, c
     suggestedSellQuantity,
     remainingAfterSell,
     summary: triggered
-      ? `+${profitPct}%水準に到達。元本回収のため${formatShareQuantity(suggestedSellQuantity)}株の部分利確を検討できます。`
+      ? `+${profitPct}%水準に到達。元本回収のため${formatShareQuantity(suggestedSellQuantity)}株の部分利益確定を検討できます。`
       : principalRecovered
       ? "売却済み分で元本回収済みです。残りは恩株として保有できます。"
       : `+${profitPct}%到達までは、成長ストーリーを見ながら保有確認します。`,
@@ -7544,7 +7550,7 @@ function decisionSafetyOverride(stock, price = {}, action, position = positionMe
       action: stock.holding ? "HOLD" : "WATCH",
       thesis: `${stock.name}は事業材料や長期上昇はありますが、グラフ上は大きく上がった後の高い位置です。今すぐ買いではなく、押し目や決算確認を待つ判定にしました。`,
       reasons: ["長期の上昇力は確認できる"],
-      risks: ["3年で大きく上がった後で、高値づかみになりやすい", "買うなら押し目と損切りラインを先に決めたい"],
+      risks: ["3年で大きく上がった後で、高い価格で買ってしまいやすい", "買うなら押し目と損切りラインを先に決めたい"],
     };
   }
   if (action === "BUY" && isNoUpsideChart(price)) {
@@ -8536,7 +8542,7 @@ function evaluateEntryPrice(targetBuyPrice, price = {}) {
       reasons.push("過去3年で見ると高すぎない価格");
     } else if (rangePosition >= 85) {
       score -= 17;
-      risks.push("過去3年の高値に近く、高値づかみしやすい");
+      risks.push("過去3年の高値に近く、高い価格で買ってしまいやすい");
     } else if (rangePosition >= 72) {
       score -= 8;
       risks.push("過去3年で見るとやや高い側の価格");
@@ -10618,11 +10624,13 @@ function buildFinancialInsights(financials = {}) {
   const operatingCf = byKey.get("operating_cf");
 
   if (marketCap?.status === "pass") {
-    insights.push("時価総額は50億-500億円の範囲で、PEが買収検討しやすいサイズです。");
+    insights.push("時価総額はPEが買収を検討しやすい範囲です。50億-500億円は中小型、500億-3000億円は大型PEでも対象になり得る規模として見ます。");
+  } else if (marketCap?.status === "watch") {
+    insights.push(`時価総額は大きめです。${marketCap.summary} 直接の買収・MBO・株主変化がない場合、PE候補としては慎重に見ます。`);
   } else if (marketCap?.status === "fail") {
-    insights.push(`時価総額はPEの中小型狙いから外れます。${marketCap.summary}`);
+    insights.push(`時価総額はPEが対象にしやすい中小型株の範囲から外れます。${marketCap.summary}`);
   } else if (marketCap?.status === "unknown") {
-    insights.push("時価総額が作れていないため、PE候補としてのサイズ判定は保留です。");
+    insights.push("時価総額が作れていないため、PE候補としての規模の確認は保留です。");
   }
 
   if (netCash?.status === "pass") {
@@ -10630,24 +10638,24 @@ function buildFinancialInsights(financials = {}) {
   } else if (netCash?.status === "watch") {
     insights.push("ネットキャッシュは一定ありますが、PEが強く好む50%以上には届いていません。");
   } else if (netCash?.status === "fail") {
-    insights.push("ネットキャッシュ面では強い買収妙味が出ていません。");
+    insights.push("ネットキャッシュ面では、買収対象として見られやすい条件は強くありません。");
   }
 
   if (valuation?.status === "pass" || pbr?.status === "pass") {
     const labels = [valuation, pbr].filter((item) => item?.status === "pass").map((item) => item.summary).filter(Boolean).join(" / ");
-    insights.push(`${labels || "倍率面"}から見ると、割安放置の根拠があります。`);
+    insights.push(`${labels || "倍率面"}から見ると、割安に見える材料があります。`);
   } else if (valuation?.status === "watch" || pbr?.status === "watch") {
     insights.push("倍率面は確認レベルで、割安だけを根拠に強く買うには弱めです。");
   } else if (valuation?.status === "fail" && pbr?.status === "fail") {
-    insights.push("EV/EBITDA・PBRの両面で、資産/収益倍率の割安根拠は弱いです。");
+    insights.push("EV/EBITDA・PBRの両面で、資産や利益に対する割安感は弱めです。");
   }
 
   if (operatingCf?.status === "pass") {
-    insights.push("営業CFが継続プラスで、LBO返済原資として見やすいです。");
+    insights.push("営業CFが継続プラスで、本業で現金を生み出せていることを確認できます。");
   } else if (operatingCf?.status === "watch") {
     insights.push("直近の営業CFはプラスですが、複数年での安定性確認が必要です。");
   } else if (operatingCf?.status === "fail") {
-    insights.push("営業CFがマイナスで、PE買収候補としては大きな減点です。");
+    insights.push("営業CFがマイナスで、PE候補としては大きな注意点です。");
   }
 
   if (Number.isFinite(financials.netCash) && Number.isFinite(financials.operatingCashFlow)) {
@@ -10661,11 +10669,17 @@ function buildPeFinancialCriteria(financials = {}) {
     if (criterion.key === "market_cap") {
       const marketCap = numberOrNull(financials.marketCap);
       if (!Number.isFinite(marketCap)) return financialCriterion(criterion, "unknown", 0, "時価総額が未取得");
-      if (marketCap >= JP_PE_MARKET_CAP_MIN && marketCap <= JP_PE_MARKET_CAP_MAX) {
-        return financialCriterion(criterion, "pass", criterion.max, "50億-500億円の中小型レンジ");
+      if (marketCap >= JP_PE_MARKET_CAP_MIN && marketCap <= JP_PE_MARKET_CAP_CORE_MAX) {
+        return financialCriterion(criterion, "pass", criterion.max, "50億-500億円で、中小型PEが検討しやすい規模");
       }
-      if (marketCap < JP_PE_MARKET_CAP_MIN) return financialCriterion(criterion, "fail", 0, "小さすぎてPEの手間に見合いにくい");
-      return financialCriterion(criterion, "fail", 0, "大型すぎて買収資金のハードルが高い");
+      if (marketCap < JP_PE_MARKET_CAP_MIN) return financialCriterion(criterion, "fail", 0, "規模が小さく、PEの案件としては優先されにくい");
+      if (marketCap <= JP_PE_MARKET_CAP_MAX) {
+        return financialCriterion(criterion, "pass", criterion.max * 0.72, "500億-3000億円で、大型PEなら対象になり得る規模");
+      }
+      if (marketCap <= JP_PE_MARKET_CAP_LARGE_WATCH_MAX) {
+        return financialCriterion(criterion, "watch", criterion.max * 0.25, "3000億円超の大型案件。直接の買収・MBO材料が必要");
+      }
+      return financialCriterion(criterion, "fail", 0, "1兆円超で、通常のPE候補としては大きすぎます");
     }
     if (criterion.key === "net_cash") {
       const ratio = numberOrNull(financials.netCashRatio);
@@ -10679,7 +10693,7 @@ function buildPeFinancialCriteria(financials = {}) {
       const per = numberOrNull(financials.per);
       if (Number.isFinite(evEbitda) && evEbitda <= 6) return financialCriterion(criterion, "pass", criterion.max, `EV/EBITDA ${evEbitda.toFixed(1)}倍`);
       if (Number.isFinite(per) && per <= 12) return financialCriterion(criterion, "pass", criterion.max * 0.8, `PER ${per.toFixed(1)}倍`);
-      if (Number.isFinite(evEbitda) || Number.isFinite(per)) return financialCriterion(criterion, "watch", criterion.max * 0.25, "回収倍率は強くない");
+      if (Number.isFinite(evEbitda) || Number.isFinite(per)) return financialCriterion(criterion, "watch", criterion.max * 0.25, "買収後に投資回収しやすい水準とは言い切れません");
       return financialCriterion(criterion, "unknown", 0, "EV/EBITDA/PERが未取得");
     }
     if (criterion.key === "pbr") {
@@ -10688,7 +10702,7 @@ function buildPeFinancialCriteria(financials = {}) {
       if (pbr <= 0.8) return financialCriterion(criterion, "pass", criterion.max, `PBR ${pbr.toFixed(2)}倍`);
       if (pbr < 1) return financialCriterion(criterion, "pass", criterion.max * 0.75, `PBR ${pbr.toFixed(2)}倍`);
       if (pbr <= 1.2) return financialCriterion(criterion, "watch", criterion.max * 0.25, `PBR ${pbr.toFixed(2)}倍`);
-      return financialCriterion(criterion, "fail", 0, `PBR ${pbr.toFixed(2)}倍で資産割安ではない`);
+      return financialCriterion(criterion, "fail", 0, `PBR ${pbr.toFixed(2)}倍で、純資産と比べた割安感は強くありません`);
     }
     if (criterion.key === "operating_cf") {
       const years = nullableNonNegativeNumber(financials.operatingCashFlowYears);
@@ -11829,7 +11843,7 @@ function extractLinks(html, baseUrl) {
 }
 
 function cleanText(value = "") {
-  return String(value)
+  return polishJapaneseText(String(value)
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
@@ -11837,7 +11851,37 @@ function cleanText(value = "") {
     .replace(/&#39;/g, "'")
     .replace(/&quot;/g, "\"")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim());
+}
+
+function polishJapaneseText(value = "") {
+  let text = String(value ?? "");
+  const replacements = [
+    ["割安放置の根拠があります", "割安に見える材料があります"],
+    ["割安放置の根拠", "割安に見える材料"],
+    ["買収妙味", "買収対象として見られやすい条件"],
+    ["割安放置", "割安のまま見過ごされている"],
+    ["PEの中小型狙い", "PEが対象にしやすい中小型株"],
+    ["PE狙い", "PE候補"],
+    ["PE買収マッチ", "PE候補チェック"],
+    ["買収阻害リスク", "買収されにくい要因"],
+    ["株主還元・統治余地", "株主還元・経営改善の余地"],
+    ["回収倍率は強くない", "買収後に投資回収しやすい水準とは言い切れません"],
+    ["資産割安ではない", "純資産と比べた割安感は強くありません"],
+    ["大型すぎて買収資金のハードルが高い", "規模が大きく、買収に必要な資金が重くなりやすい"],
+    ["小さすぎてPEの手間に見合いにくい", "規模が小さく、PEの案件としては優先されにくい"],
+    ["高値づかみ", "高い価格で買ってしまう"],
+    ["先回り初動", "早めに入る条件"],
+    ["先回り条件", "早めに入る条件"],
+    ["決算書からの示唆", "決算書から分かること"],
+    ["時価総額50億-500億円", "時価総額50億-3000億円中心"],
+    ["時価総額は50億-500億円の範囲", "時価総額は50億-3000億円を中心とする範囲"],
+    ["利確", "利益確定"],
+  ];
+  for (const [from, to] of replacements) {
+    text = text.replaceAll(from, to);
+  }
+  return text;
 }
 
 function businessContextText(value = "") {

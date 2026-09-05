@@ -1176,7 +1176,7 @@ function cryptoTimingHtml(analysis) {
         </article>
         <article class="decision-card">
           <div><h4>売るタイミング</h4><span>更新待ち</span></div>
-          <p>BTCを更新すると、利確・見直しの目安を出します。</p>
+          <p>BTCを更新すると、利益確定・見直しの目安を出します。</p>
         </article>
       </section>
     `;
@@ -1904,6 +1904,10 @@ function technicalEntryHtml(price = {}, formatter = yen) {
             <span>${entry.ready ? "入口候補" : "未確定"}</span>
           </div>
           <p>${escapeHtml(entry.summary || "買い場ライン、5日線、RSI、ローソク足の反転を確認します。")}</p>
+          ${ruleGuideHtml({
+            standard: "買い場ライン付近で、5日線・RSI・ローソク足のどれかに反転サインが出ると入口候補です。",
+            impact: "ラインから遠い時は追わず、反転が出るまで待つ判断にします。",
+          })}
           <div class="entry-points">${signals}${risks}</div>
         </article>
         <article class="risk-check ${Number.isFinite(price.atrPct) && price.atrPct >= 6 ? "medium" : "low"}">
@@ -1912,6 +1916,10 @@ function technicalEntryHtml(price = {}, formatter = yen) {
             <span>${Number.isFinite(price.atrPct) ? `${price.atrPct.toFixed(1)}%` : "未取得"}</span>
           </div>
           <p>買い場 ${formatter(entry.buyLine)} / 荒い時の指値 ${formatter(entry.atrAdjustedBuyLine)}</p>
+          ${ruleGuideHtml({
+            standard: "ATRは1日の値動きの大きさです。2-4%は通常、6%以上は荒い値動きとして見ます。",
+            impact: "荒い時は買い場ラインを少し下げ、急落に巻き込まれにくい指値にします。",
+          })}
         </article>
         <article class="risk-check ${price.sma5CrossUp || price.rsiCross30 ? "low" : "medium"}">
           <div>
@@ -1919,6 +1927,10 @@ function technicalEntryHtml(price = {}, formatter = yen) {
             <span>${price.sma5CrossUp || price.rsiCross30 ? "反転あり" : "待ち"}</span>
           </div>
           <p>5日線 ${formatter(price.sma5)} / RSI ${Number.isFinite(price.rsi14) ? price.rsi14.toFixed(1) : "-"}</p>
+          ${ruleGuideHtml({
+            standard: "RSIは30未満なら売られすぎ、70超なら過熱気味です。5日線上抜けは短期反転の確認に使います。",
+            impact: "RSIが30を上回り直す、または5日線を上抜けるまでは、安く見えても待ちます。",
+          })}
         </article>
         <article class="risk-check ${regime.panicPullbackPct >= 55 ? "medium" : "low"}">
           <div>
@@ -1926,6 +1938,10 @@ function technicalEntryHtml(price = {}, formatter = yen) {
             <span>${escapeHtml(regime.label || "未判定")}</span>
           </div>
           <p>${escapeHtml(regime.summary || "日次リターン、20日ボラ、ATR、移動平均乖離から状態を推定します。")}</p>
+          ${ruleGuideHtml({
+            standard: "安定上昇、調整・下落、横ばいのどれに近いかを確率で見ます。",
+            impact: "調整・下落が強い時は、価格だけで買わず反転確認を優先します。",
+          })}
         </article>
       </div>
     </section>
@@ -1951,6 +1967,7 @@ function financialInfoHtml(info = null, price = {}) {
         <span>${escapeHtml(financialCriterionText(item.status))}</span>
       </div>
       <p>${escapeHtml(item.summary || "未評価")}</p>
+      ${financialCriterionGuideHtml(item)}
     </article>
   `).join("");
   const warnings = (displayInfo.warnings || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
@@ -1975,7 +1992,7 @@ function financialInfoHtml(info = null, price = {}) {
         <span><strong>営業CF</strong>${largeYen(displayInfo.operatingCashFlow)}</span>
       </div>
       ${criteria ? `<div class="risk-check-grid">${criteria}</div>` : ""}
-      ${insights ? `<div class="financial-insights"><strong>決算書からの示唆</strong><ul>${insights}</ul></div>` : ""}
+      ${insights ? `<div class="financial-insights"><strong>決算書から分かること</strong><ul>${insights}</ul></div>` : ""}
       ${displayInfo.documentTitle || displayInfo.docID ? `<p class="settings-help">確認元 ${escapeHtml(displayInfo.documentTitle || "EDINET書類")} ${escapeHtml(displayInfo.docID || "")}</p>` : ""}
       ${missing ? `<div class="entry-points financial-missing"><strong>不足材料</strong>${missing}</div>` : ""}
       ${warnings ? `<div class="entry-points">${warnings}</div>` : ""}
@@ -2027,6 +2044,44 @@ function financialCriterionText(status = "") {
   return "未取得";
 }
 
+function ruleGuideHtml(guide = {}) {
+  const standard = guide?.standard || "";
+  const impact = guide?.impact || "";
+  if (!standard && !impact) return "";
+  return `
+    <div class="rule-guide">
+      ${standard ? `<span><strong>目安</strong>${escapeHtml(standard)}</span>` : ""}
+      ${impact ? `<span><strong>買う時</strong>${escapeHtml(impact)}</span>` : ""}
+    </div>
+  `;
+}
+
+function financialCriterionGuideHtml(item = {}) {
+  const guides = {
+    market_cap: {
+      standard: "50億-500億円は中小型PEの中心、500億-3000億円は大型PEでも対象になり得る範囲、3000億-1兆円は大型・特殊案件として見ます。",
+      impact: "規模が大きいほど直接の買収・MBO・株主変化が必要です。通常の株として買う判断とは分けて見ます。",
+    },
+    net_cash: {
+      standard: "ネットキャッシュ比率は50%以上なら強い、30-50%は確認、0%未満は弱い条件です。",
+      impact: "現金が厚いほど買収後に資金回収しやすいため、PE候補として加点します。",
+    },
+    ev_ebitda: {
+      standard: "EV/EBITDAは6倍以下、またはPER12倍以下を割安の目安にします。PER20倍超は慎重に見ます。",
+      impact: "利益に対して安いほど買いやすさは上がります。高い場合は高い価格で買ってしまうリスクを重く見ます。",
+    },
+    pbr: {
+      standard: "PBRは1.0倍未満なら純資産と比べて安め、0.8倍以下なら強め。1.2倍超は資産面の割安感は弱めです。",
+      impact: "PBRだけでは買いません。低PBRに加えて、事業の現金創出や株主還元余地を確認します。",
+    },
+    operating_cf: {
+      standard: "営業CFは3期以上プラスなら安定、直近期だけプラスなら確認中、マイナスなら大きな注意点です。",
+      impact: "本業で現金を生む会社ほど、長期保有やPE候補として見やすくなります。",
+    },
+  };
+  return ruleGuideHtml(guides[item.key] || null);
+}
+
 function exitPlanHtml(plan = {}) {
   if (!plan || !plan.highWaterPrice) return "";
   const currency = plan.currency || "JPY";
@@ -2039,18 +2094,30 @@ function exitPlanHtml(plan = {}) {
       level: growth.level === "exit_alert" ? "high" : growth.level === "watch" ? "medium" : "low",
       status: growth.level === "exit_alert" ? "売りアラート" : growth.level === "watch" ? "確認" : "正常",
       summary: growth.reason || "成長ストーリー崩壊は未検出です。",
+      guide: {
+        standard: "30日以内の下方修正、ガイダンス未達、需要・粗利・受注の悪化、減配などを異常として見ます。",
+        impact: "株価だけで売らず、買った理由そのものが崩れた時だけ売却候補にします。",
+      },
     },
     {
       label: "高値トレーリング",
       level: plan.trailingTriggered ? "high" : plan.alertLevel === "watch" ? "medium" : "low",
       status: plan.trailingTriggered ? "通知対象" : plan.trailingBelowLine ? "通知なし" : `${plan.trailingStopPct || 25}%`,
       summary: plan.trailingSuppressedReason || `最高値 ${moneyByCurrency(plan.highWaterPrice, currency)}${plan.highWaterDate ? ` (${plan.highWaterDate})` : ""}、確認ライン ${moneyByCurrency(plan.trailingStopPrice, currency)}。現在は高値から ${signedPctText(plan.drawdownFromHighPct)}。`,
+      guide: {
+        standard: `最高値から${plan.trailingStopPct || 25}%下を確認ラインにします。成長株の20-30%下落は通常でも起きます。`,
+        impact: "確認ラインを割ったら、利益確定か保有理由の見直しを行います。損益とファンダ崩壊も合わせて判断します。",
+      },
     },
     {
       label: "恩株化",
       level: onkabu.triggered ? "medium" : onkabu.achieved ? "low" : "low",
-      status: onkabu.triggered ? "部分利確候補" : onkabu.achieved ? "達成" : `+${onkabu.profitPct || 100}%`,
-      summary: onkabu.summary || "+100%到達時に元本分の部分利確を検討します。",
+      status: onkabu.triggered ? "部分利益確定候補" : onkabu.achieved ? "達成" : `+${onkabu.profitPct || 100}%`,
+      summary: onkabu.summary || "+100%到達時に元本分の部分利益確定を検討します。",
+      guide: {
+        standard: `含み益が+${onkabu.profitPct || 100}%に届いたら、半分売って元本回収する目安です。`,
+        impact: "元本を回収した後は、残りを長期で持ちやすくなります。",
+      },
     },
   ];
   const alerts = (plan.alerts || []).map((alert) => `
@@ -2077,6 +2144,7 @@ function exitPlanHtml(plan = {}) {
               <span>${escapeHtml(card.status)}</span>
             </div>
             <p>${escapeHtml(card.summary)}</p>
+            ${ruleGuideHtml(card.guide)}
           </article>
         `).join("")}
         ${aiForecast}
@@ -2097,8 +2165,12 @@ function sellForecastCardHtml(forecast = null, currency = "JPY") {
         <span>${escapeHtml(forecast.horizon || confidence)}</span>
       </div>
       <p>${escapeHtml(forecast.timing || forecast.reason || "ニュースと過去の値動きから、売却を検討する時期と価格を見ます。")}</p>
+      ${ruleGuideHtml({
+        standard: "決算、主要ニュース、5日線やRSIの失速、過去レンジを見て1-6か月の目安を出します。",
+        impact: "信頼度が低い時は売買指示ではなく、次の決算やニュースを待つ確認メモとして扱います。",
+      })}
       <div class="forecast-lines">
-        <span><strong>利確候補</strong>${moneyByCurrency(forecast.targetPrice, currency)}</span>
+        <span><strong>利益確定候補</strong>${moneyByCurrency(forecast.targetPrice, currency)}</span>
         <span><strong>見直し</strong>${moneyByCurrency(forecast.reviewPrice, currency)}</span>
         <span><strong>信頼度</strong>${escapeHtml(confidence)}</span>
       </div>
@@ -3399,8 +3471,42 @@ function simpleSearchReason(reason = "") {
   return text || "停止";
 }
 
+function polishJapaneseText(value = "") {
+  let text = String(value ?? "");
+  const replacements = [
+    ["割安放置の根拠があります", "割安に見える材料があります"],
+    ["割安放置の根拠", "割安に見える材料"],
+    ["買収妙味", "買収対象として見られやすい条件"],
+    ["割安放置", "割安のまま見過ごされている"],
+    ["PEの中小型狙い", "PEが対象にしやすい中小型株"],
+    ["PE狙い", "PE候補"],
+    ["PE買収マッチ", "PE候補チェック"],
+    ["買収阻害リスク", "買収されにくい要因"],
+    ["株主還元・統治余地", "株主還元・経営改善の余地"],
+    ["回収倍率は強くない", "買収後に投資回収しやすい水準とは言い切れません"],
+    ["資産割安ではない", "純資産と比べた割安感は強くありません"],
+    ["大型すぎて買収資金のハードルが高い", "規模が大きく、買収に必要な資金が重くなりやすい"],
+    ["小さすぎてPEの手間に見合いにくい", "規模が小さく、PEの案件としては優先されにくい"],
+    ["高値づかみ", "高い価格で買ってしまう"],
+    ["先回り初動", "早めに入る条件"],
+    ["先回り条件", "早めに入る条件"],
+    ["決算書からの示唆", "決算書から分かること"],
+    ["時価総額50億-500億円", "時価総額50億-3000億円中心"],
+    ["時価総額は50億-500億円の範囲", "時価総額は50億-3000億円を中心とする範囲"],
+    ["利確", "利益確定"],
+  ];
+  for (const [from, to] of replacements) {
+    text = text.replaceAll(from, to);
+  }
+  return text;
+}
+
 function escapeHtml(value = "") {
-  return String(value)
+  return rawEscapeHtml(polishJapaneseText(value));
+}
+
+function rawEscapeHtml(value = "") {
+  return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -3409,7 +3515,7 @@ function escapeHtml(value = "") {
 }
 
 function escapeAttr(value = "") {
-  return escapeHtml(value).replaceAll("`", "&#96;");
+  return rawEscapeHtml(value).replaceAll("`", "&#96;");
 }
 
 function linkifyPlainText(value = "") {
@@ -4034,14 +4140,14 @@ function candidateReportsHtml(items = []) {
     reportSectionHtml({
       title: "PEが買いそうな候補",
       count: peItems.length,
-      description: "日本株だけを対象に、時価総額50億-500億円、ネットキャッシュ比率、EV/EBITDA、PBR、営業CF、決算後の失望売り、株主還元余地を別軸で見ます。PE要素が薄いものはここには入れません。",
-      empty: "今の条件では、PE買収狙いとして根拠が強い候補はありません。",
+      description: "日本株だけを対象に、時価総額50億-3000億円を中心に、ネットキャッシュ比率、EV/EBITDA、PBR、営業CF、決算後の失望売り、株主還元余地を別軸で見ます。3000億円超は直接材料がある時だけ確認します。",
+      empty: "今の条件では、PE候補として根拠が強い銘柄はありません。",
       items: peItems,
     }),
     reportSectionHtml({
       title: "株として買う候補",
       count: stockItems.length,
-      description: "買い場ライン、3年目安、業績材料、配当、短期の過熱感で見ます。PE買収狙いとは別の通常候補です。",
+      description: "買い場ライン、3年目安、業績材料、配当、短期の過熱感で見ます。PE候補とは別の通常候補です。",
       empty: "通常の株候補はありません。",
       items: stockItems,
     }),
@@ -4263,6 +4369,10 @@ function sellPlanHtml(plan, item = {}) {
       <span><strong>売り場ライン</strong>${money(plan.targetPrice)}</span>
       <span><strong>確認ライン</strong>${money(plan.stopPrice)}</span>
       <p>${escapeHtml(plan.summary || "")}</p>
+      ${ruleGuideHtml({
+        standard: "売り場ラインは過去レンジ上側や直近高値をもとにした利益確定の目安、確認ラインは下落理由を見直す目安です。",
+        impact: "候補を買う前に、どこで利益を取り、どこで前提を見直すかを先に決めます。",
+      })}
     </div>
   `;
 }
@@ -4272,7 +4382,7 @@ function earlySignalHtml(signal) {
   const criteria = (signal.criteria || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
   const risks = (signal.risks || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
   const cls = Number(signal.score || 0) >= 75 ? "good" : Number(signal.score || 0) >= 60 ? "ok" : Number(signal.score || 0) >= 45 ? "watch" : "weak";
-  const title = signal.title || (Number(signal.score || 0) >= 45 ? "先回り初動" : "初動確認");
+  const title = signal.title || (Number(signal.score || 0) >= 45 ? "早めに入る条件" : "初動確認");
   return `
     <div class="early-signal ${cls}">
       <div>
@@ -4311,12 +4421,12 @@ function peSignalHtml(signal) {
   const score = Number(signal.matchScore || 0);
   const cls = score >= 70 ? "strong" : score >= 45 ? "watch" : "weak";
   const warning = score < 45
-    ? `<p class="pe-warning">PE買収狙いでは優先しません。安定収益や業種だけでは、買収候補としての根拠が足りません。</p>`
+    ? `<p class="pe-warning">PE候補としては優先しません。安定収益や業種だけでは、買収候補としての根拠が足りません。</p>`
     : "";
   return `
     <div class="pe-signal ${cls}">
       <div>
-        <strong>PE買収マッチ</strong>
+        <strong>PE候補チェック</strong>
         <span>${escapeHtml(signal.label || "確認")} ${Number.isFinite(signal.matchScore) ? signal.matchScore : "-"}</span>
       </div>
       <p>${escapeHtml(signal.summary || "")}</p>
