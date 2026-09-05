@@ -2,6 +2,7 @@ const MANAGED_STOCK_LIMIT = 50;
 const VIEW_KEYS = new Set(["analysis", "stocks", "us", "crypto", "ideas", "settings"]);
 const VIEW_STORAGE_KEY = "stockSignalActiveView";
 const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2400000;
+const NISA_GROWTH_LIFETIME_LIMIT_YEN = 12000000;
 
 const state = {
   stocks: [],
@@ -917,7 +918,10 @@ function renderProfitSummary() {
   if (els.dividendIncomeTotal) els.dividendIncomeTotal.textContent = yen(summary.annualDividendEstimate);
   if (els.nisaRemainingTotal) els.nisaRemainingTotal.textContent = yen(summary.nisaRemaining);
   if (els.nisaAllowanceUsage) {
-    els.nisaAllowanceUsage.textContent = `${summary.nisaYear}年 購入 ${yen(summary.nisaUsed)} / 上限 ${yen(summary.nisaLimit)}`;
+    const restoringText = summary.nisaRestoringNextYear > 0
+      ? `・来年復活 ${yen(summary.nisaRestoringNextYear)}`
+      : "";
+    els.nisaAllowanceUsage.textContent = `${summary.nisaYear}年 ${yen(summary.nisaUsed)} / ${yen(summary.nisaLimit)}・生涯 ${yen(summary.nisaLifetimeUsed)} / ${yen(summary.nisaLifetimeLimit)}${restoringText}`;
   }
   if (els.profitableCount) els.profitableCount.textContent = String(summary.winCount);
   if (els.lossCount) els.lossCount.textContent = String(summary.lossCount);
@@ -1529,21 +1533,67 @@ function portfolioSummary() {
 
 function nisaAllowanceSummary(year = new Date().getFullYear()) {
   const limit = nisaAnnualLimitYen();
-  const used = state.stocks.reduce((sum, stock) => {
+  const lifetimeLimit = NISA_GROWTH_LIFETIME_LIMIT_YEN;
+  const yearStart = `${year}-01-01`;
+  const nextYearStart = `${year + 1}-01-01`;
+  let used = 0;
+  let lifetimeBookValue = 0;
+  let restoredBookValue = 0;
+  let restoringNextYear = 0;
+  state.stocks.forEach((stock) => {
     const lots = positionLots(stock);
-    return sum + lots.reduce((lotSum, lot) => {
-      if (normalizeAccountType(lot.accountType) !== "nisa") return lotSum;
+    const sales = saleLots(stock);
+    lots.forEach((lot) => {
+      if (normalizeAccountType(lot.accountType) !== "nisa") return;
+      const bookValue = lot.purchasePrice * lot.quantity;
+      lifetimeBookValue += bookValue;
       const purchaseYear = Number(String(lot.purchaseDate || "").slice(0, 4));
-      if (Number.isFinite(purchaseYear) && purchaseYear > 0 && purchaseYear !== year) return lotSum;
-      return lotSum + (lot.purchasePrice * lot.quantity);
-    }, 0);
-  }, 0);
+      if (Number.isFinite(purchaseYear) && purchaseYear > 0 && purchaseYear !== year) return;
+      used += bookValue;
+    });
+    nisaSaleBookValues(lots, sales).forEach((sale) => {
+      if (sale.sellDate && sale.sellDate < yearStart) restoredBookValue += sale.bookValue;
+      if (sale.sellDate && sale.sellDate >= yearStart && sale.sellDate < nextYearStart) {
+        restoringNextYear += sale.bookValue;
+      }
+    });
+  });
+  const lifetimeUsed = Math.max(0, lifetimeBookValue - restoredBookValue);
+  const yearRemaining = Math.max(0, limit - used);
+  const lifetimeRemaining = Math.max(0, lifetimeLimit - lifetimeUsed);
   return {
     nisaYear: year,
     nisaLimit: limit,
     nisaUsed: used,
-    nisaRemaining: Math.max(0, limit - used),
+    nisaLifetimeLimit: lifetimeLimit,
+    nisaLifetimeUsed: lifetimeUsed,
+    nisaYearRemaining: yearRemaining,
+    nisaLifetimeRemaining: lifetimeRemaining,
+    nisaRestoringNextYear: restoringNextYear,
+    nisaRemaining: Math.min(yearRemaining, lifetimeRemaining),
   };
+}
+
+function nisaSaleBookValues(lots = [], sales = []) {
+  if (!lots.length || !sales.length) return [];
+  const remainingLots = lots.map((lot) => ({ ...lot }));
+  const soldBookValues = [];
+  sales.forEach((sale) => {
+    let saleLeft = sale.quantity;
+    for (const lot of remainingLots) {
+      if (saleLeft <= 0) break;
+      if (!lot.quantity) continue;
+      const take = Math.min(lot.quantity, saleLeft);
+      lot.quantity = Math.max(0, lot.quantity - take);
+      saleLeft -= take;
+      if (normalizeAccountType(lot.accountType) !== "nisa") continue;
+      soldBookValues.push({
+        sellDate: sale.sellDate || "",
+        bookValue: take * lot.purchasePrice,
+      });
+    }
+  });
+  return soldBookValues;
 }
 
 function nisaAnnualLimitYen() {
