@@ -10447,9 +10447,12 @@ function buildFinancialSnapshot(stock = {}, quote = {}, doc = null, facts = null
   const cash = numberOrNull(facts?.cashAndEquivalents ?? previous?.cashAndEquivalents);
   const shortTermSecurities = numberOrNull(facts?.shortTermSecurities ?? previous?.shortTermSecurities);
   const debt = numberOrNull(facts?.interestBearingDebt ?? previous?.interestBearingDebt);
-  const currentPrice = nullablePositiveNumber(quote.currentPrice ?? quote.regularMarketPrice ?? stock.currentPrice ?? stock.price?.current ?? previous?.currentPrice);
   const sharesOutstanding = nullablePositiveNumber(facts?.sharesOutstanding ?? quote.sharesOutstanding ?? previous?.sharesOutstanding);
-  const marketCap = numberOrNull(quote.marketCap ?? (currentPrice && sharesOutstanding ? currentPrice * sharesOutstanding : null) ?? previous?.marketCap);
+  const rawCurrentPrice = nullablePositiveNumber(quote.currentPrice ?? quote.regularMarketPrice ?? stock.currentPrice ?? stock.price?.current ?? previous?.currentPrice);
+  const rawMarketCap = numberOrNull(quote.marketCap ?? previous?.marketCap);
+  const marketValues = reconcileFinancialMarketValues(rawCurrentPrice, sharesOutstanding, rawMarketCap);
+  const currentPrice = marketValues.currentPrice;
+  const marketCap = marketValues.marketCap;
   const operatingIncome = numberOrNull(facts?.operatingIncome ?? previous?.operatingIncome);
   const depreciation = numberOrNull(facts?.depreciationAndAmortization ?? previous?.depreciationAndAmortization);
   const ebitda = numberOrNull(facts?.ebitda ?? (Number.isFinite(operatingIncome) && Number.isFinite(depreciation) ? operatingIncome + depreciation : previous?.ebitda));
@@ -10510,7 +10513,7 @@ function buildFinancialSnapshot(stock = {}, quote = {}, doc = null, facts = null
     netAssets,
     totalAssets: numberOrNull(facts?.totalAssets ?? previous?.totalAssets),
     depreciationAndAmortization: depreciation,
-    warnings: [],
+    warnings: marketValues.warnings,
   };
   snapshot.criteria = buildPeFinancialCriteria(snapshot);
   snapshot.missingMetrics = buildFinancialMissingMetrics(snapshot);
@@ -10521,6 +10524,38 @@ function buildFinancialSnapshot(stock = {}, quote = {}, doc = null, facts = null
   if (!doc?.docID) snapshot.warnings.push("EDINET報告書は直近検索で未取得");
   if (!Number.isFinite(snapshot.marketCap)) snapshot.warnings.push("時価総額未取得");
   return normalizeFinancialSnapshot(snapshot);
+}
+
+function reconcileFinancialMarketValues(currentPrice, sharesOutstanding, marketCap) {
+  const warnings = [];
+  const price = nullablePositiveNumber(currentPrice);
+  const shares = nullablePositiveNumber(sharesOutstanding);
+  const cap = nullablePositiveNumber(marketCap);
+  const impliedPrice = cap && shares ? cap / shares : null;
+  let reconciledPrice = price;
+  let reconciledMarketCap = cap;
+
+  if (Number.isFinite(impliedPrice) && !isFinancialPriceConsistent(price, impliedPrice)) {
+    reconciledPrice = impliedPrice;
+    warnings.push("株価を時価総額÷発行済株式数で補正");
+  }
+
+  if (!Number.isFinite(reconciledMarketCap) && Number.isFinite(reconciledPrice) && shares) {
+    reconciledMarketCap = reconciledPrice * shares;
+  }
+
+  return {
+    currentPrice: numberOrNull(reconciledPrice),
+    marketCap: numberOrNull(reconciledMarketCap),
+    warnings,
+  };
+}
+
+function isFinancialPriceConsistent(price, impliedPrice) {
+  if (!Number.isFinite(price)) return false;
+  if (!Number.isFinite(impliedPrice) || impliedPrice <= 0) return true;
+  const ratio = price / impliedPrice;
+  return ratio >= 0.65 && ratio <= 1.35;
 }
 
 function financialFactsFromSnapshot(item = {}) {
@@ -10817,7 +10852,8 @@ function parseYahooJapanQuotePageSnapshot(html = "") {
     .replace(/\\u003e/gi, ">")
     .replace(/\\"/g, "\"");
   const text = cleanText(htmlToInlineText(decoded));
-  const currentPrice = parseJapaneseAmountNearLabel(text, ["現在値", "株価"], { allowNoUnit: true });
+  const currentPrice = extractJsonRawNumber(decoded, ["regularMarketPrice", "currentPrice"])
+    ?? parseJapaneseAmountNearLabel(text, ["現在値", "取引値"], { allowNoUnit: true });
   const marketCap = parseJapaneseAmountNearLabel(text, ["時価総額"], { defaultUnit: "百万円" })
     ?? extractJsonRawNumber(decoded, ["marketCap", "marketCapitalization"]);
   const sharesOutstanding = parseJapaneseAmountNearLabel(text, ["発行済株式数"], { defaultUnit: "株", allowNoUnit: true })

@@ -1791,7 +1791,7 @@ function renderSelection() {
     ${positionEditor(stock, position, analysis)}
     ${chartMessageHtml(price)}
     ${jpAiConfirmationHtml(stock, analysis, position)}
-    ${financialInfoHtml(analysis.financials)}
+    ${financialInfoHtml(analysis.financials, analysis.price)}
     ${shareholderInfoHtml(analysis.shareholders)}
   `;
   attachPositionForm(stock.symbol);
@@ -1932,8 +1932,9 @@ function technicalEntryHtml(price = {}, formatter = yen) {
   `;
 }
 
-function financialInfoHtml(info = null) {
+function financialInfoHtml(info = null, price = {}) {
   if (!info) return "";
+  const displayInfo = normalizedFinancialDisplayInfo(info, price);
   const statusText = info.status === "ok"
     ? "取得済み"
     : info.status === "partial"
@@ -1943,7 +1944,7 @@ function financialInfoHtml(info = null) {
     : info.status === "not_found"
     ? "未取得"
     : "確認";
-  const criteria = (info.criteria || []).map((item) => `
+  const criteria = (displayInfo.criteria || []).map((item) => `
     <article class="risk-check ${financialCriterionClass(item.status)}">
       <div>
         <strong>${escapeHtml(item.label)}</strong>
@@ -1952,34 +1953,65 @@ function financialInfoHtml(info = null) {
       <p>${escapeHtml(item.summary || "未評価")}</p>
     </article>
   `).join("");
-  const warnings = (info.warnings || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
-  const missing = (info.missingMetrics || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
-  const insights = (info.insights || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  const yahooLink = info.symbol ? symbolLinkHtml(info.symbol, "jp") : "";
+  const warnings = (displayInfo.warnings || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  const missing = (displayInfo.missingMetrics || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  const insights = (displayInfo.insights || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const yahooLink = displayInfo.symbol ? symbolLinkHtml(displayInfo.symbol, "jp") : "";
   return `
     <section class="risk-checks financial-info" aria-label="財務情報">
       <div class="risk-check-title">
         <strong>財務情報</strong>
-        <span>${yahooLink ? `${yahooLink} / ` : ""}${escapeHtml(statusText)}${info.checkedAt ? ` ${new Date(info.checkedAt).toLocaleString("ja-JP")}` : ""}</span>
+        <span>${yahooLink ? `${yahooLink} / ` : ""}${escapeHtml(statusText)}${displayInfo.checkedAt ? ` ${new Date(displayInfo.checkedAt).toLocaleString("ja-JP")}` : ""}</span>
       </div>
       <div class="metric-strip financial-metrics" aria-label="EDINET財務指標">
-        <span><strong>株価</strong>${yen(info.currentPrice)}</span>
-        <span><strong>発行済株式数</strong>${shareCount(info.sharesOutstanding)}</span>
-        <span><strong>時価総額</strong>${largeYen(info.marketCap)}</span>
-        <span><strong>ネットキャッシュ比率</strong>${Number.isFinite(info.netCashRatio) ? `${(info.netCashRatio * 100).toFixed(1)}%` : "-"}</span>
-        <span><strong>ネットキャッシュ</strong>${largeYen(info.netCash)}</span>
-        <span><strong>EV/EBITDA</strong>${multipleText(info.evEbitda)}</span>
-        <span><strong>PBR</strong>${multipleText(info.pbr)}</span>
-        <span><strong>PER</strong>${multipleText(info.per)}</span>
-        <span><strong>営業CF</strong>${largeYen(info.operatingCashFlow)}</span>
+        <span><strong>株価</strong>${yen(displayInfo.currentPrice)}</span>
+        <span><strong>発行済株式数</strong>${shareCount(displayInfo.sharesOutstanding)}</span>
+        <span><strong>時価総額</strong>${largeYen(displayInfo.marketCap)}</span>
+        <span><strong>ネットキャッシュ比率</strong>${Number.isFinite(displayInfo.netCashRatio) ? `${(displayInfo.netCashRatio * 100).toFixed(1)}%` : "-"}</span>
+        <span><strong>ネットキャッシュ</strong>${largeYen(displayInfo.netCash)}</span>
+        <span><strong>EV/EBITDA</strong>${multipleText(displayInfo.evEbitda)}</span>
+        <span><strong>PBR</strong>${multipleText(displayInfo.pbr)}</span>
+        <span><strong>PER</strong>${multipleText(displayInfo.per)}</span>
+        <span><strong>営業CF</strong>${largeYen(displayInfo.operatingCashFlow)}</span>
       </div>
       ${criteria ? `<div class="risk-check-grid">${criteria}</div>` : ""}
       ${insights ? `<div class="financial-insights"><strong>決算書からの示唆</strong><ul>${insights}</ul></div>` : ""}
-      ${info.documentTitle || info.docID ? `<p class="settings-help">確認元 ${escapeHtml(info.documentTitle || "EDINET書類")} ${escapeHtml(info.docID || "")}</p>` : ""}
+      ${displayInfo.documentTitle || displayInfo.docID ? `<p class="settings-help">確認元 ${escapeHtml(displayInfo.documentTitle || "EDINET書類")} ${escapeHtml(displayInfo.docID || "")}</p>` : ""}
       ${missing ? `<div class="entry-points financial-missing"><strong>不足材料</strong>${missing}</div>` : ""}
       ${warnings ? `<div class="entry-points">${warnings}</div>` : ""}
     </section>
   `;
+}
+
+function normalizedFinancialDisplayInfo(info = {}, price = {}) {
+  const currentPrice = finiteOrNull(info.currentPrice);
+  const marketPrice = finiteOrNull(price.current);
+  const sharesOutstanding = finiteOrNull(info.sharesOutstanding);
+  const marketCap = finiteOrNull(info.marketCap);
+  const impliedPrice = marketCap && sharesOutstanding ? marketCap / sharesOutstanding : null;
+  const warnings = [...(info.warnings || [])];
+  if (Number.isFinite(marketPrice) && !isFinancialDisplayPriceConsistent(currentPrice, marketPrice)) {
+    return {
+      ...info,
+      currentPrice: marketPrice,
+      warnings: [...new Set([...warnings, "株価を価格データで補正"].filter(Boolean))],
+    };
+  }
+  if (Number.isFinite(impliedPrice) && !isFinancialDisplayPriceConsistent(currentPrice, impliedPrice)) {
+    return {
+      ...info,
+      currentPrice: impliedPrice,
+      warnings: [...new Set([...warnings, "株価を時価総額÷発行済株式数で補正"].filter(Boolean))],
+    };
+  }
+  return info;
+}
+
+function isFinancialDisplayPriceConsistent(price, impliedPrice) {
+  if (!Number.isFinite(price)) return false;
+  if (!Number.isFinite(impliedPrice) || impliedPrice <= 0) return true;
+  const ratio = price / impliedPrice;
+  return ratio >= 0.65 && ratio <= 1.35;
 }
 
 function financialCriterionClass(status = "") {
