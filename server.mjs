@@ -33,7 +33,7 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 9;
+const DISCOVERY_SCORING_VERSION = 10;
 const DISCOVERY_FINANCIAL_REVIEW_LIMIT = 48;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
@@ -1151,6 +1151,30 @@ async function refreshWatchlistPrices(options = {}) {
 async function analyzeWatchlist(options = {}, onProgress = null) {
   const stocks = await readWatchlist();
   const settings = await readSettings();
+  const warnings = [];
+  const systemWarnings = [];
+  onProgress?.({
+    phase: "EDINET財務を確認中",
+    checked: 0,
+    total: stocks.length,
+    aiDone: 0,
+    aiCurrent: 0,
+    aiTotal: 0,
+  });
+  const previousFinancialCache = await readFinancialCache().catch(() => ({ items: [] }));
+  const previousFinancialBySymbol = new Map((previousFinancialCache.items || []).map((item) => [item.symbol, item]));
+  const missingFinancialForWatchlist = stocks.some((stock) => {
+    if (!/\.T$/.test(stock.symbol)) return false;
+    const item = previousFinancialBySymbol.get(stock.symbol);
+    return !item || ["missing_key", "not_found", "error"].includes(item.status);
+  });
+  const shouldForceFinancials = Boolean(settings.edinetApiKey)
+    && (options.forceFinancials === true || missingFinancialForWatchlist);
+  const financialCache = await updateFinancialSnapshots({ force: shouldForceFinancials }).catch(async (error) => {
+    systemWarnings.push(`EDINET財務: ${error.message || "財務情報を更新できませんでした"}`);
+    return previousFinancialCache;
+  });
+  const financialBySymbol = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
   const recentPrices = options.reuseFreshPrices
     ? recentCachedPriceBySymbol(await readAnalysisCache())
     : new Map();
@@ -1158,8 +1182,6 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
   const depthLimit = clamp(Number(options.depthLimit || settings.depthLimit || defaultSettings.depthLimit), 1, MAX_DEPTH_LIMIT);
   const pagesPerSite = clamp(Number(options.pagesPerSite || settings.pagesPerSite || defaultSettings.pagesPerSite), 1, MAX_PAGES_PER_SITE);
   const lmStatus = await checkLmStudio();
-  const warnings = [];
-  const systemWarnings = [];
   let checked = 0;
   onProgress?.({
     phase: "価格・配当・検索を確認中",
@@ -1181,7 +1203,7 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
     const fallback = ruleBasedDecision(stock, price, research);
     checked += 1;
     onProgress?.({ phase: "価格・配当・検索を確認中", checked, total: stocks.length });
-    return { stock, price, research, fallback };
+    return { stock, price, research, fallback, financials: financialBySymbol.get(stock.symbol) || null };
   });
   await translateResearchEvidenceRows(rows).catch(() => {});
 
@@ -3178,14 +3200,10 @@ async function discoverStocks(options = {}, job = null) {
     total: candidates.length + shortlist.length,
   });
   const enhanced = await mapLimit(shortlist, 3, async (candidate) => {
-    const code = candidate.symbol.replace(".T", "");
     const usCandidate = isUsDiscoveryCandidate(candidate);
-    const query = usCandidate
-      ? ""
-      : `${candidate.name} ${code} 決算後 失望売り 株主還元 自社株買い 増配なし ネットキャッシュ PBR PER EV EBITDA 営業CF TOB MBO PEファンド 大量保有 アクティビスト Yahoo 株探 TDnet`;
     const results = usCandidate
       ? await searchUsCandidateEvidence(candidate, websiteLimit).catch(() => [])
-      : (await searchGoogle(query, { limit: websiteLimit }).catch(() => [])).map((item, index) => ({ ...item, rank: index + 1 }));
+      : await searchJpStockEvidence(candidate, websiteLimit).catch(() => []);
     const evidencePool = usCandidate
       ? results
       : uniqueBy([...(candidate.sourceEvidence || []), ...results], (item) => item.url);
@@ -4911,13 +4929,154 @@ function searchPositionSignal(candidate, allResults = [], relevantResults = []) 
 }
 
 function relevantSearchResults(candidate, results) {
-  const code = candidate.symbol.replace(".T", "");
-  const name = candidate.name.toLowerCase();
-  const symbol = candidate.symbol.toLowerCase();
+  if (isJapaneseListedSymbol(candidate.symbol)) {
+    return results.filter((item) => isJpStockSpecificEvidence(item, candidate));
+  }
+  const code = String(candidate.symbol || "").replace(".T", "");
+  const name = String(candidate.name || "").toLowerCase();
+  const symbol = String(candidate.symbol || "").toLowerCase();
   return results.filter((item) => {
     const text = `${item.title} ${item.snippet} ${item.url}`.toLowerCase();
     return text.includes(code) || text.includes(symbol) || text.includes(name);
   });
+}
+
+function jpStockEvidenceQueries(stock = {}) {
+  const code = jpStockCode(stock.symbol);
+  const name = stock.name || code;
+  const base = [
+    `${code} ${name} 株価 ニュース 決算 業績予想 事業変化 Yahoo 株探`,
+    `${code} ${name} 決算後 急落 失望売り 自社株買いなし 増配なし 株主還元`,
+    `${code} ${name} 中期経営計画 受注 利益率 ガイダンス 上方修正 下方修正 TDnet`,
+    `${code} ${name} 時価総額 PBR PER EV EBITDA ネットキャッシュ 営業キャッシュフロー`,
+    `${code} ${name} 信用倍率 空売り 需給 大量保有 アクティビスト TOB MBO PEファンド`,
+  ];
+  if (!code) return base.map((text) => ({ text: text.trim(), topic: "company" }));
+  return [
+    { text: `site:kabutan.jp/stock/news?code=${code} ${name} 決算 業績 配当 自社株買い`, topic: "company" },
+    { text: `site:finance.yahoo.co.jp/quote/${code}.T ${name} ニュース 決算 業績`, topic: "company" },
+    { text: `site:irbank.net/${code} ${name} PBR PER 時価総額 キャッシュフロー`, topic: "company" },
+    ...base.map((text) => ({ text, topic: "company" })),
+  ];
+}
+
+async function searchJpStockEvidence(stock = {}, websiteLimit = 20) {
+  const queries = jpStockEvidenceQueries(stock);
+  const perQueryLimit = Math.max(3, Math.ceil(websiteLimit / Math.max(1, queries.length)));
+  const pages = await mapLimit(queries, 2, async (query) => (
+    searchGoogle(query.text, { limit: perQueryLimit, language: "ja-JP" }).catch(() => [])
+  ));
+  return uniqueBy(pages.flat(), (item) => item.url)
+    .filter((item) => isJpStockSpecificEvidence(item, stock))
+    .sort((a, b) => jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock))
+    .slice(0, websiteLimit)
+    .map((item, index) => ({ ...item, rank: index + 1 }));
+}
+
+function isJapaneseListedSymbol(symbol = "") {
+  return /^\d{4}(?:\.T)?$/i.test(String(symbol || "").trim());
+}
+
+function jpStockCode(symbol = "") {
+  const match = String(symbol || "").toUpperCase().match(/(\d{4})(?:\.T)?/);
+  return match ? match[1] : "";
+}
+
+function isJpStockSpecificEvidence(item = {}, stock = {}) {
+  const url = normalizeUrl(item.url);
+  const text = cleanText(`${item.title || ""} ${item.snippet || ""} ${url}`);
+  if (!text) return false;
+  if (isLowValueStockEvidence(item, url)) return false;
+  const code = jpStockCode(stock.symbol);
+  const hasCode = code ? jpEvidenceHasCode(item, code) : false;
+  if (hasConflictingJpStockCode(item, code) && !hasCode) return false;
+  if (hasCode) return true;
+  return hasStrongCompanyName(item, stock);
+}
+
+function jpStockEvidenceScore(item = {}, stock = {}) {
+  const url = normalizeUrl(item.url);
+  const host = hostOf(url).toLowerCase();
+  const text = businessContextText(`${item.title || ""} ${item.snippet || ""} ${url}`);
+  const code = jpStockCode(stock.symbol);
+  let score = 0;
+  if (code && jpEvidenceHasCode(item, code)) score += 45;
+  if (hasStrongCompanyName(item, stock)) score += 18;
+  if (/kabutan\.jp|finance\.yahoo\.co\.jp|tdnet|jpx|irbank\.net|nikkei\.com|buffett-code|minkabu/.test(host)) score += 24;
+  if (/決算|業績|上方修正|下方修正|配当|増配|減配|自社株買い|株主還元|中期経営|受注|営業利益|キャッシュフロー|pbr|per|ev.?ebitda|tob|mbo|大量保有|アクティビスト/i.test(text)) score += 16;
+  if (item.publishedDate && isRecentSearchDate(item.publishedDate, 120)) score += 8;
+  return score;
+}
+
+function jpEvidenceHasCode(item = {}, code = "") {
+  if (!code) return false;
+  const raw = `${item.title || ""} ${item.snippet || ""} ${item.url || ""}`;
+  const normalized = raw.toLowerCase();
+  const escaped = escapeRegExp(code);
+  return new RegExp(`(^|[^0-9])${escaped}(\\.t|[^0-9]|$)`, "i").test(raw)
+    || new RegExp(`(code|quote|stock|stocks|symbol|銘柄コード|証券コード)[=/._-]*${escaped}`, "i").test(normalized)
+    || normalized.includes(`/quote/${code}.t`)
+    || normalized.includes(`code=${code}`)
+    || normalized.includes(`/stocks/${code}`)
+    || normalized.includes(`/stock/${code}`)
+    || normalized.includes(`/${code}/`)
+    || normalized.includes(`/${code}-`);
+}
+
+function hasConflictingJpStockCode(item = {}, code = "") {
+  const text = cleanText(`${item.title || ""} ${item.snippet || ""} ${item.url || ""}`);
+  const matches = [
+    ...[...text.matchAll(/(?:証券コード|銘柄コード|コード|code|quote|stock|stocks)[^0-9]{0,12}(\d{4})(?:\.T)?/gi)].map((match) => match[1]),
+    ...[...text.matchAll(/[<（(]\s*(\d{4})(?:\.T)?\s*[>）)]/gi)].map((match) => match[1]),
+    ...[...text.matchAll(/\/(?:quote|stock|stocks)\/?(\d{4})(?:\.T)?/gi)].map((match) => match[1]),
+    ...[...text.matchAll(/[?&]code=(\d{4})/gi)].map((match) => match[1]),
+  ]
+    .filter((value) => !/^(19|20)\d{2}$/.test(value));
+  const uniqueCodes = uniqueText(matches);
+  return uniqueCodes.some((value) => value !== code);
+}
+
+function hasStrongCompanyName(item = {}, stock = {}) {
+  const haystack = normalizeCompanyKey(`${item.title || ""} ${item.snippet || ""} ${item.url || ""}`);
+  const aliases = jpCompanyAliases(stock);
+  return aliases.some((alias) => alias.length >= 3 && haystack.includes(alias));
+}
+
+function jpCompanyAliases(stock = {}) {
+  const rawValues = [
+    stock.name,
+    stock.shortName,
+    stock.longName,
+    ...(Array.isArray(stock.aliases) ? stock.aliases : []),
+  ];
+  return uniqueText(rawValues.map(normalizeCompanyKey).filter((value) => value.length >= 3));
+}
+
+function normalizeCompanyKey(value = "") {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/株式会社|有限会社|合同会社|\(株\)|（株）|㈱|ホールディングス|holdings?|corporation|corp\.?|inc\.?|company|co\.?,?\s*ltd\.?/gi, "")
+    .replace(/[ァィゥェォッャュョ]/g, (char) => ({
+      "ァ": "ア",
+      "ィ": "イ",
+      "ゥ": "ウ",
+      "ェ": "エ",
+      "ォ": "オ",
+      "ッ": "ツ",
+      "ャ": "ヤ",
+      "ュ": "ユ",
+      "ョ": "ヨ",
+    }[char] || char))
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xFEE0))
+    .replace(/[\s　・･,，.．、。:：;；/／\\\-ー_＿()[\]（）【】「」『』"'`]/g, "");
+}
+
+function isLowValueStockEvidence(item = {}, url = "") {
+  const titleAndUrl = cleanText(`${item.title || ""} ${url}`).toLowerCase();
+  const haystack = cleanText(`${item.title || ""} ${item.snippet || ""} ${url}`).toLowerCase();
+  if (/porn|casino|betting|download|crack|torrent|login|sign in/.test(haystack)) return true;
+  if (/careers?|jobs?|採用|求人|転職|ログイン|社員用|myappid|linkedin|wikipedia|facebook|instagram|youtube|x\.com|twitter/.test(titleAndUrl)) return true;
+  return false;
 }
 
 function buildDiscoveryProcess({
@@ -5376,13 +5535,7 @@ function stockSector(stock) {
 
 async function researchStock(stock, options) {
   const sector = stock.sector || stockSector(stock);
-  const queries = [
-    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 株価 Yahoo 株探 決算短信 業績 事業変化 ニュース`, topic: "company" },
-    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 決算後 急落 失望売り 自社株買いなし 増配なし 株主還元`, topic: "company" },
-    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 中期経営計画 受注 利益率 ガイダンス 上方修正 下方修正 TDnet`, topic: "company" },
-    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 時価総額 PBR PER EV EBITDA ネットキャッシュ 営業キャッシュフロー`, topic: "company" },
-    { text: `${stock.name} ${stock.symbol.replace(".T", "")} 信用倍率 空売り 需給 大量保有 アクティビスト`, topic: "company" },
-  ];
+  const queries = jpStockEvidenceQueries(stock);
   if (sector && sector !== "その他") {
     queries.push({ text: `${sector} 業界 市況 見通し 日本株 決算 業績 需要 リスク`, topic: "sector" });
   }
@@ -5390,11 +5543,14 @@ async function researchStock(stock, options) {
   const perQueryLimit = Math.max(5, Math.ceil(options.websiteLimit / queries.length));
 
   for (const query of queries) {
-    const results = await searchGoogle(query.text, { limit: perQueryLimit }).catch(() => []);
+    const results = await searchGoogle(query.text, { limit: perQueryLimit, language: "ja-JP" }).catch(() => []);
     searchResults.push(...results.map((item) => ({ ...item, topic: query.topic, query: query.text })));
   }
 
-  const companyResults = uniqueBy(searchResults.filter((item) => item.topic !== "sector"), (item) => item.url);
+  const companyResults = uniqueBy(searchResults
+    .filter((item) => item.topic !== "sector")
+    .filter((item) => isJpStockSpecificEvidence(item, stock))
+    .sort((a, b) => jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock)), (item) => item.url);
   const sectorResults = uniqueBy(searchResults
     .filter((item) => item.topic === "sector")
     .filter((item) => isRelevantSectorEvidence(item, sector)), (item) => item.url);
@@ -6514,7 +6670,7 @@ function isNoUpsideChart(price = {}) {
 }
 
 async function aiBatchDecisions(rows, onProgress = null) {
-  const items = rows.map(({ stock, price, research, fallback }) => ({
+  const items = rows.map(({ stock, price, research, fallback, financials }) => ({
     symbol: stock.symbol,
     name: stock.name,
     sector: stock.sector || stockSector(stock),
@@ -6522,6 +6678,7 @@ async function aiBatchDecisions(rows, onProgress = null) {
     notes: stock.notes || "",
     position: positionMetrics(stock, price),
     price: compactPrice(price),
+    financials: compactFinancialForAi(financials),
     ruleDecision: fallback,
     evidence: research.evidence.slice(0, 6).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
@@ -6572,6 +6729,7 @@ async function aiDecisionChunk(model, items) {
     "3年で大きく上がった後、現在値が3年の流れや安値から見て高い位置にある場合はBUYにせず、WATCHかHOLDにしてください。",
     "配当利回り、配当の増減、購入日以降の配当込み損益を見てください。高配当だけでBUYにせず、株価下落で利回りが高く見える可能性をリスクに入れてください。",
     "短期売買ではなく、3年の価格傾向、1年買い場ライン、購入日、購入単価、残株数、売却済み株数、確定損益、含み損益、配当込み損益、直近モメンタム、出来高、悪材料、過熱感、業種環境、保有継続可否を総合評価してください。",
+    "financialsにはEDINET有価証券報告書とYahoo株から取れた財務指標、未取得項目、決算書からの示唆が入ります。未取得は推測せず、取得できた財務情報だけを根拠にしてください。",
     "sellForecastは保有中か残株がある銘柄だけに出してください。将来を断定せず、ニュースや過去の経緯から売却を検討する時期、利確候補価格、見直し価格、根拠を短く示してください。根拠が薄ければtargetPrice/null、horizon/未定。",
     "",
     JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
@@ -6739,6 +6897,40 @@ function compactPrice(price) {
     dividendChangePct: price.dividendChangePct,
     dividendLastDate: price.dividendLastDate,
     dividendLastAmount: price.dividendLastAmount,
+  };
+}
+
+function compactFinancialForAi(financials = null) {
+  const snapshot = financials ? normalizeFinancialSnapshot(financials) : null;
+  if (!snapshot) return null;
+  return {
+    status: snapshot.status,
+    source: snapshot.source,
+    asOfDate: snapshot.asOfDate,
+    docID: snapshot.docID,
+    documentTitle: snapshot.documentTitle,
+    currentPrice: snapshot.currentPrice,
+    sharesOutstanding: snapshot.sharesOutstanding,
+    marketCap: snapshot.marketCap,
+    netCashRatio: snapshot.netCashRatio,
+    netCash: snapshot.netCash,
+    evEbitda: snapshot.evEbitda,
+    pbr: snapshot.pbr,
+    per: snapshot.per,
+    operatingCashFlow: snapshot.operatingCashFlow,
+    operatingCashFlowYears: snapshot.operatingCashFlowYears,
+    operatingCashFlowPositive: snapshot.operatingCashFlowPositive,
+    netSales: snapshot.netSales,
+    operatingIncome: snapshot.operatingIncome,
+    netIncome: snapshot.netIncome,
+    criteria: snapshot.criteria.map((item) => ({
+      key: item.key,
+      label: item.label,
+      status: item.status,
+      summary: item.summary,
+    })),
+    insights: snapshot.insights,
+    missingMetrics: snapshot.missingMetrics,
   };
 }
 

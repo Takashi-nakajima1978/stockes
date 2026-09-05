@@ -1539,6 +1539,28 @@ tr:hover .drag-handle,
   text-transform: uppercase;
 }
 
+.metrics-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.metrics-row > span {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+}
+
+.metrics-row > span > strong {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
 .risk-checks {
   display: grid;
   gap: 10px;

@@ -1751,46 +1751,12 @@ function renderSelection() {
   const action = analysis.action || "WATCH";
   const price = analysis.price || {};
   const position = positionMetrics(stock, price);
-  const reasons = (analysis.reasons || []).slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  const risks = (analysis.risks || []).slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   els.decisionDetail.innerHTML = `
     ${positionEditor(stock, position, analysis)}
-    <div class="decision-callout ${actionClasses[action] || "watch"}">
-      <div class="decision-title">
-        <strong>${escapeHtml(stock.name)}</strong>
-        <span class="badge ${actionClasses[action] || "watch"}">${actionLabels[action] || "要確認"}</span>
-      </div>
-      <p>${escapeHtml(actionExplanation(action, stock, position))}</p>
-      <small>業種: ${escapeHtml(stock.sector || "その他")} / 信頼度 ${Number.isFinite(analysis.confidence) ? `${Math.round(analysis.confidence)}%` : "-"}</small>
-    </div>
-    <p>${escapeHtml(analysis.thesis || "分析コメントはありません。")}</p>
     ${chartMessageHtml(price)}
-    <div class="metric-strip" aria-label="主要指標">
-      <span><strong>配当込み損益</strong>${positionPnl(position)}</span>
-      <span><strong>配当利回り</strong>${Number.isFinite(price.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
-      <span><strong>年間配当</strong>${yen(position.annualDividendEstimate)}</span>
-      <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(price, yen))}</span>
-      <span><strong>3年</strong>${pct(price.return3y)}</span>
-      <span><strong>3年目安との差</strong>${trendGapBadge(price.distanceFromTrend3y)}</span>
-      <span><strong>高値から</strong>${pct(price.distanceFromHigh3y)}</span>
-      <span><strong>傾向</strong>${escapeHtml(trendLabel(price.trend3y))}</span>
-      <span><strong>判定対象株</strong>${position.sellableQuantity ? `${position.sellableQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
-    </div>
-    ${riskChecksHtml(analysis.riskChecks)}
-    ${technicalEntryHtml(price, yen)}
+    ${jpAiConfirmationHtml(stock, analysis, position)}
     ${financialInfoHtml(analysis.financials)}
-    ${exitPlanHtml(analysis.exitPlan)}
     ${shareholderInfoHtml(analysis.shareholders)}
-    <div class="decision-columns">
-      <section>
-        <h4>良い材料</h4>
-        <ul class="reason-list">${reasons || "<li>根拠不足</li>"}</ul>
-      </section>
-      <section>
-        <h4>注意点</h4>
-        <ul class="risk-list">${risks || "<li>リスク未検出ではありません</li>"}</ul>
-      </section>
-    </div>
   `;
   attachPositionForm(stock.symbol);
 
@@ -1801,11 +1767,57 @@ function renderSelection() {
         <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title || item.source || "source")}</a>
         <p>${escapeHtml(evidenceMetaText(item))}</p>
       </div>
-      <p>${escapeHtml(item.snippet || "")}</p>
-      <span>${escapeHtml(item.kind || "web")}</span>
+      <p>${escapeHtml(item.summaryJa || item.snippet || "")}</p>
+      <span>${escapeHtml(item.translationMethod === "lm_studio" ? "日本語要約" : item.kind || "web")}</span>
     </article>
   `).join("") || "<article class=\"evidence-item\"><p>根拠リンクはまだありません。</p></article>";
   els.evidenceList.innerHTML = `${evidenceSummaryHtml(stock, analysis, position)}${evidenceHtml}`;
+}
+
+function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
+  const action = analysis.action || "WATCH";
+  const price = analysis.price || {};
+  const reasons = (analysis.reasons || []).slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const risks = (analysis.risks || []).slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const confidence = Number.isFinite(analysis.confidence) ? ` ${Math.round(analysis.confidence)}%` : "";
+  const badgeClass = actionClasses[action] || "watch";
+  const summary = analysis.thesis || actionExplanation(action, stock, position);
+  return `
+    <section class="decision-card jp-ai-confirmation">
+      <div>
+        <h4>AI確認</h4>
+        <span class="badge ${badgeClass}">${escapeHtml(actionLabels[action] || "要確認")}${confidence}</span>
+      </div>
+      <p>${escapeHtml(summary)}</p>
+      <div class="metrics-row">
+        <span><strong>現在値</strong>${yen(price.current)}</span>
+        <span><strong>配当込み損益</strong>${positionPnl(position)}</span>
+        <span><strong>平均取得</strong>${yen(position.purchasePrice)}</span>
+        <span><strong>平均売却</strong>${yen(position.averageSellPrice)}</span>
+        <span><strong>残株数</strong>${shareCount(position.quantity)}</span>
+        <span><strong>受取配当</strong>${yen(position.dividendReceived)}</span>
+        <span><strong>配当利回り</strong>${Number.isFinite(price.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(price, yen))}</span>
+        <span><strong>1か月</strong>${pct(price.return1m)}</span>
+        <span><strong>1年</strong>${pct(price.return1y)}</span>
+        <span><strong>3年</strong>${pct(price.return3y)}</span>
+        <span><strong>銘柄コード</strong>${symbolLinkHtml(stock.symbol, "jp")}</span>
+      </div>
+      ${riskChecksHtml(analysis.riskChecks)}
+      ${exitPlanHtml(analysis.exitPlan)}
+      ${technicalEntryHtml(price, yen)}
+      <div class="reason-columns">
+        <section>
+          <h4>良い材料</h4>
+          <ul class="reason-list">${reasons || "<li>更新後に表示します</li>"}</ul>
+        </section>
+        <section>
+          <h4>注意点</h4>
+          <ul class="risk-list">${risks || "<li>更新後に表示します</li>"}</ul>
+        </section>
+      </div>
+    </section>
+  `;
 }
 
 function riskChecksHtml(checks = []) {
