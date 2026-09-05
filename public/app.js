@@ -262,6 +262,14 @@ function largeYen(value) {
   return yen(value);
 }
 
+function shareCount(value) {
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  const abs = Math.abs(value);
+  if (abs >= 100_000_000) return `${(value / 100_000_000).toFixed(2)}億株`;
+  if (abs >= 10_000) return `${Math.round(value / 10_000).toLocaleString("ja-JP")}万株`;
+  return `${value.toLocaleString("ja-JP", { maximumFractionDigits: 4 })}株`;
+}
+
 function multipleText(value) {
   return Number.isFinite(value) ? `${value.toFixed(value >= 10 ? 1 : 2)}倍` : "-";
 }
@@ -1897,6 +1905,8 @@ function financialInfoHtml(info = null) {
     </article>
   `).join("");
   const warnings = (info.warnings || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  const missing = (info.missingMetrics || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  const insights = (info.insights || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const yahooLink = info.symbol ? symbolLinkHtml(info.symbol, "jp") : "";
   return `
     <section class="risk-checks financial-info" aria-label="財務情報">
@@ -1905,6 +1915,8 @@ function financialInfoHtml(info = null) {
         <span>${yahooLink ? `${yahooLink} / ` : ""}${escapeHtml(statusText)}${info.checkedAt ? ` ${new Date(info.checkedAt).toLocaleString("ja-JP")}` : ""}</span>
       </div>
       <div class="metric-strip financial-metrics" aria-label="EDINET財務指標">
+        <span><strong>株価</strong>${yen(info.currentPrice)}</span>
+        <span><strong>発行済株式数</strong>${shareCount(info.sharesOutstanding)}</span>
         <span><strong>時価総額</strong>${largeYen(info.marketCap)}</span>
         <span><strong>ネットキャッシュ比率</strong>${Number.isFinite(info.netCashRatio) ? `${(info.netCashRatio * 100).toFixed(1)}%` : "-"}</span>
         <span><strong>ネットキャッシュ</strong>${largeYen(info.netCash)}</span>
@@ -1914,7 +1926,9 @@ function financialInfoHtml(info = null) {
         <span><strong>営業CF</strong>${largeYen(info.operatingCashFlow)}</span>
       </div>
       ${criteria ? `<div class="risk-check-grid">${criteria}</div>` : ""}
+      ${insights ? `<div class="financial-insights"><strong>決算書からの示唆</strong><ul>${insights}</ul></div>` : ""}
       ${info.documentTitle || info.docID ? `<p class="settings-help">確認元 ${escapeHtml(info.documentTitle || "EDINET書類")} ${escapeHtml(info.docID || "")}</p>` : ""}
+      ${missing ? `<div class="entry-points financial-missing"><strong>不足材料</strong>${missing}</div>` : ""}
       ${warnings ? `<div class="entry-points">${warnings}</div>` : ""}
     </section>
   `;
@@ -3395,11 +3409,6 @@ function trendGapBadge(value) {
   return "同じ";
 }
 
-function shareCount(value) {
-  if (!Number.isFinite(value) || value <= 0) return "-";
-  return `${value.toLocaleString("ja-JP", { maximumFractionDigits: 4 })}株`;
-}
-
 function buyTimingBadge(price = {}) {
   const gap = Number(price.distanceFromBuyLine1y);
   if (!Number.isFinite(gap)) return "-";
@@ -4210,6 +4219,8 @@ function peSignalHtml(signal) {
       <span><strong>PER</strong>${multipleText(financials.per)}</span>
     </div>
   ` : "";
+  const financialInsights = (financials.insights || []).slice(0, 3).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+  const financialMissing = (financials.missingMetrics || []).slice(0, 3).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
   const risks = (signal.risks || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
   const tendencies = (signal.tendencies || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
   const evidence = (signal.evidence || []).map((item) => `
@@ -4229,7 +4240,9 @@ function peSignalHtml(signal) {
       <p>${escapeHtml(signal.summary || "")}</p>
       ${warning}
       ${financialLine}
+      ${financialInsights ? `<div class="pe-financial-insights">${financialInsights}</div>` : ""}
       <div>${financialCriteria}${criteria}${risks}</div>
+      ${financialMissing ? `<div class="pe-financial-insights">${financialMissing}</div>` : ""}
       ${tendencies ? `<div class="pe-tendencies">${tendencies}</div>` : ""}
       ${evidence ? `<div class="pe-evidence">${evidence}</div>` : ""}
     </div>

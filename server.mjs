@@ -33,7 +33,7 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 8;
+const DISCOVERY_SCORING_VERSION = 9;
 const DISCOVERY_FINANCIAL_REVIEW_LIMIT = 48;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
@@ -10085,7 +10085,11 @@ function normalizeFinancialSnapshot(item = {}) {
     netIncome: numberOrNull(item.netIncome),
     netAssets: numberOrNull(item.netAssets),
     totalAssets: numberOrNull(item.totalAssets),
+    depreciationAndAmortization: numberOrNull(item.depreciationAndAmortization),
     criteria,
+    missingMetrics: asStringArray(item.missingMetrics).slice(0, 10),
+    insights: asStringArray(item.insights).slice(0, 8),
+    insightMethod: cleanText(item.insightMethod || "rules").slice(0, 40),
     peScore: Number.isFinite(item.peScore) ? clamp(Math.round(item.peScore), 0, 100) : financialCriteriaScore(criteria),
     warnings: asStringArray(item.warnings).slice(0, 8),
   };
@@ -10174,10 +10178,25 @@ async function collectFinancialSnapshotsForStocks(stocks = [], options = {}) {
   }
 
   const warnings = [];
-  const quoteBySymbol = await fetchYahooQuoteSnapshots(jpStocks.map((stock) => stock.symbol)).catch((error) => {
+  let quoteBySymbol = await fetchYahooQuoteSnapshots(jpStocks.map((stock) => stock.symbol)).catch((error) => {
     warnings.push(`Yahoo Finance: ${error.message || "株価サイトの指標取得に失敗しました"}`);
     return new Map();
   });
+  const quoteSummaryBySymbol = await fetchYahooQuoteSummarySnapshots(jpStocks.map((stock) => stock.symbol)).catch((error) => {
+    warnings.push(`Yahoo quoteSummary: ${error.message || "株価サイトの詳細指標取得に失敗しました"}`);
+    return new Map();
+  });
+  quoteBySymbol = mergeQuoteSnapshotMaps(quoteBySymbol, quoteSummaryBySymbol);
+  const pageFallbackSymbols = jpStocks
+    .map((stock) => stock.symbol)
+    .filter((symbol) => !hasQuoteSnapshotFinancialBasis(quoteBySymbol.get(symbol)));
+  if (pageFallbackSymbols.length) {
+    const pageQuoteBySymbol = await fetchYahooJapanPageSnapshots(pageFallbackSymbols).catch((error) => {
+      warnings.push(`Yahoo株ページ: ${error.message || "ページからの補完に失敗しました"}`);
+      return new Map();
+    });
+    quoteBySymbol = mergeQuoteSnapshotMaps(quoteBySymbol, pageQuoteBySymbol);
+  }
   const docLookup = await findLatestEdinetDocuments(jpStocks, settings.edinetApiKey).catch((error) => {
     warnings.push(`EDINET: ${error.message || "書類一覧を取得できませんでした"}`);
     return { bySymbol: new Map(), warnings: [] };
@@ -10233,11 +10252,11 @@ function buildFinancialSnapshot(stock = {}, quote = {}, doc = null, facts = null
   const cash = numberOrNull(facts?.cashAndEquivalents ?? previous?.cashAndEquivalents);
   const shortTermSecurities = numberOrNull(facts?.shortTermSecurities ?? previous?.shortTermSecurities);
   const debt = numberOrNull(facts?.interestBearingDebt ?? previous?.interestBearingDebt);
-  const currentPrice = nullablePositiveNumber(quote.currentPrice ?? quote.regularMarketPrice ?? previous?.currentPrice);
+  const currentPrice = nullablePositiveNumber(quote.currentPrice ?? quote.regularMarketPrice ?? stock.currentPrice ?? stock.price?.current ?? previous?.currentPrice);
   const sharesOutstanding = nullablePositiveNumber(facts?.sharesOutstanding ?? quote.sharesOutstanding ?? previous?.sharesOutstanding);
   const marketCap = numberOrNull(quote.marketCap ?? (currentPrice && sharesOutstanding ? currentPrice * sharesOutstanding : null) ?? previous?.marketCap);
   const operatingIncome = numberOrNull(facts?.operatingIncome ?? previous?.operatingIncome);
-  const depreciation = numberOrNull(facts?.depreciationAndAmortization);
+  const depreciation = numberOrNull(facts?.depreciationAndAmortization ?? previous?.depreciationAndAmortization);
   const ebitda = numberOrNull(facts?.ebitda ?? (Number.isFinite(operatingIncome) && Number.isFinite(depreciation) ? operatingIncome + depreciation : previous?.ebitda));
   const netIncome = numberOrNull(facts?.netIncome ?? previous?.netIncome);
   const netAssets = numberOrNull(facts?.netAssets ?? previous?.netAssets);
@@ -10295,9 +10314,13 @@ function buildFinancialSnapshot(stock = {}, quote = {}, doc = null, facts = null
     netIncome,
     netAssets,
     totalAssets: numberOrNull(facts?.totalAssets ?? previous?.totalAssets),
+    depreciationAndAmortization: depreciation,
     warnings: [],
   };
   snapshot.criteria = buildPeFinancialCriteria(snapshot);
+  snapshot.missingMetrics = buildFinancialMissingMetrics(snapshot);
+  snapshot.insights = buildFinancialInsights(snapshot);
+  snapshot.insightMethod = "edinet_rules";
   snapshot.peScore = financialCriteriaScore(snapshot.criteria);
   if (snapshot.marketCap || snapshot.cashAndEquivalents || snapshot.pbr || snapshot.per) snapshot.status = doc?.docID ? "ok" : "partial";
   if (!doc?.docID) snapshot.warnings.push("EDINET報告書は直近検索で未取得");
@@ -10319,7 +10342,88 @@ function financialFactsFromSnapshot(item = {}) {
     netAssets: item.netAssets,
     totalAssets: item.totalAssets,
     sharesOutstanding: item.sharesOutstanding,
+    depreciationAndAmortization: item.depreciationAndAmortization,
   };
+}
+
+function buildFinancialMissingMetrics(financials = {}) {
+  const missing = [];
+  if (!Number.isFinite(financials.marketCap)) {
+    const parts = [];
+    if (!Number.isFinite(financials.currentPrice)) parts.push("現在株価");
+    if (!Number.isFinite(financials.sharesOutstanding)) parts.push("発行済株式数");
+    missing.push(parts.length ? `時価総額: ${parts.join("・")}不足` : "時価総額: Yahoo側の補完不足");
+  }
+  if (!Number.isFinite(financials.netCashRatio)) missing.push("ネットキャッシュ比率: 時価総額不足");
+  if (!Number.isFinite(financials.evEbitda)) {
+    const parts = [];
+    if (!Number.isFinite(financials.marketCap)) parts.push("時価総額");
+    if (!Number.isFinite(financials.netCash)) parts.push("ネットキャッシュ");
+    if (!Number.isFinite(financials.ebitda)) parts.push("EBITDA");
+    missing.push(`EV/EBITDA: ${parts.length ? parts.join("・") : "倍率データ"}不足`);
+  }
+  if (!Number.isFinite(financials.pbr)) {
+    const parts = [];
+    if (!Number.isFinite(financials.marketCap)) parts.push("時価総額");
+    if (!Number.isFinite(financials.netAssets)) parts.push("純資産");
+    missing.push(`PBR: ${parts.length ? parts.join("・") : "Yahoo側のPBR"}不足`);
+  }
+  if (!Number.isFinite(financials.per)) {
+    const parts = [];
+    if (!Number.isFinite(financials.marketCap)) parts.push("時価総額");
+    if (!Number.isFinite(financials.netIncome)) parts.push("純利益");
+    missing.push(`PER: ${parts.length ? parts.join("・") : "Yahoo側のPER"}不足`);
+  }
+  return uniqueText(missing).slice(0, 8);
+}
+
+function buildFinancialInsights(financials = {}) {
+  const insights = [];
+  const criteria = normalizeFinancialCriteria(financials.criteria || []);
+  const byKey = new Map(criteria.map((item) => [item.key, item]));
+  const marketCap = byKey.get("market_cap");
+  const netCash = byKey.get("net_cash");
+  const valuation = byKey.get("ev_ebitda");
+  const pbr = byKey.get("pbr");
+  const operatingCf = byKey.get("operating_cf");
+
+  if (marketCap?.status === "pass") {
+    insights.push("時価総額は50億-500億円の範囲で、PEが買収検討しやすいサイズです。");
+  } else if (marketCap?.status === "fail") {
+    insights.push(`時価総額はPEの中小型狙いから外れます。${marketCap.summary}`);
+  } else if (marketCap?.status === "unknown") {
+    insights.push("時価総額が作れていないため、PE候補としてのサイズ判定は保留です。");
+  }
+
+  if (netCash?.status === "pass") {
+    insights.push("ネットキャッシュが厚く、買収後に資金回収しやすい形です。");
+  } else if (netCash?.status === "watch") {
+    insights.push("ネットキャッシュは一定ありますが、PEが強く好む50%以上には届いていません。");
+  } else if (netCash?.status === "fail") {
+    insights.push("ネットキャッシュ面では強い買収妙味が出ていません。");
+  }
+
+  if (valuation?.status === "pass" || pbr?.status === "pass") {
+    const labels = [valuation, pbr].filter((item) => item?.status === "pass").map((item) => item.summary).filter(Boolean).join(" / ");
+    insights.push(`${labels || "倍率面"}から見ると、割安放置の根拠があります。`);
+  } else if (valuation?.status === "watch" || pbr?.status === "watch") {
+    insights.push("倍率面は確認レベルで、割安だけを根拠に強く買うには弱めです。");
+  } else if (valuation?.status === "fail" && pbr?.status === "fail") {
+    insights.push("EV/EBITDA・PBRの両面で、資産/収益倍率の割安根拠は弱いです。");
+  }
+
+  if (operatingCf?.status === "pass") {
+    insights.push("営業CFが継続プラスで、LBO返済原資として見やすいです。");
+  } else if (operatingCf?.status === "watch") {
+    insights.push("直近の営業CFはプラスですが、複数年での安定性確認が必要です。");
+  } else if (operatingCf?.status === "fail") {
+    insights.push("営業CFがマイナスで、PE買収候補としては大きな減点です。");
+  }
+
+  if (Number.isFinite(financials.netCash) && Number.isFinite(financials.operatingCashFlow)) {
+    insights.push(`決算書ではネットキャッシュ${formatLargeYen(financials.netCash)}、営業CF${formatLargeYen(financials.operatingCashFlow)}を確認しました。`);
+  }
+  return uniqueText(insights).slice(0, 6);
 }
 
 function buildPeFinancialCriteria(financials = {}) {
@@ -10379,6 +10483,30 @@ function financialCriterion(base, status, score, summary) {
   };
 }
 
+function mergeQuoteSnapshotMaps(...maps) {
+  const merged = new Map();
+  for (const map of maps) {
+    if (!(map instanceof Map)) continue;
+    for (const [symbol, value] of map.entries()) {
+      const normalized = normalizeSymbol(symbol);
+      if (!normalized) continue;
+      const next = { ...(merged.get(normalized) || {}) };
+      for (const [key, entryValue] of Object.entries(value || {})) {
+        if (entryValue === null || entryValue === undefined || entryValue === "") continue;
+        next[key] = entryValue;
+      }
+      merged.set(normalized, next);
+    }
+  }
+  return merged;
+}
+
+function hasQuoteSnapshotFinancialBasis(quote = {}) {
+  if (!quote) return false;
+  return Number.isFinite(quote.marketCap)
+    && (Number.isFinite(quote.priceToBook) || Number.isFinite(quote.trailingPE) || Number.isFinite(quote.forwardPE));
+}
+
 async function fetchYahooQuoteSnapshots(symbols = []) {
   const cleanSymbols = uniqueText(symbols.map(normalizeSymbol).filter(Boolean));
   const quotes = new Map();
@@ -10424,6 +10552,149 @@ async function fetchYahooQuoteSnapshots(symbols = []) {
     }
   }
   return quotes;
+}
+
+async function fetchYahooQuoteSummarySnapshots(symbols = []) {
+  const cleanSymbols = uniqueText(symbols.map(normalizeSymbol).filter(Boolean));
+  const quotes = new Map();
+  await mapLimit(cleanSymbols, 4, async (symbol) => {
+    const url = new URL(`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}`);
+    url.searchParams.set("modules", "price,summaryDetail,defaultKeyStatistics,financialData");
+    url.searchParams.set("lang", "ja-JP");
+    url.searchParams.set("region", "JP");
+    const response = await fetchWithTimeout(url, {
+      timeout: 9000,
+      headers: { accept: "application/json", "user-agent": "Mozilla/5.0 Stock Signal" },
+    });
+    if (!response.ok) return;
+    const payload = await response.json().catch(() => null);
+    const result = payload?.quoteSummary?.result?.[0] || {};
+    const price = result.price || {};
+    const summary = result.summaryDetail || {};
+    const stats = result.defaultKeyStatistics || {};
+    const financial = result.financialData || {};
+    quotes.set(symbol, {
+      marketCap: yahooRawNumber(price.marketCap ?? summary.marketCap),
+      currentPrice: yahooRawNumber(price.regularMarketPrice ?? financial.currentPrice),
+      regularMarketPrice: yahooRawNumber(price.regularMarketPrice ?? financial.currentPrice),
+      sharesOutstanding: yahooRawNumber(stats.sharesOutstanding ?? stats.floatShares ?? price.sharesOutstanding),
+      priceToBook: yahooRawNumber(stats.priceToBook ?? summary.priceToBook),
+      trailingPE: yahooRawNumber(summary.trailingPE ?? stats.trailingPE),
+      forwardPE: yahooRawNumber(summary.forwardPE ?? stats.forwardPE),
+      enterpriseToEbitda: yahooRawNumber(stats.enterpriseToEbitda),
+      bookValue: yahooRawNumber(stats.bookValue),
+      epsTrailingTwelveMonths: yahooRawNumber(stats.trailingEps),
+      epsForward: yahooRawNumber(stats.forwardEps),
+    });
+  });
+  return quotes;
+}
+
+function yahooRawNumber(value) {
+  if (value && typeof value === "object" && "raw" in value) return numberOrNull(value.raw);
+  return numberOrNull(value);
+}
+
+async function fetchYahooJapanPageSnapshots(symbols = []) {
+  const cleanSymbols = uniqueText(symbols.map(normalizeSymbol).filter(Boolean));
+  const quotes = new Map();
+  await mapLimit(cleanSymbols, 4, async (symbol) => {
+    const url = `https://finance.yahoo.co.jp/quote/${encodeURIComponent(symbol)}`;
+    const response = await fetchWithTimeout(url, {
+      timeout: 9000,
+      headers: {
+        accept: "text/html,application/xhtml+xml",
+        "accept-language": "ja,en-US;q=0.8,en;q=0.6",
+        "user-agent": "Mozilla/5.0 Stock Signal",
+      },
+    });
+    if (!response.ok) return;
+    const html = await response.text();
+    const parsed = parseYahooJapanQuotePageSnapshot(html);
+    if (Object.values(parsed).some(Number.isFinite)) quotes.set(symbol, parsed);
+  });
+  return quotes;
+}
+
+function parseYahooJapanQuotePageSnapshot(html = "") {
+  const decoded = xmlDecode(String(html || ""))
+    .replace(/\\u003c/gi, "<")
+    .replace(/\\u003e/gi, ">")
+    .replace(/\\"/g, "\"");
+  const text = cleanText(htmlToInlineText(decoded));
+  const currentPrice = parseJapaneseAmountNearLabel(text, ["現在値", "株価"], { allowNoUnit: true });
+  const marketCap = parseJapaneseAmountNearLabel(text, ["時価総額"], { defaultUnit: "百万円" })
+    ?? extractJsonRawNumber(decoded, ["marketCap", "marketCapitalization"]);
+  const sharesOutstanding = parseJapaneseAmountNearLabel(text, ["発行済株式数"], { defaultUnit: "株", allowNoUnit: true })
+    ?? extractJsonRawNumber(decoded, ["sharesOutstanding", "issuedShare", "issuedShares"]);
+  return {
+    currentPrice,
+    regularMarketPrice: currentPrice,
+    marketCap,
+    sharesOutstanding,
+    priceToBook: parseMultipleNearLabel(text, ["PBR", "株価純資産倍率"]) ?? extractJsonRawNumber(decoded, ["priceToBook"]),
+    trailingPE: parseMultipleNearLabel(text, ["PER", "株価収益率"]) ?? extractJsonRawNumber(decoded, ["trailingPE"]),
+    forwardPE: extractJsonRawNumber(decoded, ["forwardPE"]),
+    enterpriseToEbitda: parseMultipleNearLabel(text, ["EV/EBITDA", "EV EBITDA"]) ?? extractJsonRawNumber(decoded, ["enterpriseToEbitda"]),
+    bookValue: parseJapaneseAmountNearLabel(text, ["BPS", "1株純資産"], { allowNoUnit: true }) ?? extractJsonRawNumber(decoded, ["bookValue"]),
+    epsTrailingTwelveMonths: parseJapaneseAmountNearLabel(text, ["EPS", "1株利益"], { allowNoUnit: true }) ?? extractJsonRawNumber(decoded, ["trailingEps"]),
+    epsForward: extractJsonRawNumber(decoded, ["forwardEps"]),
+  };
+}
+
+function extractJsonRawNumber(text = "", keys = []) {
+  for (const key of keys) {
+    const escaped = escapeRegExp(key);
+    const rawMatch = text.match(new RegExp(`"${escaped}"\\s*:\\s*\\{[^{}]{0,240}?"raw"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)`, "i"));
+    if (rawMatch) return numberOrNull(rawMatch[1]);
+    const simpleMatch = text.match(new RegExp(`"${escaped}"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)`, "i"));
+    if (simpleMatch) return numberOrNull(simpleMatch[1]);
+  }
+  return null;
+}
+
+function parseMultipleNearLabel(text = "", labels = []) {
+  for (const label of labels) {
+    const match = text.match(new RegExp(`${escapeRegExp(label)}[^0-9\\-]{0,80}(-?\\d+(?:\\.\\d+)?)\\s*倍`, "i"));
+    const number = numberOrNull(match?.[1]);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function parseJapaneseAmountNearLabel(text = "", labels = [], options = {}) {
+  for (const label of labels) {
+    const match = text.match(new RegExp(`${escapeRegExp(label)}[^0-9０-９\\-]{0,100}(-?[0-9０-９,，.．]+)\\s*(兆円|億円|万円|百万円|千円|円|株)?`, "i"));
+    if (!match) continue;
+    const amount = parseJapaneseNumber(match[1]);
+    if (!Number.isFinite(amount)) continue;
+    const unit = match[2] || options.defaultUnit || "";
+    if (!unit && options.allowNoUnit !== true) continue;
+    return applyJapaneseAmountUnit(amount, unit);
+  }
+  return null;
+}
+
+function parseJapaneseNumber(value = "") {
+  const text = String(value || "")
+    .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xFEE0))
+    .replace(/，/g, ",")
+    .replace(/．/g, ".")
+    .replace(/,/g, "")
+    .trim();
+  if (!/^-?\d+(?:\.\d+)?$/.test(text)) return null;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : null;
+}
+
+function applyJapaneseAmountUnit(value, unit = "") {
+  if (!Number.isFinite(value)) return null;
+  if (unit === "兆円") return value * 1_000_000_000_000;
+  if (unit === "億円") return value * 100_000_000;
+  if (unit === "万円") return value * 10_000;
+  if (unit === "百万円") return value * 1_000_000;
+  if (unit === "千円") return value * 1_000;
+  return value;
 }
 
 async function fetchYahooCurrentQuoteFromChart(symbol = "") {
@@ -10587,59 +10858,122 @@ function extractFinancialFactsFromXbrl(xbrl = "") {
     "CashAndDeposits",
     "CashAndCashEquivalents",
     "CashAndCashEquivalentsIFRS",
+    "CashAndCashEquivalentsIFRSSummaryOfBusinessResults",
     "CashAndCashEquivalentsAtEndOfPeriod",
+    "CashAndCashEquivalentsAtEndOfPeriodIFRS",
   ], "instant");
   const securities = extractBestXbrlFact(xbrl, [
     "ShortTermInvestmentSecurities",
     "Securities",
     "SecuritiesCA",
     "ShortTermInvestments",
+    "OtherFinancialAssetsCA",
+    "MarketableSecurities",
   ], "instant");
-  const debt = extractXbrlFactSum(xbrl, [
+  const broadDebt = extractBestXbrlFact(xbrl, [
+    "InterestBearingDebt",
+    "BondsAndBorrowings",
+  ], "instant");
+  const debt = Number.isFinite(broadDebt) ? broadDebt : extractXbrlFactSum(xbrl, [
+    "BondsAndBorrowingsCL",
+    "BondsAndBorrowingsNCL",
     "ShortTermLoansPayable",
+    "ShortTermBorrowings",
     "CurrentPortionOfLongTermLoansPayable",
     "CurrentPortionOfBonds",
     "LongTermLoansPayable",
+    "LongTermBorrowings",
     "BondsPayable",
     "LeaseObligations",
+    "LeaseLiabilitiesCL",
+    "LeaseLiabilitiesNCL",
     "CommercialPapersLiabilities",
   ]);
   const operatingCashFlow = extractBestXbrlFact(xbrl, [
     "NetCashProvidedByUsedInOperatingActivities",
     "CashFlowsFromUsedInOperatingActivities",
     "CashFlowsFromOperatingActivities",
+    "NetCashProvidedByUsedInOperatingActivitiesIFRS",
+    "CashFlowsFromUsedInOperatingActivitiesIFRS",
   ], "duration");
   const operatingCashFlowSeries = extractXbrlFactValues(xbrl, [
     "NetCashProvidedByUsedInOperatingActivities",
     "CashFlowsFromUsedInOperatingActivities",
     "CashFlowsFromOperatingActivities",
+    "NetCashProvidedByUsedInOperatingActivitiesIFRS",
+    "CashFlowsFromUsedInOperatingActivitiesIFRS",
   ], "duration").map((item) => item.value);
   const operatingCashFlowYears = operatingCashFlowSeries.filter((value) => value > 0).length;
-  const netSales = extractBestXbrlFact(xbrl, ["NetSales", "Revenue", "OperatingRevenue"], "duration");
-  const operatingIncome = extractBestXbrlFact(xbrl, ["OperatingIncome", "OperatingProfitLoss"], "duration");
+  const netSales = extractBestXbrlFact(xbrl, [
+    "NetSales",
+    "Revenue",
+    "RevenueIFRS",
+    "RevenueSummaryOfBusinessResults",
+    "OperatingRevenue",
+    "SalesRevenue",
+  ], "duration");
+  const operatingIncome = extractBestXbrlFact(xbrl, [
+    "OperatingIncome",
+    "OperatingProfitLoss",
+    "OperatingProfitIFRS",
+    "ProfitLossFromOperatingActivities",
+    "ProfitLossFromOperatingActivitiesIFRS",
+    "BusinessProfit",
+  ], "duration");
   const netIncome = extractBestXbrlFact(xbrl, [
     "ProfitLoss",
     "ProfitLossAttributableToOwnersOfParent",
     "ProfitLossAttributableToOwnersOfParentIFRS",
+    "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults",
+    "ProfitAttributableToOwnersOfParentSummaryOfBusinessResults",
     "NetIncome",
     "NetIncomeLoss",
     "NetIncomeLossAttributableToOwnersOfParent",
     "ProfitAttributableToOwnersOfParent",
+    "ProfitAttributableToOwnersOfParentIFRS",
     "ProfitLossSummaryOfBusinessResults",
   ], "duration");
-  const depreciation = extractBestXbrlFact(xbrl, ["DepreciationAndAmortization", "Depreciation"], "duration");
-  const ebitda = extractBestXbrlFact(xbrl, ["EBITDA"], "duration");
-  const netAssets = extractBestXbrlFact(xbrl, ["NetAssets", "Equity"], "instant");
-  const totalAssets = extractBestXbrlFact(xbrl, ["Assets", "TotalAssets"], "instant");
+  const depreciation = extractBestXbrlFact(xbrl, [
+    "DepreciationAndAmortization",
+    "Depreciation",
+    "DepreciationAndAmortisationExpense",
+    "DepreciationAndAmortizationSGA",
+  ], "duration");
+  const ebitda = extractBestXbrlFact(xbrl, ["EBITDA", "AdjustedEBITDA"], "duration");
+  const netAssets = extractBestXbrlFact(xbrl, [
+    "NetAssets",
+    "NetAssetsSummaryOfBusinessResults",
+    "Equity",
+    "EquityIFRS",
+    "TotalEquityIFRS",
+    "EquityAttributableToOwnersOfParent",
+    "EquityAttributableToOwnersOfParentIFRS",
+    "EquityAttributableToOwnersOfParentSummaryOfBusinessResults",
+  ], "instant");
+  const totalAssets = extractBestXbrlFact(xbrl, [
+    "Assets",
+    "TotalAssets",
+    "AssetsIFRS",
+    "TotalAssetsIFRS",
+    "TotalAssetsSummaryOfBusinessResults",
+  ], "instant");
   const sharesOutstanding = extractBestXbrlFact(xbrl, [
     "TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+    "TotalNumberOfIssuedSharesAsOfFiscalYearEndSummaryOfBusinessResults",
     "TotalNumberOfIssuedShares",
     "NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock",
     "NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYear",
     "NumberOfIssuedShares",
     "IssuedSharesTotalNumberOfSharesEtc",
+    "NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+    "TotalNumberOfIssuedSharesIssuedSharesTotalNumberOfSharesEtc",
+    "NumberOfSharesIssuedAndOutstandingAtEndOfFiscalYear",
     "TotalNumberOfIssuedSharesCommonStocks",
-  ], "instant");
+    "TotalNumberOfIssuedSharesCommonShares",
+    "AverageNumberOfShares",
+    "AverageNumberOfSharesSummaryOfBusinessResults",
+    "AverageNumberOfSharesDuringPeriod",
+  ], "shares");
   return {
     cashAndEquivalents: cash,
     shortTermSecurities: securities,
@@ -10718,8 +11052,16 @@ function xbrlFactScore(contextRef = "", periodHint = "") {
   if (/Prior|Previous|前期/i.test(text)) score -= 30;
   if (/Consolidated|連結/i.test(text)) score += 16;
   if (/NonConsolidated|個別/i.test(text)) score -= 10;
+  if (/Segment|セグメント|Business|Geographical|Axis|Member/i.test(text)) score -= 16;
   if (periodHint === "instant" && /Instant|AsOf/i.test(text)) score += 8;
   if (periodHint === "duration" && /Duration|YTD|Year/i.test(text)) score += 8;
+  if (periodHint === "instant" && /Duration/i.test(text)) score -= 12;
+  if (periodHint === "duration" && /Instant|AsOf/i.test(text)) score -= 12;
+  if (periodHint === "shares") {
+    if (/Instant|AsOf|End|FiscalYearEnd/i.test(text)) score += 18;
+    if (/Average/i.test(text)) score += 8;
+    if (/PerShare|Diluted|Basic/i.test(text)) score -= 90;
+  }
   if (/Quarter|Q[1-4]/i.test(text)) score += 2;
   return score;
 }
@@ -11848,6 +12190,16 @@ function formatYen(value) {
   if (!Number.isFinite(value)) return "-";
   const sign = value < 0 ? "-" : "";
   return `${sign}¥${Math.abs(Math.round(value)).toLocaleString("ja-JP")}`;
+}
+
+function formatLargeYen(value) {
+  if (!Number.isFinite(value)) return "-";
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (abs >= 1_000_000_000_000) return `${sign}${(abs / 1_000_000_000_000).toFixed(2)}兆円`;
+  if (abs >= 100_000_000) return `${sign}${(abs / 100_000_000).toFixed(1)}億円`;
+  if (abs >= 10_000) return `${sign}${Math.round(abs / 10_000).toLocaleString("ja-JP")}万円`;
+  return formatYen(value);
 }
 
 function formatUsd(value) {

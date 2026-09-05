@@ -1439,6 +1439,13 @@ tr:hover .drag-handle,
   gap: 6px;
 }
 
+.entry-points > strong {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.9;
+}
+
 .entry-points span,
 .suggestion-points span {
   border-radius: 7px;
@@ -1566,6 +1573,37 @@ tr:hover .drag-handle,
 
 .financial-metrics {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.financial-insights {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8fbfa;
+  padding: 10px 12px;
+}
+
+.financial-insights strong {
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.financial-insights ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.financial-insights li {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.financial-missing {
+  align-items: center;
 }
 
 .risk-check {
@@ -2123,6 +2161,17 @@ tr:hover .drag-handle,
 .pe-signal .pe-financial-line strong {
   color: var(--muted);
   font-size: 11px;
+}
+
+.pe-financial-insights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pe-financial-insights span {
+  background: #eef8f4;
+  color: var(--accent);
 }
 
 .pe-tendencies span {
