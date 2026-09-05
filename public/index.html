@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260905-copy-guides">
+  <link rel="stylesheet" href="/styles.css?v=20260905-nisa-growth-limit">
 </head>
 <body>
   <div class="app-shell">
@@ -94,9 +94,9 @@
             <small>今の株数ベース</small>
           </article>
           <article class="profit-card">
-            <span>NISA枠</span>
+            <span>NISA成長枠</span>
             <strong id="nisaRemainingTotal">-</strong>
-            <small id="nisaAllowanceUsage">今年の使用額</small>
+            <small id="nisaAllowanceUsage">今年の購入額</small>
           </article>
           <article class="profit-card">
             <span>勝ち / 負け</span>
@@ -612,8 +612,8 @@
                   <input id="settingsJpNisaTradeFeeYen" type="number" min="0" max="100000" step="10" value="0">
                 </label>
                 <label>
-                  <span>NISA年間上限額</span>
-                  <input id="settingsNisaAnnualLimitYen" type="number" min="0" max="10000000" step="10000" value="3600000">
+                  <span>NISA成長投資枠 年間上限</span>
+                  <input id="settingsNisaAnnualLimitYen" type="number" min="0" max="2400000" step="10000" value="2400000">
                 </label>
                 <label>
                   <span>一般/特定 税率%</span>
@@ -818,6 +818,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260905-copy-guides" type="module"></script>
+  <script src="/app.js?v=20260905-nisa-growth-limit" type="module"></script>
 </body>
 </html>

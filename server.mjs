@@ -49,6 +49,7 @@ const US_HOLDING_REVIEW_TIMEOUT_MS = 180000;
 const US_HOLDING_REVIEW_CHUNK_SIZE = 2;
 const EDINET_API_BASE = "https://api.edinet-fsa.go.jp/api/v2";
 const EDINET_LOOKBACK_DAYS = 120;
+const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2_400_000;
 const JP_PE_MARKET_CAP_MIN = 5_000_000_000;
 const JP_PE_MARKET_CAP_CORE_MAX = 50_000_000_000;
 const JP_PE_MARKET_CAP_MAX = 300_000_000_000;
@@ -215,7 +216,7 @@ const defaultSettings = {
   defaultJpAccountType: "taxable",
   jpTaxableTradeFeeYen: 0,
   jpNisaTradeFeeYen: 0,
-  nisaAnnualLimitYen: 3600000,
+  nisaAnnualLimitYen: NISA_GROWTH_ANNUAL_LIMIT_YEN,
   jpCapitalGainTaxPct: 20.315,
   usTradeFeeUsd: 0,
   usCapitalGainTaxPct: 0,
@@ -11330,6 +11331,7 @@ async function saveSettings(settings) {
 function normalizeSettings(settings = {}) {
   const provider = String(settings.searchProvider || "searxng").toLowerCase() === "google" ? "google" : "searxng";
   const unitBudgetUnlimited = settings.unitBudgetUnlimited === true;
+  const nisaAnnualLimitYen = clamp(Number(settings.nisaAnnualLimitYen ?? defaultSettings.nisaAnnualLimitYen), 0, NISA_GROWTH_ANNUAL_LIMIT_YEN);
   return {
     searchProvider: provider,
     searxngUrl: normalizeUrl(settings.searxngUrl) || defaultSettings.searxngUrl,
@@ -11368,7 +11370,7 @@ function normalizeSettings(settings = {}) {
     defaultJpAccountType: normalizeJpAccountType(settings.defaultJpAccountType || defaultSettings.defaultJpAccountType),
     jpTaxableTradeFeeYen: clamp(Number(settings.jpTaxableTradeFeeYen ?? settings.tradeFeeYen ?? defaultSettings.jpTaxableTradeFeeYen), 0, 100000),
     jpNisaTradeFeeYen: clamp(Number(settings.jpNisaTradeFeeYen ?? defaultSettings.jpNisaTradeFeeYen), 0, 100000),
-    nisaAnnualLimitYen: clamp(Number(settings.nisaAnnualLimitYen ?? defaultSettings.nisaAnnualLimitYen), 0, 10000000),
+    nisaAnnualLimitYen,
     jpCapitalGainTaxPct: clamp(Number(settings.jpCapitalGainTaxPct ?? defaultSettings.jpCapitalGainTaxPct), 0, 60),
     usTradeFeeUsd: clamp(Number(settings.usTradeFeeUsd ?? defaultSettings.usTradeFeeUsd), 0, 1000),
     usCapitalGainTaxPct: clamp(Number(settings.usCapitalGainTaxPct ?? defaultSettings.usCapitalGainTaxPct), 0, 60),

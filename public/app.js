@@ -1,6 +1,7 @@
 const MANAGED_STOCK_LIMIT = 50;
 const VIEW_KEYS = new Set(["analysis", "stocks", "us", "crypto", "ideas", "settings"]);
 const VIEW_STORAGE_KEY = "stockSignalActiveView";
+const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2400000;
 
 const state = {
   stocks: [],
@@ -402,7 +403,7 @@ function applySettings(settings = {}) {
   if (els.stockAccountType) els.stockAccountType.value = normalizeAccountType(settings.defaultJpAccountType || "taxable");
   if (els.settingsJpTaxableTradeFeeYen) els.settingsJpTaxableTradeFeeYen.value = settings.jpTaxableTradeFeeYen || 0;
   if (els.settingsJpNisaTradeFeeYen) els.settingsJpNisaTradeFeeYen.value = settings.jpNisaTradeFeeYen || 0;
-  if (els.settingsNisaAnnualLimitYen) els.settingsNisaAnnualLimitYen.value = Number.isFinite(settings.nisaAnnualLimitYen) ? settings.nisaAnnualLimitYen : 3600000;
+  if (els.settingsNisaAnnualLimitYen) els.settingsNisaAnnualLimitYen.value = normalizedNisaAnnualLimitYen(settings.nisaAnnualLimitYen);
   if (els.settingsJpCapitalGainTaxPct) els.settingsJpCapitalGainTaxPct.value = Number.isFinite(settings.jpCapitalGainTaxPct) ? settings.jpCapitalGainTaxPct : 20.315;
   if (els.settingsUsTradeFeeUsd) els.settingsUsTradeFeeUsd.value = Number.isFinite(settings.usTradeFeeUsd) ? settings.usTradeFeeUsd : 0;
   if (els.settingsUsCapitalGainTaxPct) els.settingsUsCapitalGainTaxPct.value = Number.isFinite(settings.usCapitalGainTaxPct) ? settings.usCapitalGainTaxPct : 0;
@@ -916,7 +917,7 @@ function renderProfitSummary() {
   if (els.dividendIncomeTotal) els.dividendIncomeTotal.textContent = yen(summary.annualDividendEstimate);
   if (els.nisaRemainingTotal) els.nisaRemainingTotal.textContent = yen(summary.nisaRemaining);
   if (els.nisaAllowanceUsage) {
-    els.nisaAllowanceUsage.textContent = `${summary.nisaYear}年 使用 ${yen(summary.nisaUsed)} / 上限 ${yen(summary.nisaLimit)}`;
+    els.nisaAllowanceUsage.textContent = `${summary.nisaYear}年 購入 ${yen(summary.nisaUsed)} / 上限 ${yen(summary.nisaLimit)}`;
   }
   if (els.profitableCount) els.profitableCount.textContent = String(summary.winCount);
   if (els.lossCount) els.lossCount.textContent = String(summary.lossCount);
@@ -1546,8 +1547,13 @@ function nisaAllowanceSummary(year = new Date().getFullYear()) {
 }
 
 function nisaAnnualLimitYen() {
-  const value = Number(state.settings?.nisaAnnualLimitYen);
-  return Number.isFinite(value) ? Math.max(0, value) : 3600000;
+  return normalizedNisaAnnualLimitYen(state.settings?.nisaAnnualLimitYen);
+}
+
+function normalizedNisaAnnualLimitYen(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return NISA_GROWTH_ANNUAL_LIMIT_YEN;
+  return Math.max(0, Math.min(amount, NISA_GROWTH_ANNUAL_LIMIT_YEN));
 }
 
 function usSummaryFromState() {
@@ -5007,7 +5013,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
         defaultJpAccountType: normalizeAccountType(els.settingsDefaultJpAccountType?.value || "taxable"),
         jpTaxableTradeFeeYen: valueOrZero(els.settingsJpTaxableTradeFeeYen?.value),
         jpNisaTradeFeeYen: valueOrZero(els.settingsJpNisaTradeFeeYen?.value),
-        nisaAnnualLimitYen: valueOrZero(els.settingsNisaAnnualLimitYen?.value),
+        nisaAnnualLimitYen: normalizedNisaAnnualLimitYen(els.settingsNisaAnnualLimitYen?.value),
         jpCapitalGainTaxPct: valueOrZero(els.settingsJpCapitalGainTaxPct?.value),
         usTradeFeeUsd: valueOrZero(els.settingsUsTradeFeeUsd?.value),
         usCapitalGainTaxPct: valueOrZero(els.settingsUsCapitalGainTaxPct?.value),
