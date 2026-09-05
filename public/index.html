@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260905-jp-ai-news-code">
+  <link rel="stylesheet" href="/styles.css?v=20260905-nisa-sale-summary">
 </head>
 <body>
   <div class="app-shell">
@@ -92,6 +92,11 @@
             <span>年間配当目安</span>
             <strong id="dividendIncomeTotal">-</strong>
             <small>今の株数ベース</small>
+          </article>
+          <article class="profit-card">
+            <span>NISA枠</span>
+            <strong id="nisaRemainingTotal">-</strong>
+            <small id="nisaAllowanceUsage">今年の使用額</small>
           </article>
           <article class="profit-card">
             <span>勝ち / 負け</span>
@@ -607,6 +612,10 @@
                   <input id="settingsJpNisaTradeFeeYen" type="number" min="0" max="100000" step="10" value="0">
                 </label>
                 <label>
+                  <span>NISA年間上限額</span>
+                  <input id="settingsNisaAnnualLimitYen" type="number" min="0" max="10000000" step="10000" value="3600000">
+                </label>
+                <label>
                   <span>一般/特定 税率%</span>
                   <input id="settingsJpCapitalGainTaxPct" type="number" min="0" max="60" step="0.001" value="20.315">
                 </label>
@@ -809,6 +818,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260905-jp-ai-news-code" type="module"></script>
+  <script src="/app.js?v=20260905-nisa-sale-summary" type="module"></script>
 </body>
 </html>

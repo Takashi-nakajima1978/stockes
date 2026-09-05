@@ -212,6 +212,7 @@ const defaultSettings = {
   defaultJpAccountType: "taxable",
   jpTaxableTradeFeeYen: 0,
   jpNisaTradeFeeYen: 0,
+  nisaAnnualLimitYen: 3600000,
   jpCapitalGainTaxPct: 20.315,
   usTradeFeeUsd: 0,
   usCapitalGainTaxPct: 0,
@@ -8639,9 +8640,11 @@ function aggregateSales(sales) {
 }
 
 function currentCycleSales(positions = [], sales = [], remainingQuantity = 0) {
-  if (!remainingQuantity) return [];
+  if (!sales.length) return [];
   const resetDate = lastZeroPositionDate(positions, sales);
   if (!resetDate) return sales;
+  const hasBuyAfterReset = positions.some((lot) => lot.purchaseDate && lot.purchaseDate > resetDate);
+  if (!hasBuyAfterReset) return sales;
   return sales.filter((sale) => sale.sellDate && sale.sellDate > resetDate);
 }
 
@@ -11315,6 +11318,7 @@ function normalizeSettings(settings = {}) {
     defaultJpAccountType: normalizeJpAccountType(settings.defaultJpAccountType || defaultSettings.defaultJpAccountType),
     jpTaxableTradeFeeYen: clamp(Number(settings.jpTaxableTradeFeeYen ?? settings.tradeFeeYen ?? defaultSettings.jpTaxableTradeFeeYen), 0, 100000),
     jpNisaTradeFeeYen: clamp(Number(settings.jpNisaTradeFeeYen ?? defaultSettings.jpNisaTradeFeeYen), 0, 100000),
+    nisaAnnualLimitYen: clamp(Number(settings.nisaAnnualLimitYen ?? defaultSettings.nisaAnnualLimitYen), 0, 10000000),
     jpCapitalGainTaxPct: clamp(Number(settings.jpCapitalGainTaxPct ?? defaultSettings.jpCapitalGainTaxPct), 0, 60),
     usTradeFeeUsd: clamp(Number(settings.usTradeFeeUsd ?? defaultSettings.usTradeFeeUsd), 0, 1000),
     usCapitalGainTaxPct: clamp(Number(settings.usCapitalGainTaxPct ?? defaultSettings.usCapitalGainTaxPct), 0, 60),
@@ -11368,6 +11372,7 @@ function applySettingsPatch(current, body = {}) {
   if (body.defaultJpAccountType !== undefined) next.defaultJpAccountType = body.defaultJpAccountType;
   if (body.jpTaxableTradeFeeYen !== undefined) next.jpTaxableTradeFeeYen = body.jpTaxableTradeFeeYen;
   if (body.jpNisaTradeFeeYen !== undefined) next.jpNisaTradeFeeYen = body.jpNisaTradeFeeYen;
+  if (body.nisaAnnualLimitYen !== undefined) next.nisaAnnualLimitYen = body.nisaAnnualLimitYen;
   if (body.jpCapitalGainTaxPct !== undefined) next.jpCapitalGainTaxPct = body.jpCapitalGainTaxPct;
   if (body.usTradeFeeUsd !== undefined) next.usTradeFeeUsd = body.usTradeFeeUsd;
   if (body.usCapitalGainTaxPct !== undefined) next.usCapitalGainTaxPct = body.usCapitalGainTaxPct;
@@ -11419,6 +11424,7 @@ function publicSettings(settings) {
     defaultJpAccountType: settings.defaultJpAccountType,
     jpTaxableTradeFeeYen: settings.jpTaxableTradeFeeYen,
     jpNisaTradeFeeYen: settings.jpNisaTradeFeeYen,
+    nisaAnnualLimitYen: settings.nisaAnnualLimitYen,
     jpCapitalGainTaxPct: settings.jpCapitalGainTaxPct,
     usTradeFeeUsd: settings.usTradeFeeUsd,
     usCapitalGainTaxPct: settings.usCapitalGainTaxPct,

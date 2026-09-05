@@ -133,6 +133,8 @@ const els = {
   dividendIncomeTotal: document.getElementById("dividendIncomeTotal"),
   profitableCount: document.getElementById("profitableCount"),
   lossCount: document.getElementById("lossCount"),
+  nisaRemainingTotal: document.getElementById("nisaRemainingTotal"),
+  nisaAllowanceUsage: document.getElementById("nisaAllowanceUsage"),
   lastRun: document.getElementById("lastRun"),
   stockTable: document.getElementById("stockTable"),
   manageStockTable: document.getElementById("manageStockTable"),
@@ -180,6 +182,7 @@ const els = {
   settingsDefaultJpAccountType: document.getElementById("settingsDefaultJpAccountType"),
   settingsJpTaxableTradeFeeYen: document.getElementById("settingsJpTaxableTradeFeeYen"),
   settingsJpNisaTradeFeeYen: document.getElementById("settingsJpNisaTradeFeeYen"),
+  settingsNisaAnnualLimitYen: document.getElementById("settingsNisaAnnualLimitYen"),
   settingsJpCapitalGainTaxPct: document.getElementById("settingsJpCapitalGainTaxPct"),
   settingsUsTradeFeeUsd: document.getElementById("settingsUsTradeFeeUsd"),
   settingsUsCapitalGainTaxPct: document.getElementById("settingsUsCapitalGainTaxPct"),
@@ -399,6 +402,7 @@ function applySettings(settings = {}) {
   if (els.stockAccountType) els.stockAccountType.value = normalizeAccountType(settings.defaultJpAccountType || "taxable");
   if (els.settingsJpTaxableTradeFeeYen) els.settingsJpTaxableTradeFeeYen.value = settings.jpTaxableTradeFeeYen || 0;
   if (els.settingsJpNisaTradeFeeYen) els.settingsJpNisaTradeFeeYen.value = settings.jpNisaTradeFeeYen || 0;
+  if (els.settingsNisaAnnualLimitYen) els.settingsNisaAnnualLimitYen.value = Number.isFinite(settings.nisaAnnualLimitYen) ? settings.nisaAnnualLimitYen : 3600000;
   if (els.settingsJpCapitalGainTaxPct) els.settingsJpCapitalGainTaxPct.value = Number.isFinite(settings.jpCapitalGainTaxPct) ? settings.jpCapitalGainTaxPct : 20.315;
   if (els.settingsUsTradeFeeUsd) els.settingsUsTradeFeeUsd.value = Number.isFinite(settings.usTradeFeeUsd) ? settings.usTradeFeeUsd : 0;
   if (els.settingsUsCapitalGainTaxPct) els.settingsUsCapitalGainTaxPct.value = Number.isFinite(settings.usCapitalGainTaxPct) ? settings.usCapitalGainTaxPct : 0;
@@ -730,7 +734,7 @@ function dividendCell(position, price = {}, formatter = yen) {
 }
 
 function averagePriceCell(position = {}, formatter = yen) {
-  const showSell = Number.isFinite(position.averageSellPrice) && Number(position.quantity || 0) > 0;
+  const showSell = Number.isFinite(position.averageSellPrice);
   return `
     <span class="avg-price-cell">
       <span><em>取得</em><strong>${formatter(position.purchasePrice)}</strong></span>
@@ -910,6 +914,10 @@ function renderProfitSummary() {
   if (els.investedTotal) els.investedTotal.textContent = yen(summary.invested);
   if (els.marketTotal) els.marketTotal.textContent = yen(summary.marketValue);
   if (els.dividendIncomeTotal) els.dividendIncomeTotal.textContent = yen(summary.annualDividendEstimate);
+  if (els.nisaRemainingTotal) els.nisaRemainingTotal.textContent = yen(summary.nisaRemaining);
+  if (els.nisaAllowanceUsage) {
+    els.nisaAllowanceUsage.textContent = `${summary.nisaYear}年 使用 ${yen(summary.nisaUsed)} / 上限 ${yen(summary.nisaLimit)}`;
+  }
   if (els.profitableCount) els.profitableCount.textContent = String(summary.winCount);
   if (els.lossCount) els.lossCount.textContent = String(summary.lossCount);
 }
@@ -1469,7 +1477,7 @@ function usFinancialCard(fundamentals = {}) {
 }
 
 function portfolioSummary() {
-  return state.stocks.reduce((summary, stock) => {
+  const summary = state.stocks.reduce((summary, stock) => {
     const analysis = state.analyses[stock.symbol];
     const position = positionMetrics(stock, analysis?.price);
     const hasPositionResult = Number.isFinite(position.grossInvested)
@@ -1512,6 +1520,34 @@ function portfolioSummary() {
     winCount: 0,
     lossCount: 0,
   });
+  return {
+    ...summary,
+    ...nisaAllowanceSummary(),
+  };
+}
+
+function nisaAllowanceSummary(year = new Date().getFullYear()) {
+  const limit = nisaAnnualLimitYen();
+  const used = state.stocks.reduce((sum, stock) => {
+    const lots = positionLots(stock);
+    return sum + lots.reduce((lotSum, lot) => {
+      if (normalizeAccountType(lot.accountType) !== "nisa") return lotSum;
+      const purchaseYear = Number(String(lot.purchaseDate || "").slice(0, 4));
+      if (Number.isFinite(purchaseYear) && purchaseYear > 0 && purchaseYear !== year) return lotSum;
+      return lotSum + (lot.purchasePrice * lot.quantity);
+    }, 0);
+  }, 0);
+  return {
+    nisaYear: year,
+    nisaLimit: limit,
+    nisaUsed: used,
+    nisaRemaining: Math.max(0, limit - used),
+  };
+}
+
+function nisaAnnualLimitYen() {
+  const value = Number(state.settings?.nisaAnnualLimitYen);
+  return Number.isFinite(value) ? Math.max(0, value) : 3600000;
 }
 
 function usSummaryFromState() {
@@ -3556,9 +3592,11 @@ function positionMetrics(stock, price = {}) {
 }
 
 function currentCycleSales(positions = [], sales = [], remainingQuantity = 0) {
-  if (!remainingQuantity) return [];
+  if (!sales.length) return [];
   const resetDate = lastZeroPositionDate(positions, sales);
   if (!resetDate) return sales;
+  const hasBuyAfterReset = positions.some((lot) => lot.purchaseDate && lot.purchaseDate > resetDate);
+  if (!hasBuyAfterReset) return sales;
   return sales.filter((sale) => sale.sellDate && sale.sellDate > resetDate);
 }
 
@@ -4827,6 +4865,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
         defaultJpAccountType: normalizeAccountType(els.settingsDefaultJpAccountType?.value || "taxable"),
         jpTaxableTradeFeeYen: valueOrZero(els.settingsJpTaxableTradeFeeYen?.value),
         jpNisaTradeFeeYen: valueOrZero(els.settingsJpNisaTradeFeeYen?.value),
+        nisaAnnualLimitYen: valueOrZero(els.settingsNisaAnnualLimitYen?.value),
         jpCapitalGainTaxPct: valueOrZero(els.settingsJpCapitalGainTaxPct?.value),
         usTradeFeeUsd: valueOrZero(els.settingsUsTradeFeeUsd?.value),
         usCapitalGainTaxPct: valueOrZero(els.settingsUsCapitalGainTaxPct?.value),
