@@ -215,6 +215,7 @@ const els = {
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
+    signal: !options.method || options.method === "GET" ? AbortSignal.timeout(20000) : undefined,
     headers: { "content-type": "application/json" },
     ...options,
   });
@@ -435,8 +436,9 @@ async function loadUsStocks() {
   render();
 }
 
-async function loadAnalysisCache() {
+async function loadAnalysisCache(background = false) {
   const payload = await request("/api/analysis");
+  if (background && !acceptBackgroundCache("jp", payload)) return;
   const currentSymbols = new Set(state.stocks.map((stock) => stock.symbol));
   state.analyses = Object.fromEntries((payload.analyses || [])
     .filter((item) => currentSymbols.has(item.symbol))
@@ -448,19 +450,50 @@ async function loadAnalysisCache() {
       ? "保存済み 価格更新"
       : payload.usedLmStudio ? "保存済み LM Studio分析" : "保存済みルール分析";
   }
-  render();
+  if (background) {
+    renderTable();
+    renderProfitSummary();
+    renderSummary();
+    if (!document.activeElement?.closest("form")) renderSelection();
+  } else render();
 }
 
-async function loadUsAnalysisCache() {
+async function loadUsAnalysisCache(background = false) {
   const payload = await request("/api/us-analysis");
+  if (background && !acceptBackgroundCache("us", payload)) return;
   applyUsAnalysisPayload(payload);
-  renderUs();
+  if (background) {
+    renderUsSummary();
+    renderUsTable();
+    if (!document.activeElement?.closest("form")) renderUsDetail();
+  } else renderUs();
 }
 
-async function loadCrypto() {
+async function loadCrypto(background = false) {
   const payload = await request("/api/crypto");
+  if (background && !acceptBackgroundCache("crypto", payload)) return;
   applyCryptoPayload(payload);
-  renderCrypto();
+  if (!background || !document.activeElement?.closest("form")) renderCrypto();
+}
+
+const backgroundCacheVersions = new Map();
+let backgroundCacheLoading = false;
+
+function acceptBackgroundCache(market, payload) {
+  const version = payload.generatedAt || payload.analysis?.generatedAt;
+  if (!version || backgroundCacheVersions.get(market) === version) return false;
+  backgroundCacheVersions.set(market, version);
+  return true;
+}
+
+async function syncBackgroundPrices() {
+  if (document.hidden || backgroundCacheLoading) return;
+  backgroundCacheLoading = true;
+  try {
+    await Promise.allSettled([loadAnalysisCache(true), loadUsAnalysisCache(true), loadCrypto(true)]);
+  } finally {
+    backgroundCacheLoading = false;
+  }
 }
 
 function applyUsAnalysisPayload(payload = {}) {
@@ -3090,6 +3123,7 @@ async function analyze(options = {}) {
     try {
       const quickPayload = await request("/api/analyze", {
         method: "POST",
+        signal: AbortSignal.timeout(120000),
         body: JSON.stringify({ ...body, quick: true }),
       });
       applyAnalysisPayload(quickPayload, false);
@@ -3142,6 +3176,7 @@ async function analyzeUs(options = {}) {
     try {
       const quickPayload = await request("/api/us-analyze", {
         method: "POST",
+        signal: AbortSignal.timeout(120000),
         body: JSON.stringify({ ...body, quick: true }),
       });
       applyUsAnalysisPayload(quickPayload);
@@ -5142,6 +5177,10 @@ window.addEventListener("resize", () => renderSelection());
 await loadInitialData();
 void refreshAfterBrowserReload();
 setInterval(loadStatus, 15000);
+setInterval(syncBackgroundPrices, 15000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) void syncBackgroundPrices();
+});
 
 async function loadInitialData() {
   render();
