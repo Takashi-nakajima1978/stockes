@@ -4,7 +4,7 @@ import { readFile, writeFile, mkdir, rename, mkdtemp, rm } from "node:fs/promise
 import path from "node:path";
 import os from "node:os";
 import vm from "node:vm";
-import { createSingleFlight, preserveNewerPrices } from "../refresh-control.mjs";
+import { createSingleFlight, isBuyReversalPending, preserveNewerPrices } from "../refresh-control.mjs";
 
 const serverSource = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
@@ -41,6 +41,71 @@ test("late analysis retains newer prices and new research", () => {
   assert.deepEqual(merged.position, newer.position);
   assert.deepEqual(merged.exitPlan, newer.exitPlan);
   assert.equal(preserveNewerPrices([newer], [analysis])[0], newer);
+});
+
+test("buy signals near the buy line wait for a reversal confirmation", () => {
+  assert.equal(isBuyReversalPending({
+    current: 2515,
+    buyLine1y: 2493,
+    return1m: -13.9,
+    rsi14: 12.7,
+    technicalEntry: {
+      ready: false,
+      score: 60,
+      buyLine: 2493,
+    },
+    regime: { panicPullbackPct: 46 },
+  }), true);
+  assert.equal(isBuyReversalPending({
+    current: 2515,
+    buyLine1y: 2493,
+    return1m: -13.9,
+    rsi14: 32,
+    technicalEntry: {
+      ready: true,
+      score: 78,
+      buyLine: 2493,
+    },
+    regime: { panicPullbackPct: 46 },
+  }), false);
+  assert.equal(isBuyReversalPending({
+    current: 2700,
+    buyLine1y: 2493,
+    return1m: -13.9,
+    rsi14: 12.7,
+    technicalEntry: {
+      ready: false,
+      score: 60,
+      buyLine: 2493,
+    },
+    regime: { panicPullbackPct: 46 },
+  }), false);
+});
+
+test("Japan watchlist decisions do not mark unconfirmed pullbacks as buy candidates", () => {
+  const safety = loadFunction(serverSource, "decisionSafetyOverride", {
+    positionMetrics: () => ({}),
+    nullablePositiveNumber: (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    },
+    formatYen: (value) => `¥${Number(value).toLocaleString("ja-JP")}`,
+    formatSignedPercent: (value) => `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`,
+    isBuyReversalPending,
+    isHighChaseChart: () => false,
+    isNoUpsideChart: () => false,
+  });
+  const result = safety({ name: "ホシデン", holding: false }, {
+    current: 2515,
+    buyLine1y: 2493,
+    return1m: -13.9,
+    rsi14: 12.7,
+    technicalEntry: { ready: false, score: 60, buyLine: 2493 },
+    regime: { panicPullbackPct: 46 },
+  }, "BUY", {});
+  assert.equal(result.action, "WATCH");
+  assert.equal(result.confidence, 64);
+  assert.match(result.thesis, /反転待ち/);
 });
 
 test("slow Japan refresh does not delay US or crypto, or depend on AI job state", async () => {

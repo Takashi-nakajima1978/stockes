@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
-import { createSingleFlight, preserveNewerPrices } from "./refresh-control.mjs";
+import { createSingleFlight, isBuyReversalPending, preserveNewerPrices } from "./refresh-control.mjs";
 
 const runPriceRefresh = createSingleFlight();
 const priceRefreshAttempts = new Map();
@@ -6569,9 +6569,12 @@ function ruleBasedDecision(stock, price, research) {
   const safety = decisionSafetyOverride(stock, price, initialAction, position);
   const action = safety.action;
   const thesis = safety.thesis || `${stock.name}は価格トレンド、検索材料、変動率を総合して${actionLabels[action]}判定。`;
+  const confidence = Number.isFinite(safety.confidence)
+    ? safety.confidence
+    : clamp(Math.round(Math.abs(score - 50) * 1.2 + 45), 35, 86);
   return {
     action,
-    confidence: clamp(Math.round(Math.abs(score - 50) * 1.2 + 45), 35, 86),
+    confidence,
     thesis,
     reasons: uniqueText([...reasons, ...safety.reasons]).slice(0, 5),
     risks: uniqueText([...risks, ...safety.risks]).slice(0, 5),
@@ -6792,6 +6795,7 @@ async function aiDecisionChunk(model, items) {
     "thesisは120字以内、reasonsとrisksは各3件まで、riskChecksのsummaryは各80字以内にしてください。growthExit.evidenceは根拠にした記事や開示だけを最大3件入れてください。",
     "ユーザーはデイトレーダーではありません。短期ノイズだけで売買を促さず、根拠不足、材料が古い、検索結果が薄い場合はWATCHを優先してください。",
     "3年で大きく上がった後、現在値が3年の流れや安値から見て高い位置にある場合はBUYにせず、WATCHかHOLDにしてください。",
+    "未保有銘柄でprice.technicalEntry.readyがfalseの場合、買い場ライン付近でもBUYにしないでください。RSIが30台以下、直近1か月が下落中、またはレジームが調整/下落なら、反転待ちとしてWATCHにしてください。",
     "配当利回り、配当の増減、購入日以降の配当込み損益を見てください。高配当だけでBUYにせず、株価下落で利回りが高く見える可能性をリスクに入れてください。",
     "短期売買ではなく、3年の価格傾向、1年買い場ライン、購入日、購入単価、残株数、売却済み株数、確定損益、含み損益、配当込み損益、直近モメンタム、出来高、悪材料、過熱感、業種環境、保有継続可否を総合評価してください。",
     "financialsにはEDINET有価証券報告書とYahoo株から取れた財務指標、未取得項目、決算書から分かることが入ります。未取得は推測せず、取得できた財務情報だけを根拠にしてください。",
@@ -7018,6 +7022,9 @@ function normalizeDecision(stock, price, research, decision) {
   const position = positionMetrics(stock, price);
   const safety = decisionSafetyOverride(stock, price, initialAction, position);
   const action = safety.action;
+  const confidence = Number.isFinite(safety.confidence)
+    ? Math.min(clamp(Number(decision.confidence || 45), 0, 100), safety.confidence)
+    : clamp(Number(decision.confidence || 45), 0, 100);
   const fallbackGrowthExit = ruleGrowthExit(stock, research, price);
   let growthExit = normalizeGrowthExit(decision.growthExit || fallbackGrowthExit);
   if (!growthExit.evidence.length && fallbackGrowthExit.evidence?.length) {
@@ -7038,7 +7045,7 @@ function normalizeDecision(stock, price, research, decision) {
     symbol: stock.symbol,
     name: stock.name,
     action,
-    confidence: clamp(Number(decision.confidence || 45), 0, 100),
+    confidence,
     thesis: String(safety.thesis || decision.thesis || `${stock.name}は${actionLabels[action]}判定。`).slice(0, 360),
     reasons,
     risks,
@@ -7590,6 +7597,7 @@ function decisionSafetyOverride(stock, price = {}, action, position = positionMe
     const gap = ((current - targetBuyPrice) / targetBuyPrice) * 100;
     return {
       action: stock.holding ? "HOLD" : "WATCH",
+      confidence: 68,
       thesis: `${stock.name}は買いたい価格を超えています。今すぐ買いではなく、入力した買値目安まで待つ判定にしました。`,
       reasons: ["事業や配当の確認材料は残る"],
       risks: [`現在値${formatYen(current)}は買いたい価格${formatYen(targetBuyPrice)}より${formatSignedPercent(gap)}高い`],
@@ -7599,14 +7607,28 @@ function decisionSafetyOverride(stock, price = {}, action, position = positionMe
     const gap = ((current - buyLine) / buyLine) * 100;
     return {
       action: stock.holding ? "HOLD" : "WATCH",
+      confidence: 68,
       thesis: `${stock.name}は過去1年の買い場ラインより高い位置です。買い候補ではなく、押し目待ちにしました。`,
       reasons: ["候補として監視する価値は残る"],
       risks: [`現在値${formatYen(current)}は買い場ライン${formatYen(buyLine)}より${formatSignedPercent(gap)}高い`],
     };
   }
+  if (action === "BUY" && !stock.holding && isBuyReversalPending(price)) {
+    const gapText = current && buyLine
+      ? `現在値${formatYen(current)}は買い場ライン${formatYen(buyLine)}に近い`
+      : "買い場に近い";
+    return {
+      action: "WATCH",
+      confidence: 64,
+      thesis: `${stock.name}は買い場に近いですが、5日線・RSI・ローソク足の反転がまだ確認できません。買い候補ではなく、反転待ちにしました。`,
+      reasons: [gapText, "候補として監視する価値はある"],
+      risks: ["直近の下落中に反転サインが未確認", "価格だけで買うと下げ止まり前に入る可能性がある"],
+    };
+  }
   if (action === "BUY" && isHighChaseChart(price)) {
     return {
       action: stock.holding ? "HOLD" : "WATCH",
+      confidence: 68,
       thesis: `${stock.name}は事業材料や長期上昇はありますが、グラフ上は大きく上がった後の高い位置です。今すぐ買いではなく、押し目や決算確認を待つ判定にしました。`,
       reasons: ["長期の上昇力は確認できる"],
       risks: ["3年で大きく上がった後で、高い価格で買ってしまいやすい", "買うなら押し目と損切りラインを先に決めたい"],
@@ -7615,6 +7637,7 @@ function decisionSafetyOverride(stock, price = {}, action, position = positionMe
   if (action === "BUY" && isNoUpsideChart(price)) {
     return {
       action: stock.holding ? "HOLD" : "WATCH",
+      confidence: 68,
       thesis: `${stock.name}は直近で戻していますが、3年チャートでは上値が重い位置です。新規買い候補ではなく、保有なら様子見、買い増しは押し目待ちにしました。`,
       reasons: ["直近の戻りは確認できる"],
       risks: ["3年高値に近いのに長期の上昇力が弱く、ここからの上値余地が小さい", "追加買いは安い位置まで待ちたい"],
