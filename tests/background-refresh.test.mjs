@@ -4,7 +4,7 @@ import { readFile, writeFile, mkdir, rename, mkdtemp, rm } from "node:fs/promise
 import path from "node:path";
 import os from "node:os";
 import vm from "node:vm";
-import { createSingleFlight, isBuyReversalPending, preserveNewerPrices } from "../refresh-control.mjs";
+import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "../refresh-control.mjs";
 
 const serverSource = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
@@ -80,6 +80,34 @@ test("buy signals near the buy line wait for a reversal confirmation", () => {
     },
     regime: { panicPullbackPct: 46 },
   }), false);
+});
+
+test("dividend seasonality flags upcoming rights demand", () => {
+  const signal = dividendEventSeasonality({
+    dividendYield: 3.9,
+    dividendEvents: [
+      { date: "2025-03-31", amount: 60 },
+      { date: "2025-09-30", amount: 50 },
+      { date: "2026-03-31", amount: 73 },
+    ],
+  }, { today: "2026-09-12" });
+  assert.equal(signal.label, "権利取り前");
+  assert.equal(signal.nextDate, "2026-09-30");
+  assert.equal(signal.daysToNext, 18);
+  assert.ok(signal.score >= 10);
+});
+
+test("Japan discovery EDINET review is not capped to top candidates", () => {
+  const discoverStart = serverSource.indexOf("async function discoverStocks");
+  const discoverEnd = serverSource.indexOf("function discoveryUniverseStats", discoverStart);
+  const discoverBody = serverSource.slice(discoverStart, discoverEnd);
+  const refreshStart = serverSource.indexOf("async function refreshDiscoveryFinancials");
+  const refreshEnd = serverSource.indexOf("function applyDiscoveryFinancialAdjustment", refreshStart);
+  const refreshBody = serverSource.slice(refreshStart, refreshEnd);
+  assert.doesNotMatch(discoverBody, /DISCOVERY_FINANCIAL_REVIEW_LIMIT|slice\(0,\s*48\)/);
+  assert.doesNotMatch(refreshBody, /DISCOVERY_FINANCIAL_REVIEW_LIMIT|slice\(0,\s*48\)/);
+  assert.ok(discoverBody.indexOf("refreshDiscoveryFinancials(pricedCandidates") < discoverBody.indexOf("const prelimPool = scored"));
+  assert.match(discoverBody, /const shortlist = uniqueBy\(rawShortlist/);
 });
 
 test("Japan watchlist decisions do not mark unconfirmed pullbacks as buy candidates", () => {

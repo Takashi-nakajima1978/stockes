@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
-import { createSingleFlight, isBuyReversalPending, preserveNewerPrices } from "./refresh-control.mjs";
+import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "./refresh-control.mjs";
 
 const runPriceRefresh = createSingleFlight();
 const priceRefreshAttempts = new Map();
@@ -39,8 +39,8 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 10;
-const DISCOVERY_FINANCIAL_REVIEW_LIMIT = 48;
+const DISCOVERY_SCORING_VERSION = 11;
+const SEASONAL_BUY_TARGET_ALLOWANCE = 0.02;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
@@ -252,6 +252,7 @@ const actionLabels = {
 const businessGoodWords = ["増収増益", "上方修正", "最高益", "過去最高益", "最高益更新", "営業益増", "営業利益増", "経常増益", "増益", "増収", "黒字転換", "増配", "配当増額", "自社株買い", "受注増", "受注高", "revenue growth", "earnings beat", "raised guidance", "record profit", "margin expansion", "free cash flow", "buyback", "dividend increase"];
 const valueGoodWords = ["割安", "低per", "低pbr", "pbr1倍割れ", "pbr", "per", "配当利回り", "高配当", "出遅れ", "undervalued", "low multiple", "cheap valuation", "dividend yield", "discount"];
 const businessBadWords = ["下方修正", "減益", "赤字", "減配", "不祥事", "行政処分", "訴訟", "guidance cut", "earnings miss", "loss", "dividend cut", "lawsuit", "investigation"];
+const SHAREHOLDER_BENEFIT_WORDS = ["株主優待", "優待", "優待券", "QUOカード", "クオカード", "カタログギフト", "食事券", "買物券", "自社商品", "優待利回り", "権利確定", "権利付き最終日"];
 
 let lmModelCache = { configuredUrl: "", url: "", model: "" };
 let primeUniverseCache = null;
@@ -3223,7 +3224,7 @@ async function discoverStocks(options = {}, job = null) {
     total: candidates.length,
   });
   let checked = 0;
-  const scored = await mapLimit(candidates, 8, async (candidate) => {
+  const pricedCandidates = await mapLimit(candidates, 8, async (candidate) => {
     const price = await fetchPriceHistory(candidate.symbol);
     const resolvedCandidate = resolveCandidateFromPrice(candidate, price);
     const candidateBudget = discoveryBudgetForCandidate(resolvedCandidate, {
@@ -3242,21 +3243,22 @@ async function discoverStocks(options = {}, job = null) {
     }
     return scoredCandidate;
   });
-  const prelimPool = scored
-    .filter((candidate) => candidate.nearBudget)
-    .sort((a, b) => b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol));
-  const rawShortlist = fullScan ? prelimPool : prelimPool.slice(0, 24);
-  const shortlist = uniqueBy([
-    ...rawShortlist.filter((candidate) => !isUsDiscoveryCandidate(candidate)).slice(0, DISCOVERY_FINANCIAL_REVIEW_LIMIT),
-    ...rawShortlist.filter(isUsDiscoveryCandidate),
-  ], (candidate) => candidate.symbol);
-  const discoveryFinancials = await refreshDiscoveryFinancials(shortlist, settings, financialCache, job);
+  const discoveryFinancials = await refreshDiscoveryFinancials(pricedCandidates, settings, financialCache, job);
   financialBySymbol = discoveryFinancials.bySymbol;
   const financialStats = {
     edinetDiscoveryEnabled: discoveryFinancials.enabled,
     edinetDiscoveryChecked: discoveryFinancials.checked,
     edinetDiscoveryWarnings: discoveryFinancials.warnings,
   };
+  const scored = pricedCandidates.map((candidate) => applyDiscoveryFinancialAdjustment(
+    candidate,
+    financialBySymbol.get(candidate.symbol),
+  ));
+  const prelimPool = scored
+    .filter((candidate) => candidate.nearBudget)
+    .sort((a, b) => b.businessValueScore - a.businessValueScore || b.score - a.score || a.risks.length - b.risks.length || a.symbol.localeCompare(b.symbol));
+  const rawShortlist = fullScan ? prelimPool : prelimPool.slice(0, 24);
+  const shortlist = uniqueBy(rawShortlist, (candidate) => candidate.symbol);
   let individualSearchCount = 0;
   const enhancedSoFar = [];
   updateDiscoveryJob(job, {
@@ -3277,10 +3279,7 @@ async function discoverStocks(options = {}, job = null) {
     const peSignal = searchPeSignal(candidate, results, relevantResults, financialBySymbol.get(candidate.symbol));
     individualSearchCount += results.length;
     const enhancedCandidate = applyCandidateLearning(
-      applyDiscoveryFinancialAdjustment(
-        enhanceBusinessCandidate(candidate, relevantResults, positionSignal, peSignal),
-        financialBySymbol.get(candidate.symbol),
-      ),
+      enhanceBusinessCandidate(candidate, relevantResults, positionSignal, peSignal),
       performance,
     );
     enhancedSoFar.push(enhancedCandidate);
@@ -3340,6 +3339,17 @@ async function discoverStocks(options = {}, job = null) {
   } catch {
     // Candidate discovery still works without the local model.
   }
+  const stageStats = discoveryStageStats({
+    scored,
+    prelimPool,
+    shortlist,
+    enhanced,
+    eligibleEnhanced,
+    supported,
+    viable,
+    suggestions,
+    financialStats,
+  });
 
   const added = [];
   const addedUs = [];
@@ -3379,6 +3389,9 @@ async function discoverStocks(options = {}, job = null) {
       searchPositionUsed: true,
       marketBrief,
       performance,
+      stageStats,
+      incomeSeasonalityUsed: true,
+      seasonalBuyPremiumPct: SEASONAL_BUY_TARGET_ALLOWANCE * 100,
       ...financialStats,
       ...universeStats,
     }),
@@ -3416,6 +3429,36 @@ function discoveryUniverseStats(baseUniverse = [], candidateUniverse = [], exist
     usExcludedCount: countBlocked(usBase, (candidate) => excluded.has(candidate.symbol)),
     jpAvoidedBusinessCount: countBlocked(jpBase, (candidate) => notAlreadyBlocked(candidate) && isDiscoveryAvoidedBusiness(candidate)),
     usAvoidedBusinessCount: countBlocked(usBase, (candidate) => notAlreadyBlocked(candidate) && isDiscoveryAvoidedBusiness(candidate)),
+  };
+}
+
+function discoveryStageStats({
+  scored = [],
+  prelimPool = [],
+  shortlist = [],
+  enhanced = [],
+  eligibleEnhanced = [],
+  supported = [],
+  viable = [],
+  suggestions = [],
+  financialStats = {},
+} = {}) {
+  const split = (items = [], target) => items.filter((candidate) => (
+    target === "us" ? isUsDiscoveryCandidate(candidate) : !isUsDiscoveryCandidate(candidate)
+  )).length;
+  const build = (target) => ({
+    priceChecked: split(scored, target),
+    buyArea: split(prelimPool, target),
+    edinetChecked: target === "jp" ? Number(financialStats.edinetDiscoveryChecked || 0) : 0,
+    searched: split(enhanced, target),
+    financialPass: split(eligibleEnhanced, target),
+    actionable: split(supported, target),
+    scorePass: split(viable, target),
+    shown: split(suggestions, target),
+  });
+  return {
+    jp: build("jp"),
+    us: build("us"),
   };
 }
 
@@ -3462,6 +3505,7 @@ function discoveryPriorityScore(candidate = {}) {
   const pe = candidatePeScore(candidate);
   const value = Number(candidate.businessValueScore || candidate.score || 0);
   const early = Number(candidate.earlySignal?.score || 0);
+  const income = !isUsDiscoveryCandidate(candidate) ? Math.max(0, Number(candidate.incomeSeasonality?.score || 0)) : 0;
   const current = nullablePositiveNumber(candidate.price?.current);
   const buyLine = nullablePositiveNumber(candidate.price?.buyLine1y);
   const buyPlan = nullablePositiveNumber(candidate.buyPlan?.maxBuyPrice);
@@ -3490,6 +3534,7 @@ function discoveryPriorityScore(candidate = {}) {
     + earlyTierBonus
     + (pe * 1.4)
     + (early * earlyWeight)
+    + income
     + (value * nonPeWeight)
     + ((timingBonus + buyLineBonus + planBonus) * timingWeight)
     + currencyBonus
@@ -3501,6 +3546,7 @@ function discoveryPriorityScore(candidate = {}) {
 
 function pePriorityScore(candidate = {}) {
   const pe = candidatePeScore(candidate);
+  const income = !isUsDiscoveryCandidate(candidate) ? Math.max(0, Number(candidate.incomeSeasonality?.score || 0)) : 0;
   const current = nullablePositiveNumber(candidate.price?.current);
   const buyLine = nullablePositiveNumber(candidate.price?.buyLine1y);
   const buyPlan = nullablePositiveNumber(candidate.buyPlan?.maxBuyPrice);
@@ -3516,7 +3562,7 @@ function pePriorityScore(candidate = {}) {
   const planBonus = current && buyPlan && current <= buyPlan * STRICT_BUY_TARGET_TOLERANCE ? 14 : 0;
   const currencyBonus = isUsDiscoveryCandidate(candidate) ? 2 : 0;
   const hardSignalBonus = pe >= PE_STRONG_MIN_SCORE ? 18 : 0;
-  return Math.round((pe * 1.35) + hardSignalBonus + timingBonus + buyLineBonus + planBonus + currencyBonus);
+  return Math.round((pe * 1.35) + hardSignalBonus + timingBonus + buyLineBonus + planBonus + currencyBonus + Math.min(8, income));
 }
 
 function isActionableDiscoveryCandidate(candidate = {}) {
@@ -3526,8 +3572,9 @@ function isActionableDiscoveryCandidate(candidate = {}) {
   const maxBuyPrice = nullablePositiveNumber(plan.maxBuyPrice);
   if (!current || !maxBuyPrice) return false;
   if (isExtendedRunChart(price)) return false;
-  if (current > maxBuyPrice * STRICT_BUY_TARGET_TOLERANCE) return false;
-  if (price.buyLine1y && current > price.buyLine1y * 1.03) return false;
+  const seasonalAllowance = candidateIncomeBuyAllowance(candidate);
+  if (current > maxBuyPrice * (STRICT_BUY_TARGET_TOLERANCE + seasonalAllowance)) return false;
+  if (price.buyLine1y && current > price.buyLine1y * (1.03 + seasonalAllowance)) return false;
   if (candidate.inBudget === false) return false;
   return (candidate.businessValueScore || candidate.score || 0) >= 50;
 }
@@ -3579,7 +3626,6 @@ async function refreshDiscoveryFinancials(candidates = [], settings = null, fina
   const bySymbol = new Map((previous.items || []).map((item) => [item.symbol, item]));
   const jpCandidates = uniqueBy(candidates
     .filter((candidate) => !isUsDiscoveryCandidate(candidate))
-    .slice(0, DISCOVERY_FINANCIAL_REVIEW_LIMIT)
     .map(candidateToStock), (stock) => stock.symbol);
   if (!jpCandidates.length) {
     return { bySymbol, checked: 0, enabled: Boolean(settings?.edinetApiKey), warnings: [] };
@@ -3595,7 +3641,7 @@ async function refreshDiscoveryFinancials(candidates = [], settings = null, fina
   const collected = await collectFinancialSnapshotsForStocks(jpCandidates, {
     settings,
     previous,
-    force: true,
+    force: false,
   }).catch((error) => ({
     generatedAt: new Date().toISOString(),
     enabled: false,
@@ -3911,6 +3957,8 @@ async function savePartialDiscovery({
       usedDiscoveryAi,
       fullScan,
       searchPositionUsed: true,
+      incomeSeasonalityUsed: true,
+      seasonalBuyPremiumPct: SEASONAL_BUY_TARGET_ALLOWANCE * 100,
       marketBrief,
       ...financialStats,
       ...universeStats,
@@ -4366,6 +4414,74 @@ function earlyEntrySignal(candidate = {}, price = {}) {
   };
 }
 
+function incomeSeasonalitySignal(candidate = {}, price = {}, evidence = []) {
+  if (isUsDiscoveryCandidate(candidate)) return null;
+  const dividend = dividendEventSeasonality(price);
+  const benefit = shareholderBenefitSignal(candidate, evidence);
+  if (!dividend?.hasDividend && !benefit.hasBenefit) return null;
+
+  let score = Number(dividend?.score || 0);
+  const criteria = [...(dividend?.criteria || [])];
+  const risks = [...(dividend?.risks || [])];
+  if (benefit.hasBenefit) {
+    const days = Number(dividend?.daysToNext);
+    const timingBonus = Number.isFinite(days) && days >= 8 && days <= 75 ? 6 : 3;
+    score += timingBonus;
+    criteria.push("株主優待あり");
+  }
+
+  let label = dividend?.label || "配当・優待確認";
+  if (benefit.hasBenefit && score >= 10) label = "優待・配当前";
+  else if (benefit.hasBenefit) label = "優待確認";
+
+  const summaryParts = [];
+  if (dividend?.summary) summaryParts.push(dividend.summary);
+  if (benefit.hasBenefit) summaryParts.push("株主優待の情報が検索結果にあります。権利確定前は買い需要が出やすい一方、権利落ち後の反落も見ます。");
+
+  return {
+    hasDividend: Boolean(dividend?.hasDividend),
+    hasBenefit: benefit.hasBenefit,
+    score: clamp(Math.round(score), -8, 18),
+    label,
+    nextDate: dividend?.nextDate || "",
+    daysToNext: Number.isFinite(dividend?.daysToNext) ? dividend.daysToNext : null,
+    months: dividend?.months || [],
+    summary: summaryParts.join(" "),
+    criteria: uniqueText(criteria).slice(0, 5),
+    risks: uniqueText(risks).slice(0, 4),
+    evidence: benefit.evidence,
+  };
+}
+
+function shareholderBenefitSignal(candidate = {}, evidence = []) {
+  if (isUsDiscoveryCandidate(candidate)) return { hasBenefit: false, evidence: [] };
+  const hits = [];
+  for (const item of evidence || []) {
+    const text = businessContextText(`${item?.title || ""} ${item?.snippet || ""} ${item?.url || ""}`);
+    if (!SHAREHOLDER_BENEFIT_WORDS.some((word) => text.includes(word.toLowerCase()))) continue;
+    hits.push({
+      title: item.title,
+      url: item.url,
+      source: hostOf(item.url),
+      snippet: item.snippet,
+    });
+  }
+  return {
+    hasBenefit: hits.length > 0,
+    evidence: uniqueBy(hits, (item) => item.url).slice(0, 3),
+  };
+}
+
+function candidateIncomeBuyAllowance(candidate = {}) {
+  if (isUsDiscoveryCandidate(candidate)) return 0;
+  const signal = candidate.incomeSeasonality || {};
+  const score = Number(signal.score || 0);
+  const days = Number(signal.daysToNext);
+  if (score >= 10 && Number.isFinite(days) && days >= 8 && days <= 45) return SEASONAL_BUY_TARGET_ALLOWANCE;
+  if (score >= 8 && Number.isFinite(days) && days > 45 && days <= 75) return SEASONAL_BUY_TARGET_ALLOWANCE / 2;
+  return 0;
+}
+
 function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budget = {}) {
   let score = 50;
   const reasons = [];
@@ -4377,6 +4493,7 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
   const inBudget = Number.isFinite(unitAmount) && (!hasBudget || unitAmount <= budget.unitBudget);
   const nearBudget = Number.isFinite(unitAmount) && (!hasBudget || unitAmount <= budget.unitBudgetAllowance);
   const context = businessContextText(haystack);
+  const incomeSignal = incomeSeasonalitySignal(candidate, price);
   let businessScore = 0;
   let valueScore = 0;
 
@@ -4505,6 +4622,16 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     }
   }
 
+  if (incomeSignal?.score > 0) {
+    const bonus = Math.min(10, incomeSignal.score);
+    score += bonus;
+    valueScore += Math.min(5, Math.ceil(bonus / 2));
+    reasons.push(incomeSignal.summary);
+  } else if (incomeSignal?.score < 0) {
+    score += incomeSignal.score;
+    risks.push(incomeSignal.risks?.[0] || "権利落ち前後の値動きに注意");
+  }
+
   const mentioned = context.includes(candidate.name.toLowerCase()) || context.includes(candidate.symbol.replace(".T", ""));
   const businessHits = businessGoodWords.filter((word) => context.includes(word.toLowerCase()));
   const valueHits = valueGoodWords.filter((word) => context.includes(word.toLowerCase()));
@@ -4607,6 +4734,7 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     businessHits: mentioned ? businessHits : [],
     valueHits: mentioned ? valueHits : [],
     badHits: mentioned ? badHits : [],
+    incomeSignal,
   });
   const extendedRun = isExtendedRunChart(price);
   if (extendedRun) {
@@ -4639,6 +4767,7 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     businessValueScore,
     rankLabel: discoveryRankLabel(businessValueScore),
     earlySignal,
+    incomeSeasonality: incomeSignal,
     process,
     reasons: uniqueText(reasons).slice(0, 4),
     risks: uniqueText(risks).slice(0, 3),
@@ -4662,9 +4791,11 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
       businessEvidence: [],
       searchPosition: positionSignal,
       peSignal: peSignal || candidate.peSignal || null,
+      incomeSeasonality: candidate.incomeSeasonality || incomeSeasonalitySignal(candidate, candidate.price || {}) || null,
     };
   }
   const context = businessContextText(results.map((item) => `${item.title} ${item.snippet}`).join("\n"));
+  const incomeSignal = incomeSeasonalitySignal(candidate, candidate.price || {}, results) || candidate.incomeSeasonality || null;
   const businessHits = businessGoodWords.filter((word) => context.includes(word.toLowerCase()));
   const valueHits = valueGoodWords.filter((word) => context.includes(word.toLowerCase()));
   const badHits = businessBadWords.filter((word) => context.includes(word.toLowerCase()));
@@ -4722,6 +4853,17 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
     }
   }
 
+  const incomeDelta = Number(incomeSignal?.score || 0) - Number(candidate.incomeSeasonality?.score || 0);
+  if (incomeDelta > 0) {
+    const bonus = Math.min(8, Math.round(incomeDelta));
+    score += bonus;
+    businessValueScore += bonus;
+    candidate.process = boostProcessStage(candidate.process, "買い時", Math.min(5, bonus), "配当・優待の権利前需給を確認");
+    reasons.push(incomeSignal.summary);
+  } else if (incomeSignal?.score < 0) {
+    risks.push(incomeSignal.risks?.[0] || "権利落ち前後の値動きに注意");
+  }
+
   if (peSignal?.matchScore >= 65 && peSignal.reportEligible !== false) {
     const bonus = Math.min(8, Math.round((peSignal.matchScore - 50) / 5));
     score += bonus;
@@ -4756,6 +4898,7 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
     evidenceQuality,
     searchPosition: positionSignal,
     peSignal: peSignal || candidate.peSignal || null,
+    incomeSeasonality: incomeSignal,
     reasons: uniqueText([...candidate.reasons, ...reasons]).slice(0, 5),
     risks: uniqueText([...candidate.risks, ...risks]).slice(0, 4),
     businessEvidence: materialResults.slice(0, 3).map((item) => ({
@@ -4791,6 +4934,7 @@ async function aiDiscoveryReview(candidates) {
     searchPosition: candidate.searchPosition || null,
     peSignal: candidate.peSignal || null,
     earlySignal: candidate.earlySignal || null,
+    incomeSeasonality: candidate.incomeSeasonality || null,
     buyPlan: {
       stance: candidate.buyPlan?.stance,
       maxBuyPrice: candidate.buyPlan?.maxBuyPrice,
@@ -4830,6 +4974,7 @@ async function aiDiscoveryReviewChunk(model, items) {
     "目的は「事業として好調そうなのに、株価が高すぎず、買い場ラインや買い目安以下で検討できる候補」を上に残すことです。",
     "米国株は特に、すでに急騰した後ではなく、買い場以下・3年目安付近・1か月反発・3か月非過熱・出来高増のような、早めに入る条件を重視してください。",
     "過去3年の流れに対する現在価格、1年買い場ライン、早めに入る条件のスコア、配当利回り、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
+    "日本株は配当・株主優待の権利取り前の買い需要も参考にしてください。ただし権利落ち直前や権利落ち後の反落を無視して買い評価を上げないでください。",
     "1年買い場ラインを下回っていて、事業材料も良いものはプラス評価してください。上がり切った高値圏はマイナス評価してください。",
     "PEファンドが買いそうな会社かは、割安に見える材料、安定キャッシュフロー、株主変化、再編余地、買収されにくい要因に分けて評価してください。ただしPE要素だけで高い価格で買う判断を肯定しないでください。",
     "日本語は一般的な投資メモの表現にしてください。買収妙味、割安放置、PEの中小型狙いのような不自然な言い方は使わず、理由と買う時の影響が分かる言葉で書いてください。",
@@ -5012,16 +5157,17 @@ function jpStockEvidenceQueries(stock = {}) {
   const code = jpStockCode(stock.symbol);
   const name = stock.name || code;
   const base = [
-    `${code} ${name} 株価 ニュース 決算 業績予想 事業変化 Yahoo 株探`,
+    `${code} ${name} 株価 ニュース 決算 業績予想 事業変化 配当 株主優待 Yahoo 株探`,
     `${code} ${name} 決算後 急落 失望売り 自社株買いなし 増配なし 株主還元`,
     `${code} ${name} 中期経営計画 受注 利益率 ガイダンス 上方修正 下方修正 TDnet`,
     `${code} ${name} 時価総額 PBR PER EV EBITDA ネットキャッシュ 営業キャッシュフロー`,
     `${code} ${name} 信用倍率 空売り 需給 大量保有 アクティビスト TOB MBO PEファンド`,
+    `${code} ${name} 株主優待 配当 権利確定 権利落ち 配当落ち`,
   ];
   if (!code) return base.map((text) => ({ text: text.trim(), topic: "company" }));
   return [
     { text: `site:kabutan.jp/stock/news?code=${code} ${name} 決算 業績 配当 自社株買い`, topic: "company" },
-    { text: `site:finance.yahoo.co.jp/quote/${code}.T ${name} ニュース 決算 業績`, topic: "company" },
+    { text: `site:finance.yahoo.co.jp/quote/${code}.T ${name} ニュース 決算 業績 配当 株主優待`, topic: "company" },
     { text: `site:irbank.net/${code} ${name} PBR PER 時価総額 キャッシュフロー`, topic: "company" },
     ...base.map((text) => ({ text, topic: "company" })),
   ];
@@ -5070,7 +5216,7 @@ function jpStockEvidenceScore(item = {}, stock = {}) {
   if (code && jpEvidenceHasCode(item, code)) score += 45;
   if (hasStrongCompanyName(item, stock)) score += 18;
   if (/kabutan\.jp|finance\.yahoo\.co\.jp|tdnet|jpx|irbank\.net|nikkei\.com|buffett-code|minkabu/.test(host)) score += 24;
-  if (/決算|業績|上方修正|下方修正|配当|増配|減配|自社株買い|株主還元|中期経営|受注|営業利益|キャッシュフロー|pbr|per|ev.?ebitda|tob|mbo|大量保有|アクティビスト/i.test(text)) score += 16;
+  if (/決算|業績|上方修正|下方修正|配当|増配|減配|株主優待|優待|権利確定|権利落ち|配当落ち|自社株買い|株主還元|中期経営|受注|営業利益|キャッシュフロー|pbr|per|ev.?ebitda|tob|mbo|大量保有|アクティビスト/i.test(text)) score += 16;
   if (item.publishedDate && isRecentSearchDate(item.publishedDate, 120)) score += 8;
   return score;
 }
@@ -5157,6 +5303,7 @@ function buildDiscoveryProcess({
   businessHits,
   valueHits,
   badHits,
+  incomeSignal = null,
 }) {
   let business = 0;
   let value = 0;
@@ -5226,6 +5373,10 @@ function buildDiscoveryProcess({
     value += Math.min(4, valueHits.length * 2);
     notes.value.push("割安ワードあり");
   }
+  if (incomeSignal?.score > 0) {
+    value += Math.min(4, Math.ceil(incomeSignal.score / 4));
+    notes.value.push(incomeSignal.hasBenefit ? "株主優待あり" : "配当権利月が近い");
+  }
 
   if (Number.isFinite(price.return3m)) {
     if (price.return3m >= -4 && price.return3m <= 18) {
@@ -5250,6 +5401,13 @@ function buildDiscoveryProcess({
       timing -= 4;
       notes.timing.push("1年買い場ラインより高い");
     }
+  }
+  if (incomeSignal?.score > 0) {
+    timing += Math.min(6, incomeSignal.score);
+    notes.timing.push(incomeSignal.label || "配当・優待の権利前");
+  } else if (incomeSignal?.score < 0) {
+    timing -= 3;
+    notes.timing.push("権利落ち前後は急がない");
   }
   if (Number.isFinite(price.sma200) && Number.isFinite(price.current) && price.current >= price.sma200 * 0.95) {
     timing += 5;
@@ -5548,6 +5706,7 @@ function compactDiscoveryPrice(price, unitSize = 100, currency = "JPY") {
     dividendChangePct: price.dividendChangePct,
     dividendLastDate: price.dividendLastDate,
     dividendLastAmount: price.dividendLastAmount,
+    dividendEvents: Array.isArray(price.dividendEvents) ? price.dividendEvents.slice(-12) : [],
   };
 }
 
@@ -9126,6 +9285,20 @@ function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = [])
       pePriorityScore: pePriorityScore(candidate),
       reportBucket: isPeReportCandidate(candidate) ? "pe" : "stock",
     }));
+  const sourceStageStats = result.sourceSummary?.stageStats || null;
+  const stageStats = sourceStageStats
+    ? {
+      ...sourceStageStats,
+      jp: {
+        ...(sourceStageStats.jp || {}),
+        shown: suggestions.filter((candidate) => !isUsDiscoveryCandidate(candidate)).length,
+      },
+      us: {
+        ...(sourceStageStats.us || {}),
+        shown: suggestions.filter(isUsDiscoveryCandidate).length,
+      },
+    }
+    : null;
   return {
     generatedAt: result.generatedAt || "",
     added: result.added || [],
@@ -9139,6 +9312,7 @@ function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = [])
         avoidedBusiness: result.sourceSummary.avoidedBusiness || "卸売・食品、情報系ベンチャー寄りは候補から除外",
         peCriteria: result.sourceSummary.peCriteria || PE_FINANCIAL_CRITERIA.map((item) => item.label),
         peTendencies: result.sourceSummary.peTendencies || PE_RECENT_TENDENCIES,
+        stageStats,
         excludedCount: excludedCandidates.length,
         suggestionCount: suggestions.length,
       }
@@ -11611,6 +11785,9 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     edinetDiscoveryWarnings: asStringArray(budget.edinetDiscoveryWarnings).slice(0, 5),
     fullScan: Boolean(budget.fullScan),
     searchPositionUsed: Boolean(budget.searchPositionUsed),
+    incomeSeasonalityUsed: Boolean(budget.incomeSeasonalityUsed),
+    seasonalBuyPremiumPct: Number(budget.seasonalBuyPremiumPct || 0),
+    stageStats: budget.stageStats || null,
     marketBrief: budget.marketBrief || null,
     performance: budget.performance || null,
     settingsKey: discoverySettingsKey(settings),

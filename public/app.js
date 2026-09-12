@@ -4190,8 +4190,15 @@ function renderCandidateList() {
       ? `注意: ${source.edinetDiscoveryWarnings.slice(0, 2).join(" / ")}。`
       : "";
     const edinetText = source.edinetDiscoveryEnabled
-      ? `日本株上位${source.edinetDiscoveryChecked || 0}件はEDINET財務を取得してから選別しています。`
+      ? `日本株${source.edinetDiscoveryChecked || 0}件をEDINET財務で確認してから選別しています。`
       : `候補探しのEDINET財務選別は未実行です。${edinetWarningText}`;
+    const jpStage = source.stageStats?.jp || null;
+    const stageText = jpStage
+      ? `日本株は価格確認${jpStage.priceChecked || 0}件、買い場条件${jpStage.buyArea || 0}件、EDINET後${jpStage.financialPass || 0}件、最終表示${jpStage.shown || 0}件です。`
+      : "";
+    const seasonalText = source.incomeSeasonalityUsed
+      ? `配当・株主優待の権利前需給も加味します。権利前だけ買い目安の許容幅を最大${source.seasonalBuyPremiumPct || 2}%まで広げます。`
+      : "";
     const positionText = source.searchPositionUsed ? "検索順位に出る業績・割安材料も採点しています。" : "";
     const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
     const avoidText = source.avoidedBusiness ? `${source.avoidedBusiness}。` : "";
@@ -4211,8 +4218,8 @@ function renderCandidateList() {
     els.suggestionSource.textContent = source.settingsChanged
       ? `${source.message || "調査条件または採点ルールが変わりました。候補を探すで現在の条件に合わせて作り直してください。"}現在の日本株条件は${budgetText}、米国株条件は${usBudgetText}です。${earlyText}候補は自動追加されません。`
       : source.searchCount > 0
-      ? `${source.provider}で${source.searchCount}件確認しました。${engineText}${discoveryText}${poolText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${edinetText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
-      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${engineText}${poolText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${edinetText}${countText}${excludedText}`;
+      ? `${source.provider}で${source.searchCount}件確認しました。${engineText}${discoveryText}${poolText}${stageText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${edinetText}${seasonalText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
+      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${engineText}${poolText}${stageText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${edinetText}${seasonalText}${countText}${excludedText}`;
   }
   if (!state.suggestions.length) {
     els.candidateList.classList.add("empty-state");
@@ -4238,7 +4245,7 @@ function candidateReportsHtml(items = []) {
     reportSectionHtml({
       title: "株として買う候補",
       count: stockItems.length,
-      description: "買い場ライン、3年目安、業績材料、配当、短期の過熱感で見ます。PE候補とは別の通常候補です。",
+      description: "買い場ライン、3年目安、業績材料、配当・株主優待の権利前、短期の過熱感で見ます。PE候補とは別の通常候補です。",
       empty: "通常の株候補はありません。",
       items: stockItems,
     }),
@@ -4399,10 +4406,12 @@ function suggestionItem(item, index) {
         <span><strong>1年</strong>${pct(price.return1y)}</span>
         <span><strong>3年</strong>${pct(price.return3y)}</span>
         <span><strong>配当</strong>${Number.isFinite(price.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>配当/優待</strong>${incomeSeasonalityBadge(item.incomeSeasonality)}</span>
         <span><strong>検索順位</strong>${item.searchPosition?.rank ? `${item.searchPosition.rank}位` : "-"}</span>
       </div>
       ${buyPlanHtml(item.buyPlan, item)}
       ${earlySignalHtml(item.earlySignal)}
+      ${incomeSeasonalityHtml(item.incomeSeasonality)}
       ${sellPlanHtml(item.sellPlan, item)}
       ${target === "jp" ? peSignalHtml(item.peSignal) : ""}
       ${learningHtml(item.learning)}
@@ -4481,6 +4490,34 @@ function earlySignalHtml(signal) {
         <span>${escapeHtml(signal.label || "確認")} ${Number.isFinite(signal.score) ? signal.score : "-"}</span>
       </div>
       <p>${escapeHtml(signal.summary || "買い場と初動条件を確認します。")}</p>
+      <div>${criteria}${risks}</div>
+    </div>
+  `;
+}
+
+function incomeSeasonalityBadge(signal = null) {
+  if (!signal || (!signal.hasDividend && !signal.hasBenefit)) return "-";
+  const parts = [signal.label || "確認"];
+  if (Number.isFinite(signal.daysToNext)) parts.push(`${signal.daysToNext}日後`);
+  else if (signal.nextDate) parts.push(formatDate(signal.nextDate));
+  if (signal.hasBenefit) parts.push("優待");
+  return escapeHtml(parts.join(" / "));
+}
+
+function incomeSeasonalityHtml(signal = null) {
+  if (!signal || (!signal.hasDividend && !signal.hasBenefit)) return "";
+  const criteria = (signal.criteria || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+  const risks = (signal.risks || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  const score = Number(signal.score || 0);
+  const cls = score >= 10 ? "good" : score > 0 ? "watch" : "weak";
+  const next = signal.nextDate ? ` / 次回目安 ${formatDate(signal.nextDate)}` : "";
+  return `
+    <div class="early-signal income-seasonality ${cls}">
+      <div>
+        <strong>配当・優待タイミング</strong>
+        <span>${escapeHtml(signal.label || "確認")}${escapeHtml(next)}</span>
+      </div>
+      <p>${escapeHtml(signal.summary || "権利確定前後の買い需要と反落リスクを確認します。")}</p>
       <div>${criteria}${risks}</div>
     </div>
   `;
