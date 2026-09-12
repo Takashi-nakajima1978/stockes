@@ -2338,6 +2338,15 @@ function compactUsPrice(price = {}) {
     atrPct: price.atrPct,
     sma5: price.sma5,
     sma5CrossUp: Boolean(price.sma5CrossUp),
+    sma25: price.sma25,
+    sma50: price.sma50,
+    sma75: price.sma75,
+    sma200: price.sma200,
+    goldenCross: Boolean(price.goldenCross),
+    deadCross: Boolean(price.deadCross),
+    maCrossSignal: price.maCrossSignal || null,
+    closeStrength: price.closeStrength || null,
+    closePositionPct: price.closePositionPct,
     rsi14: price.rsi14,
     rsiCross30: Boolean(price.rsiCross30),
     candlestickSignal: price.candlestickSignal || null,
@@ -2380,6 +2389,15 @@ function compactFxPrice(price = {}) {
     atrPct: price.atrPct,
     sma5: price.sma5,
     sma5CrossUp: Boolean(price.sma5CrossUp),
+    sma25: price.sma25,
+    sma50: price.sma50,
+    sma75: price.sma75,
+    sma200: price.sma200,
+    goldenCross: Boolean(price.goldenCross),
+    deadCross: Boolean(price.deadCross),
+    maCrossSignal: price.maCrossSignal || null,
+    closeStrength: price.closeStrength || null,
+    closePositionPct: price.closePositionPct,
     rsi14: price.rsi14,
     rsiCross30: Boolean(price.rsiCross30),
     candlestickSignal: price.candlestickSignal || null,
@@ -4327,6 +4345,20 @@ function earlyEntrySignal(candidate = {}, price = {}) {
     score += 9;
     criteria.push(price.candlestickSignal.label);
   }
+  if (price.maCrossSignal?.score > 0) {
+    score += Math.min(10, price.maCrossSignal.score);
+    criteria.push(price.maCrossSignal.label);
+  } else if (price.maCrossSignal?.score < 0) {
+    score += Math.max(-12, price.maCrossSignal.score);
+    risks.push(price.maCrossSignal.summary || price.maCrossSignal.label);
+  }
+  if (price.closeStrength?.score > 0) {
+    score += Math.min(7, price.closeStrength.score);
+    criteria.push(price.closeStrength.label);
+  } else if (price.closeStrength?.score < 0) {
+    score += Math.max(-7, price.closeStrength.score);
+    risks.push(price.closeStrength.summary || price.closeStrength.label);
+  }
   if (Number.isFinite(price.atrPct)) {
     if (price.atrPct >= 6) {
       score -= 8;
@@ -4930,6 +4962,8 @@ async function aiDiscoveryReview(candidates) {
       maxDrawdown3y: candidate.price?.maxDrawdown3y,
       dividendYield: candidate.price?.dividendYield,
       dividendPerShareTtm: candidate.price?.dividendPerShareTtm,
+      maCrossSignal: candidate.price?.maCrossSignal || null,
+      closeStrength: candidate.price?.closeStrength || null,
     },
     searchPosition: candidate.searchPosition || null,
     peSignal: candidate.peSignal || null,
@@ -4973,7 +5007,7 @@ async function aiDiscoveryReviewChunk(model, items) {
     "あなたは日本株・米国株の候補発掘レビュー担当です。将来の利益を保証せず、根拠不足を厳しく扱ってください。",
     "目的は「事業として好調そうなのに、株価が高すぎず、買い場ラインや買い目安以下で検討できる候補」を上に残すことです。",
     "米国株は特に、すでに急騰した後ではなく、買い場以下・3年目安付近・1か月反発・3か月非過熱・出来高増のような、早めに入る条件を重視してください。",
-    "過去3年の流れに対する現在価格、1年買い場ライン、早めに入る条件のスコア、配当利回り、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
+    "過去3年の流れに対する現在価格、1年買い場ライン、早めに入る条件のスコア、配当利回り、ゴールデンクロス、大引けの強さ、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
     "日本株は配当・株主優待の権利取り前の買い需要も参考にしてください。ただし権利落ち直前や権利落ち後の反落を無視して買い評価を上げないでください。",
     "1年買い場ラインを下回っていて、事業材料も良いものはプラス評価してください。上がり切った高値圏はマイナス評価してください。",
     "PEファンドが買いそうな会社かは、割安に見える材料、安定キャッシュフロー、株主変化、再編余地、買収されにくい要因に分けて評価してください。ただしPE要素だけで高い価格で買う判断を肯定しないでください。",
@@ -5409,6 +5443,20 @@ function buildDiscoveryProcess({
     timing -= 3;
     notes.timing.push("権利落ち前後は急がない");
   }
+  if (price.maCrossSignal?.score > 0) {
+    timing += Math.min(6, price.maCrossSignal.score);
+    notes.timing.push(price.maCrossSignal.label);
+  } else if (price.maCrossSignal?.score < 0) {
+    timing -= Math.min(5, Math.abs(price.maCrossSignal.score));
+    notes.timing.push(price.maCrossSignal.label);
+  }
+  if (price.closeStrength?.score > 0) {
+    timing += Math.min(5, price.closeStrength.score);
+    notes.timing.push(price.closeStrength.label);
+  } else if (price.closeStrength?.score < 0) {
+    timing -= Math.min(4, Math.abs(price.closeStrength.score));
+    notes.timing.push(price.closeStrength.label);
+  }
   if (Number.isFinite(price.sma200) && Number.isFinite(price.current) && price.current >= price.sma200 * 0.95) {
     timing += 5;
     notes.timing.push("長めの平均価格を大きく下回っていない");
@@ -5610,6 +5658,8 @@ function candidateBuyPlan(price, options = {}) {
   if (price.sma5CrossUp) checks.push("5日線上抜け");
   if (price.rsiCross30) checks.push("RSI30復帰");
   if (price.candlestickSignal?.label) checks.push(price.candlestickSignal.label);
+  if (price.maCrossSignal?.score > 0) checks.push(price.maCrossSignal.label);
+  if (price.closeStrength?.score > 0) checks.push(price.closeStrength.label);
   if (price.regime?.label) checks.push(`相場: ${price.regime.label}`);
 
   const gapToMax = ((current - maxBuyPrice) / maxBuyPrice) * 100;
@@ -5696,6 +5746,15 @@ function compactDiscoveryPrice(price, unitSize = 100, currency = "JPY") {
     atrPct: price.atrPct,
     sma5: price.sma5,
     sma5CrossUp: Boolean(price.sma5CrossUp),
+    sma25: price.sma25,
+    sma50: price.sma50,
+    sma75: price.sma75,
+    sma200: price.sma200,
+    goldenCross: Boolean(price.goldenCross),
+    deadCross: Boolean(price.deadCross),
+    maCrossSignal: price.maCrossSignal || null,
+    closeStrength: price.closeStrength || null,
+    closePositionPct: price.closePositionPct,
     rsi14: price.rsi14,
     rsiCross30: Boolean(price.rsiCross30),
     candlestickSignal: price.candlestickSignal || null,
@@ -6103,7 +6162,9 @@ function priceMetrics(series, meta = {}) {
   const low52 = Math.min(...closes.slice(-252));
   const high3y = high3yPoint?.close || Math.max(...closes3y);
   const low3y = Math.min(...closes3y);
+  const sma25 = average(closes.slice(-25));
   const sma50 = average(closes.slice(-50));
+  const sma75 = average(closes.slice(-75));
   const sma200 = average(closes.slice(-200));
   const volatility = annualizedVolatility(closes.slice(-252));
   const return3y = series.length > 500 ? returnFrom(series, Math.min(756, series.length - 1)) : null;
@@ -6138,7 +6199,9 @@ function priceMetrics(series, meta = {}) {
     trendPrice3y,
     distanceFromTrend3y: trendPrice3y ? ((current - trendPrice3y) / trendPrice3y) * 100 : null,
     trend3y: trendSlope3y > 8 ? "UP" : trendSlope3y < -6 ? "DOWN" : "SIDEWAYS",
+    sma25,
     sma50,
+    sma75,
     sma200,
     volatility,
     latestVolume,
@@ -6151,6 +6214,11 @@ function priceMetrics(series, meta = {}) {
     atrPct: technical.atrPct,
     sma5: technical.sma5,
     sma5CrossUp: technical.sma5CrossUp,
+    goldenCross: technical.goldenCross,
+    deadCross: technical.deadCross,
+    maCrossSignal: technical.maCrossSignal,
+    closeStrength: technical.closeStrength,
+    closePositionPct: technical.closePositionPct,
     rsi14: technical.rsi14,
     rsiCross30: technical.rsiCross30,
     candlestickSignal: technical.candlestickSignal,
@@ -6277,6 +6345,15 @@ function technicalIndicators(series = [], buyTiming = {}) {
       atrPct: null,
       sma5: null,
       sma5CrossUp: false,
+      sma25: null,
+      sma50: null,
+      sma75: null,
+      sma200: null,
+      goldenCross: false,
+      deadCross: false,
+      maCrossSignal: null,
+      closeStrength: null,
+      closePositionPct: null,
       rsi14: null,
       rsiCross30: false,
       candlestickSignal: null,
@@ -6286,8 +6363,28 @@ function technicalIndicators(series = [], buyTiming = {}) {
 
   const sma5 = average(closes.slice(-5));
   const previousSma5 = clean.length >= 6 ? average(closes.slice(-6, -1)) : null;
+  const sma25 = average(closes.slice(-25));
+  const previousSma25 = clean.length >= 26 ? average(closes.slice(-26, -1)) : null;
+  const sma50 = average(closes.slice(-50));
+  const previousSma50 = clean.length >= 51 ? average(closes.slice(-51, -1)) : null;
+  const sma75 = average(closes.slice(-75));
+  const previousSma75 = clean.length >= 76 ? average(closes.slice(-76, -1)) : null;
+  const sma200 = average(closes.slice(-200));
+  const previousSma200 = clean.length >= 201 ? average(closes.slice(-201, -1)) : null;
   const previousClose = nullablePositiveNumber(previous.close);
   const sma5CrossUp = Boolean(previousClose && previousSma5 && sma5 && previousClose <= previousSma5 && current > sma5);
+  const maCrossSignal = movingAverageCrossSignal({
+    sma25,
+    previousSma25,
+    sma50,
+    previousSma50,
+    sma75,
+    previousSma75,
+    sma200,
+    previousSma200,
+  });
+  const goldenCross = maCrossSignal?.key === "golden_cross";
+  const deadCross = maCrossSignal?.key === "dead_cross";
   const rsiSeries = rsiValues(closes, 14);
   const rsi14 = lastFinite(rsiSeries);
   const previousRsi = previousFinite(rsiSeries);
@@ -6298,6 +6395,8 @@ function technicalIndicators(series = [], buyTiming = {}) {
   const histVol20 = annualizedVolatility(closes.slice(-21));
   const logReturn1d = previousClose ? Math.log(current / previousClose) : null;
   const candlestickSignal = latestCandlestickSignal(clean);
+  const closeStrength = closingStrengthSignal(clean);
+  const closePositionPct = Number.isFinite(closeStrength?.closePositionPct) ? closeStrength.closePositionPct : null;
   const buyLine = nullablePositiveNumber(buyTiming.buyLine1y);
   const atrBuffer = atr14 ? atr14 * (Number.isFinite(atrPct) && atrPct > 4 ? 1.0 : 0.5) : 0;
   const atrAdjustedBuyLine = buyLine ? Math.max(0.01, buyLine - atrBuffer) : null;
@@ -6306,11 +6405,15 @@ function technicalIndicators(series = [], buyTiming = {}) {
     : false;
   const confirmationSignals = [
     sma5CrossUp ? "終値が5日線を上抜け" : "",
+    maCrossSignal?.score > 0 ? maCrossSignal.label : "",
     rsiCross30 ? "RSIが30割れから再浮上" : "",
     candlestickSignal ? candlestickSignal.label : "",
+    closeStrength?.score > 0 ? closeStrength.label : "",
   ].filter(Boolean);
   const risks = [
     buyLine && !nearBuyLine ? "買い場ラインまではまだ距離あり" : "",
+    maCrossSignal?.score < 0 ? maCrossSignal.summary : "",
+    closeStrength?.score < 0 ? closeStrength.summary : "",
     Number.isFinite(atrPct) && atrPct >= 6 ? "ATRが大きく、指値を深めに置きたい" : "",
     !confirmationSignals.length ? "反転サインはまだ未確認" : "",
   ].filter(Boolean);
@@ -6319,8 +6422,12 @@ function technicalIndicators(series = [], buyTiming = {}) {
     35
     + (nearBuyLine ? 25 : 0)
     + (sma5CrossUp ? 15 : 0)
+    + Math.max(0, Number(maCrossSignal?.score || 0))
     + (rsiCross30 ? 15 : 0)
     + (candlestickSignal ? 10 : 0)
+    + Math.max(0, Number(closeStrength?.score || 0))
+    + Math.min(0, Number(maCrossSignal?.score || 0))
+    + Math.min(0, Number(closeStrength?.score || 0))
     - (Number.isFinite(atrPct) && atrPct >= 6 ? 8 : 0),
   ), 0, 100);
   const summary = ready
@@ -6336,6 +6443,15 @@ function technicalIndicators(series = [], buyTiming = {}) {
     atrPct,
     sma5,
     sma5CrossUp,
+    sma25,
+    sma50,
+    sma75,
+    sma200,
+    goldenCross,
+    deadCross,
+    maCrossSignal,
+    closeStrength,
+    closePositionPct,
     rsi14,
     rsiCross30,
     candlestickSignal,
@@ -6349,6 +6465,131 @@ function technicalIndicators(series = [], buyTiming = {}) {
       summary,
     },
   };
+}
+
+function movingAverageCrossSignal(values = {}) {
+  const candidates = [
+    maCrossPair("25日/75日", values.sma25, values.sma75, values.previousSma25, values.previousSma75),
+    maCrossPair("50日/200日", values.sma50, values.sma200, values.previousSma50, values.previousSma200),
+  ].filter(Boolean);
+  const golden = candidates.find((item) => item.key === "golden_cross");
+  if (golden) return golden;
+  const dead = candidates.find((item) => item.key === "dead_cross");
+  if (dead) return dead;
+  return candidates.sort((a, b) => Math.abs(b.score) - Math.abs(a.score))[0] || null;
+}
+
+function maCrossPair(label, shortNow, longNow, shortPrev, longPrev) {
+  if (![shortNow, longNow, shortPrev, longPrev].every(Number.isFinite) || longNow <= 0 || longPrev <= 0) return null;
+  const spread = ((shortNow - longNow) / longNow) * 100;
+  const previousSpread = ((shortPrev - longPrev) / longPrev) * 100;
+  if (previousSpread <= 0 && spread > 0) {
+    return {
+      key: "golden_cross",
+      label: `${label} ゴールデンクロス`,
+      score: 14,
+      spreadPct: spread,
+      summary: `${label}で短期線が長期線を上抜け。下落後の反転初動として見ます。`,
+    };
+  }
+  if (previousSpread >= 0 && spread < 0) {
+    return {
+      key: "dead_cross",
+      label: `${label} デッドクロス`,
+      score: -16,
+      spreadPct: spread,
+      summary: `${label}で短期線が長期線を下抜け。買い急ぎを避けます。`,
+    };
+  }
+  if (spread > 0 && spread <= 3) {
+    return {
+      key: "near_golden_cross",
+      label: `${label} 上向き初動`,
+      score: 6,
+      spreadPct: spread,
+      summary: `${label}は短期線が長期線を少し上回る状態です。上昇初動の確認材料にします。`,
+    };
+  }
+  if (spread > 3) {
+    return {
+      key: "bullish_alignment",
+      label: `${label} 上向き`,
+      score: 3,
+      spreadPct: spread,
+      summary: `${label}は短期線が長期線を上回っています。上昇トレンドの継続材料です。`,
+    };
+  }
+  if (spread < 0 && spread >= -3) {
+    return {
+      key: "near_dead_cross",
+      label: `${label} 反転待ち`,
+      score: -4,
+      spreadPct: spread,
+      summary: `${label}は短期線が長期線をまだ下回っています。ゴールデンクロスを待ちます。`,
+    };
+  }
+  return {
+    key: "bearish_alignment",
+    label: `${label} 下向き`,
+    score: -9,
+    spreadPct: spread,
+    summary: `${label}は短期線が長期線を大きく下回っています。需給はまだ弱めです。`,
+  };
+}
+
+function closingStrengthSignal(series = []) {
+  const latest = series.at(-1) || {};
+  const previous = series.at(-2) || {};
+  const open = nullablePositiveNumber(latest.open) || latest.close;
+  const close = nullablePositiveNumber(latest.close);
+  const high = nullablePositiveNumber(latest.high) || close;
+  const low = nullablePositiveNumber(latest.low) || close;
+  const previousClose = nullablePositiveNumber(previous.close);
+  if (!open || !close || !high || !low || high <= low) return null;
+  const closePositionPct = ((close - low) / (high - low)) * 100;
+  const openToClosePct = ((close - open) / open) * 100;
+  const dayReturnPct = previousClose ? ((close - previousClose) / previousClose) * 100 : null;
+  const strongCloseStreak = closeStrengthStreak(series);
+  let score = 0;
+  let label = "大引け中立";
+  let summary = `終値は日中値幅の${Math.round(closePositionPct)}%位置です。大引けの需給は中立として見ます。`;
+  if (closePositionPct >= 75 && close >= open && (!Number.isFinite(dayReturnPct) || dayReturnPct >= -1)) {
+    score = 8 + (strongCloseStreak >= 2 ? 3 : 0);
+    label = strongCloseStreak >= 2 ? "大引け強さ継続" : "大引け強い";
+    summary = `終値が日中高値側で引けています。買いが引けまで残った可能性があり、反転確認の補助材料にします。`;
+  } else if (closePositionPct >= 60 && openToClosePct >= -0.5) {
+    score = 4;
+    label = "大引けまずまず";
+    summary = `終値は日中値幅の${Math.round(closePositionPct)}%位置です。売り崩れではなく、様子見のプラス材料にします。`;
+  } else if (closePositionPct <= 25 && close < open) {
+    score = -8;
+    label = "大引け弱い";
+    summary = `終値が日中安値側で引けています。引けまで売りが残った可能性があり、翌営業日の反発確認を待ちます。`;
+  }
+  return {
+    label,
+    score,
+    closePositionPct,
+    openToClosePct,
+    dayReturnPct,
+    strongCloseStreak,
+    summary,
+  };
+}
+
+function closeStrengthStreak(series = []) {
+  let streak = 0;
+  for (let index = series.length - 1; index >= 0; index -= 1) {
+    const point = series[index];
+    const close = nullablePositiveNumber(point?.close);
+    const high = nullablePositiveNumber(point?.high) || close;
+    const low = nullablePositiveNumber(point?.low) || close;
+    if (!close || !high || !low || high <= low) break;
+    const position = ((close - low) / (high - low)) * 100;
+    if (position < 70) break;
+    streak += 1;
+  }
+  return streak;
 }
 
 function technicalEntryFallback(summary = "更新後に表示します。") {
@@ -6683,6 +6924,22 @@ function ruleBasedDecision(stock, price, research) {
       score -= 9;
       risks.push("50日移動平均が200日移動平均を下回っている");
     }
+  }
+
+  if (price.maCrossSignal?.score > 0) {
+    score += Math.min(8, price.maCrossSignal.score);
+    reasons.push(price.maCrossSignal.summary || price.maCrossSignal.label);
+  } else if (price.maCrossSignal?.score < 0) {
+    score += Math.max(-10, price.maCrossSignal.score);
+    risks.push(price.maCrossSignal.summary || price.maCrossSignal.label);
+  }
+
+  if (price.closeStrength?.score > 0) {
+    score += Math.min(6, price.closeStrength.score);
+    reasons.push(price.closeStrength.summary || price.closeStrength.label);
+  } else if (price.closeStrength?.score < 0) {
+    score += Math.max(-6, price.closeStrength.score);
+    risks.push(price.closeStrength.summary || price.closeStrength.label);
   }
 
   if (Number.isFinite(price.distanceFromHigh52) && price.distanceFromHigh52 > -8) {
@@ -7103,7 +7360,9 @@ function compactPrice(price) {
     buyTiming1y: price.buyTiming1y,
     low1y: price.low1y,
     low1yDate: price.low1yDate,
+    sma25: price.sma25,
     sma50: price.sma50,
+    sma75: price.sma75,
     sma200: price.sma200,
     volatility: price.volatility,
     latestVolume: price.latestVolume,
@@ -7116,6 +7375,11 @@ function compactPrice(price) {
     atrPct: price.atrPct,
     sma5: price.sma5,
     sma5CrossUp: Boolean(price.sma5CrossUp),
+    goldenCross: Boolean(price.goldenCross),
+    deadCross: Boolean(price.deadCross),
+    maCrossSignal: price.maCrossSignal || null,
+    closeStrength: price.closeStrength || null,
+    closePositionPct: price.closePositionPct,
     rsi14: price.rsi14,
     rsiCross30: Boolean(price.rsiCross30),
     candlestickSignal: price.candlestickSignal || null,
@@ -12586,7 +12850,9 @@ function emptyPrice(series = [], meta = {}) {
     distanceFromTrend3y: null,
     trend3y: "UNKNOWN",
     ...emptyBuyTiming(),
+    sma25: null,
     sma50: null,
+    sma75: null,
     sma200: null,
     volatility: null,
     latestVolume: null,
@@ -12599,6 +12865,11 @@ function emptyPrice(series = [], meta = {}) {
     atrPct: null,
     sma5: null,
     sma5CrossUp: false,
+    goldenCross: false,
+    deadCross: false,
+    maCrossSignal: null,
+    closeStrength: null,
+    closePositionPct: null,
     rsi14: null,
     rsiCross30: false,
     candlestickSignal: null,

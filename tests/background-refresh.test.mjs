@@ -97,6 +97,16 @@ test("dividend seasonality flags upcoming rights demand", () => {
   assert.ok(signal.score >= 10);
 });
 
+test("technical entry uses golden cross and closing strength experience rules", () => {
+  assert.match(serverSource, /function movingAverageCrossSignal/);
+  assert.match(serverSource, /function closingStrengthSignal/);
+  assert.match(serverSource, /ゴールデンクロス/);
+  assert.match(serverSource, /大引け強/);
+  assert.match(appSource, /ゴールデンクロス/);
+  assert.match(appSource, /大引けの強さ/);
+  assert.match(appSource, /technicalExperienceBadge/);
+});
+
 test("Japan discovery EDINET review is not capped to top candidates", () => {
   const discoverStart = serverSource.indexOf("async function discoverStocks");
   const discoverEnd = serverSource.indexOf("function discoveryUniverseStats", discoverStart);

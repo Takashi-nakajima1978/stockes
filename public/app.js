@@ -2021,6 +2021,28 @@ function technicalEntryHtml(price = {}, formatter = yen) {
             impact: "RSIが30を上回り直す、または5日線を上抜けるまでは、安く見えても待ちます。",
           })}
         </article>
+        <article class="risk-check ${maCrossLevel(price.maCrossSignal)}">
+          <div>
+            <strong>ゴールデンクロス</strong>
+            <span>${escapeHtml(price.maCrossSignal?.label || "未確認")}</span>
+          </div>
+          <p>${escapeHtml(price.maCrossSignal?.summary || "短期線が長期線を上抜けたかを確認します。")}</p>
+          ${ruleGuideHtml({
+            standard: "日本株は25日/75日、米国株や暗号資産は50日/200日も見ます。短期線が長期線を上抜けると買いが戻り始めたサインです。",
+            impact: "買い場近くでゴールデンクロスが出ると入口候補に近づき、デッドクロスなら反転待ちにします。",
+          })}
+        </article>
+        <article class="risk-check ${closeStrengthLevel(price.closeStrength)}">
+          <div>
+            <strong>大引けの強さ</strong>
+            <span>${escapeHtml(price.closeStrength?.label || "未確認")}</span>
+          </div>
+          <p>${escapeHtml(closeStrengthText(price.closeStrength))}</p>
+          ${ruleGuideHtml({
+            standard: "終値が日中高値に近いほど、引けまで買いが残った可能性があります。25%以下なら引け味は弱めです。",
+            impact: "強い大引けは反転確認の補助材料、弱い大引けは翌営業日の確認待ちにします。",
+          })}
+        </article>
         <article class="risk-check ${regime.panicPullbackPct >= 55 ? "medium" : "low"}">
           <div>
             <strong>レジーム(HMM風)</strong>
@@ -2035,6 +2057,30 @@ function technicalEntryHtml(price = {}, formatter = yen) {
       </div>
     </section>
   `;
+}
+
+function maCrossLevel(signal = null) {
+  const score = Number(signal?.score);
+  if (!Number.isFinite(score)) return "medium";
+  if (score >= 6) return "low";
+  if (score < 0) return "high";
+  return "medium";
+}
+
+function closeStrengthLevel(signal = null) {
+  const score = Number(signal?.score);
+  if (!Number.isFinite(score)) return "medium";
+  if (score >= 4) return "low";
+  if (score < 0) return "high";
+  return "medium";
+}
+
+function closeStrengthText(signal = null) {
+  if (!signal) return "終値が日中の高値側で終わったかを確認します。";
+  const position = Number.isFinite(signal.closePositionPct)
+    ? `終値位置 ${Math.round(signal.closePositionPct)}%。`
+    : "";
+  return `${position}${signal.summary || ""}`.trim();
 }
 
 function financialInfoHtml(info = null, price = {}) {
@@ -4205,7 +4251,7 @@ function renderCandidateList() {
     const peText = source.peCriteria?.length
       ? `PE買収狙いは日本株だけを別レポートで見ます。${source.peCriteria.join("・")}を重視します。`
       : "";
-    const earlyText = "米国株は買い場以下・反発初動・短期非過熱を優先します。";
+    const earlyText = "買い場以下・反発初動・短期非過熱に加えて、ゴールデンクロスと大引けの強さも見ます。";
     const learnText = source.performance?.evaluated
       ? `過去候補は${source.performance.evaluated}件判定済み、当たり${Math.round((source.performance.hitRate || 0) * 100)}%です。`
       : "";
@@ -4407,6 +4453,7 @@ function suggestionItem(item, index) {
         <span><strong>3年</strong>${pct(price.return3y)}</span>
         <span><strong>配当</strong>${Number.isFinite(price.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
         <span><strong>配当/優待</strong>${incomeSeasonalityBadge(item.incomeSeasonality)}</span>
+        <span><strong>需給経験則</strong>${technicalExperienceBadge(price)}</span>
         <span><strong>検索順位</strong>${item.searchPosition?.rank ? `${item.searchPosition.rank}位` : "-"}</span>
       </div>
       ${buyPlanHtml(item.buyPlan, item)}
@@ -4502,6 +4549,15 @@ function incomeSeasonalityBadge(signal = null) {
   else if (signal.nextDate) parts.push(formatDate(signal.nextDate));
   if (signal.hasBenefit) parts.push("優待");
   return escapeHtml(parts.join(" / "));
+}
+
+function technicalExperienceBadge(price = {}) {
+  const parts = [];
+  if (price.goldenCross || price.maCrossSignal?.score >= 6) parts.push("GC");
+  else if (price.deadCross || price.maCrossSignal?.score < 0) parts.push("DC注意");
+  if (price.closeStrength?.score >= 4) parts.push(price.closeStrength.label || "大引け強い");
+  else if (price.closeStrength?.score < 0) parts.push("大引け弱い");
+  return escapeHtml(parts.length ? parts.join(" / ") : "-");
 }
 
 function incomeSeasonalityHtml(signal = null) {
