@@ -235,6 +235,18 @@ const defaultSettings = {
   graphChatId: process.env.GRAPH_CHAT_ID || "",
 };
 
+const LM_STRICT_JSON_INSTRUCTIONS = [
+  "Return strict JSON only. Do not wrap the JSON in markdown fences.",
+  "Use English for analysis, classification, scoring, financial reasoning, and risk assessment.",
+  "Preserve the meaning of Japanese source terms, but reason about them by concept rather than translating them literally.",
+  "Write every user-facing natural-language field in clear, natural Japanese unless the schema explicitly asks for an enum, ticker, URL, or number.",
+  "Avoid awkward Japanese finance jargon such as 買収妙味, 割安放置, or PEの中小型狙い. Explain the concrete reason and how it affects buy, hold, sell, or watch decisions.",
+];
+
+function lmJsonInstructions(extra = "") {
+  return [...LM_STRICT_JSON_INSTRUCTIONS, extra].filter(Boolean).join("\n");
+}
+
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -1714,9 +1726,10 @@ async function applyUsEvidenceTranslationChunk(model, chunk = []) {
 async function translateUsEvidenceChunk(model, items = []) {
   const prompt = [
     "/no_think",
-    "英語の米国株ニュースを日本語に要約してください。投資助言ではなく記事内容だけ。",
-    "JSONのみ: {\"items\":[{\"titleJa\":\"45字以内\",\"summaryJa\":\"90字以内\"}]}。入力と同じ順番・件数。",
-    "古い日付や根拠が薄い場合はsummaryJaに短く含めてください。",
+    "Task: translate and summarize US stock news snippets into natural Japanese.",
+    "Read and reason about the English source text in English first. Do not add investment advice; summarize only what the article says.",
+    "Return strict JSON only: {\"items\":[{\"titleJa\":\"Japanese title within 45 characters\",\"summaryJa\":\"Japanese summary within 90 characters\"}]}. Keep the same order and count as the input.",
+    "If the item is old, generic, or weak evidence, mention that briefly in summaryJa.",
     "",
     JSON.stringify({
       items: items.map((item) => ({
@@ -1727,10 +1740,17 @@ async function translateUsEvidenceChunk(model, items = []) {
     }),
   ].join("\n");
   const content = await callLmStudioResponses(model, prompt, {
+    instructions: lmJsonInstructions("titleJa and summaryJa must be natural Japanese."),
     maxOutputTokens: 2200,
     timeoutMs: US_EVIDENCE_TRANSLATION_TIMEOUT_MS,
   }).catch(async (error) => {
-    if (shouldFallbackToLmStudioChat(error)) return callLmStudioChat(model, prompt, { maxTokens: 2200, timeoutMs: US_EVIDENCE_TRANSLATION_TIMEOUT_MS });
+    if (shouldFallbackToLmStudioChat(error)) {
+      return callLmStudioChat(model, prompt, {
+        system: lmJsonInstructions("titleJa and summaryJa must be natural Japanese."),
+        maxTokens: 2200,
+        timeoutMs: US_EVIDENCE_TRANSLATION_TIMEOUT_MS,
+      });
+    }
     throw error;
   });
   const parsed = parseJsonObjectMatching(content, isUsEvidenceTranslationPayload);
@@ -2125,24 +2145,31 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
   }));
   const prompt = [
     "/no_think",
-    "あなたは米国株の保有確認AIです。候補探索はしません。保有銘柄について、損益とニュース材料を日本語で短く整理してください。",
-    "英語記事のsnippetは日本語に要約してください。残株数、売却済み株数、確定損益、含み損益、受取配当、年間配当目安、配当込み損益を分けて読み、財務サマリーのPER、EPS、売上成長、利益率、ROE、負債水準、次回決算も確認してください。",
-    "利益保証をせず、保有継続の確認材料と注意点を分けてください。財務データが不足している場合は、不足を注意点にしてください。",
-    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"titleJa\":\"...\",\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":123.45,\"reviewPrice\":111.11,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}。",
-    "stanceは HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED のいずれか。changeLevelは normal, watch, important のいずれか。",
-    "NVIDIAのような10倍候補は20〜30%の株価下落だけではEXITにしません。売上成長の鈍化、guidanceがconsensusを下回る、需要・粗利・受注の構造悪化、成長投資テーマの破綻など、買った根拠が崩れた時だけgrowthExit.levelをexit_alertにしてください。",
-    `growthExit.exit_alertはpublishedDateが過去${FUNDAMENTAL_EXIT_MAX_AGE_DAYS}日以内の根拠がある時だけにしてください。日付不明、古い記事、過去の歴史記事は売りアラートの根拠にしないでください。`,
-    "summaryJaは90字以内、goodとrisksは各3件まで、evidenceJaのsummaryは各80字以内にしてください。growthExit.evidenceは根拠にした記事や開示だけを最大3件入れてください。",
-    "sellForecastは保有中か残株がある銘柄だけに出してください。ニュース、決算、過去3年の価格、保有単価、トレーリングストップを合わせ、売却を検討する価格帯と時期を出してください。根拠が薄ければtargetPrice/null、horizon/未定。",
+    "Role: US equity holding-review analyst. Do not search for new candidates; review only the provided holdings.",
+    "Analyze English news snippets and financial summaries in English. Then write all user-facing text in natural Japanese.",
+    "Separate position facts: remaining shares, sold shares, realized P/L, unrealized P/L, received dividends, estimated annual dividend, and total return including dividends.",
+    "Check PER, EPS, revenue growth, margin, ROE, debt level, next earnings timing, news evidence, 3-year price history, purchase price, and trailing-stop context.",
+    "Do not promise profit. Separate reasons to continue holding from risks or missing data. If financial data is missing, say that as a risk.",
+    "Return strict JSON only in this schema: {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"titleJa\":\"...\",\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":123.45,\"reviewPrice\":111.11,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}.",
+    "stance must be one of HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED. changeLevel must be one of normal, watch, important.",
+    "For long-term compounders such as NVIDIA, a 20-30% drawdown alone is not an exit signal. Set growthExit.level to exit_alert only when the original thesis is impaired: clear revenue-growth slowdown, guidance below consensus, structural weakness in demand/gross margin/orders, dividend cut, downward revision, or similar evidence.",
+    `Only use growthExit.exit_alert when there is supporting evidence with publishedDate within the last ${FUNDAMENTAL_EXIT_MAX_AGE_DAYS} days. Do not use undated, old, or historical articles as sell-alert evidence.`,
+    "summaryJa must be within 90 Japanese characters. good and risks are up to 3 items each. evidenceJa.summary is within 80 Japanese characters. growthExit.evidence should include up to 3 source items actually used as evidence.",
+    "Only provide sellForecast for holdings with remaining shares. Estimate a review horizon, profit-taking candidate price, review price, timing, and reason from news, earnings, 3-year price history, purchase price, and trailing stops. If evidence is weak, use targetPrice:null and horizon:未定.",
     "",
     JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
   const content = await callLmStudioResponses(model, prompt, {
+    instructions: lmJsonInstructions("All narrative fields such as summaryJa, good, risks, evidenceJa.summary, timing, reason, and catalysts must be natural Japanese."),
     maxOutputTokens: 3500,
     timeoutMs: US_HOLDING_REVIEW_TIMEOUT_MS,
   }).catch(async (error) => {
     if (shouldFallbackToLmStudioChat(error)) {
-      return callLmStudioChat(model, prompt, { maxTokens: 3500, timeoutMs: US_HOLDING_REVIEW_TIMEOUT_MS });
+      return callLmStudioChat(model, prompt, {
+        system: lmJsonInstructions("All narrative fields such as summaryJa, good, risks, evidenceJa.summary, timing, reason, and catalysts must be natural Japanese."),
+        maxTokens: 3500,
+        timeoutMs: US_HOLDING_REVIEW_TIMEOUT_MS,
+      });
     }
     throw error;
   });
@@ -2203,9 +2230,10 @@ async function translateResearchEvidenceRows(rows = []) {
 
 async function translateEvidenceChunk(model, items = []) {
   const prompt = [
-    "英語の株式ニュース断片を、日本語で短く要約してください。",
-    "出力はJSONのみ。形式は {\"items\":[\"日本語要約\", \"...\"]}。入力と同じ順番、同じ件数で返してください。",
-    "各要約は80字以内。投資助言ではなく、記事の内容だけを訳して要約してください。",
+    "Task: translate and summarize short English stock-news snippets into natural Japanese.",
+    "Analyze the source text in English. Do not add investment advice; summarize only article content.",
+    "Return strict JSON only: {\"items\":[\"Japanese summary\", \"...\"]}. Keep the same order and count as the input.",
+    "Each summary must be natural Japanese within 80 characters.",
     "",
     JSON.stringify({
       items: items.map((item) => ({
@@ -2216,7 +2244,12 @@ async function translateEvidenceChunk(model, items = []) {
     }),
   ].join("\n");
   const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 1800 }).catch(async (error) => {
-    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 1800 });
+    if (String(error.message || "").includes("404")) {
+      return callLmStudioChat(model, prompt, {
+        system: lmJsonInstructions("The items array must contain Japanese summaries."),
+        maxTokens: 1800,
+      });
+    }
     throw error;
   });
   const parsed = parseJsonObject(content);
@@ -5004,27 +5037,27 @@ async function aiDiscoveryReview(candidates) {
 
 async function aiDiscoveryReviewChunk(model, items) {
   const prompt = [
-    "あなたは日本株・米国株の候補発掘レビュー担当です。将来の利益を保証せず、根拠不足を厳しく扱ってください。",
-    "目的は「事業として好調そうなのに、株価が高すぎず、買い場ラインや買い目安以下で検討できる候補」を上に残すことです。",
-    "米国株は特に、すでに急騰した後ではなく、買い場以下・3年目安付近・1か月反発・3か月非過熱・出来高増のような、早めに入る条件を重視してください。",
-    "過去3年の流れに対する現在価格、1年買い場ライン、早めに入る条件のスコア、配当利回り、ゴールデンクロス、大引けの強さ、検索順位に出る材料、短期の過熱、下落リスク、検索根拠の薄さを重視してください。",
-    "日本株は配当・株主優待の権利取り前の買い需要も参考にしてください。ただし権利落ち直前や権利落ち後の反落を無視して買い評価を上げないでください。",
-    "1年買い場ラインを下回っていて、事業材料も良いものはプラス評価してください。上がり切った高値圏はマイナス評価してください。",
-    "PEファンドが買いそうな会社かは、割安に見える材料、安定キャッシュフロー、株主変化、再編余地、買収されにくい要因に分けて評価してください。ただしPE要素だけで高い価格で買う判断を肯定しないでください。",
-    "日本語は一般的な投資メモの表現にしてください。買収妙味、割安放置、PEの中小型狙いのような不自然な言い方は使わず、理由と買う時の影響が分かる言葉で書いてください。",
-    "adjustmentは-8から8の整数。根拠が薄い場合は0以下、悪材料や高い価格で買ってしまう懸念が強い場合はマイナスにしてください。",
-    "出力はJSONのみ。形式は {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"]}]}。米国株は IBM のようにティッカーをそのまま返してください。",
+    "Role: candidate-discovery reviewer for Japanese and US equities. Do not promise future profit. Penalize weak evidence.",
+    "Goal: keep candidates where the business appears healthy, the price is not extended, and the current price is near or below the calculated buy area.",
+    "For US stocks, prefer early-entry conditions such as below buy area, near 3-year trend value, 1-month rebound, non-overheated 3-month move, and healthy volume. Avoid stocks that already ran too far.",
+    "Evaluate 3-year trend distance, 1-year buy line, early-entry score, dividend yield, golden cross, closing strength, search-rank evidence, short-term overheat, downside risk, and evidence quality.",
+    "For Japanese stocks, factor in demand before dividend or shareholder-benefit record dates. Do not raise the score just because of an imminent ex-rights drop or post-rights rebound risk.",
+    "Add positive adjustment when price is below the 1-year buy line and business evidence is solid. Apply negative adjustment for extended high-price charts.",
+    "Evaluate PE/take-private potential separately: apparent undervaluation, stable cash flow, shareholder changes, restructuring optionality, and reasons a buyout would be difficult. Do not justify buying at an expensive chart level only because PE-related keywords exist.",
+    "Use natural Japanese for summary, positives, and risks. Avoid vague jargon; state the concrete reason and how it affects the buy decision.",
+    "adjustment must be an integer from -8 to 8. Use 0 or lower when evidence is thin. Use a negative value when bad news or high-price risk is material.",
+    "Return strict JSON only in this schema: {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"]}]}. For US stocks, return plain tickers such as IBM.",
     "",
     JSON.stringify({ candidates: items }),
   ].join("\n");
 
   const content = await callLmStudioResponses(model, prompt, {
-    instructions: "Return strict JSON only. Do not explain.",
+    instructions: lmJsonInstructions("summary, positives, and risks must be natural Japanese."),
     maxOutputTokens: 5000,
   }).catch(async (error) => {
     if (String(error.message || "").includes("404")) {
       return callLmStudioChat(model, prompt, {
-        system: "Return strict JSON only. Do not explain.",
+        system: lmJsonInstructions("summary, positives, and risks must be natural Japanese."),
         maxTokens: 5000,
       });
     }
@@ -5054,21 +5087,22 @@ async function aiMarketTrendBrief(searchResults = [], universeCount = 0) {
     snippet: cleanText(item.snippet || "").slice(0, 180),
   }));
   const prompt = [
-    "日本株の候補探索のため、検索結果から今見るべき業績トレンドを短く整理してください。",
-    "出力はJSONのみ。形式は {\"summary\":\"...\",\"themes\":[\"...\"],\"avoid\":[\"...\"],\"keywords\":[\"...\"]}。",
-    "ユーザーはデイトレーダーではありません。数週間から数か月で持てる、事業好調だが株価が高すぎない候補を探します。",
-    "PEファンド、TOB、MBO、大量保有、物言う株主の傾向があれば、過去の買収対象に多い特徴として短く含めてください。",
+    "Task: summarize market and earnings themes for Japanese equity candidate discovery.",
+    "Analyze the search evidence in English even when the source text is Japanese. Write all output fields in natural Japanese.",
+    "Return strict JSON only in this schema: {\"summary\":\"...\",\"themes\":[\"...\"],\"avoid\":[\"...\"],\"keywords\":[\"...\"]}.",
+    "The user is not day-trading. Find themes useful for holdings over several weeks to months: business momentum with prices that are not already too expensive.",
+    "If evidence mentions PE funds, TOB, MBO, large shareholdings, or activists, summarize the concrete pattern seen in recent buyout targets.",
     "",
     JSON.stringify({ universe: `東証プライム ${universeCount}銘柄`, evidence }),
   ].join("\n");
   const model = await getLmStudioModel();
   const content = await callLmStudioResponses(model, prompt, {
-    instructions: "Return strict JSON only. Do not explain.",
+    instructions: lmJsonInstructions("summary, themes, avoid, and keywords must be natural Japanese where they are phrases."),
     maxOutputTokens: 3000,
   }).catch(async (error) => {
     if (String(error.message || "").includes("404")) {
       return callLmStudioChat(model, prompt, {
-        system: "Return strict JSON only. Do not explain.",
+        system: lmJsonInstructions("summary, themes, avoid, and keywords must be natural Japanese where they are phrases."),
         maxTokens: 3000,
       });
     }
@@ -7201,28 +7235,36 @@ async function aiBatchDecisions(rows, onProgress = null) {
 
 async function aiDecisionChunk(model, items) {
   const prompt = [
-    "あなたは日本株のリサーチ補助AIです。将来利益を保証せず、売買判断の根拠とリスクを厳密に分けてください。",
-    "注意点は、トレードのプロが最低限確認する観点で評価してください。業種環境も個社とは別の材料として読み込んでください。",
-    "出力はJSONのみ。形式は {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":2000,\"reviewPrice\":1600,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}。",
-    "actionは BUY, HOLD, SELL, WATCH のいずれか。SELLは即時売却ではなく、数週間から数か月の保有理由を見直す意味です。confidenceは0-100。",
-    "NVIDIAのような10倍候補は20〜30%の株価下落だけではファンダ崩壊にしないでください。growthExitは、売上高成長率の明確な鈍化、ガイダンスが市場予想を下回る、需要・粗利・受注の構造悪化、減配/下方修正など、買った根拠そのものが崩れた時だけexit_alertにしてください。",
-    `growthExit.exit_alertはpublishedDateが過去${FUNDAMENTAL_EXIT_MAX_AGE_DAYS}日以内の根拠がある時だけにしてください。日付不明、古い記事、過去の歴史記事は売りアラートの根拠にしないでください。`,
-    "riskChecksは必ずこの6項目にしてください: 業績・決算, 業種環境, 株価位置, 需給・流動性, 配当, 保有損益。levelは low, medium, high のいずれか。",
-    "thesisは120字以内、reasonsとrisksは各3件まで、riskChecksのsummaryは各80字以内にしてください。growthExit.evidenceは根拠にした記事や開示だけを最大3件入れてください。",
-    "ユーザーはデイトレーダーではありません。短期ノイズだけで売買を促さず、根拠不足、材料が古い、検索結果が薄い場合はWATCHを優先してください。",
-    "3年で大きく上がった後、現在値が3年の流れや安値から見て高い位置にある場合はBUYにせず、WATCHかHOLDにしてください。",
-    "未保有銘柄でprice.technicalEntry.readyがfalseの場合、買い場ライン付近でもBUYにしないでください。RSIが30台以下、直近1か月が下落中、またはレジームが調整/下落なら、反転待ちとしてWATCHにしてください。",
-    "配当利回り、配当の増減、購入日以降の配当込み損益を見てください。高配当だけでBUYにせず、株価下落で利回りが高く見える可能性をリスクに入れてください。",
-    "短期売買ではなく、3年の価格傾向、1年買い場ライン、購入日、購入単価、残株数、売却済み株数、確定損益、含み損益、配当込み損益、直近モメンタム、出来高、悪材料、過熱感、業種環境、保有継続可否を総合評価してください。",
-    "financialsにはEDINET有価証券報告書とYahoo株から取れた財務指標、未取得項目、決算書から分かることが入ります。未取得は推測せず、取得できた財務情報だけを根拠にしてください。",
-    "日本語は一般的な投資メモの表現にしてください。買収妙味、割安放置、PEの中小型狙いのような不自然な言い方は使わず、理由と売買判断への影響が分かる言葉で書いてください。",
-    "sellForecastは保有中か残株がある銘柄だけに出してください。将来を断定せず、ニュースや過去の経緯から売却を検討する時期、利益確定候補価格、見直し価格、根拠を短く示してください。根拠が薄ければtargetPrice/null、horizon/未定。",
+    "Role: Japanese equity research assistant. Do not promise future profit. Strictly separate decision reasons from risks.",
+    "Analyze the data in English for clarity: financials, valuation, price action, industry context, news age, evidence quality, and position P/L. Write all user-facing text in natural Japanese.",
+    "Return strict JSON only in this schema: {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":2000,\"reviewPrice\":1600,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}.",
+    "action must be one of BUY, HOLD, SELL, WATCH. SELL means review the holding thesis over the next several weeks to months, not automatic immediate sale. confidence is 0-100.",
+    "For long-term compounder examples such as NVIDIA, a 20-30% drawdown alone is not thesis collapse. Set growthExit.level to exit_alert only when the original thesis is impaired: clear revenue-growth slowdown, guidance below market expectations, structural weakness in demand/gross margin/orders, dividend cut, downward revision, or similar evidence.",
+    `Only use growthExit.exit_alert when there is supporting evidence with publishedDate within the last ${FUNDAMENTAL_EXIT_MAX_AGE_DAYS} days. Do not use undated, old, or historical articles as sell-alert evidence.`,
+    "riskChecks must contain exactly these six labels: 業績・決算, 業種環境, 株価位置, 需給・流動性, 配当, 保有損益. level must be low, medium, or high.",
+    "thesis must be within 120 Japanese characters. reasons and risks are up to 3 items each. riskChecks.summary is within 80 Japanese characters. growthExit.evidence should include up to 3 source items actually used as evidence.",
+    "The user is not day-trading. Do not suggest trades on short-term noise alone. Prefer WATCH when evidence is thin, old, irrelevant, or search results are weak.",
+    "If the stock has risen sharply over 3 years and the current price is high relative to the 3-year trend or lows, do not mark BUY; use WATCH or HOLD.",
+    "For stocks not currently held, if price.technicalEntry.ready is false, do not mark BUY even near the buy line. If RSI is low, the 1-month trend is still falling, or the regime is pullback/down, mark it as waiting for reversal confirmation.",
+    "Consider dividend yield, dividend changes, and total return including dividends since purchase. Do not mark BUY only because yield is high; explain the risk that yield may look high because the stock price fell.",
+    "Evaluate 3-year price trend, 1-year buy line, purchase date, purchase price, remaining shares, sold shares, realized P/L, unrealized P/L, dividend-included P/L, momentum, volume, negative evidence, overheat, industry context, and whether the holding thesis still works.",
+    "financials include EDINET annual-securities-report data, Yahoo Finance metrics, missing fields, and insights extracted from filings. Do not infer missing values; use only acquired financial data as evidence.",
+    "Use plain Japanese investment memo language. Avoid vague jargon; state the concrete reason and how it affects buy, hold, sell, or watch.",
+    "Only provide sellForecast for holdings with remaining shares. Without predicting the future with certainty, provide a review horizon, profit-taking candidate price, review price, and short reason based on news and past context. If evidence is weak, use targetPrice:null and horizon:未定.",
     "",
     JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
 
-  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 2800 }).catch(async (error) => {
-    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 2800 });
+  const content = await callLmStudioResponses(model, prompt, {
+    instructions: lmJsonInstructions("All thesis, reasons, risks, summaries, timing, reason, and catalysts must be natural Japanese."),
+    maxOutputTokens: 2800,
+  }).catch(async (error) => {
+    if (String(error.message || "").includes("404")) {
+      return callLmStudioChat(model, prompt, {
+        system: lmJsonInstructions("All thesis, reasons, risks, summaries, timing, reason, and catalysts must be natural Japanese."),
+        maxTokens: 2800,
+      });
+    }
     throw error;
   });
   const parsed = parseJsonObject(content);
@@ -7255,7 +7297,7 @@ async function callLmStudioResponses(model, prompt, options = {}) {
     body: JSON.stringify({
       model,
       input: prompt,
-      instructions: options.instructions || "Return strict JSON only. Do not wrap the JSON in markdown fences.",
+      instructions: options.instructions || lmJsonInstructions(),
       reasoning: { effort: "low" },
       temperature: 0.2,
       max_output_tokens: options.maxOutputTokens || 4096,
@@ -7280,7 +7322,7 @@ async function callLmStudioChat(model, prompt, options = {}) {
       temperature: 0.2,
       max_tokens: options.maxTokens || 4096,
       messages: [
-        { role: "system", content: options.system || "Return strict JSON only. Do not wrap the JSON in markdown fences." },
+        { role: "system", content: options.system || lmJsonInstructions() },
         { role: "user", content: prompt },
       ],
     }),
@@ -8320,23 +8362,30 @@ async function aiDisclosureReviews(model, disclosures = []) {
     url: disclosure.url,
     keywordHits: disclosure.assessment?.keywords || [],
   }));
-  const prompt = `あなたは日本株の適時開示を保有者向けにふるい分けるアナリストです。
-次のTDnet開示タイトルを確認し、保有企業の根本的価値に関わる重大ニュースだけを important 以上にしてください。
-重大扱いの例: 業績下方修正、減配/無配、赤字転落、特別損失、減損、債務超過、継続企業の前提、上場廃止、不祥事、行政処分、事業撤退。
-決算短信・決算説明資料は確認対象だが、売上成長率の明確な鈍化、ガイダンス失望、需要/粗利/受注の構造悪化など、成長ストーリー崩壊が読み取れる場合だけ important 以上にしてください。
-通常は通知しない例: 役員人事、自己株式取得、月次、株主総会、コーポレートガバナンス、軽微な事務的開示。
-PDF本文がない場合は、タイトルだけで断定しすぎず「確認が必要」と書いてください。
+  const prompt = `Role: Japanese TDnet disclosure triage analyst for existing holdings.
+Analyze the disclosure titles in English for classification consistency. Write summary, whyNotify, and suggestedAction in natural Japanese.
+Mark severity as important or critical only for disclosures that can affect the fundamental value of a held company.
+Important examples: downward earnings revision, dividend cut or suspension, new loss, special loss, impairment, insolvency, going-concern issue, delisting, misconduct, regulatory penalty, or business withdrawal.
+Earnings releases and presentation materials should be reviewed, but mark important or higher only when they indicate thesis damage such as clear revenue-growth slowdown, disappointing guidance, structural weakness in demand/gross margin/orders, or similar evidence.
+Usually ignore: officer changes, ordinary buybacks, monthly data, shareholder meetings, governance documents, and minor administrative disclosures.
+If the PDF body is unavailable, do not overstate conclusions from the title alone; say in Japanese that confirmation is needed.
 
-返答はこのJSONだけ:
+Return this JSON only:
 {"reviews":[{"id":"...","severity":"critical|important|monitor|ignore","fundamentalImpact":true,"category":"下方修正|減配|赤字/損失|減損|上場廃止|不祥事|その他","summary":"日本語で1文","whyNotify":"通知する/しない理由を1文","suggestedAction":"次に確認することを1文"}]}
 
-TDnet開示:
+TDnet disclosures:
 ${JSON.stringify(payload, null, 2)}`;
   let raw = "";
   try {
-    raw = await callLmStudioResponses(model, prompt, { maxOutputTokens: 4096 });
+    raw = await callLmStudioResponses(model, prompt, {
+      instructions: lmJsonInstructions("summary, whyNotify, and suggestedAction must be natural Japanese."),
+      maxOutputTokens: 4096,
+    });
   } catch {
-    raw = await callLmStudioChat(model, prompt, { maxTokens: 4096 });
+    raw = await callLmStudioChat(model, prompt, {
+      system: lmJsonInstructions("summary, whyNotify, and suggestedAction must be natural Japanese."),
+      maxTokens: 4096,
+    });
   }
   const parsed = parseJsonObject(raw);
   const reviews = Array.isArray(parsed.reviews) ? parsed.reviews : [];
@@ -10628,10 +10677,11 @@ function shareholderEvidenceMentionsStock(item = {}, stock = {}) {
 async function aiShareholderSnapshot(stock, evidence = []) {
   const model = await getLmStudioModel();
   const prompt = [
-    "あなたは株主構成データの抽出係です。根拠に書かれていない数値を推測しないでください。",
-    "機関投資家比率は、institutional ownership または明示された機関投資家/金融機関等の保有割合です。日本株で外国法人等しか分からない場合は foreignOwnershipPct に入れ、institutionalOwnershipPct はnullにしてください。",
-    "出力はJSONのみ。形式: {\"institutionalOwnershipPct\":12.3,\"foreignOwnershipPct\":45.6,\"asOfDate\":\"YYYY-MM-DD\",\"majorHolders\":[{\"name\":\"...\",\"pct\":1.2,\"type\":\"機関/外国/個人/政府/その他\"}],\"summaryJa\":\"日本語で1文\",\"confidence\":0}",
-    "数値は百分率です。明示値がなければnull。majorHoldersは最大6件。",
+    "Role: shareholder-structure data extraction specialist.",
+    "Analyze the evidence in English for extraction consistency, even when the source text is Japanese. Do not infer numbers that are not explicitly supported by evidence.",
+    "institutionalOwnershipPct means institutional ownership or clearly stated ownership by institutions/financial firms. For Japanese stocks, if only foreign-corporation ownership is available, put it in foreignOwnershipPct and set institutionalOwnershipPct to null.",
+    "Return strict JSON only in this schema: {\"institutionalOwnershipPct\":12.3,\"foreignOwnershipPct\":45.6,\"asOfDate\":\"YYYY-MM-DD\",\"majorHolders\":[{\"name\":\"...\",\"pct\":1.2,\"type\":\"機関/外国/個人/政府/その他\"}],\"summaryJa\":\"日本語で1文\",\"confidence\":0}.",
+    "Percent values are 0-100 percentages. Use null when no explicit value exists. majorHolders is up to 6 entries. summaryJa must be natural Japanese.",
     "",
     JSON.stringify({
       symbol: stock.symbol,
@@ -10640,8 +10690,16 @@ async function aiShareholderSnapshot(stock, evidence = []) {
       evidence,
     }),
   ].join("\n");
-  const content = await callLmStudioResponses(model, prompt, { maxOutputTokens: 1400 }).catch(async (error) => {
-    if (String(error.message || "").includes("404")) return callLmStudioChat(model, prompt, { maxTokens: 1400 });
+  const content = await callLmStudioResponses(model, prompt, {
+    instructions: lmJsonInstructions("summaryJa must be natural Japanese. Do not infer unsupported ownership values."),
+    maxOutputTokens: 1400,
+  }).catch(async (error) => {
+    if (String(error.message || "").includes("404")) {
+      return callLmStudioChat(model, prompt, {
+        system: lmJsonInstructions("summaryJa must be natural Japanese. Do not infer unsupported ownership values."),
+        maxTokens: 1400,
+      });
+    }
     throw error;
   });
   const parsed = parseJsonObject(content);

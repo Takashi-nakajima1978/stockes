@@ -107,6 +107,14 @@ test("technical entry uses golden cross and closing strength experience rules", 
   assert.match(appSource, /technicalExperienceBadge/);
 });
 
+test("LM prompts use English reasoning with Japanese output guardrails", () => {
+  assert.match(serverSource, /LM_STRICT_JSON_INSTRUCTIONS/);
+  assert.match(serverSource, /Use English for analysis, classification, scoring/);
+  assert.match(serverSource, /Write every user-facing natural-language field in clear, natural Japanese/);
+  assert.doesNotMatch(serverSource, /あなたは(日本株|米国株|株主構成|.*AI)/);
+  assert.doesNotMatch(serverSource, /出力はJSONのみ|返答はこのJSONだけ/);
+});
+
 test("Japan discovery EDINET review is not capped to top candidates", () => {
   const discoverStart = serverSource.indexOf("async function discoverStocks");
   const discoverEnd = serverSource.indexOf("function discoveryUniverseStats", discoverStart);
