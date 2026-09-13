@@ -107,6 +107,25 @@ test("technical entry uses golden cross and closing strength experience rules", 
   assert.match(appSource, /technicalExperienceBadge/);
 });
 
+test("Japan watchlist resolves sectors and shows FX/overseas sales context", () => {
+  assert.match(serverSource, /const JP_SECTOR_BY_SYMBOL/);
+  assert.match(serverSource, /"6804\.T": "電子部品"/);
+  assert.match(serverSource, /"5930\.T": "金属製品"/);
+  assert.match(serverSource, /"6506\.T": "FA"/);
+  assert.match(serverSource, /"9020\.T": "鉄道"/);
+  assert.match(serverSource, /"9936\.T": "外食"/);
+  assert.match(serverSource, /const JP_SECTOR_NAME_ALIASES/);
+  assert.match(serverSource, /"電気機器": "電機"/);
+  assert.match(serverSource, /"その他金融業": "金融"/);
+  assert.match(serverSource, /function buildIndustryProfile/);
+  assert.match(serverSource, /function readUsdJpyContext/);
+  assert.match(serverSource, /overseasSalesRatio/);
+  assert.match(serverSource, /業種動向|業界動向/);
+  assert.match(appSource, /業種・為替/);
+  assert.match(appSource, /為替影響/);
+  assert.match(appSource, /海外売上比率/);
+});
+
 test("LM prompts use English reasoning with Japanese output guardrails", () => {
   assert.match(serverSource, /LM_STRICT_JSON_INSTRUCTIONS/);
   assert.match(serverSource, /Use English for analysis, classification, scoring/);

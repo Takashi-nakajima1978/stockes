@@ -159,6 +159,167 @@ const PE_FINANCIAL_CRITERIA = [
   { key: "pbr", label: "PBR1倍割れ", max: 15 },
   { key: "operating_cf", label: "営業CFが継続プラス", max: 15 },
 ];
+const JP_SECTOR_BY_SYMBOL = {
+  "1605.T": "資源",
+  "1802.T": "建設",
+  "1861.T": "建設",
+  "1925.T": "建設",
+  "2002.T": "食品",
+  "2749.T": "サービス",
+  "2914.T": "食品",
+  "3382.T": "小売",
+  "4063.T": "素材",
+  "4452.T": "生活用品",
+  "4502.T": "医薬品",
+  "4519.T": "医薬品",
+  "4568.T": "医薬品",
+  "4661.T": "レジャー",
+  "4689.T": "IT",
+  "4704.T": "IT",
+  "4755.T": "サービス",
+  "4901.T": "ヘルスケア",
+  "4911.T": "化粧品",
+  "5019.T": "エネルギー",
+  "5020.T": "エネルギー",
+  "5108.T": "自動車部品",
+  "5930.T": "金属製品",
+  "5957.T": "金属製品",
+  "6098.T": "サービス",
+  "6146.T": "半導体",
+  "6273.T": "FA",
+  "6301.T": "機械",
+  "6310.T": "機械",
+  "6367.T": "機械",
+  "6501.T": "電機",
+  "6503.T": "電機",
+  "6506.T": "FA",
+  "6592.T": "電子部品",
+  "6632.T": "電機",
+  "6723.T": "半導体",
+  "6758.T": "電機",
+  "6762.T": "電子部品",
+  "6804.T": "電子部品",
+  "6857.T": "半導体",
+  "6861.T": "FA",
+  "6902.T": "自動車部品",
+  "6981.T": "電子部品",
+  "7011.T": "機械",
+  "7012.T": "機械",
+  "7013.T": "機械",
+  "7203.T": "自動車",
+  "7259.T": "自動車部品",
+  "7267.T": "自動車",
+  "7270.T": "自動車",
+  "7735.T": "半導体",
+  "7744.T": "サービス",
+  "7974.T": "ゲーム",
+  "8001.T": "商社",
+  "8002.T": "商社",
+  "8016.T": "繊維製品",
+  "8031.T": "商社",
+  "8035.T": "半導体",
+  "8057.T": "IT",
+  "8058.T": "商社",
+  "8111.T": "繊維製品",
+  "8237.T": "小売",
+  "8267.T": "小売",
+  "8306.T": "銀行",
+  "8316.T": "銀行",
+  "8425.T": "金融",
+  "8411.T": "銀行",
+  "8591.T": "金融",
+  "8630.T": "保険",
+  "8725.T": "保険",
+  "8766.T": "保険",
+  "8801.T": "不動産",
+  "8802.T": "不動産",
+  "9005.T": "鉄道",
+  "9020.T": "鉄道",
+  "9201.T": "航空",
+  "9432.T": "通信",
+  "9433.T": "通信",
+  "9434.T": "通信",
+  "9502.T": "電力",
+  "9503.T": "電力",
+  "9613.T": "IT",
+  "9843.T": "小売",
+  "9936.T": "外食",
+  "9984.T": "投資",
+};
+const JP_SECTOR_NAME_ALIASES = {
+  "水産・農林業": "食品",
+  "鉱業": "資源",
+  "建設業": "建設",
+  "食料品": "食品",
+  "繊維製品": "繊維製品",
+  "パルプ・紙": "素材",
+  "化学": "素材",
+  "医薬品": "医薬品",
+  "石油・石炭製品": "エネルギー",
+  "ゴム製品": "自動車部品",
+  "ガラス・土石製品": "素材",
+  "鉄鋼": "素材",
+  "非鉄金属": "素材",
+  "金属製品": "金属製品",
+  "機械": "機械",
+  "電気機器": "電機",
+  "輸送用機器": "自動車",
+  "精密機器": "ヘルスケア",
+  "その他製品": "サービス",
+  "電気・ガス業": "電力",
+  "陸運業": "鉄道",
+  "海運業": "資源",
+  "空運業": "航空",
+  "倉庫・運輸関連業": "物流",
+  "情報・通信業": "IT",
+  "卸売業": "商社",
+  "小売業": "小売",
+  "銀行業": "銀行",
+  "証券、商品先物取引業": "金融",
+  "保険業": "保険",
+  "その他金融業": "金融",
+  "不動産業": "不動産",
+  "サービス業": "サービス",
+};
+const JP_SECTOR_KEYWORDS = [
+  { sector: "鉄道", pattern: /鉄道|私鉄|沿線|東急|railway|railroad/i },
+  { sector: "航空", pattern: /航空|空運|国際線|旅行需要|airline|aviation/i },
+  { sector: "通信", pattern: /通信|携帯|キャリア|paypay|telecom/i },
+  { sector: "自動車", pattern: /自動車|完成車|ハイブリッド|二輪|automotive|automaker/i },
+  { sector: "自動車部品", pattern: /自動車部品|車載|タイヤ|電動化|automotive parts/i },
+  { sector: "半導体", pattern: /半導体|製造装置|テスター|洗浄装置|semiconductor/i },
+  { sector: "電子部品", pattern: /電子部品|コネクタ|スイッチ|音響|部品|electronics components/i },
+  { sector: "電機", pattern: /電機|電気機器|音楽|映画|家電|映像|electronics/i },
+  { sector: "機械", pattern: /機械|防衛|航空宇宙|航空エンジン|建機|農機|空調|産業機械|machinery/i },
+  { sector: "FA", pattern: /FA|ファクトリーオートメーション|空圧|factory automation/i },
+  { sector: "銀行", pattern: /銀行|金利|bank/i },
+  { sector: "金融", pattern: /金融|リース|finance|financial/i },
+  { sector: "保険", pattern: /保険|損保|insurance/i },
+  { sector: "商社", pattern: /商社|総合商社|非資源|trading company/i },
+  { sector: "不動産", pattern: /不動産|再開発|real estate/i },
+  { sector: "医薬品", pattern: /医薬品|製薬|創薬|pharma/i },
+  { sector: "ヘルスケア", pattern: /ヘルスケア|医療機器|healthcare/i },
+  { sector: "小売", pattern: /小売|コンビニ|家具|retail/i },
+  { sector: "外食", pattern: /外食|飲食|レストラン|フードサービス|restaurant|food service/i },
+  { sector: "建設", pattern: /建設|ゼネコン|土木|construction/i },
+  { sector: "資源", pattern: /資源|原油|天然ガス|鉱山|resource/i },
+  { sector: "エネルギー", pattern: /エネルギー|石油|燃料|energy/i },
+  { sector: "電力", pattern: /電力|原子力|料金|utility/i },
+  { sector: "素材", pattern: /素材|化学|材料|materials/i },
+  { sector: "食品", pattern: /食品|たばこ|食料|food/i },
+  { sector: "生活用品", pattern: /生活用品|日用品|consumer staples/i },
+  { sector: "サービス", pattern: /サービス|人材|保育|医療介護|楽天|service/i },
+  { sector: "IT", pattern: /IT|情報通信|ソフトウェア|ネット広告|クラウド|technology/i },
+  { sector: "レジャー", pattern: /レジャー|テーマパーク|旅行|leisure/i },
+  { sector: "化粧品", pattern: /化粧品|cosmetics/i },
+  { sector: "繊維製品", pattern: /繊維|アパレル|スポーツ用品|ゴールドウイン|ゴールドウィン|textile/i },
+  { sector: "金属製品", pattern: /金属製品|シャッター|ねじ|ネジ|ファスナー|建材/i },
+  { sector: "ゲーム", pattern: /ゲーム|ゲーム機|IP|game/i },
+  { sector: "投資", pattern: /投資会社|ファンド|AI|Arm|investment/i },
+];
+const JP_EXPORT_FX_SECTORS = new Set(["自動車", "自動車部品", "半導体", "電子部品", "電機", "機械", "FA", "ゲーム", "医薬品", "化粧品", "繊維製品", "素材", "商社", "資源"]);
+const JP_IMPORT_FX_SECTORS = new Set(["航空", "小売", "外食", "食品", "生活用品", "電力", "エネルギー", "レジャー"]);
+const JP_LOW_FX_SECTORS = new Set(["鉄道", "通信", "銀行", "金融", "保険", "不動産", "建設", "サービス"]);
 const US_TICKER_STOPWORDS = new Set(["A", "AI", "API", "CEO", "CFO", "COO", "EPS", "ETF", "GDP", "IPO", "LLM", "MBO", "MOC", "NYSE", "PE", "PBR", "PER", "Q1", "Q2", "Q3", "Q4", "SEC", "TOB", "USA", "USD"]);
 const TDNET_SOURCE_BASE = "https://www.release.tdnet.info/inbs/";
 const DISCLOSURE_CRITICAL_WORDS = [
@@ -1128,6 +1289,7 @@ function cachedDecisionFromAnalysis(analysis = null, fallback = {}) {
     reasons: reasons.length ? reasons : fallback.reasons,
     risks: risks.length ? risks : fallback.risks,
     riskChecks: analysis.riskChecks || fallback.riskChecks,
+    industryProfile: analysis.industryProfile || fallback.industryProfile,
     growthExit: analysis.growthExit || analysis.ai?.growthExit || fallback.growthExit,
     sellForecast: analysis.sellForecast || analysis.ai?.sellForecast || fallback.sellForecast,
   };
@@ -1144,6 +1306,7 @@ async function performWatchlistPriceRefresh(options = {}) {
   const previousBySymbol = new Map((previous.analyses || []).map((analysis) => [analysis.symbol, analysis]));
   const generatedAt = new Date().toISOString();
   const warnings = [];
+  const fxContext = await readUsdJpyContext().catch(() => normalizeUsdJpyContext({}));
   const rows = await mapLimit(stocks, 8, async (stock) => {
     const previousAnalysis = previousBySymbol.get(stock.symbol) || null;
     let priceError = "";
@@ -1156,11 +1319,13 @@ async function performWatchlistPriceRefresh(options = {}) {
       warnings.push(`${stock.name}: ${priceError || "最新価格を取得できなかったため保存済み価格を使いました"}`);
     }
     const research = cachedResearchFromAnalysis(previousAnalysis);
-    const fallback = ruleBasedDecision(stock, price, research);
+    const financials = previousAnalysis?.financials || null;
+    const industryProfile = buildIndustryProfile(stock, research, financials, fxContext);
+    const fallback = ruleBasedDecision(stock, price, research, { financials, industryProfile, fxContext });
     const decision = cachedDecisionFromAnalysis(previousAnalysis, fallback);
     return {
       ...(previousAnalysis || {}),
-      ...normalizeDecision(stock, price, research, decision),
+      ...normalizeDecision(stock, price, research, decision, { financials, industryProfile, fxContext }),
       refreshedPriceOnlyAt: usablePrice(fetchedPrice) ? fetchedPrice.fetchedAt : previousAnalysis?.refreshedPriceOnlyAt || "",
     };
   });
@@ -1215,6 +1380,7 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
   const depthLimit = clamp(Number(options.depthLimit || settings.depthLimit || defaultSettings.depthLimit), 1, MAX_DEPTH_LIMIT);
   const pagesPerSite = clamp(Number(options.pagesPerSite || settings.pagesPerSite || defaultSettings.pagesPerSite), 1, MAX_PAGES_PER_SITE);
   const lmStatus = await checkLmStudio();
+  const fxContext = await readUsdJpyContext().catch(() => normalizeUsdJpyContext({}));
   let checked = 0;
   onProgress?.({
     phase: "価格・配当・検索を確認中",
@@ -1233,10 +1399,12 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
     ]);
 
     if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
-    const fallback = ruleBasedDecision(stock, price, research);
+    const financials = financialBySymbol.get(stock.symbol) || null;
+    const industryProfile = buildIndustryProfile(stock, research, financials, fxContext);
+    const fallback = ruleBasedDecision(stock, price, research, { financials, industryProfile, fxContext });
     checked += 1;
     onProgress?.({ phase: "価格・配当・検索を確認中", checked, total: stocks.length });
-    return { stock, price, research, fallback, financials: financialBySymbol.get(stock.symbol) || null };
+    return { stock, price, research, fallback, financials, industryProfile, fxContext };
   });
   await translateResearchEvidenceRows(rows).catch(() => {});
 
@@ -1260,8 +1428,8 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
     onProgress?.({ phase: "価格ルールで整理中", aiDone: 0, aiCurrent: 0, aiTotal: 0 });
   }
 
-  const normalizedRows = rows.map(({ stock, price, research, fallback }) => {
-    return normalizeDecision(stock, price, research, aiBySymbol.get(stock.symbol) || fallback);
+  const normalizedRows = rows.map(({ stock, price, research, fallback, financials, industryProfile, fxContext }) => {
+    return normalizeDecision(stock, price, research, aiBySymbol.get(stock.symbol) || fallback, { financials, industryProfile, fxContext });
   });
   const withFinancials = await attachFinancialsToAnalyses(normalizedRows);
   const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(withFinancials, settings));
@@ -1291,11 +1459,18 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
     researchStock(stock, { websiteLimit, depthLimit, pagesPerSite }),
   ]);
   if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
+  const financialCache = await readFinancialCache().catch(() => ({ items: [] }));
+  const financials = (financialCache.items || []).find((item) => item.symbol === stock.symbol) || null;
+  const fxContext = await readUsdJpyContext().catch(() => normalizeUsdJpyContext({}));
+  const industryProfile = buildIndustryProfile(stock, research, financials, fxContext);
   const row = {
     stock,
     price,
     research,
-    fallback: ruleBasedDecision(stock, price, research),
+    fallback: ruleBasedDecision(stock, price, research, { financials, industryProfile, fxContext }),
+    financials,
+    industryProfile,
+    fxContext,
   };
   await translateResearchEvidenceRows([row]).catch(() => {});
 
@@ -1310,7 +1485,7 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
   }
 
   const withFinancials = await attachFinancialsToAnalyses([
-    normalizeDecision(stock, price, research, aiDecision || row.fallback),
+    normalizeDecision(stock, price, research, aiDecision || row.fallback, { financials, industryProfile, fxContext }),
   ]);
   const analysis = (await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(withFinancials, settings)))[0];
   const previous = await readAnalysisCache();
@@ -3257,6 +3432,7 @@ async function discoverStocks(options = {}, job = null) {
   const performance = candidatePerformanceSummary(await readCandidateHistory());
   const financialCache = await readFinancialCache();
   let financialBySymbol = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
+  const fxContext = await readUsdJpyContext().catch(() => normalizeUsdJpyContext({}));
   const baseCandidateUniverse = uniqueBy([...searchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse], (candidate) => candidate.symbol);
   const candidateUniverse = baseCandidateUniverse
     .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
@@ -3283,6 +3459,7 @@ async function discoverStocks(options = {}, job = null) {
       unitBudget,
       unitBudgetAllowance,
       unitBudgetUnlimited,
+      fxContext,
     });
     const scoredCandidate = applyCandidateLearning(
       scoreDiscoveryCandidate(resolvedCandidate, price, haystack, sectorCounts, candidateBudget),
@@ -3304,6 +3481,7 @@ async function discoverStocks(options = {}, job = null) {
   const scored = pricedCandidates.map((candidate) => applyDiscoveryFinancialAdjustment(
     candidate,
     financialBySymbol.get(candidate.symbol),
+    fxContext,
   ));
   const prelimPool = scored
     .filter((candidate) => candidate.nearBudget)
@@ -3725,7 +3903,7 @@ async function refreshDiscoveryFinancials(candidates = [], settings = null, fina
   };
 }
 
-function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null) {
+function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null, fxContext = null) {
   if (!candidate || isUsDiscoveryCandidate(candidate)) return candidate;
   const snapshot = financials ? normalizeFinancialSnapshot(financials) : null;
   if (!snapshot) return candidate;
@@ -3734,6 +3912,10 @@ function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null) {
   let process = candidate.process;
   const reasons = [];
   const risks = [];
+  const previousFxScore = fxImpactScore(candidate.industryProfile);
+  const industryProfile = buildIndustryProfile(candidate, { evidence: [], contextText: "" }, snapshot, fxContext || candidate.industryProfile?.fxContext);
+  const nextFxScore = fxImpactScore(industryProfile);
+  const fxDelta = nextFxScore - previousFxScore;
   const statusByKey = new Map(criteria.map((item) => [item.key, item]));
   const marketCap = statusByKey.get("market_cap");
   const netCash = statusByKey.get("net_cash");
@@ -3780,6 +3962,16 @@ function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null) {
     risks.push(marketCap.summary || "PEが対象にしやすい時価総額から外れる");
   }
 
+  if (fxDelta > 0) {
+    scoreDelta += fxDelta;
+    process = boostProcessStage(process, "事業", Math.min(3, fxDelta), "為替が業績に追い風");
+    reasons.push(industryProfile.fxImpact.summary);
+  } else if (fxDelta < 0) {
+    scoreDelta += fxDelta;
+    process = boostProcessStage(process, "リスク", Math.max(-3, fxDelta), "為替が業績に逆風");
+    risks.push(industryProfile.fxImpact.summary);
+  }
+
   const finalized = finalizeDiscoveryProcess(process);
   const businessValueScore = clamp(Math.round(finalized.totalScore), 0, 100);
   const score = clamp(Math.round(Number(candidate.score || 0) + scoreDelta), 0, 100);
@@ -3793,6 +3985,7 @@ function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null) {
   return {
     ...candidate,
     financials: snapshot,
+    industryProfile,
     score,
     businessValueScore,
     rankLabel: discoveryRankLabel(businessValueScore),
@@ -4559,6 +4752,9 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
   const nearBudget = Number.isFinite(unitAmount) && (!hasBudget || unitAmount <= budget.unitBudgetAllowance);
   const context = businessContextText(haystack);
   const incomeSignal = incomeSeasonalitySignal(candidate, price);
+  const industryProfile = currency === "JPY"
+    ? buildIndustryProfile(candidate, { evidence: [], contextText: haystack }, null, budget.fxContext)
+    : null;
   let businessScore = 0;
   let valueScore = 0;
 
@@ -4719,6 +4915,16 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
     risks.push("検索材料に業績悪化の言葉がある");
   }
 
+  const candidateFxScore = fxImpactScore(industryProfile);
+  if (candidateFxScore > 0) {
+    score += candidateFxScore;
+    businessScore += Math.min(4, candidateFxScore);
+    reasons.push(industryProfile.fxImpact.summary);
+  } else if (candidateFxScore < 0) {
+    score += candidateFxScore;
+    risks.push(industryProfile.fxImpact.summary);
+  }
+
   if (Number.isFinite(price.distanceFromLow3y) && price.distanceFromLow3y <= 18 && price.trend3y !== "DOWN") {
     score += 6;
     reasons.push("過去3年レンジの安い側で、損切りより反発確認の場面");
@@ -4826,6 +5032,7 @@ function scoreDiscoveryCandidate(candidate, price, haystack, sectorCounts, budge
   return {
     ...candidate,
     sector,
+    industryProfile,
     currency,
     targetCollection: currency === "USD" ? "us" : "jp",
     score: clamp(Math.round(score), 0, 100),
@@ -5224,6 +5431,7 @@ function relevantSearchResults(candidate, results) {
 function jpStockEvidenceQueries(stock = {}) {
   const code = jpStockCode(stock.symbol);
   const name = stock.name || code;
+  const sector = stockSector(stock);
   const base = [
     `${code} ${name} 株価 ニュース 決算 業績予想 事業変化 配当 株主優待 Yahoo 株探`,
     `${code} ${name} 決算後 急落 失望売り 自社株買いなし 増配なし 株主還元`,
@@ -5231,13 +5439,15 @@ function jpStockEvidenceQueries(stock = {}) {
     `${code} ${name} 時価総額 PBR PER EV EBITDA ネットキャッシュ 営業キャッシュフロー`,
     `${code} ${name} 信用倍率 空売り 需給 大量保有 アクティビスト TOB MBO PEファンド`,
     `${code} ${name} 株主優待 配当 権利確定 権利落ち 配当落ち`,
+    sector && sector !== "その他" ? `${code} ${name} ${sector} 事業環境 業界動向 需要 競合 為替` : "",
   ];
-  if (!code) return base.map((text) => ({ text: text.trim(), topic: "company" }));
+  const normalizedBase = base.filter(Boolean);
+  if (!code) return normalizedBase.map((text) => ({ text: text.trim(), topic: "company" }));
   return [
     { text: `site:kabutan.jp/stock/news?code=${code} ${name} 決算 業績 配当 自社株買い`, topic: "company" },
     { text: `site:finance.yahoo.co.jp/quote/${code}.T ${name} ニュース 決算 業績 配当 株主優待`, topic: "company" },
     { text: `site:irbank.net/${code} ${name} PBR PER 時価総額 キャッシュフロー`, topic: "company" },
-    ...base.map((text) => ({ text, topic: "company" })),
+    ...normalizedBase.map((text) => ({ text, topic: "company" })),
   ];
 }
 
@@ -5834,29 +6044,39 @@ function sectorCount(stocks) {
 }
 
 function stockSector(stock) {
-  if (stock.sector) return stock.sector;
-  const universe = [...discoveryUniverse, ...usDiscoveryUniverse].find((candidate) => candidate.symbol === stock.symbol);
-  if (universe?.sector) return universe.sector;
-  const known = {
-    "9005.T": "鉄道",
-    "9201.T": "航空",
-    "9432.T": "通信",
-    "9434.T": "通信",
-    "7203.T": "自動車",
-    "6758.T": "電機",
-    "8306.T": "銀行",
-    "6501.T": "電機",
-    "7974.T": "ゲーム",
-    "9984.T": "投資",
-  };
-  return known[stock.symbol] || "その他";
+  const rawSymbol = String(stock?.symbol || "").trim().toUpperCase();
+  const symbol = isJapaneseListedSymbol(rawSymbol) ? normalizeSymbol(rawSymbol) : rawSymbol;
+  if (/\.T$/.test(symbol) && JP_SECTOR_BY_SYMBOL[symbol]) return JP_SECTOR_BY_SYMBOL[symbol];
+  const explicit = normalizeSectorName(stock?.sector || "");
+  if (explicit && explicit !== "その他") return explicit;
+  const universe = [...discoveryUniverse, ...usDiscoveryUniverse].find((candidate) => candidate.symbol === symbol);
+  const universeSector = normalizeSectorName(universe?.sector || "");
+  if (universeSector && universeSector !== "その他") return universeSector;
+  const inferred = inferJpSectorFromStock(stock);
+  return inferred || "その他";
+}
+
+function normalizeSectorName(value = "") {
+  const cleaned = cleanText(value);
+  if (!cleaned) return "";
+  return JP_SECTOR_NAME_ALIASES[cleaned] || cleaned;
+}
+
+function inferJpSectorFromStock(stock = {}) {
+  const text = cleanText(`${stock.name || ""} ${stock.notes || ""} ${stock.market || ""}`);
+  if (!text) return "";
+  const hit = JP_SECTOR_KEYWORDS.find((item) => item.pattern.test(text));
+  return hit?.sector || "";
 }
 
 async function researchStock(stock, options) {
-  const sector = stock.sector || stockSector(stock);
+  const sector = stockSector(stock);
   const queries = jpStockEvidenceQueries(stock);
   if (sector && sector !== "その他") {
-    queries.push({ text: `${sector} 業界 市況 見通し 日本株 決算 業績 需要 リスク`, topic: "sector" });
+    const code = jpStockCode(stock.symbol);
+    const terms = sectorEvidenceTerms(sector).slice(0, 4).join(" ");
+    queries.push({ text: `${code} ${stock.name} ${sector} 業界 市況 需要 見通し 決算 業績 リスク`, topic: "sector" });
+    queries.push({ text: `${sector} 業界動向 日本株 ${terms} 需要 価格転嫁 為替 原材料 2026`, topic: "sector" });
   }
   const searchResults = [];
   const perQueryLimit = Math.max(5, Math.ceil(options.websiteLimit / queries.length));
@@ -5872,7 +6092,7 @@ async function researchStock(stock, options) {
     .sort((a, b) => jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock)), (item) => item.url);
   const sectorResults = uniqueBy(searchResults
     .filter((item) => item.topic === "sector")
-    .filter((item) => isRelevantSectorEvidence(item, sector)), (item) => item.url);
+    .filter((item) => isRelevantSectorEvidence(item, sector, stock)), (item) => item.url);
   const sectorLimit = Math.min(6, Math.max(2, Math.ceil(options.websiteLimit / 3)));
   const deduped = uniqueBy([
     ...companyResults.slice(0, options.websiteLimit),
@@ -6813,11 +7033,12 @@ function dividendSum(dividends, fromTime, toTime) {
   }, 0);
 }
 
-function ruleBasedDecision(stock, price, research) {
+function ruleBasedDecision(stock, price, research, options = {}) {
   let score = 50;
   const reasons = [];
   const risks = [];
   const position = positionMetrics(stock, price);
+  const industryProfile = normalizeIndustryProfile(options.industryProfile || buildIndustryProfile(stock, research, options.financials, options.fxContext));
 
   if (stock.holding && !position.purchasePrice) {
     risks.push("保有中だが購入単価が未入力のため、売却判断の精度が落ちる");
@@ -7014,6 +7235,14 @@ function ruleBasedDecision(stock, price, research) {
       risks.push(`${word}に関する材料が検索結果に含まれる`);
     }
   }
+  const fxScore = fxImpactScore(industryProfile);
+  if (fxScore > 0) {
+    score += fxScore;
+    reasons.push(industryProfile.fxImpact.summary);
+  } else if (fxScore < 0) {
+    score += fxScore;
+    risks.push(industryProfile.fxImpact.summary);
+  }
 
   const initialAction = score >= 72 ? "BUY" : score >= 46 ? "HOLD" : score >= 26 ? "WATCH" : "SELL";
   const safety = decisionSafetyOverride(stock, price, initialAction, position);
@@ -7028,13 +7257,15 @@ function ruleBasedDecision(stock, price, research) {
     thesis,
     reasons: uniqueText([...reasons, ...safety.reasons]).slice(0, 5),
     risks: uniqueText([...risks, ...safety.risks]).slice(0, 5),
-    riskChecks: professionalRiskChecks(stock, price, research, position),
+    riskChecks: professionalRiskChecks(stock, price, research, position, { industryProfile }),
+    industryProfile,
   };
 }
 
-function professionalRiskChecks(stock, price = {}, research = {}, position = positionMetrics(stock, price)) {
+function professionalRiskChecks(stock, price = {}, research = {}, position = positionMetrics(stock, price), options = {}) {
   const context = String(research.contextText || "").toLowerCase();
-  const sector = stock.sector || stockSector(stock);
+  const sector = stockSector(stock);
+  const industryProfile = normalizeIndustryProfile(options.industryProfile || buildIndustryProfile(stock, research, options.financials, options.fxContext));
   const hasEvidence = Number(research.searched || 0) >= 3;
   const badWords = ["下方修正", "減益", "赤字", "減配", "不祥事", "行政処分", "訴訟"].filter((word) => context.includes(word.toLowerCase()));
   const goodWords = ["上方修正", "増収増益", "最高益", "営業益増", "増配", "自社株買い"].filter((word) => context.includes(word.toLowerCase()));
@@ -7047,10 +7278,8 @@ function professionalRiskChecks(stock, price = {}, research = {}, position = pos
         : goodWords.length
         ? `検索結果に${goodWords.slice(0, 2).join("、")}があり、業績材料は悪くない`
         : "決算・業績材料の強さは検索結果だけでは薄い"),
-    riskCheck("業種環境", sectorEvidenceCount ? sectorRiskLevel(context, sector) : "medium",
-      sectorEvidenceCount
-        ? `${sector}の業種情報を${sectorEvidenceCount}件確認。需要、規制、景気感応度を評価材料に含める`
-        : `${sector}の業種Evidenceが不足。個社だけで判断しない`),
+    riskCheck("業種環境", industryRiskLevel(context, sector, industryProfile),
+      industryRiskSummary(sector, sectorEvidenceCount, industryProfile)),
     riskCheck("株価位置", chartRiskLevel(price),
       chartRiskSummary(price)),
     riskCheck("需給・流動性", liquidityRiskLevel(price),
@@ -7187,16 +7416,246 @@ function isNoUpsideChart(price = {}) {
   return nearUpperRange && notCheapVsTrend && weakLongTrend && (reboundAlready || shortOverLongNotEnough);
 }
 
+async function readUsdJpyContext() {
+  const cached = await readCryptoAnalysisCache();
+  return normalizeUsdJpyContext(cached.usdJpy || {});
+}
+
+function normalizeUsdJpyContext(value = {}) {
+  const current = numberOrNull(value.current);
+  const return1m = numberOrNull(value.return1m);
+  const return3m = numberOrNull(value.return3m);
+  const trend = Number.isFinite(return1m)
+    ? return1m >= 1.5
+      ? "yen_weaker"
+      : return1m <= -1.5
+      ? "yen_stronger"
+      : "flat"
+    : "unknown";
+  const label = trend === "yen_weaker"
+    ? "円安方向"
+    : trend === "yen_stronger"
+    ? "円高方向"
+    : trend === "flat"
+    ? "横ばい"
+    : "未取得";
+  const summary = Number.isFinite(current)
+    ? `USD/JPY ${current.toFixed(2)}、1カ月${formatSignedPercent(return1m)}`
+    : "USD/JPYは未取得";
+  return { current, return1m, return3m, trend, label, summary };
+}
+
+function buildIndustryProfile(stock = {}, research = {}, financials = null, fxContext = null) {
+  const sector = stockSector(stock);
+  const normalizedFinancials = financials ? normalizeFinancialSnapshot(financials) : null;
+  const evidenceCount = (research.evidence || []).filter((item) => item.kind === "sector").length;
+  const sectorProfile = industryProfileBySector(sector);
+  const fxExposure = fxExposureForStock(stock, sector, normalizedFinancials);
+  const resolvedFxContext = normalizeUsdJpyContext(fxContext || {});
+  const fxImpact = evaluateFxImpact(fxExposure, resolvedFxContext);
+  const overseasSalesRatio = numberOrNull(normalizedFinancials?.overseasSalesRatio);
+  const overseasSales = numberOrNull(normalizedFinancials?.overseasSales);
+  const overseasText = Number.isFinite(overseasSalesRatio)
+    ? `海外売上比率${(overseasSalesRatio * 100).toFixed(1)}%`
+    : "海外売上比率は未取得";
+  return normalizeIndustryProfile({
+    sector,
+    source: industryProfileSource(stock, sector),
+    evidenceCount,
+    drivers: sectorProfile.drivers,
+    risks: sectorProfile.risks,
+    cyclicality: sectorProfile.cyclicality,
+    overseasSales,
+    overseasSalesRatio,
+    overseasSalesSource: normalizedFinancials?.overseasSalesSource || "",
+    fxExposure,
+    fxImpact,
+    fxContext: resolvedFxContext,
+    summary: `${sector}として、${sectorProfile.drivers.slice(0, 2).join("、")}を確認。${overseasText}。${fxImpact.summary}`,
+  });
+}
+
+function normalizeIndustryProfile(profile = null) {
+  if (!profile || typeof profile !== "object") return null;
+  return {
+    sector: cleanText(profile.sector || "その他").slice(0, 80) || "その他",
+    source: cleanText(profile.source || "").slice(0, 80),
+    evidenceCount: clamp(Number(profile.evidenceCount || 0), 0, 99),
+    drivers: asStringArray(profile.drivers).slice(0, 4),
+    risks: asStringArray(profile.risks).slice(0, 4),
+    cyclicality: cleanText(profile.cyclicality || "").slice(0, 80),
+    overseasSales: numberOrNull(profile.overseasSales),
+    overseasSalesRatio: numberOrNull(profile.overseasSalesRatio),
+    overseasSalesSource: cleanText(profile.overseasSalesSource || "").slice(0, 120),
+    fxExposure: normalizeFxExposure(profile.fxExposure),
+    fxImpact: normalizeFxImpact(profile.fxImpact),
+    fxContext: normalizeUsdJpyContext(profile.fxContext || {}),
+    summary: cleanText(profile.summary || "").slice(0, 260),
+  };
+}
+
+function industryProfileSource(stock = {}, sector = "") {
+  const explicit = cleanText(stock.sector || "");
+  if (explicit && explicit !== "その他") return "Watchlist";
+  const symbol = normalizeSymbol(stock.symbol || "");
+  if (JP_SECTOR_BY_SYMBOL[symbol]) return "銘柄コード";
+  if (sector && sector !== "その他") return "銘柄名・メモ";
+  return "未判定";
+}
+
+function industryProfileBySector(sector = "") {
+  const profiles = {
+    鉄道: { cyclicality: "景気・人流", drivers: ["通勤・観光需要", "沿線不動産", "運賃改定"], risks: ["人流減少", "設備投資負担", "金利上昇"] },
+    航空: { cyclicality: "景気敏感", drivers: ["国際線需要", "訪日需要", "単価改善"], risks: ["燃料費", "円安コスト", "景気減速"] },
+    通信: { cyclicality: "ディフェンシブ", drivers: ["通信契約", "金融・決済", "法人DX"], risks: ["料金競争", "設備投資", "規制"] },
+    自動車: { cyclicality: "景気・為替敏感", drivers: ["北米販売", "ハイブリッド・EV", "円安効果"], risks: ["円高", "原材料", "販売台数鈍化"] },
+    自動車部品: { cyclicality: "景気・為替敏感", drivers: ["車載需要", "電動化", "完成車生産"], risks: ["在庫調整", "円高", "価格転嫁"] },
+    半導体: { cyclicality: "市況敏感", drivers: ["AI投資", "メモリ・ロジック需要", "設備投資"], risks: ["在庫循環", "輸出規制", "急な受注減"] },
+    電子部品: { cyclicality: "市況敏感", drivers: ["スマホ・車載需要", "ゲーム機・産業機器", "円安効果"], risks: ["在庫調整", "円高", "セット需要の弱さ"] },
+    電機: { cyclicality: "景気・為替敏感", drivers: ["海外売上", "ゲーム・エンタメ", "産業機器"], risks: ["円高", "部材コスト", "需要鈍化"] },
+    機械: { cyclicality: "景気敏感", drivers: ["防衛・インフラ", "設備投資", "海外受注"], risks: ["受注減", "円高", "部材高"] },
+    FA: { cyclicality: "設備投資敏感", drivers: ["自動化投資", "半導体・EV投資", "海外工場投資"], risks: ["設備投資減速", "中国需要", "円高"] },
+    銀行: { cyclicality: "金利敏感", drivers: ["金利上昇", "与信費用安定", "株主還元"], risks: ["景気後退", "与信費用増", "政策金利低下"] },
+    金融: { cyclicality: "金利・市場敏感", drivers: ["金利", "投資収益", "株主還元"], risks: ["市場下落", "信用コスト", "規制"] },
+    保険: { cyclicality: "金利・災害敏感", drivers: ["保険料改定", "政策株売却", "金利上昇"], risks: ["自然災害", "運用損", "競争"] },
+    商社: { cyclicality: "資源・為替敏感", drivers: ["資源価格", "非資源利益", "円安効果"], risks: ["資源安", "円高", "投資損失"] },
+    不動産: { cyclicality: "金利敏感", drivers: ["再開発", "賃料", "資産売却"], risks: ["金利上昇", "オフィス市況", "含み益縮小"] },
+    医薬品: { cyclicality: "研究開発敏感", drivers: ["新薬・適応拡大", "海外売上", "パイプライン"], risks: ["薬価改定", "特許切れ", "臨床失敗"] },
+    ヘルスケア: { cyclicality: "ディフェンシブ", drivers: ["医療需要", "高付加価値製品", "海外展開"], risks: ["規制", "研究開発費", "為替"] },
+    小売: { cyclicality: "消費・為替敏感", drivers: ["既存店売上", "値上げ", "訪日需要"], risks: ["円安仕入れコスト", "人件費", "消費低迷"] },
+    外食: { cyclicality: "消費・コスト敏感", drivers: ["既存店売上", "客単価", "出店余地"], risks: ["原材料高", "人件費", "消費低迷"] },
+    建設: { cyclicality: "公共投資・金利敏感", drivers: ["公共工事", "インフラ更新", "再開発"], risks: ["資材高", "人手不足", "採算悪化"] },
+    資源: { cyclicality: "資源価格敏感", drivers: ["原油・ガス価格", "円安効果", "増配"], risks: ["資源価格下落", "政策リスク", "円高"] },
+    エネルギー: { cyclicality: "資源・為替敏感", drivers: ["精製マージン", "資源価格", "株主還元"], risks: ["円安仕入れコスト", "原油急変", "需要減"] },
+    電力: { cyclicality: "燃料費・規制敏感", drivers: ["料金改定", "原発稼働", "電力需要"], risks: ["燃料費", "規制", "設備トラブル"] },
+    素材: { cyclicality: "市況敏感", drivers: ["半導体材料", "価格転嫁", "海外需要"], risks: ["市況悪化", "円高", "原材料"] },
+    食品: { cyclicality: "ディフェンシブ", drivers: ["値上げ", "ブランド力", "海外販売"], risks: ["原材料高", "円安コスト", "消費節約"] },
+    生活用品: { cyclicality: "消費敏感", drivers: ["値上げ", "ブランド力", "海外販売"], risks: ["原材料高", "円安コスト", "競争"] },
+    サービス: { cyclicality: "個社要因大", drivers: ["利用者数", "単価", "新規事業"], risks: ["人件費", "競争", "個別事業の失速"] },
+    IT: { cyclicality: "投資需要敏感", drivers: ["DX投資", "継続課金", "公共・法人需要"], risks: ["成長鈍化", "人件費", "競争"] },
+    レジャー: { cyclicality: "人流・消費敏感", drivers: ["訪日需要", "値上げ", "稼働率"], risks: ["消費低迷", "天候・災害", "円安コスト"] },
+    物流: { cyclicality: "景気・コスト敏感", drivers: ["荷動き", "運賃改定", "EC・物流需要"], risks: ["燃料費", "人件費", "荷動き鈍化"] },
+    化粧品: { cyclicality: "消費・中国敏感", drivers: ["訪日需要", "中国需要", "ブランド力"], risks: ["中国減速", "在庫調整", "円高"] },
+    繊維製品: { cyclicality: "消費・為替敏感", drivers: ["ブランド販売", "海外展開", "機能素材"], risks: ["在庫調整", "円高", "消費低迷"] },
+    金属製品: { cyclicality: "建設・設備投資敏感", drivers: ["建材需要", "価格転嫁", "設備投資"], risks: ["資材高", "建設需要減", "価格競争"] },
+    ゲーム: { cyclicality: "製品サイクル敏感", drivers: ["新ハード", "ソフト販売", "IP展開"], risks: ["発売サイクル", "円高", "ヒット依存"] },
+    投資: { cyclicality: "市場敏感", drivers: ["投資先評価", "IPO・売却益", "AI関連"], risks: ["市場下落", "評価損", "金利上昇"] },
+  };
+  return profiles[sector] || { cyclicality: "未判定", drivers: ["個社の売上・利益動向", "市場シェア", "株主還元"], risks: ["業界情報不足", "個社材料への偏り", "需要変化"] };
+}
+
+function fxExposureForStock(stock = {}, sector = "", financials = null) {
+  const notes = cleanText(`${stock.name || ""} ${stock.notes || ""}`);
+  const overseasSalesRatio = numberOrNull(financials?.overseasSalesRatio);
+  if (Number.isFinite(overseasSalesRatio)) {
+    if (overseasSalesRatio >= 0.5) {
+      return normalizeFxExposure({ level: "high", direction: "yen_weak_positive", basis: `海外売上比率${(overseasSalesRatio * 100).toFixed(1)}%` });
+    }
+    if (overseasSalesRatio >= 0.25) {
+      return normalizeFxExposure({ level: "medium", direction: "yen_weak_positive", basis: `海外売上比率${(overseasSalesRatio * 100).toFixed(1)}%` });
+    }
+  }
+  if (/円高メリット|輸入|仕入れ|燃料費|原材料高/i.test(notes)) {
+    return normalizeFxExposure({ level: JP_IMPORT_FX_SECTORS.has(sector) ? "high" : "medium", direction: "yen_weak_negative", basis: "メモ・業種に輸入コスト要素あり" });
+  }
+  if (/海外|北米|輸出|グローバル|為替|円安/i.test(notes)) {
+    return normalizeFxExposure({ level: "high", direction: "yen_weak_positive", basis: "メモに海外・為替要素あり" });
+  }
+  if (JP_EXPORT_FX_SECTORS.has(sector)) {
+    return normalizeFxExposure({ level: "medium", direction: "yen_weak_positive", basis: `${sector}は海外売上・輸出の影響を受けやすい業種` });
+  }
+  if (JP_IMPORT_FX_SECTORS.has(sector)) {
+    return normalizeFxExposure({ level: "medium", direction: "yen_weak_negative", basis: `${sector}は輸入コスト・燃料費の影響を受けやすい業種` });
+  }
+  if (JP_LOW_FX_SECTORS.has(sector)) {
+    return normalizeFxExposure({ level: "low", direction: "limited", basis: `${sector}は国内要因の比重が高い業種` });
+  }
+  return normalizeFxExposure({ level: "medium", direction: "mixed", basis: "海外売上比率が未取得のため業種からは断定しない" });
+}
+
+function normalizeFxExposure(value = {}) {
+  const level = ["high", "medium", "low"].includes(value.level) ? value.level : "medium";
+  const direction = ["yen_weak_positive", "yen_weak_negative", "mixed", "limited"].includes(value.direction) ? value.direction : "mixed";
+  return {
+    level,
+    direction,
+    basis: cleanText(value.basis || "").slice(0, 140),
+  };
+}
+
+function evaluateFxImpact(exposure = {}, fxContext = {}) {
+  const normalizedExposure = normalizeFxExposure(exposure);
+  const context = normalizeUsdJpyContext(fxContext);
+  if (context.trend === "unknown") {
+    return normalizeFxImpact({ level: "neutral", label: "為替未取得", summary: `${normalizedExposure.basis || "為替感応度は未判定"}。USD/JPYが未取得です。` });
+  }
+  const strong = normalizedExposure.level === "high";
+  if (normalizedExposure.direction === "limited") {
+    return normalizeFxImpact({ level: "neutral", label: "為替影響は限定的", summary: `${normalizedExposure.basis}。${context.summary}。買い判断への影響は小さめです。` });
+  }
+  if (normalizedExposure.direction === "mixed") {
+    return normalizeFxImpact({ level: "neutral", label: "為替は確認材料", summary: `${normalizedExposure.basis}。${context.summary}。円高・円安のどちらが有利かは決算資料で確認します。` });
+  }
+  const yenWeak = context.trend === "yen_weaker";
+  const positive = normalizedExposure.direction === "yen_weak_positive" ? yenWeak : !yenWeak && context.trend === "yen_stronger";
+  if (context.trend === "flat") {
+    return normalizeFxImpact({ level: "neutral", label: "為替は横ばい", summary: `${normalizedExposure.basis}。${context.summary}。足元の為替影響は中立寄りです。` });
+  }
+  const label = positive
+    ? normalizedExposure.direction === "yen_weak_positive" ? "円安追い風" : "円高追い風"
+    : normalizedExposure.direction === "yen_weak_positive" ? "円高逆風" : "円安逆風";
+  const summary = positive
+    ? `${normalizedExposure.basis}。${context.summary}なので、業績・株価には${strong ? "強めの" : ""}追い風として見ます。`
+    : `${normalizedExposure.basis}。${context.summary}なので、業績・株価には${strong ? "強めの" : ""}逆風として見ます。`;
+  return normalizeFxImpact({ level: positive ? "positive" : "negative", label, summary });
+}
+
+function normalizeFxImpact(value = {}) {
+  const level = ["positive", "negative", "neutral"].includes(value.level) ? value.level : "neutral";
+  return {
+    level,
+    label: cleanText(value.label || "").slice(0, 40),
+    summary: cleanText(value.summary || "").slice(0, 180),
+  };
+}
+
+function fxImpactScore(profile = null) {
+  const normalized = normalizeIndustryProfile(profile);
+  if (!normalized?.fxImpact) return 0;
+  const weight = normalized.fxExposure?.level === "high" ? 6 : normalized.fxExposure?.level === "medium" ? 4 : 2;
+  if (normalized.fxImpact.level === "positive") return weight;
+  if (normalized.fxImpact.level === "negative") return -weight;
+  return 0;
+}
+
+function industryRiskLevel(context, sector = "", profile = null) {
+  const base = sectorRiskLevel(context, sector);
+  const normalized = normalizeIndustryProfile(profile);
+  if (normalized?.fxImpact?.level === "negative" && normalized.fxExposure?.level === "high") return "high";
+  if (normalized?.fxImpact?.level === "positive" && base !== "high") return "low";
+  return base;
+}
+
+function industryRiskSummary(sector = "", sectorEvidenceCount = 0, profile = null) {
+  const normalized = normalizeIndustryProfile(profile);
+  const evidenceText = sectorEvidenceCount
+    ? `${sector}の業種情報を${sectorEvidenceCount}件確認`
+    : `${sector}の業種情報は検索結果が不足`;
+  const fxText = normalized?.fxImpact?.summary || "為替影響は未評価です。";
+  return `${evidenceText}。${fxText}`;
+}
+
 async function aiBatchDecisions(rows, onProgress = null) {
-  const items = rows.map(({ stock, price, research, fallback, financials }) => ({
+  const items = rows.map(({ stock, price, research, fallback, financials, industryProfile }) => ({
     symbol: stock.symbol,
     name: stock.name,
-    sector: stock.sector || stockSector(stock),
+    sector: stockSector(stock),
     holding: Boolean(stock.holding),
     notes: stock.notes || "",
     position: positionMetrics(stock, price),
     price: compactPrice(price),
     financials: compactFinancialForAi(financials),
+    industryProfile: normalizeIndustryProfile(industryProfile || buildIndustryProfile(stock, research, financials)),
     ruleDecision: fallback,
     evidence: research.evidence.slice(0, 6).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
@@ -7248,6 +7707,7 @@ async function aiDecisionChunk(model, items) {
     "For stocks not currently held, if price.technicalEntry.ready is false, do not mark BUY even near the buy line. If RSI is low, the 1-month trend is still falling, or the regime is pullback/down, mark it as waiting for reversal confirmation.",
     "Consider dividend yield, dividend changes, and total return including dividends since purchase. Do not mark BUY only because yield is high; explain the risk that yield may look high because the stock price fell.",
     "Evaluate 3-year price trend, 1-year buy line, purchase date, purchase price, remaining shares, sold shares, realized P/L, unrealized P/L, dividend-included P/L, momentum, volume, negative evidence, overheat, industry context, and whether the holding thesis still works.",
+    "For Japanese stocks, industryProfile includes the resolved sector, sector evidence count, drivers/risks, overseas sales ratio, and USD/JPY impact. Exporters or companies with high overseas sales usually benefit from yen weakness and are hurt by yen strength; import-cost sectors can be the opposite.",
     "financials include EDINET annual-securities-report data, Yahoo Finance metrics, missing fields, and insights extracted from filings. Do not infer missing values; use only acquired financial data as evidence.",
     "Use plain Japanese investment memo language. Avoid vague jargon; state the concrete reason and how it affects buy, hold, sell, or watch.",
     "Only provide sellForecast for holdings with remaining shares. Without predicting the future with certainty, provide a review horizon, profit-taking candidate price, review price, and short reason based on news and past context. If evidence is weak, use targetPrice:null and horizon:未定.",
@@ -7456,6 +7916,9 @@ function compactFinancialForAi(financials = null) {
     operatingCashFlowYears: snapshot.operatingCashFlowYears,
     operatingCashFlowPositive: snapshot.operatingCashFlowPositive,
     netSales: snapshot.netSales,
+    overseasSales: snapshot.overseasSales,
+    overseasSalesRatio: snapshot.overseasSalesRatio,
+    overseasSalesSource: snapshot.overseasSalesSource,
     operatingIncome: snapshot.operatingIncome,
     netIncome: snapshot.netIncome,
     criteria: snapshot.criteria.map((item) => ({
@@ -7482,9 +7945,10 @@ function extractResponseText(data) {
   return chunks.join("\n").trim();
 }
 
-function normalizeDecision(stock, price, research, decision) {
+function normalizeDecision(stock, price, research, decision, options = {}) {
   const initialAction = ["BUY", "HOLD", "SELL", "WATCH"].includes(decision.action) ? decision.action : "WATCH";
   const position = positionMetrics(stock, price);
+  const industryProfile = normalizeIndustryProfile(options.industryProfile || decision.industryProfile || buildIndustryProfile(stock, research, options.financials, options.fxContext));
   const safety = decisionSafetyOverride(stock, price, initialAction, position);
   const action = safety.action;
   const confidence = Number.isFinite(safety.confidence)
@@ -7503,7 +7967,7 @@ function normalizeDecision(stock, price, research, decision) {
   const reasons = uniqueText([...asStringArray(decision.reasons), ...safety.reasons]).slice(0, 5);
   const risks = uniqueText([...asStringArray(decision.risks), ...safety.risks]).slice(0, 5);
   const riskChecks = mergeRiskChecks(
-    professionalRiskChecks(stock, price, research, position),
+    professionalRiskChecks(stock, price, research, position, { industryProfile, financials: options.financials, fxContext: options.fxContext }),
     normalizeRiskChecks(decision.riskChecks),
   );
   return {
@@ -7517,6 +7981,7 @@ function normalizeDecision(stock, price, research, decision) {
     riskChecks,
     price,
     position,
+    industryProfile,
     growthExit,
     sellForecast,
     entryValue: evaluateEntryPrice(stock.targetBuyPrice, price),
@@ -8743,7 +9208,7 @@ function normalizeStock(stock) {
     symbol: normalizeSymbol(stock.symbol),
     name: String(stock.name || "").trim(),
     market: String(stock.market || "東証").trim(),
-    sector: String(stock.sector || stockSector(stock)).trim(),
+    sector: String(stockSector(stock)).trim(),
     holding: typeof stock.holding === "boolean" ? stock.holding : hasPosition,
     notes: String(stock.notes || "").trim(),
     purchaseDate,
@@ -9352,11 +9817,13 @@ function mergeSectorEvidence(existing = [], incoming = []) {
   })).filter((group) => group.items.length);
 }
 
-function isRelevantSectorEvidence(item = {}, sector = "") {
+function isRelevantSectorEvidence(item = {}, sector = "", stock = null) {
   const normalizedSector = cleanText(sector);
   if (!normalizedSector || normalizedSector === "その他") return false;
   const text = businessContextText(`${item.title || ""} ${item.snippet || ""} ${item.url || ""}`);
   if (!text) return false;
+  const code = jpStockCode(stock?.symbol || "");
+  if (code && hasConflictingJpStockCode(item, code) && !jpEvidenceHasCode(item, code)) return false;
   const hasSector = sectorEvidenceTerms(normalizedSector).some((term) => text.includes(term.toLowerCase()));
   const hasMarketContext = [
     "株", "日本株", "銘柄", "市場", "市況", "業界", "業績", "決算", "見通し", "需要", "供給",
@@ -9391,6 +9858,7 @@ function sectorEvidenceTerms(sector = "") {
     不動産: ["不動産", "不動産株", "real estate"],
     医薬品: ["医薬品", "製薬", "pharma", "pharmaceutical"],
     小売: ["小売", "小売株", "retail"],
+    外食: ["外食", "外食株", "飲食", "レストラン", "フードサービス", "restaurant"],
     建設: ["建設", "ゼネコン", "construction"],
     資源: ["資源", "原油", "天然ガス", "resource", "energy"],
     エネルギー: ["エネルギー", "電力", "石油", "energy"],
@@ -9401,8 +9869,12 @@ function sectorEvidenceTerms(sector = "") {
     サービス: ["サービス", "サービス株", "service"],
     IT: ["IT", "情報通信", "ソフトウェア", "technology"],
     レジャー: ["レジャー", "テーマパーク", "旅行", "leisure"],
+    物流: ["物流", "物流株", "倉庫", "運輸", "logistics"],
     化粧品: ["化粧品", "化粧品株", "cosmetics"],
     繊維製品: ["繊維製品", "繊維株", "アパレル", "textile"],
+    金属製品: ["金属製品", "シャッター", "ねじ", "ネジ", "建材", "metal products"],
+    ゲーム: ["ゲーム", "ゲーム株", "ゲーム機", "IP", "game"],
+    投資: ["投資", "投資会社", "ファンド", "investment"],
   };
   return uniqueText([normalized, ...(aliases[normalized] || [])]);
 }
@@ -9464,6 +9936,13 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
   );
   const sellForecast = normalizeSellForecast(analysis.sellForecast || analysis.ai?.sellForecast)
     || ruleSellForecast({ price, position }, "JPY");
+  const financials = analysis.financials ? normalizeFinancialSnapshot(analysis.financials) : analysis.financials;
+  const cachedResearch = {
+    evidence: analysis.evidence || [],
+    contextText: (analysis.evidence || []).map((item) => `${item.title || ""}\n${item.summaryJa || item.snippet || ""}`).join("\n"),
+    searched: analysis.researchStats?.searched || (analysis.evidence || []).length,
+  };
+  const industryProfile = normalizeIndustryProfile(analysis.industryProfile || buildIndustryProfile(resolvedStock, cachedResearch, financials));
   return {
     ...analysis,
     symbol,
@@ -9472,10 +9951,15 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
     thesis: safety.thesis || analysis.thesis || `${resolvedStock.name || symbol}は${actionLabels[action]}判定。`,
     reasons: uniqueText([...asStringArray(analysis.reasons), ...safety.reasons]).slice(0, 5),
     risks: uniqueText([...asStringArray(analysis.risks), ...safety.risks]).slice(0, 5),
+    riskChecks: mergeRiskChecks(
+      professionalRiskChecks(resolvedStock, price, cachedResearch, position, { industryProfile, financials }),
+      normalizeRiskChecks(analysis.riskChecks),
+    ),
     position,
     growthExit,
     sellForecast,
-    financials: analysis.financials ? normalizeFinancialSnapshot(analysis.financials) : analysis.financials,
+    industryProfile,
+    financials,
     ai: analysis.ai ? { ...analysis.ai, growthExit, sellForecast: normalizeSellForecast(analysis.ai.sellForecast) || sellForecast } : analysis.ai,
     entryValue: evaluateEntryPrice(resolvedStock.targetBuyPrice, price),
   };
@@ -10877,6 +11361,9 @@ function normalizeFinancialSnapshot(item = {}) {
     operatingCashFlowPositive: item.operatingCashFlowPositive === true,
     ebitda: numberOrNull(item.ebitda),
     netSales: numberOrNull(item.netSales),
+    overseasSales: numberOrNull(item.overseasSales),
+    overseasSalesRatio: numberOrNull(item.overseasSalesRatio),
+    overseasSalesSource: cleanText(item.overseasSalesSource || "").slice(0, 120),
     operatingIncome: numberOrNull(item.operatingIncome),
     netIncome: numberOrNull(item.netIncome),
     netAssets: numberOrNull(item.netAssets),
@@ -11109,6 +11596,9 @@ function buildFinancialSnapshot(stock = {}, quote = {}, doc = null, facts = null
     operatingCashFlowPositive: Boolean(Number.isFinite(facts?.operatingCashFlow) ? facts.operatingCashFlow > 0 : previous?.operatingCashFlowPositive),
     ebitda,
     netSales: numberOrNull(facts?.netSales ?? previous?.netSales),
+    overseasSales: numberOrNull(facts?.overseasSales ?? previous?.overseasSales),
+    overseasSalesRatio: numberOrNull(facts?.overseasSalesRatio ?? previous?.overseasSalesRatio),
+    overseasSalesSource: cleanText(facts?.overseasSalesSource || previous?.overseasSalesSource || "").slice(0, 120),
     operatingIncome,
     netIncome,
     netAssets,
@@ -11168,6 +11658,9 @@ function financialFactsFromSnapshot(item = {}) {
     operatingCashFlowYears: item.operatingCashFlowYears,
     ebitda: item.ebitda,
     netSales: item.netSales,
+    overseasSales: item.overseasSales,
+    overseasSalesRatio: item.overseasSalesRatio,
+    overseasSalesSource: item.overseasSalesSource,
     operatingIncome: item.operatingIncome,
     netIncome: item.netIncome,
     netAssets: item.netAssets,
@@ -11205,6 +11698,7 @@ function buildFinancialMissingMetrics(financials = {}) {
     if (!Number.isFinite(financials.netIncome)) parts.push("純利益");
     missing.push(`PER: ${parts.length ? parts.join("・") : "Yahoo側のPER"}不足`);
   }
+  if (!Number.isFinite(financials.overseasSalesRatio)) missing.push("海外売上比率: EDINETの地域別売上が未取得");
   return uniqueText(missing).slice(0, 8);
 }
 
@@ -11251,6 +11745,11 @@ function buildFinancialInsights(financials = {}) {
     insights.push("直近の営業CFはプラスですが、複数年での安定性確認が必要です。");
   } else if (operatingCf?.status === "fail") {
     insights.push("営業CFがマイナスで、PE候補としては大きな注意点です。");
+  }
+
+  if (Number.isFinite(financials.overseasSalesRatio)) {
+    const ratio = (financials.overseasSalesRatio * 100).toFixed(1);
+    insights.push(`海外売上比率は${ratio}%です。為替が業績に与える影響を、業種だけでなく決算書ベースでも確認できます。`);
   }
 
   if (Number.isFinite(financials.netCash) && Number.isFinite(financials.operatingCashFlow)) {
@@ -11752,6 +12251,7 @@ function extractFinancialFactsFromXbrl(xbrl = "") {
     "OperatingRevenue",
     "SalesRevenue",
   ], "duration");
+  const overseasSalesFact = extractOverseasSalesFact(xbrl, netSales);
   const operatingIncome = extractBestXbrlFact(xbrl, [
     "OperatingIncome",
     "OperatingProfitLoss",
@@ -11821,6 +12321,9 @@ function extractFinancialFactsFromXbrl(xbrl = "") {
     operatingCashFlow,
     operatingCashFlowYears,
     netSales,
+    overseasSales: overseasSalesFact.overseasSales,
+    overseasSalesRatio: overseasSalesFact.overseasSalesRatio,
+    overseasSalesSource: overseasSalesFact.overseasSalesSource,
     operatingIncome,
     netIncome,
     depreciationAndAmortization: depreciation,
@@ -11829,6 +12332,95 @@ function extractFinancialFactsFromXbrl(xbrl = "") {
     totalAssets,
     sharesOutstanding,
   };
+}
+
+function extractOverseasSalesFact(xbrl = "", netSales = null) {
+  const salesNames = [
+    "OverseasSales",
+    "ForeignSales",
+    "InternationalSales",
+    "OverseasRevenue",
+    "ForeignRevenue",
+    "RevenueFromExternalCustomersOverseas",
+    "RevenueFromExternalCustomersOutsideJapan",
+    "NetSalesOutsideJapan",
+    "NetSalesOfForeignCountries",
+    "SalesToOverseasCustomers",
+    "SalesToForeignCustomers",
+  ];
+  const ratioNames = [
+    "OverseasSalesRatio",
+    "RatioOfOverseasSales",
+    "RatioOfOverseasSalesToNetSales",
+    "ForeignSalesRatio",
+    "InternationalSalesRatio",
+  ];
+  const directSales = extractXbrlFactValues(xbrl, salesNames, "duration")
+    .map((item) => ({ ...item, kind: "sales", source: item.name }))
+    .filter((item) => item.value > 0);
+  const directRatios = extractXbrlFactValues(xbrl, ratioNames, "duration")
+    .map((item) => ({ ...item, kind: "ratio", source: item.name }))
+    .filter((item) => item.value > 0);
+  const dynamicFacts = extractXbrlNumericFacts(xbrl)
+    .filter((item) => looksLikeOverseasSalesFact(item))
+    .map((item) => ({
+      ...item,
+      kind: /ratio|percentage|percent/i.test(`${item.name} ${item.contextRef}`) ? "ratio" : "sales",
+      source: item.name,
+    }));
+  const candidates = [...directSales, ...directRatios, ...dynamicFacts]
+    .filter((item) => item.kind === "ratio" || !Number.isFinite(netSales) || item.value <= netSales * 1.05)
+    .sort((a, b) => b.score - a.score || Math.abs(b.value) - Math.abs(a.value));
+  const ratioCandidate = candidates.find((item) => item.kind === "ratio");
+  const salesCandidate = candidates.find((item) => item.kind === "sales");
+  const ratioFromCandidate = ratioCandidate
+    ? ratioValueFromXbrl(ratioCandidate.value)
+    : Number.isFinite(netSales) && salesCandidate?.value > 0
+    ? salesCandidate.value / netSales
+    : null;
+  return {
+    overseasSales: numberOrNull(salesCandidate?.value),
+    overseasSalesRatio: Number.isFinite(ratioFromCandidate) && ratioFromCandidate >= 0 && ratioFromCandidate <= 1.2
+      ? Math.min(1, ratioFromCandidate)
+      : null,
+    overseasSalesSource: salesCandidate?.source || ratioCandidate?.source || "",
+  };
+}
+
+function ratioValueFromXbrl(value) {
+  const numeric = numberOrNull(value);
+  if (!Number.isFinite(numeric)) return null;
+  if (numeric <= 1.2) return numeric;
+  if (numeric <= 120) return numeric / 100;
+  return null;
+}
+
+function extractXbrlNumericFacts(xbrl = "") {
+  const facts = [];
+  const seen = new Set();
+  const re = /<(?:[A-Za-z0-9_.-]+:)?([A-Za-z0-9_.-]+)\b([^>]*)>([-+]?\d+(?:,\d{3})*(?:\.\d+)?)<\/(?:[A-Za-z0-9_.-]+:)?\1>/gi;
+  let match;
+  while ((match = re.exec(xbrl))) {
+    const value = parseXbrlNumber(match[3]);
+    if (!Number.isFinite(value)) continue;
+    const attrs = match[2] || "";
+    const contextRef = cleanText(attrs.match(/contextRef=["']([^"']+)["']/i)?.[1] || "");
+    const unitRef = cleanText(attrs.match(/unitRef=["']([^"']+)["']/i)?.[1] || "");
+    if (unitRef && !/JPY|Yen|Pure/i.test(unitRef)) continue;
+    const key = `${match[1]}:${contextRef}:${value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    facts.push({ name: match[1], value, contextRef, score: xbrlFactScore(contextRef, "duration") });
+  }
+  return facts;
+}
+
+function looksLikeOverseasSalesFact(item = {}) {
+  const text = `${item.name || ""} ${item.contextRef || ""}`;
+  const hasOverseas = /overseas|foreign|international|outsidejapan|nonjapan|global|海外|国外|北米|米国|欧州|ヨーロッパ|アジア|中国/i.test(text);
+  const hasSales = /sales|revenue|turnover|売上|収益/i.test(text);
+  const hasBadTerm = /expense|cost|liabilit|asset|profit|income|segmentassets|従業員|設備|費用|利益|資産|負債/i.test(text);
+  return hasOverseas && hasSales && !hasBadTerm;
 }
 
 function extractXbrlFactValues(xbrl = "", names = [], periodHint = "") {

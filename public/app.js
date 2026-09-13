@@ -1907,6 +1907,7 @@ function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
   const confidence = Number.isFinite(analysis.confidence) ? ` ${Math.round(analysis.confidence)}%` : "";
   const badgeClass = actionClasses[action] || "watch";
   const summary = analysis.thesis || actionExplanation(action, stock, position);
+  const industryProfile = analysis.industryProfile || {};
   return `
     <section class="decision-card jp-ai-confirmation">
       <div>
@@ -1926,8 +1927,11 @@ function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
         <span><strong>1か月</strong>${pct(price.return1m)}</span>
         <span><strong>1年</strong>${pct(price.return1y)}</span>
         <span><strong>3年</strong>${pct(price.return3y)}</span>
+        <span><strong>業種</strong>${escapeHtml(industryProfile.sector || stock.sector || "その他")}</span>
+        <span><strong>為替影響</strong>${escapeHtml(industryFxShortText(industryProfile))}</span>
         <span><strong>銘柄コード</strong>${symbolLinkHtml(stock.symbol, "jp")}</span>
       </div>
+      ${industryProfileHtml(industryProfile)}
       ${riskChecksHtml(analysis.riskChecks)}
       ${exitPlanHtml(analysis.exitPlan)}
       ${technicalEntryHtml(price, yen)}
@@ -1940,6 +1944,49 @@ function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
           <h4>注意点</h4>
           <ul class="risk-list">${risks || "<li>更新後に表示します</li>"}</ul>
         </section>
+      </div>
+    </section>
+  `;
+}
+
+function industryFxShortText(profile = {}) {
+  const fx = profile.fxImpact || {};
+  const ratio = Number.isFinite(profile.overseasSalesRatio) ? ` / 海外${ratioPct(profile.overseasSalesRatio)}` : "";
+  return `${fx.label || "未評価"}${ratio}`;
+}
+
+function industryProfileHtml(profile = {}) {
+  if (!profile || (!profile.sector && !profile.summary)) return "";
+  const fx = profile.fxImpact || {};
+  const fxLevel = fx.level === "negative" ? "high" : fx.level === "positive" ? "low" : "medium";
+  const drivers = (profile.drivers || []).slice(0, 3).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+  const risks = (profile.risks || []).slice(0, 3).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
+  return `
+    <section class="risk-checks industry-profile" aria-label="業種・為替">
+      <div class="risk-check-title">
+        <strong>業種・為替</strong>
+        <span>${escapeHtml(profile.source || "推定")} / Evidence ${Number(profile.evidenceCount || 0)}</span>
+      </div>
+      <div class="risk-check-grid">
+        <article class="risk-check medium">
+          <div>
+            <strong>${escapeHtml(profile.sector || "その他")}</strong>
+            <span>${escapeHtml(profile.cyclicality || "確認")}</span>
+          </div>
+          <p>${escapeHtml(profile.summary || "業種情報を確認します。")}</p>
+          <div class="entry-points">${drivers}${risks}</div>
+        </article>
+        <article class="risk-check ${fxLevel}">
+          <div>
+            <strong>為替影響</strong>
+            <span>${escapeHtml(fx.label || "未評価")}</span>
+          </div>
+          <p>${escapeHtml(fx.summary || "海外売上比率または業種特性から確認します。")}</p>
+          ${ruleGuideHtml({
+            standard: "海外売上比率が高い会社は円安が追い風になりやすく、円高は逆風になりやすいです。輸入コストが重い会社は逆になることがあります。",
+            impact: "追い風なら保有・買いの補助材料、逆風なら買い急がず決算への影響を確認します。",
+          })}
+        </article>
       </div>
     </section>
   `;
@@ -2121,6 +2168,7 @@ function financialInfoHtml(info = null, price = {}) {
         <span><strong>時価総額</strong>${largeYen(displayInfo.marketCap)}</span>
         <span><strong>ネットキャッシュ比率</strong>${Number.isFinite(displayInfo.netCashRatio) ? `${(displayInfo.netCashRatio * 100).toFixed(1)}%` : "-"}</span>
         <span><strong>ネットキャッシュ</strong>${largeYen(displayInfo.netCash)}</span>
+        <span><strong>海外売上比率</strong>${ratioPct(displayInfo.overseasSalesRatio)}</span>
         <span><strong>EV/EBITDA</strong>${multipleText(displayInfo.evEbitda)}</span>
         <span><strong>PBR</strong>${multipleText(displayInfo.pbr)}</span>
         <span><strong>PER</strong>${multipleText(displayInfo.per)}</span>
@@ -3695,6 +3743,11 @@ function signedPct(value) {
 function plainPct(value) {
   if (!Number.isFinite(value)) return "-";
   return `${value.toFixed(1)}%`;
+}
+
+function ratioPct(value) {
+  if (!Number.isFinite(value)) return "-";
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function numberText(value) {
