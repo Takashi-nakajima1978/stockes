@@ -2942,13 +2942,25 @@ function nullableNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function hasOpenPosition(stock = {}, position = {}) {
+  if (Number.isFinite(position.quantity) && position.quantity > 0) return true;
+  if (
+    Number.isFinite(position.grossQuantity)
+    && position.grossQuantity > 0
+    && Number.isFinite(position.soldQuantity)
+  ) {
+    return position.grossQuantity > position.soldQuantity;
+  }
+  return Boolean(stock.holding);
+}
+
 function usPortfolioSummary(rows = []) {
   return rows.reduce((summary, row) => {
     const position = row.position || {};
     const hasPositionResult = Number.isFinite(position.grossInvested)
       || Number.isFinite(position.invested)
       || Number.isFinite(position.pnlAmount);
-    if (!hasPositionResult) return summary;
+    if (!hasOpenPosition(row, position) || !hasPositionResult) return summary;
     summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
     summary.grossInvested += Number.isFinite(position.grossInvested)
       ? position.grossInvested
@@ -2964,9 +2976,10 @@ function usPortfolioSummary(rows = []) {
       : Number.isFinite(position.pnlAmount)
       ? position.pnlAmount
       : 0;
-    if (Number.isFinite(position.pnlAmount)) {
-      if (position.pnlAmount >= 0) summary.winCount += 1;
-      else summary.lossCount += 1;
+    const resultAmount = Number.isFinite(position.totalReturnAmount) ? position.totalReturnAmount : position.pnlAmount;
+    if (Number.isFinite(resultAmount)) {
+      if (resultAmount > 0) summary.winCount += 1;
+      else if (resultAmount < 0) summary.lossCount += 1;
     }
     summary.pnlPct = summary.grossInvested ? (summary.pnlAmount / summary.grossInvested) * 100 : null;
     summary.totalReturnPct = summary.grossInvested ? (summary.totalReturnAmount / summary.grossInvested) * 100 : null;
@@ -7245,7 +7258,8 @@ function ruleBasedDecision(stock, price, research, options = {}) {
   }
 
   const initialAction = score >= 72 ? "BUY" : score >= 46 ? "HOLD" : score >= 26 ? "WATCH" : "SELL";
-  const safety = decisionSafetyOverride(stock, price, initialAction, position);
+  const growthExit = ruleGrowthExit(stock, research, price);
+  const safety = decisionSafetyOverride(stock, price, initialAction, position, { growthExit });
   const action = safety.action;
   const thesis = safety.thesis || `${stock.name}は価格トレンド、検索材料、変動率を総合して${actionLabels[action]}判定。`;
   const confidence = Number.isFinite(safety.confidence)
@@ -7259,6 +7273,7 @@ function ruleBasedDecision(stock, price, research, options = {}) {
     risks: uniqueText([...risks, ...safety.risks]).slice(0, 5),
     riskChecks: professionalRiskChecks(stock, price, research, position, { industryProfile }),
     industryProfile,
+    growthExit,
   };
 }
 
@@ -7949,11 +7964,6 @@ function normalizeDecision(stock, price, research, decision, options = {}) {
   const initialAction = ["BUY", "HOLD", "SELL", "WATCH"].includes(decision.action) ? decision.action : "WATCH";
   const position = positionMetrics(stock, price);
   const industryProfile = normalizeIndustryProfile(options.industryProfile || decision.industryProfile || buildIndustryProfile(stock, research, options.financials, options.fxContext));
-  const safety = decisionSafetyOverride(stock, price, initialAction, position);
-  const action = safety.action;
-  const confidence = Number.isFinite(safety.confidence)
-    ? Math.min(clamp(Number(decision.confidence || 45), 0, 100), safety.confidence)
-    : clamp(Number(decision.confidence || 45), 0, 100);
   const fallbackGrowthExit = ruleGrowthExit(stock, research, price);
   let growthExit = normalizeGrowthExit(decision.growthExit || fallbackGrowthExit);
   if (!growthExit.evidence.length && fallbackGrowthExit.evidence?.length) {
@@ -7963,6 +7973,11 @@ function normalizeDecision(stock, price, research, decision, options = {}) {
     growthExit.signals = asStringArray(fallbackGrowthExit.signals).slice(0, 5);
   }
   growthExit = enforceRecentGrowthExit(growthExit, research, stock);
+  const safety = decisionSafetyOverride(stock, price, initialAction, position, { growthExit });
+  const action = safety.action;
+  const confidence = Number.isFinite(safety.confidence)
+    ? Math.min(clamp(Number(decision.confidence || 45), 0, 100), safety.confidence)
+    : clamp(Number(decision.confidence || 45), 0, 100);
   const sellForecast = normalizeSellForecast(decision.sellForecast) || ruleSellForecast({ price, position }, "JPY");
   const reasons = uniqueText([...asStringArray(decision.reasons), ...safety.reasons]).slice(0, 5);
   const risks = uniqueText([...asStringArray(decision.risks), ...safety.risks]).slice(0, 5);
@@ -8519,10 +8534,11 @@ function mergeRiskChecks(base = [], ai = []) {
   return [...byLabel.values()].slice(0, 8);
 }
 
-function decisionSafetyOverride(stock, price = {}, action, position = positionMetrics(stock, price)) {
+function decisionSafetyOverride(stock, price = {}, action, position = positionMetrics(stock, price), options = {}) {
   const current = nullablePositiveNumber(price.current);
   const buyLine = nullablePositiveNumber(price.buyLine1y);
   const targetBuyPrice = nullablePositiveNumber(stock.targetBuyPrice);
+  const growthExitLevel = String(options.growthExit?.level || "").toLowerCase();
   if (action === "BUY" && current && targetBuyPrice && current > targetBuyPrice * 1.01) {
     const gap = ((current - targetBuyPrice) / targetBuyPrice) * 100;
     return {
@@ -8574,10 +8590,57 @@ function decisionSafetyOverride(stock, price = {}, action, position = positionMe
     };
   }
   if (action === "SELL" && stock.holding) {
+    const openPnlPct = Number.isFinite(position.unrealizedPnlPct) ? position.unrealizedPnlPct : position.pnlPct;
+    const totalReturnPct = Number.isFinite(position.totalReturnPct) ? position.totalReturnPct : position.pnlPct;
+    const hasMajorLoss = Number.isFinite(totalReturnPct)
+      ? totalReturnPct <= -15
+      : Number.isFinite(openPnlPct) && openPnlPct <= -15;
+    const trendDamage = price.trend3y === "DOWN"
+      && Number.isFinite(price.return1y)
+      && price.return1y <= -15
+      && Number.isFinite(price.sma50)
+      && Number.isFinite(price.sma200)
+      && price.sma50 < price.sma200;
+    const hasRecentExitAlert = growthExitLevel === "exit_alert";
+    const hasRecentWatchSignal = growthExitLevel === "watch";
+    if (hasRecentExitAlert) {
+      return {
+        action: "SELL",
+        confidence: 82,
+        thesis: `${stock.name}は直近の悪材料が保有理由に触れているため、見直し候補にしました。売却前に根拠リンクと次の決算反応を確認してください。`,
+        reasons: ["直近の悪材料が出口ルールに該当"],
+        risks: ["保有理由が変わった可能性がある"],
+      };
+    }
+    if (!hasMajorLoss && !trendDamage) {
+      const pnlText = Number.isFinite(totalReturnPct)
+        ? `配当込み損益は${formatSignedPercent(totalReturnPct)}です`
+        : "保有損益は大きく崩れていません";
+      const trendText = [
+        Number.isFinite(price.return1y) ? `1年${formatSignedPercent(price.return1y)}` : "",
+        Number.isFinite(price.return3y) ? `3年${formatSignedPercent(price.return3y)}` : "",
+      ].filter(Boolean).join("、");
+      return {
+        action: hasRecentWatchSignal ? "WATCH" : "HOLD",
+        confidence: hasRecentWatchSignal ? 64 : 62,
+        thesis: `${stock.name}は${pnlText}。長期トレンドや為替は確認材料ですが、損失拡大や直近の出口アラートがないため、見直し候補ではなく保有継続で確認します。`,
+        reasons: ["保有損益が大きく悪化していない", "直近の出口アラートは未確認"],
+        risks: [trendText ? `${trendText}のため、買い増しは反転確認後` : "長期トレンドと次の決算を確認"],
+      };
+    }
+    if (hasRecentWatchSignal && !hasMajorLoss) {
+      return {
+        action: "WATCH",
+        confidence: 66,
+        thesis: `${stock.name}は確認材料がありますが、損失が大きい状態ではありません。売却前に決算・ニュース・下値割れを確認する判定にしました。`,
+        reasons: ["保有損益だけでは売却根拠が不足"],
+        risks: ["確認材料があるため、次の決算と下値ラインを見る"],
+      };
+    }
     const nearRangeLow = Number.isFinite(price.distanceFromLow3y) && price.distanceFromLow3y <= 18;
     const notDownTrend = price.trend3y !== "DOWN";
-    const lossButNotBroken = Number.isFinite(position.totalReturnPct || position.pnlPct)
-      && (position.totalReturnPct ?? position.pnlPct) > -18;
+    const combinedReturnPct = Number.isFinite(position.totalReturnPct) ? position.totalReturnPct : position.pnlPct;
+    const lossButNotBroken = Number.isFinite(combinedReturnPct) && combinedReturnPct > -18;
     if (nearRangeLow && notDownTrend && lossButNotBroken) {
       return {
         action: "WATCH",
@@ -9927,13 +9990,16 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
   const price = analysis.price || {};
   const position = positionMetrics(resolvedStock, price);
   const initialAction = ["BUY", "HOLD", "SELL", "WATCH"].includes(analysis.action) ? analysis.action : "WATCH";
-  const safety = decisionSafetyOverride(resolvedStock, price, initialAction, position);
-  const action = safety.action;
   const growthExit = enforceRecentGrowthExit(
     normalizeGrowthExit(analysis.growthExit || analysis.ai?.growthExit),
     { evidence: analysis.evidence || [] },
     resolvedStock,
   );
+  const safety = decisionSafetyOverride(resolvedStock, price, initialAction, position, { growthExit });
+  const action = safety.action;
+  const confidence = Number.isFinite(safety.confidence)
+    ? Math.min(clamp(Number(analysis.confidence || 45), 0, 100), safety.confidence)
+    : clamp(Number(analysis.confidence || 45), 0, 100);
   const sellForecast = normalizeSellForecast(analysis.sellForecast || analysis.ai?.sellForecast)
     || ruleSellForecast({ price, position }, "JPY");
   const financials = analysis.financials ? normalizeFinancialSnapshot(analysis.financials) : analysis.financials;
@@ -9948,6 +10014,7 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
     symbol,
     name: resolvedStock.name || analysis.name || symbol,
     action,
+    confidence,
     thesis: safety.thesis || analysis.thesis || `${resolvedStock.name || symbol}は${actionLabels[action]}判定。`,
     reasons: uniqueText([...asStringArray(analysis.reasons), ...safety.reasons]).slice(0, 5),
     risks: uniqueText([...asStringArray(analysis.risks), ...safety.risks]).slice(0, 5),

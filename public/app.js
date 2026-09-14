@@ -997,6 +997,7 @@ function renderUsTable() {
     const position = analysis?.position || positionMetrics(stock, analysis?.price);
     const fundamentals = analysis?.fundamentals || {};
     const selected = state.usSelected === stock.symbol ? "selected" : "";
+    const openHolding = hasOpenPosition(stock, position);
     return `
       <tr class="${selected}" data-us-symbol="${escapeAttr(stock.symbol)}">
         <td>
@@ -1004,7 +1005,7 @@ function renderUsTable() {
             <button type="button" class="drag-handle" draggable="true" data-us-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>
             <span class="stock-name">
               <strong>${escapeHtml(stock.name)}</strong>
-              <span>${symbolLinkHtml(stock.symbol, "us")} / ${escapeHtml(stock.market || "NYSE")}</span>
+              <span>${symbolLinkHtml(stock.symbol, "us")} / ${escapeHtml(stock.market || "NYSE")}${openHolding ? " / 保有" : ""}</span>
             </span>
           </div>
         </td>
@@ -1015,7 +1016,7 @@ function renderUsTable() {
         <td>${shareCount(position.quantity)}</td>
         <td>${positionPnlUsd(position)}</td>
         <td>${dividendCell(position, analysis?.price, usd)}</td>
-        <td>${usStanceBadge(analysis?.ai)}</td>
+        <td>${usStanceBadge(analysis?.ai, stock, position)}</td>
         <td><button type="button" class="icon" data-remove-us="${escapeAttr(stock.symbol)}" aria-label="${escapeAttr(stock.name)}を削除">×</button></td>
       </tr>
     `;
@@ -1646,7 +1647,7 @@ function usSummaryFromState() {
     const hasPositionResult = Number.isFinite(position.grossInvested)
       || Number.isFinite(position.invested)
       || Number.isFinite(position.pnlAmount);
-    if (!stock.holding || !hasPositionResult) return summary;
+    if (!hasOpenPosition(stock, position) || !hasPositionResult) return summary;
     summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
     summary.grossInvested += Number.isFinite(position.grossInvested)
       ? position.grossInvested
@@ -1663,7 +1664,7 @@ function usSummaryFromState() {
       ? position.pnlAmount
       : 0;
     const resultAmount = Number.isFinite(position.totalReturnAmount) ? position.totalReturnAmount : position.pnlAmount;
-    summary.winCount += Number.isFinite(resultAmount) && resultAmount >= 0 ? 1 : 0;
+    summary.winCount += Number.isFinite(resultAmount) && resultAmount > 0 ? 1 : 0;
     summary.lossCount += Number.isFinite(resultAmount) && resultAmount < 0 ? 1 : 0;
     summary.pnlPct = summary.grossInvested > 0 ? (summary.pnlAmount / summary.grossInvested) * 100 : null;
     summary.totalReturnPct = summary.grossInvested > 0 ? (summary.totalReturnAmount / summary.grossInvested) * 100 : null;
@@ -1683,6 +1684,25 @@ function usSummaryFromState() {
   });
 }
 
+function hasOpenPosition(stock = {}, position = {}) {
+  if (Number.isFinite(position.quantity) && position.quantity > 0) return true;
+  if (
+    Number.isFinite(position.grossQuantity)
+    && position.grossQuantity > 0
+    && Number.isFinite(position.soldQuantity)
+  ) {
+    return position.grossQuantity > position.soldQuantity;
+  }
+  return Boolean(stock.holding);
+}
+
+function hasClosedPosition(position = {}) {
+  return Number.isFinite(position.grossQuantity)
+    && position.grossQuantity > 0
+    && Number.isFinite(position.soldQuantity)
+    && position.soldQuantity >= position.grossQuantity;
+}
+
 function positionPnlUsd(position = {}) {
   const amount = Number.isFinite(position.totalReturnAmount) ? position.totalReturnAmount : position.pnlAmount;
   const ratio = Number.isFinite(position.totalReturnPct) ? position.totalReturnPct : position.pnlPct;
@@ -1694,7 +1714,10 @@ function positionPnlUsd(position = {}) {
   return `<span class="pnl-cell">${main}${sub}</span>`;
 }
 
-function usStanceBadge(ai = null) {
+function usStanceBadge(ai = null, stock = {}, position = {}) {
+  if (!hasOpenPosition(stock, position) && hasClosedPosition(position)) {
+    return "<span class=\"badge watch\">売却済み</span>";
+  }
   const stance = ai?.stance || "DATA_NEEDED";
   const label = {
     HOLD: "保有確認",

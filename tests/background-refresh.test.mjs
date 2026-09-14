@@ -173,6 +173,86 @@ test("Japan watchlist decisions do not mark unconfirmed pullbacks as buy candida
   assert.match(result.thesis, /反転待ち/);
 });
 
+test("Japan holding is not marked as a sell review without loss or exit evidence", () => {
+  const safety = loadFunction(serverSource, "decisionSafetyOverride", {
+    positionMetrics: () => ({}),
+    nullablePositiveNumber: (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    },
+    formatYen: (value) => `¥${Number(value).toLocaleString("ja-JP")}`,
+    formatSignedPercent: (value) => `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`,
+    isBuyReversalPending: () => false,
+    isHighChaseChart: () => false,
+    isNoUpsideChart: () => false,
+  });
+  const result = safety({ name: "ゴールドウイン", holding: true }, {
+    current: 2139,
+    return1y: -11.9,
+    return3y: -38.4,
+    trend3y: "DOWN",
+    sma50: 2100,
+    sma200: 2500,
+  }, "SELL", { totalReturnPct: 1.4, pnlPct: 1.4, quantity: 100 }, { growthExit: { level: "normal" } });
+  assert.equal(result.action, "HOLD");
+  assert.match(result.thesis, /見直し候補ではなく保有継続/);
+});
+
+test("US portfolio summary counts only open holdings and uses dividend-included result", () => {
+  const hasOpenPosition = loadFunction(serverSource, "hasOpenPosition", {});
+  const summaryForUs = loadFunction(serverSource, "usPortfolioSummary", { hasOpenPosition });
+  const summary = summaryForUs([
+    {
+      symbol: "LOSS",
+      holding: true,
+      position: {
+        grossInvested: 100,
+        invested: 100,
+        marketValue: 90,
+        pnlAmount: -10,
+        totalReturnAmount: -5,
+        grossQuantity: 10,
+        soldQuantity: 0,
+        quantity: 10,
+      },
+    },
+    {
+      symbol: "SOLD",
+      holding: true,
+      position: {
+        grossInvested: 100,
+        invested: null,
+        marketValue: null,
+        pnlAmount: 20,
+        totalReturnAmount: 20,
+        grossQuantity: 10,
+        soldQuantity: 10,
+        quantity: null,
+      },
+    },
+    {
+      symbol: "DIVWIN",
+      holding: true,
+      position: {
+        grossInvested: 100,
+        invested: 100,
+        marketValue: 95,
+        pnlAmount: -5,
+        dividendReceived: 8,
+        totalReturnAmount: 3,
+        grossQuantity: 10,
+        soldQuantity: 0,
+        quantity: 10,
+      },
+    },
+  ]);
+  assert.equal(summary.winCount, 1);
+  assert.equal(summary.lossCount, 1);
+  assert.equal(summary.grossInvested, 200);
+  assert.match(appSource, /symbolLinkHtml\(stock\.symbol, "us"\).*保有/s);
+  assert.match(appSource, /売却済み/);
+});
+
 test("slow Japan refresh does not delay US or crypto, or depend on AI job state", async () => {
   let finishJapan;
   const calls = [];
