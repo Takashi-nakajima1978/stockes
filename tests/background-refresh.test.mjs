@@ -263,6 +263,81 @@ test("detail pages show absolute dividend amounts without changing watchlist div
   assert.match(appSource, /function usPositionEditor[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
 });
 
+test("dividend estimates prefer forecast annual dividend over stale trailing events", () => {
+  const enrich = loadFunction(serverSource, "enrichPriceDividendForecast", {
+    nullablePositiveNumber: (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    },
+    projectedAnnualDividendFromEvents: () => null,
+    normalizeYahooDividendYield: (value) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return null;
+      return numeric <= 1 ? numeric * 100 : numeric;
+    },
+    normalizeDate: (value) => String(value || "").slice(0, 10),
+  });
+  const price = enrich(
+    { current: 100, dividendPerShareTtm: 3, dividendYield: 3, dividendEvents: [{ date: "2024-08-07", amount: 0.5 }] },
+    { forwardAnnualDividendRate: 5, dividendYield: 0.05, exDividendDate: "2026-09-30" },
+  );
+  assert.equal(price.dividendPerShareAnnual, 5);
+  assert.equal(price.dividendPerShareForward, 5);
+  assert.equal(price.dividendYield, 5);
+  assert.equal(price.dividendAnnualSource, "会社予想");
+  assert.equal(price.dividendNextDate, "2026-09-30");
+  assert.match(serverSource, /const anchorTime = Date\.now\(\)/);
+  assert.match(serverSource, /includeDividendForecast: true/);
+  assert.match(appSource, /function annualDividendPerShare/);
+});
+
+test("Kadoya-style PE take-private pattern is not filtered out as food", () => {
+  const avoidPattern = (serverSource.match(/const DISCOVERY_AVOID_SECTOR_PATTERN = ([^\n]+);/) || [])[1] || "";
+  assert.doesNotMatch(avoidPattern, /食品|食料品|consumer staples|packaged foods/);
+  assert.match(serverSource, /"2612\.T": "食品"/);
+  assert.match(serverSource, /かどや製油/);
+  assert.match(serverSource, /brand_staple/);
+  const searchPeSignal = loadFunction(serverSource, "searchPeSignal", {
+    PE_CRITERIA: [
+      { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益"], weight: 14 },
+      { key: "shareholder", label: "株主変化", words: ["創業家", "大株主", "不応募"], weight: 20 },
+      { key: "brand_staple", label: "老舗ブランド・生活必需品", words: ["ブランド", "食品", "海外展開", "原材料高"], weight: 10 },
+      { key: "restructuring", label: "再編余地", words: ["TOB", "非公開化"], weight: 20 },
+    ],
+    PE_BUYER_WORDS: ["投資ファンド", "TOB", "株主"],
+    PE_DIRECT_BUYER_WORDS: ["投資ファンド", "TOB", "非公開化"],
+    PE_PRIORITY_MIN_SCORE: 45,
+    PE_STRONG_MIN_SCORE: 55,
+    PE_RECENT_TENDENCIES: [],
+    businessContextText: (value) => String(value || "").toLowerCase(),
+    normalizeFinancialCriteria: (items) => items,
+    financialCriteriaScore: () => 35,
+    isHighChaseChart: () => false,
+    clamp: (value, min, max) => Math.min(max, Math.max(min, value)),
+    hostOf: () => "source.test",
+    normalizeFinancialSnapshot: (value) => value,
+    uniqueText: (items) => [...new Set(items)],
+    peSignalSummary: (_label, _criteria, _buyerHits, options = {}) => [
+      ...(options.ownerDealHits?.length ? ["株主構造"] : []),
+      ...(options.brandTakePrivateHits?.length ? ["かどや型材料"] : []),
+    ].join("・"),
+  });
+  const signal = searchPeSignal(
+    { symbol: "2612.T", name: "かどや製油", sector: "食品", notes: "老舗ブランド 創業家 大株主 不応募 安定収益 海外展開 原材料高" },
+    [],
+    [{ title: "投資ファンドがTOBで非公開化", snippet: "創業家と大株主が残り、ブランドを維持して海外展開を進める", url: "https://source.test/kadoya" }],
+    { criteria: [
+      { key: "market_cap", label: "時価総額", status: "pass", summary: "対象範囲" },
+      { key: "operating_cf", label: "営業CF", status: "pass", summary: "プラス" },
+      { key: "net_cash", label: "ネットキャッシュ", status: "unknown", summary: "未確認" },
+      { key: "pbr", label: "PBR", status: "unknown", summary: "未確認" },
+    ] },
+  );
+  assert.equal(signal.reportEligible, true);
+  assert.ok(signal.matchScore >= 55);
+  assert.match(signal.summary, /株主構造|かどや型材料/);
+});
+
 test("slow Japan refresh does not delay US or crypto, or depend on AI job state", async () => {
   let finishJapan;
   const calls = [];

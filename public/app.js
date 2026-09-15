@@ -769,12 +769,22 @@ function dividendCell(position, price = {}, formatter = yen) {
 }
 
 function dividendPerShareText(price = {}, position = {}, formatter = yen) {
-  const direct = Number.isFinite(price?.dividendPerShareTtm) ? price.dividendPerShareTtm : null;
+  const direct = annualDividendPerShare(price);
   const derived = Number.isFinite(position?.annualDividendEstimate) && Number.isFinite(position?.quantity) && position.quantity > 0
     ? position.annualDividendEstimate / position.quantity
     : null;
   const amount = Number.isFinite(direct) ? direct : derived;
-  return Number.isFinite(amount) ? `${formatter(amount)}/株` : "-";
+  const source = price?.dividendAnnualSource ? ` ${price.dividendAnnualSource}` : "";
+  return Number.isFinite(amount) ? `${formatter(amount)}/株${escapeHtml(source)}` : "-";
+}
+
+function annualDividendPerShare(price = {}) {
+  const amount = finiteOrNull(
+    price?.dividendPerShareAnnual
+    ?? price?.dividendPerShareForward
+    ?? price?.dividendPerShareTtm,
+  );
+  return amount && amount > 0 ? amount : null;
 }
 
 function annualDividendText(position = {}, formatter = yen) {
@@ -3062,7 +3072,11 @@ function isSuspiciousChartPoint(point, index, points = []) {
 
 function dividendTiming(price = {}) {
   const events = dividendEvents(price);
-  if (!events.length) return null;
+  const nextDate = String(price?.dividendNextDate || "").slice(0, 10);
+  const nextDateLabel = dividendNextDateLabel(nextDate);
+  if (!events.length) {
+    return nextDateLabel ? { latest: null, months: [], nextLabel: nextDateLabel, nextDate } : null;
+  }
   const latest = events.at(-1);
   const monthCounts = new Map();
   events.slice(-12).forEach((event) => {
@@ -3077,7 +3091,8 @@ function dividendTiming(price = {}) {
   return {
     latest,
     months,
-    nextLabel: nextDividendLabel(months, latest.date),
+    nextDate: nextDateLabel ? nextDate : "",
+    nextLabel: nextDateLabel || nextDividendLabel(months, latest.date),
   };
 }
 
@@ -3118,20 +3133,27 @@ function nextDividendLabel(months = [], latestDate = "") {
   return `${months.map(monthLabel).join("・")}頃`;
 }
 
+function dividendNextDateLabel(value = "") {
+  const time = dateToTime(value);
+  if (!Number.isFinite(time)) return "";
+  if (time < Date.now() - 14 * 86400000) return "";
+  return formatDate(value);
+}
+
 function dividendTimingSummary(price = {}) {
   const timing = dividendTiming(price);
   if (!timing) return "";
-  return timing.nextLabel ? `次 ${timing.nextLabel}` : `直近 ${formatMonthDay(timing.latest.date)}`;
+  return timing.nextLabel ? `次 ${timing.nextLabel}` : `直近 ${formatMonthDay(timing.latest?.date)}`;
 }
 
 function dividendTimingDetail(price = {}, formatter = yen) {
   const timing = dividendTiming(price);
   if (!timing) return "-";
-  const amount = Number.isFinite(timing.latest.amount) ? formatter(timing.latest.amount) : "";
-  const latest = `直近 ${formatDate(timing.latest.date)}${amount ? ` ${amount}` : ""}`;
-  const next = timing.nextLabel ? ` / 次回目安 ${timing.nextLabel}` : "";
+  const amount = Number.isFinite(timing.latest?.amount) ? formatter(timing.latest.amount) : "";
+  const latest = timing.latest ? `直近 ${formatDate(timing.latest.date)}${amount ? ` ${amount}` : ""}` : "";
+  const next = timing.nextLabel ? `次回目安 ${timing.nextLabel}` : "";
   const months = timing.months.length ? ` / 実績月 ${timing.months.map(monthLabel).join("・")}` : "";
-  return `${latest}${next}${months}`;
+  return [latest, next].filter(Boolean).join(" / ") + months || "-";
 }
 
 function monthLabel(month) {
@@ -3924,8 +3946,9 @@ function positionMetrics(stock, price = {}) {
   const pnlPct = grossInvested && Number.isFinite(pnlAmount) ? (pnlAmount / grossInvested) * 100 : null;
   const marketValue = current && remainingQuantity ? current * remainingQuantity : null;
   const dividendReceived = dividendsForPositionHistory(lots, sales, price?.dividendEvents || []);
-  const annualDividendEstimate = Number.isFinite(price?.dividendPerShareTtm) && remainingQuantity
-    ? price.dividendPerShareTtm * remainingQuantity
+  const annualPerShare = annualDividendPerShare(price);
+  const annualDividendEstimate = annualPerShare && remainingQuantity
+    ? annualPerShare * remainingQuantity
     : null;
   const totalReturnAmount = Number.isFinite(pnlAmount)
     ? pnlAmount + (Number.isFinite(dividendReceived) ? dividendReceived : 0)

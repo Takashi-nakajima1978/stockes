@@ -141,7 +141,7 @@ const SHAREHOLDER_KEYWORDS = [
 ];
 const PE_PRIORITY_MIN_SCORE = 45;
 const PE_STRONG_MIN_SCORE = 55;
-const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|食品|食料品|wholesale|food|grocery|consumer staples|packaged foods)/i;
+const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|trading house|commodity trader|wholesale distributor)/i;
 const DISCOVERY_IT_VENTURE_PATTERN = /(情報|IT|ＳＩ|SI|ソフトウェア|クラウド|SaaS|アプリ|ネット|メディア|広告|ゲーム|DX|AI)/i;
 const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|半導体|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹|mature|enterprise|consulting|infrastructure|security|cybersecurity|semiconductor|data center|platform|payments|mission critical|recurring revenue|automation|medical device)/i;
 const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "private equity", "buyout", "take private", "tender offer", "activist", "shareholder", "stake", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
@@ -149,6 +149,7 @@ const PE_DIRECT_BUYER_WORDS = ["PEファンド", "プライベートエクイテ
 const PE_RECENT_TENDENCIES = [
   "直近数年の国内PE・MBO案件は、低PBR、ネットキャッシュ、安定CF、株主還元余地、上場維持コストが重い会社を重視して採点",
   "時価総額は50億-500億円を強い条件、500億-3000億円を大型PEでも検討し得る範囲、3000億-1兆円をJSR級の大型・特殊案件として扱う",
+  "かどや製油のように、老舗ブランド、創業家の残存、大株主の持分整理、原材料高で中長期投資が必要な食品・生活必需品もPE候補として確認する",
   "単なる大型優良株や高値圏のテーマ株は、直接の買収・MBO・株主変化がなければPE候補から外す",
   "決算後に業績は悪くないのに還元不足で売られた銘柄を、アクティビスト/PEの入口候補として加点",
 ];
@@ -165,6 +166,7 @@ const JP_SECTOR_BY_SYMBOL = {
   "1861.T": "建設",
   "1925.T": "建設",
   "2002.T": "食品",
+  "2612.T": "食品",
   "2749.T": "サービス",
   "2914.T": "食品",
   "3382.T": "小売",
@@ -342,9 +344,10 @@ const PE_CRITERIA = [
   { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益", "キャッシュフロー", "高配当", "営業CF", "ストック収益", "継続課金", "cash flow", "free cash flow", "recurring revenue", "stable revenue", "dividend"], weight: 14 },
   { key: "debt_capacity", label: "低負債・借入余地", words: ["無借金", "ネットキャッシュ", "財務健全", "自己資本比率", "低負債", "debt capacity", "low debt", "net cash", "strong balance sheet"], weight: 14 },
   { key: "governance", label: "株主還元・経営改善の余地", words: ["自社株買い", "増配", "政策保有株", "ROE", "資本効率", "中期経営計画", "buyback", "capital allocation", "margin improvement", "ROIC", "shareholder return"], weight: 13 },
-  { key: "shareholder", label: "株主変化", words: ["大量保有", "保有割合", "株主", "物言う株主", "アクティビスト", "エフィッシモ", "Oasis", "旧村上", "activist", "shareholder", "stake", "13D", "13G"], weight: 18 },
-  { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化", "事業売却", "構造改革", "再編", "親子上場", "buyout", "take private", "spin off", "divestiture", "strategic review", "tender offer"], weight: 18 },
-  { key: "sector_fit", label: "PEが扱いやすい業態", words: ["サービス", "ヘルスケア", "ソフトウェア", "不動産", "物流", "人材", "設備保守", "services", "healthcare", "industrial", "maintenance", "logistics", "consumer staples"], weight: 9 },
+  { key: "shareholder", label: "株主変化", words: ["大量保有", "保有割合", "株主", "大株主", "筆頭株主", "創業家", "支配株主", "不応募", "再投資", "物言う株主", "アクティビスト", "エフィッシモ", "Oasis", "旧村上", "activist", "shareholder", "stake", "13D", "13G", "founder", "family shareholder", "rollover"], weight: 20 },
+  { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化", "事業売却", "構造改革", "再編", "親子上場", "買収提案", "対抗提案", "デューデリジェンス", "上場維持コスト", "持分整理", "政策保有", "buyout", "take private", "spin off", "divestiture", "strategic review", "tender offer"], weight: 20 },
+  { key: "brand_staple", label: "老舗ブランド・生活必需品", words: ["老舗", "ブランド", "食品", "食料品", "調味料", "生活必需品", "海外展開", "原材料高", "価格転嫁", "consumer staples", "packaged foods", "brand", "raw material cost", "overseas expansion"], weight: 10 },
+  { key: "sector_fit", label: "PEが扱いやすい業態", words: ["サービス", "ヘルスケア", "ソフトウェア", "不動産", "物流", "人材", "設備保守", "食品", "生活必需品", "services", "healthcare", "industrial", "maintenance", "logistics", "consumer staples"], weight: 9 },
   { key: "risk", label: "買収されにくい要因", words: ["規制", "国策", "赤字", "訴訟", "不祥事", "過大債務", "景気敏感", "regulatory", "litigation", "loss", "high debt", "cyclical"], weight: -12 },
 ];
 const defaultSettings = {
@@ -473,6 +476,7 @@ const discoveryUniverse = [
   { symbol: "8766.T", name: "東京海上", market: "東証", sector: "保険", notes: "保険、海外利益、政策株売却" },
   { symbol: "8725.T", name: "MS&AD", market: "東証", sector: "保険", notes: "保険、株主還元、金利" },
   { symbol: "8630.T", name: "SOMPO", market: "東証", sector: "保険", notes: "保険、介護、株主還元" },
+  { symbol: "2612.T", name: "かどや製油", market: "東証", sector: "食品", notes: "ごま油、老舗ブランド、創業家、大株主、海外展開、原材料高、PE再編検証" },
   { symbol: "2914.T", name: "日本たばこ産業", market: "東証", sector: "食品", notes: "高配当、海外、ディフェンシブ" },
   { symbol: "4452.T", name: "花王", market: "東証", sector: "生活用品", notes: "日用品、構造改革、ディフェンシブ" },
   { symbol: "4911.T", name: "資生堂", market: "東証", sector: "化粧品", notes: "化粧品、中国、インバウンド" },
@@ -1310,7 +1314,10 @@ async function performWatchlistPriceRefresh(options = {}) {
   const rows = await mapLimit(stocks, 8, async (stock) => {
     const previousAnalysis = previousBySymbol.get(stock.symbol) || null;
     let priceError = "";
-    const fetchedPrice = await fetchPriceHistory(stock.symbol, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch((error) => {
+    const fetchedPrice = await fetchPriceHistory(stock.symbol, {
+      timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS,
+      includeDividendForecast: true,
+    }).catch((error) => {
       priceError = error.message || "価格を取得できませんでした";
       return emptyPrice();
     });
@@ -1394,7 +1401,7 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
   const rows = await mapLimit(stocks, 4, async (stock) => {
     const cachedPrice = recentPrices.get(stock.symbol);
     const [price, research] = await Promise.all([
-      cachedPrice ? Promise.resolve(cachedPrice) : fetchPriceHistory(stock.symbol),
+      cachedPrice ? Promise.resolve(cachedPrice) : fetchPriceHistory(stock.symbol, { includeDividendForecast: true }),
       researchStock(stock, { websiteLimit, depthLimit, pagesPerSite }),
     ]);
 
@@ -1455,7 +1462,7 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
   const warnings = [];
   const systemWarnings = [];
   const [price, research] = await Promise.all([
-    fetchPriceHistory(stock.symbol),
+    fetchPriceHistory(stock.symbol, { includeDividendForecast: true }),
     researchStock(stock, { websiteLimit, depthLimit, pagesPerSite }),
   ]);
   if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
@@ -1516,7 +1523,10 @@ async function performUsPriceRefresh(options = {}) {
   const rows = await mapLimit(stocks, 8, async (stock) => {
     const previousAnalysis = previousBySymbol.get(stock.symbol) || null;
     let priceError = "";
-    const fetchedPrice = await fetchPriceHistory(stock.symbol, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch((error) => {
+    const fetchedPrice = await fetchPriceHistory(stock.symbol, {
+      timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS,
+      includeDividendForecast: true,
+    }).catch((error) => {
       priceError = error.message || "価格を取得できませんでした";
       return emptyPrice();
     });
@@ -1580,7 +1590,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}, onProgre
   const rows = await mapLimit(stocks, 4, async (stock) => {
     const cachedPrice = recentPrices.get(stock.symbol);
     const [price, rawFundamentals, research] = await Promise.all([
-      cachedPrice ? Promise.resolve(cachedPrice) : fetchPriceHistory(stock.symbol),
+      cachedPrice ? Promise.resolve(cachedPrice) : fetchPriceHistory(stock.symbol, { includeDividendForecast: true }),
       fetchUsFundamentals(stock.symbol).catch((error) => {
         warnings.push(`${stock.name}: ${error.message || "米国財務情報を取得できませんでした"}`);
         return normalizeUsFundamentals();
@@ -1725,7 +1735,7 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
   const websiteLimit = clamp(Number(options.websiteLimit || settings.websiteLimit || defaultSettings.websiteLimit), 1, MAX_WEBSITE_LIMIT);
   const warnings = [];
   const [price, rawFundamentals, research] = await Promise.all([
-    fetchPriceHistory(stock.symbol),
+    fetchPriceHistory(stock.symbol, { includeDividendForecast: true }),
     fetchUsFundamentals(stock.symbol).catch((error) => {
       warnings.push(`${stock.name}: ${error.message || "米国財務情報を取得できませんでした"}`);
       return normalizeUsFundamentals();
@@ -2534,11 +2544,17 @@ function compactUsPrice(price = {}) {
     buyTiming1y: price.buyTiming1y,
     low1y: price.low1y,
     low1yDate: price.low1yDate,
+    dividendPerShareAnnual: price.dividendPerShareAnnual,
+    dividendPerShareForward: price.dividendPerShareForward,
     dividendPerShareTtm: price.dividendPerShareTtm,
     dividendYield: price.dividendYield,
+    dividendYieldTtm: price.dividendYieldTtm,
     dividendChangePct: price.dividendChangePct,
     dividendLastDate: price.dividendLastDate,
     dividendLastAmount: price.dividendLastAmount,
+    dividendNextDate: price.dividendNextDate,
+    dividendPaymentDate: price.dividendPaymentDate,
+    dividendAnnualSource: price.dividendAnnualSource,
     dividendEvents: price.dividendEvents,
     logReturn1d: price.logReturn1d,
     histVol20: price.histVol20,
@@ -4038,6 +4054,12 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
   const financialFail = new Set(financialCriteria.filter((item) => item.status === "fail").map((item) => item.key));
   const buyerHits = PE_BUYER_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 8);
   const directBuyerHits = PE_DIRECT_BUYER_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 6);
+  const ownerDealHits = ["創業家", "支配株主", "大株主", "筆頭株主", "不応募", "再投資", "三菱商事", "三井物産", "商社", "政策保有", "持分整理", "上場維持コスト", "事業承継", "founder", "family shareholder", "rollover"]
+    .filter((word) => text.includes(word.toLowerCase()))
+    .slice(0, 8);
+  const brandTakePrivateHits = ["老舗", "ブランド", "食品", "食料品", "調味料", "生活必需品", "海外展開", "原材料高", "価格転嫁", "consumer staples", "packaged foods", "brand", "raw material cost", "overseas expansion"]
+    .filter((word) => text.includes(word.toLowerCase()))
+    .slice(0, 8);
   const disappointmentHits = ["決算後", "失望売り", "急落", "大幅安", "自社株買いなし", "増配なし", "株主還元", "還元不足", "earnings selloff", "disappointment", "no buyback", "capital allocation"]
     .filter((word) => text.includes(word.toLowerCase()))
     .slice(0, 6);
@@ -4048,25 +4070,39 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
   if (/銀行|保険|電力|資源|航空|鉄道|防衛|半導体|bank|insurance|utility|airline|aerospace|semiconductor/i.test(sector)) score -= 6;
   if (directBuyerHits.length) score += Math.min(20, directBuyerHits.length * 5);
   else if (buyerHits.length) score += Math.min(8, buyerHits.length * 2);
+  if (ownerDealHits.length >= 2) score += Math.min(18, ownerDealHits.length * 4);
+  if (brandTakePrivateHits.length >= 2 && (ownerDealHits.length || directBuyerHits.length)) {
+    score += Math.min(12, brandTakePrivateHits.length * 3);
+  } else if (brandTakePrivateHits.length >= 2) {
+    score += 5;
+  }
   if (disappointmentHits.length && (financialPass.has("net_cash") || financialPass.has("pbr") || financialPass.has("ev_ebitda"))) {
     score += Math.min(18, disappointmentHits.length * 4);
   }
   if (isHighChaseChart(candidate.price || {})) score = Math.min(score, 30);
   const positiveKeys = new Set(criteria.filter((item) => item.score > 0).map((item) => item.key));
-  const hasHardSignal = directBuyerHits.length
+  const hasHardSignal = Boolean(directBuyerHits.length)
     || positiveKeys.has("shareholder")
     || positiveKeys.has("restructuring")
+    || ownerDealHits.length >= 2
+    || (ownerDealHits.length > 0 && brandTakePrivateHits.length >= 2)
     || disappointmentHits.length >= 2;
   if (financialFail.has("market_cap")) score = Math.min(score, 34);
   const marketCapAccepted = financialPass.has("market_cap") || (financialWatch.has("market_cap") && hasHardSignal);
+  const hasOperatingCashflowConcern = financialFail.has("operating_cf");
+  const kadoyaStyleBase = marketCapAccepted
+    && !hasOperatingCashflowConcern
+    && (financialPass.has("operating_cf") || financialWatch.has("operating_cf") || positiveKeys.has("cashflow"))
+    && (ownerDealHits.length >= 2 || (ownerDealHits.length && brandTakePrivateHits.length >= 2))
+    && (positiveKeys.has("brand_staple") || positiveKeys.has("shareholder") || positiveKeys.has("restructuring"));
   const hasFinancialBase = marketCapAccepted
     && (financialPass.has("net_cash") || financialWatch.has("net_cash"))
     && (financialPass.has("ev_ebitda") || financialPass.has("pbr") || positiveKeys.has("undervalued"))
-    && !financialFail.has("operating_cf");
+    && !hasOperatingCashflowConcern;
   const hasLboBase = hasFinancialBase || (
     positiveKeys.has("cashflow")
     && (positiveKeys.has("undervalued") || positiveKeys.has("debt_capacity") || positiveKeys.has("sector_fit"))
-  );
+  ) || kadoyaStyleBase;
   if (!financialCriteria.length || financialCriteria.every((item) => item.status === "unknown")) {
     score = Math.min(score, 44);
   }
@@ -4115,15 +4151,19 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
     ].filter(Boolean)).slice(0, 5),
     buyerHits,
     directBuyerHits,
+    ownerDealHits,
+    brandTakePrivateHits,
     disappointmentHits,
-    reportEligible: matchScore >= PE_PRIORITY_MIN_SCORE && hasFinancialBase && (hasHardSignal || matchScore >= PE_STRONG_MIN_SCORE),
+    reportEligible: matchScore >= PE_PRIORITY_MIN_SCORE && (hasFinancialBase || kadoyaStyleBase) && (hasHardSignal || matchScore >= PE_STRONG_MIN_SCORE),
     evidence,
     summary: peSignalSummary(label, criteria, buyerHits, {
       directBuyerHits,
+      ownerDealHits,
+      brandTakePrivateHits,
       disappointmentHits,
       hasHardSignal,
       hasLboBase,
-      hasFinancialBase,
+      hasFinancialBase: hasFinancialBase || kadoyaStyleBase,
       financialCriteria,
       matchScore,
     }),
@@ -4141,6 +4181,8 @@ function peSignalSummary(label, criteria = [], buyerHits = [], options = {}) {
   if (financialHits.length) parts.push(`財務条件: ${financialHits.join("・")}`);
   if (positives.length) parts.push(`${positives.join("・")}に該当`);
   if (options.directBuyerHits?.length) parts.push(`直接材料: ${options.directBuyerHits.slice(0, 3).join("、")}`);
+  if (options.ownerDealHits?.length) parts.push(`株主構造: ${options.ownerDealHits.slice(0, 3).join("、")}`);
+  if (options.brandTakePrivateHits?.length) parts.push(`かどや型材料: ${options.brandTakePrivateHits.slice(0, 3).join("、")}`);
   if (options.disappointmentHits?.length) parts.push(`失望売り/還元不足材料: ${options.disappointmentHits.slice(0, 3).join("、")}`);
   else if (buyerHits.length) parts.push(`周辺語: ${buyerHits.slice(0, 3).join("、")}`);
   if (risk) parts.push(`注意: ${risk}`);
@@ -5214,7 +5256,10 @@ async function aiDiscoveryReview(candidates) {
       buyTiming1y: candidate.price?.buyTiming1y,
       maxDrawdown3y: candidate.price?.maxDrawdown3y,
       dividendYield: candidate.price?.dividendYield,
+      dividendPerShareAnnual: candidate.price?.dividendPerShareAnnual,
+      dividendPerShareForward: candidate.price?.dividendPerShareForward,
       dividendPerShareTtm: candidate.price?.dividendPerShareTtm,
+      dividendAnnualSource: candidate.price?.dividendAnnualSource,
       maCrossSignal: candidate.price?.maCrossSignal || null,
       closeStrength: candidate.price?.closeStrength || null,
     },
@@ -6017,11 +6062,17 @@ function compactDiscoveryPrice(price, unitSize = 100, currency = "JPY") {
     candlestickSignal: price.candlestickSignal || null,
     technicalEntry: price.technicalEntry || technicalEntryFallback(),
     regime: price.regime || null,
+    dividendPerShareAnnual: price.dividendPerShareAnnual,
+    dividendPerShareForward: price.dividendPerShareForward,
     dividendPerShareTtm: price.dividendPerShareTtm,
     dividendYield: price.dividendYield,
+    dividendYieldTtm: price.dividendYieldTtm,
     dividendChangePct: price.dividendChangePct,
     dividendLastDate: price.dividendLastDate,
     dividendLastAmount: price.dividendLastAmount,
+    dividendNextDate: price.dividendNextDate,
+    dividendPaymentDate: price.dividendPaymentDate,
+    dividendAnnualSource: price.dividendAnnualSource,
     dividendEvents: Array.isArray(price.dividendEvents) ? price.dividendEvents.slice(-12) : [],
   };
 }
@@ -6362,12 +6413,17 @@ async function fetchPriceHistory(symbol, options = {}) {
       volume: Number(volumes[index]),
     }))
     .filter((point) => Number.isFinite(point.close)));
-  return { ...priceMetrics(series, {
+  const metrics = { ...priceMetrics(series, {
     shortName: meta.shortName,
     longName: meta.longName,
     symbol: meta.symbol,
     dividends,
   }), fetchedAt: new Date().toISOString() };
+  if (!options.includeDividendForecast) return metrics;
+  const dividendSnapshot = await fetchYahooDividendSnapshot(meta.symbol || symbol, {
+    timeout: Math.min(timeout, 9000),
+  }).catch(() => null);
+  return enrichPriceDividendForecast(metrics, dividendSnapshot);
 }
 
 function combineBtcJpySeries(btcSeries = [], fxSeries = []) {
@@ -7019,21 +7075,26 @@ function dividendMetrics(dividends = [], current = null) {
     .filter((item) => item.date && item.amount)
     .sort((a, b) => a.date.localeCompare(b.date));
   const latest = sorted.at(-1) || {};
-  const anchorTime = latest.date
-    ? new Date(`${latest.date}T00:00:00`).getTime()
-    : Date.now();
+  const anchorTime = Date.now();
   const oneYearMs = 366 * 86400000;
   const ttmStart = anchorTime - oneYearMs;
   const previousStart = anchorTime - (oneYearMs * 2);
   const ttm = dividendSum(sorted, ttmStart, anchorTime);
   const previousTtm = dividendSum(sorted, previousStart, ttmStart);
+  const yieldTtm = current && ttm ? (ttm / current) * 100 : null;
   return {
+    dividendPerShareAnnual: ttm || null,
+    dividendPerShareForward: null,
     dividendPerShareTtm: ttm || null,
-    dividendYield: current && ttm ? (ttm / current) * 100 : null,
+    dividendYield: yieldTtm,
+    dividendYieldTtm: yieldTtm,
     dividendPreviousPerShareTtm: previousTtm || null,
     dividendChangePct: previousTtm ? ((ttm - previousTtm) / previousTtm) * 100 : null,
     dividendLastDate: latest.date || "",
     dividendLastAmount: latest.amount || null,
+    dividendNextDate: "",
+    dividendPaymentDate: "",
+    dividendAnnualSource: ttm ? "直近12か月実績" : "",
     dividendEvents: sorted.slice(-24),
   };
 }
@@ -7044,6 +7105,155 @@ function dividendSum(dividends, fromTime, toTime) {
     if (!Number.isFinite(time) || time <= fromTime || time > toTime) return sum;
     return sum + item.amount;
   }, 0);
+}
+
+function annualDividendPerShare(price = {}) {
+  return nullablePositiveNumber(
+    price.dividendPerShareAnnual
+    ?? price.dividendPerShareForward
+    ?? price.dividendPerShareTtm,
+  );
+}
+
+async function fetchYahooDividendSnapshot(symbol = "", options = {}) {
+  const yahooSymbol = normalizeYahooDividendSymbol(symbol);
+  if (!yahooSymbol) return null;
+  const isJapan = /\.T$/i.test(yahooSymbol);
+  const url = new URL(`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(yahooSymbol)}`);
+  url.searchParams.set("modules", "price,summaryDetail,calendarEvents");
+  url.searchParams.set("lang", isJapan ? "ja-JP" : "en-US");
+  url.searchParams.set("region", isJapan ? "JP" : "US");
+  const response = await fetchWithTimeout(url, {
+    timeout: clamp(Number(options.timeout || 9000), 1000, 15000),
+    headers: { accept: "application/json", "user-agent": "Mozilla/5.0 Stock Signal" },
+  });
+  if (!response.ok) return null;
+  const payload = await response.json().catch(() => null);
+  const result = payload?.quoteSummary?.result?.[0] || {};
+  const price = result.price || {};
+  const summary = result.summaryDetail || {};
+  const calendar = result.calendarEvents || {};
+  const currentPrice = yahooRawNumber(price.regularMarketPrice ?? price.postMarketPrice ?? price.preMarketPrice);
+  const forwardAnnualDividendRate = nullablePositiveNumber(yahooRawNumber(summary.dividendRate ?? price.dividendRate));
+  const trailingAnnualDividendRate = nullablePositiveNumber(yahooRawNumber(
+    summary.trailingAnnualDividendRate ?? price.trailingAnnualDividendRate,
+  ));
+  const dividendYield = normalizeYahooDividendYield(yahooRawNumber(
+    summary.dividendYield ?? summary.trailingAnnualDividendYield ?? price.dividendYield,
+  ));
+  return {
+    symbol: yahooSymbol,
+    currentPrice,
+    forwardAnnualDividendRate,
+    trailingAnnualDividendRate,
+    dividendYield,
+    exDividendDate: yahooRawDate(summary.exDividendDate ?? calendar.exDividendDate),
+    dividendDate: yahooRawDate(summary.dividendDate ?? calendar.dividendDate),
+  };
+}
+
+function normalizeYahooDividendSymbol(value = "") {
+  const symbol = String(value || "").trim().toUpperCase();
+  if (!/^[0-9A-Z.-]{1,16}$/.test(symbol)) return "";
+  if (/^\d{4}$/.test(symbol)) return `${symbol}.T`;
+  return symbol;
+}
+
+function enrichPriceDividendForecast(price = {}, snapshot = null) {
+  const current = nullablePositiveNumber(price.current ?? snapshot?.currentPrice);
+  const ttm = nullablePositiveNumber(price.dividendPerShareTtm ?? snapshot?.trailingAnnualDividendRate);
+  const projected = projectedAnnualDividendFromEvents(price.dividendEvents || []);
+  const forward = nullablePositiveNumber(snapshot?.forwardAnnualDividendRate);
+  const snapshotYield = normalizeYahooDividendYield(snapshot?.dividendYield);
+  let annual = forward || projected || ttm || nullablePositiveNumber(snapshot?.trailingAnnualDividendRate);
+  let source = forward
+    ? "会社予想"
+    : projected
+    ? "直近配当を年換算"
+    : ttm
+    ? "直近12か月実績"
+    : "";
+  if (!annual && current && snapshotYield) {
+    annual = (current * snapshotYield) / 100;
+    source = "予想利回りから逆算";
+  }
+  const dividendYield = current && annual
+    ? (annual / current) * 100
+    : snapshotYield || price.dividendYield || null;
+  const dividendYieldTtm = current && ttm ? (ttm / current) * 100 : price.dividendYieldTtm || null;
+  return {
+    ...price,
+    dividendPerShareAnnual: annual || null,
+    dividendPerShareForward: forward || null,
+    dividendPerShareTtm: ttm || null,
+    dividendYield,
+    dividendYieldTtm,
+    dividendAnnualSource: source || price.dividendAnnualSource || "",
+    dividendNextDate: normalizeDate(snapshot?.exDividendDate) || price.dividendNextDate || "",
+    dividendPaymentDate: normalizeDate(snapshot?.dividendDate) || price.dividendPaymentDate || "",
+  };
+}
+
+function projectedAnnualDividendFromEvents(events = []) {
+  const sorted = (events || [])
+    .map((item) => ({
+      date: normalizeDate(item.date),
+      amount: nullablePositiveNumber(item.amount),
+    }))
+    .filter((item) => item.date && item.amount)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (sorted.length < 2) return null;
+  const latest = sorted.at(-1);
+  const previous = sorted.at(-2);
+  const latestTime = new Date(`${latest.date}T00:00:00`).getTime();
+  const previousTime = new Date(`${previous.date}T00:00:00`).getTime();
+  if (!Number.isFinite(latestTime) || !Number.isFinite(previousTime)) return null;
+  const ageDays = (Date.now() - latestTime) / 86400000;
+  if (!Number.isFinite(ageDays) || ageDays < -30 || ageDays > 220) return null;
+  const intervalDays = (latestTime - previousTime) / 86400000;
+  if (!Number.isFinite(intervalDays) || intervalDays <= 0) return null;
+  if (intervalDays >= 55 && intervalDays <= 130) {
+    const priorAmounts = sorted.slice(-5, -1).map((item) => item.amount).filter(Number.isFinite);
+    const median = quantile(priorAmounts, 0.5);
+    if (median && (latest.amount > median * 3 || latest.amount < median / 3)) return null;
+    return latest.amount * 4;
+  }
+  if (intervalDays >= 130 && intervalDays <= 230) {
+    const oneYearStart = latestTime - 366 * 86400000;
+    const recent = sorted.filter((item) => {
+      const time = new Date(`${item.date}T00:00:00`).getTime();
+      return Number.isFinite(time) && time > oneYearStart && time <= latestTime;
+    });
+    const sum = recent.reduce((total, item) => total + item.amount, 0);
+    return sum || null;
+  }
+  if (intervalDays >= 300 && intervalDays <= 430) return latest.amount;
+  return null;
+}
+
+function normalizeYahooDividendYield(value) {
+  const numeric = nullablePositiveNumber(value);
+  if (!numeric) return null;
+  if (numeric <= 1) return numeric * 100;
+  if (numeric <= 100) return numeric;
+  return null;
+}
+
+function yahooRawDate(value) {
+  const raw = value && typeof value === "object" && "raw" in value ? value.raw : value;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    const millis = numeric > 100000000000 ? numeric : numeric * 1000;
+    const date = new Date(millis);
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+  }
+  const text = String((value && typeof value === "object" && (value.fmt || value.longFmt)) || raw || "").trim();
+  const iso = text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (iso) {
+    const [, year, month, day] = iso;
+    return normalizeDate(`${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`);
+  }
+  return "";
 }
 
 function ruleBasedDecision(stock, price, research, options = {}) {
@@ -7902,11 +8112,17 @@ function compactPrice(price) {
     candlestickSignal: price.candlestickSignal || null,
     technicalEntry: price.technicalEntry || technicalEntryFallback(),
     regime: price.regime || null,
+    dividendPerShareAnnual: price.dividendPerShareAnnual,
+    dividendPerShareForward: price.dividendPerShareForward,
     dividendPerShareTtm: price.dividendPerShareTtm,
     dividendYield: price.dividendYield,
+    dividendYieldTtm: price.dividendYieldTtm,
     dividendChangePct: price.dividendChangePct,
     dividendLastDate: price.dividendLastDate,
     dividendLastAmount: price.dividendLastAmount,
+    dividendNextDate: price.dividendNextDate,
+    dividendPaymentDate: price.dividendPaymentDate,
+    dividendAnnualSource: price.dividendAnnualSource,
   };
 }
 
@@ -9362,8 +9578,9 @@ function positionMetrics(stock, price = {}) {
   const pnlPct = grossInvested && Number.isFinite(pnlAmount) ? (pnlAmount / grossInvested) * 100 : null;
   const marketValue = current && remainingQuantity ? current * remainingQuantity : null;
   const dividendReceived = dividendsForPositionHistory(positions, sales, price.dividendEvents || []);
-  const annualDividendEstimate = Number.isFinite(price.dividendPerShareTtm) && remainingQuantity
-    ? price.dividendPerShareTtm * remainingQuantity
+  const annualPerShare = annualDividendPerShare(price);
+  const annualDividendEstimate = annualPerShare && remainingQuantity
+    ? annualPerShare * remainingQuantity
     : null;
   const totalReturnAmount = Number.isFinite(pnlAmount)
     ? pnlAmount + (Number.isFinite(dividendReceived) ? dividendReceived : 0)
@@ -10591,7 +10808,8 @@ function estimateBuyOpportunity(price = {}, unitSize = 100, settings = {}, optio
     };
   }
   const trend = nullablePositiveNumber(price.trendPrice3y);
-  const dividend = Number.isFinite(price.dividendPerShareTtm) ? price.dividendPerShareTtm * quantity : 0;
+  const dividendPerShare = annualDividendPerShare(price);
+  const dividend = dividendPerShare ? dividendPerShare * quantity : 0;
   const capitalEdge = trend && trend > current ? (trend - current) * quantity : 0;
   const grossAmount = Math.max(capitalEdge, dividend);
   const accountType = currency === "USD" ? "revolut_us" : normalizeJpAccountType(options.accountType || settings.defaultJpAccountType);
@@ -11931,6 +12149,11 @@ async function fetchYahooQuoteSnapshots(symbols = []) {
       "bookValue",
       "epsTrailingTwelveMonths",
       "epsForward",
+      "dividendRate",
+      "dividendYield",
+      "trailingAnnualDividendRate",
+      "trailingAnnualDividendYield",
+      "exDividendDate",
     ].join(","));
     const response = await fetchWithTimeout(url, {
       timeout: 10000,
@@ -11953,6 +12176,10 @@ async function fetchYahooQuoteSnapshots(symbols = []) {
         bookValue: numberOrNull(item.bookValue),
         epsTrailingTwelveMonths: numberOrNull(item.epsTrailingTwelveMonths),
         epsForward: numberOrNull(item.epsForward),
+        forwardAnnualDividendRate: nullablePositiveNumber(item.dividendRate),
+        trailingAnnualDividendRate: nullablePositiveNumber(item.trailingAnnualDividendRate),
+        dividendYield: normalizeYahooDividendYield(item.dividendYield ?? item.trailingAnnualDividendYield),
+        exDividendDate: yahooRawDate(item.exDividendDate),
       });
     }
   }
@@ -11964,7 +12191,7 @@ async function fetchYahooQuoteSummarySnapshots(symbols = []) {
   const quotes = new Map();
   await mapLimit(cleanSymbols, 4, async (symbol) => {
     const url = new URL(`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}`);
-    url.searchParams.set("modules", "price,summaryDetail,defaultKeyStatistics,financialData");
+    url.searchParams.set("modules", "price,summaryDetail,defaultKeyStatistics,financialData,calendarEvents");
     url.searchParams.set("lang", "ja-JP");
     url.searchParams.set("region", "JP");
     const response = await fetchWithTimeout(url, {
@@ -11978,6 +12205,7 @@ async function fetchYahooQuoteSummarySnapshots(symbols = []) {
     const summary = result.summaryDetail || {};
     const stats = result.defaultKeyStatistics || {};
     const financial = result.financialData || {};
+    const calendar = result.calendarEvents || {};
     quotes.set(symbol, {
       marketCap: yahooRawNumber(price.marketCap ?? summary.marketCap),
       currentPrice: yahooRawNumber(price.regularMarketPrice ?? financial.currentPrice),
@@ -11990,6 +12218,15 @@ async function fetchYahooQuoteSummarySnapshots(symbols = []) {
       bookValue: yahooRawNumber(stats.bookValue),
       epsTrailingTwelveMonths: yahooRawNumber(stats.trailingEps),
       epsForward: yahooRawNumber(stats.forwardEps),
+      forwardAnnualDividendRate: nullablePositiveNumber(yahooRawNumber(summary.dividendRate ?? price.dividendRate)),
+      trailingAnnualDividendRate: nullablePositiveNumber(yahooRawNumber(
+        summary.trailingAnnualDividendRate ?? price.trailingAnnualDividendRate,
+      )),
+      dividendYield: normalizeYahooDividendYield(yahooRawNumber(
+        summary.dividendYield ?? summary.trailingAnnualDividendYield ?? price.dividendYield,
+      )),
+      exDividendDate: yahooRawDate(summary.exDividendDate ?? calendar.exDividendDate),
+      dividendDate: yahooRawDate(summary.dividendDate ?? calendar.dividendDate),
     });
   });
   return quotes;
@@ -13599,12 +13836,18 @@ function emptyPrice(series = [], meta = {}) {
       summary: "価格履歴が不足しています。",
       features: {},
     },
+    dividendPerShareAnnual: null,
+    dividendPerShareForward: null,
     dividendPerShareTtm: null,
     dividendYield: null,
+    dividendYieldTtm: null,
     dividendPreviousPerShareTtm: null,
     dividendChangePct: null,
     dividendLastDate: "",
     dividendLastAmount: null,
+    dividendNextDate: "",
+    dividendPaymentDate: "",
+    dividendAnnualSource: "",
     dividendEvents: [],
     shortName: cleanText(meta.shortName || ""),
     longName: cleanText(meta.longName || ""),
