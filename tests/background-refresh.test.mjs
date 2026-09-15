@@ -253,6 +253,16 @@ test("US portfolio summary counts only open holdings and uses dividend-included 
   assert.match(appSource, /売却済み/);
 });
 
+test("detail pages show absolute dividend amounts without changing watchlist dividend cell", () => {
+  assert.match(appSource, /function dividendPerShareText/);
+  assert.match(appSource, /function annualDividendText/);
+  assert.match(appSource, /function dividendCell[\s\S]*<strong>\$\{yieldText\}<\/strong>/);
+  assert.match(appSource, /function jpAiConfirmationHtml[\s\S]*<strong>配当利回り<\/strong>[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
+  assert.match(appSource, /function renderUsDetail[\s\S]*<strong>配当利回り<\/strong>[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
+  assert.match(appSource, /function positionEditor[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
+  assert.match(appSource, /function usPositionEditor[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
+});
+
 test("slow Japan refresh does not delay US or crypto, or depend on AI job state", async () => {
   let finishJapan;
   const calls = [];

@@ -768,6 +768,19 @@ function dividendCell(position, price = {}, formatter = yen) {
   `;
 }
 
+function dividendPerShareText(price = {}, position = {}, formatter = yen) {
+  const direct = Number.isFinite(price?.dividendPerShareTtm) ? price.dividendPerShareTtm : null;
+  const derived = Number.isFinite(position?.annualDividendEstimate) && Number.isFinite(position?.quantity) && position.quantity > 0
+    ? position.annualDividendEstimate / position.quantity
+    : null;
+  const amount = Number.isFinite(direct) ? direct : derived;
+  return Number.isFinite(amount) ? `${formatter(amount)}/株` : "-";
+}
+
+function annualDividendText(position = {}, formatter = yen) {
+  return Number.isFinite(position?.annualDividendEstimate) ? `${formatter(position.annualDividendEstimate)}/年` : "-";
+}
+
 function averagePriceCell(position = {}, formatter = yen) {
   const showSell = Number.isFinite(position.averageSellPrice);
   return `
@@ -1104,6 +1117,8 @@ function renderUsDetail() {
         <span><strong>損益</strong>${positionPnlUsd(position)}</span>
         <span><strong>受取配当</strong>${usd(position.dividendReceived)}</span>
         <span><strong>配当利回り</strong>${Number.isFinite(analysis?.price?.dividendYield) ? `${analysis.price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>1株配当</strong>${dividendPerShareText(analysis?.price || {}, position, usd)}</span>
+        <span><strong>年間配当目安</strong>${annualDividendText(position, usd)}</span>
         <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(analysis?.price || {}, usd))}</span>
         <span><strong>1か月</strong>${pct(analysis?.price?.return1m)}</span>
         <span><strong>1年</strong>${pct(analysis?.price?.return1y)}</span>
@@ -1781,6 +1796,7 @@ function usPositionEditor(stock, position, price = {}) {
         <span><strong>確定損益</strong>${usd(metrics.realizedPnlAmount)}</span>
         <span><strong>含み損益</strong>${usd(metrics.unrealizedPnlAmount)}</span>
         <span><strong>受取配当</strong>${usd(metrics.dividendReceived)}</span>
+        <span><strong>1株配当</strong>${dividendPerShareText(price || {}, metrics, usd)}</span>
         <span><strong>年間配当目安</strong>${usd(metrics.annualDividendEstimate)}</span>
         <span><strong>配当利回り</strong>${Number.isFinite(price?.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
         <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(price || {}, usd))}</span>
@@ -1946,6 +1962,8 @@ function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
         <span><strong>残株数</strong>${shareCount(position.quantity)}</span>
         <span><strong>受取配当</strong>${yen(position.dividendReceived)}</span>
         <span><strong>配当利回り</strong>${Number.isFinite(price.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>1株配当</strong>${dividendPerShareText(price, position, yen)}</span>
+        <span><strong>年間配当目安</strong>${annualDividendText(position, yen)}</span>
         <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(price, yen))}</span>
         <span><strong>1か月</strong>${pct(price.return1m)}</span>
         <span><strong>1年</strong>${pct(price.return1y)}</span>
@@ -3206,6 +3224,8 @@ function evidenceSummaryHtml(stock, analysis, position) {
       <div class="evidence-summary-grid">
         <span><strong>配当込み損益</strong>${positionPnl(position, true)}</span>
         <span><strong>配当利回り</strong>${Number.isFinite(analysis.price?.dividendYield) ? `${analysis.price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>1株配当</strong>${dividendPerShareText(analysis.price || {}, position, yen)}</span>
+        <span><strong>年間配当目安</strong>${annualDividendText(position, yen)}</span>
         <span><strong>検索件数</strong>${analysis.researchStats?.searched ?? evidence.length}</span>
       </div>
       <div class="summary-points">
@@ -4076,6 +4096,7 @@ function positionEditor(stock, position, analysis) {
         <span><strong>含み損益</strong>${yen(metrics.unrealizedPnlAmount)}</span>
         <span><strong>残り元本</strong>${yen(metrics.invested)}</span>
         <span><strong>評価額</strong>${yen(metrics.marketValue)}</span>
+        <span><strong>1株配当</strong>${dividendPerShareText(analysis?.price || {}, metrics, yen)}</span>
         <span><strong>年間配当目安</strong>${yen(metrics.annualDividendEstimate)}</span>
         <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(analysis?.price || {}, yen))}</span>
         <span><strong>残す株数</strong>${metrics.minimumHoldQuantity ? `${metrics.minimumHoldQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
