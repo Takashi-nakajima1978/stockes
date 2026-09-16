@@ -52,6 +52,7 @@ const actionClasses = {
 
 const chartState = {
   series: [],
+  tradeMarkers: [],
   points: [],
   plot: null,
   hoverIndex: null,
@@ -1152,7 +1153,7 @@ function renderUsDetail() {
     </section>
   `;
   attachUsPositionForm(stock.symbol);
-  renderEmbeddedPriceChart(els.usDetail, analysis?.price?.series || [], usd);
+  renderEmbeddedPriceChart(els.usDetail, analysis?.price?.series || [], usd, chartTradeMarkers(stock));
 }
 
 function renderCrypto() {
@@ -1903,7 +1904,7 @@ function renderSelection() {
   const analysis = stock ? state.analyses[stock.symbol] : null;
   els.selectedSymbol.innerHTML = stock ? symbolLinkHtml(stock.symbol, "jp") : "未選択";
 
-  drawChart(analysis?.price?.series || []);
+  drawChart(analysis?.price?.series || [], stock ? chartTradeMarkers(stock) : []);
   renderChartTiming(analysis?.price || null);
 
   if (!stock) {
@@ -2488,7 +2489,137 @@ function signedPctText(value) {
   return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
 
-function drawChart(series) {
+function chartTradeMarkers(stock = {}) {
+  const buys = positionLots(stock).map((lot) => ({
+    type: "buy",
+    date: lot.purchaseDate,
+    price: lot.purchasePrice,
+    quantity: lot.quantity,
+  }));
+  const sells = saleLots(stock).map((lot) => ({
+    type: "sell",
+    date: lot.sellDate,
+    price: lot.sellPrice,
+    quantity: lot.quantity,
+  }));
+  return [...buys, ...sells]
+    .filter((marker) => /^\d{4}-\d{2}-\d{2}$/.test(marker.date || ""))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.type.localeCompare(b.type));
+}
+
+function resolveChartTradeMarkers(series = [], tradeMarkers = []) {
+  if (!series.length || !tradeMarkers.length) return [];
+  const firstTime = dateToTime(series[0].date);
+  const lastTime = dateToTime(series.at(-1).date);
+  if (!Number.isFinite(firstTime) || !Number.isFinite(lastTime)) return [];
+  const stackByKey = new Map();
+  return tradeMarkers
+    .map((marker) => {
+      const targetTime = dateToTime(marker.date);
+      if (!Number.isFinite(targetTime) || targetTime < firstTime || targetTime > lastTime) return null;
+      const index = chartIndexOnOrAfter(series, marker.date);
+      const point = series[index];
+      if (!point) return null;
+      const price = finiteOrNull(marker.price) || point.close;
+      const key = `${point.date}:${marker.type}`;
+      const stack = stackByKey.get(key) || 0;
+      stackByKey.set(key, stack + 1);
+      return {
+        ...marker,
+        date: point.date,
+        inputDate: marker.date,
+        price,
+        index,
+        stack,
+      };
+    })
+    .filter(Boolean);
+}
+
+function chartIndexOnOrAfter(series = [], date = "") {
+  let fallback = series.length - 1;
+  for (let index = 0; index < series.length; index += 1) {
+    if (series[index].date >= date) return index;
+    fallback = index;
+  }
+  return fallback;
+}
+
+function drawChartTradeMarkers(context, markers = [], x, y, options = {}) {
+  if (!markers.length) return;
+  const formatter = options.formatter || yen;
+  context.save();
+  context.font = "11px system-ui";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  markers.forEach((marker) => {
+    const px = x(marker.index);
+    const baseY = y(marker.price);
+    const offset = Math.min(18, marker.stack * 8);
+    const py = clampNumber(
+      marker.type === "sell" ? baseY - offset : baseY + offset,
+      options.top + 12,
+      options.bottom - 12,
+    );
+    const fill = marker.type === "sell" ? "#b33a42" : "#08785f";
+    const label = marker.type === "sell" ? "売" : "買";
+    context.strokeStyle = marker.type === "sell" ? "rgba(179,58,66,0.28)" : "rgba(8,120,95,0.28)";
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(px, options.top);
+    context.lineTo(px, options.bottom);
+    context.stroke();
+    context.fillStyle = fill;
+    context.strokeStyle = "#ffffff";
+    context.lineWidth = 2.5;
+    context.beginPath();
+    if (marker.type === "sell") {
+      context.moveTo(px, py + 9);
+      context.lineTo(px - 8, py - 6);
+      context.lineTo(px + 8, py - 6);
+    } else {
+      context.moveTo(px, py - 9);
+      context.lineTo(px - 8, py + 6);
+      context.lineTo(px + 8, py + 6);
+    }
+    context.closePath();
+    context.fill();
+    context.stroke();
+    const labelY = marker.type === "sell" ? py - 17 : py + 17;
+    const text = `${label} ${formatter(marker.price)}`;
+    const textWidth = context.measureText(text).width + 12;
+    const left = clampNumber(px - textWidth / 2, options.left + 2, options.right - textWidth - 2);
+    context.fillStyle = "rgba(255, 255, 255, 0.92)";
+    context.strokeStyle = marker.type === "sell" ? "rgba(179,58,66,0.35)" : "rgba(8,120,95,0.35)";
+    roundRectPath(context, left, labelY - 9, textWidth, 18, 8);
+    context.fill();
+    context.stroke();
+    context.fillStyle = fill;
+    context.fillText(text, left + textWidth / 2, labelY);
+  });
+  context.restore();
+}
+
+function roundRectPath(context, x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + r, y);
+  context.lineTo(x + width - r, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + r);
+  context.lineTo(x + width, y + height - r);
+  context.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  context.lineTo(x + r, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - r);
+  context.lineTo(x, y + r);
+  context.quadraticCurveTo(x, y, x + r, y);
+  context.closePath();
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function drawChart(series, tradeMarkers = chartState.tradeMarkers || []) {
   const canvas = els.chart;
   if (!canvas) return;
   const context = canvas.getContext("2d");
@@ -2506,8 +2637,10 @@ function drawChart(series) {
 
   const pad = { top: 22, right: 18, bottom: 28, left: 56 };
   const cleanSeries = cleanChartSeries(series);
-  const values = cleanSeries.map((point) => point.close);
+  const markers = resolveChartTradeMarkers(cleanSeries, tradeMarkers);
+  const values = [...cleanSeries.map((point) => point.close), ...markers.map((marker) => marker.price)];
   chartState.series = cleanSeries;
+  chartState.tradeMarkers = tradeMarkers;
   chartState.points = [];
   chartState.plot = null;
   if (values.length < 2) {
@@ -2580,6 +2713,13 @@ function drawChart(series) {
     else context.lineTo(px, py);
   });
   context.stroke();
+  drawChartTradeMarkers(context, markers, x, y, {
+    top: pad.top,
+    bottom: height - pad.bottom,
+    left: pad.left,
+    right: width - pad.right,
+    formatter: yen,
+  });
 
   context.fillStyle = "#1a2428";
   context.font = "12px system-ui";
@@ -2639,14 +2779,14 @@ function updateChartHover(event) {
     return;
   }
   chartState.hoverIndex = nearest.index;
-  drawChart(chartState.series);
+  drawChart(chartState.series, chartState.tradeMarkers);
 }
 
 function clearChartHover() {
   if (!Number.isFinite(chartState.hoverIndex)) return;
   chartState.hoverIndex = null;
   hideChartTooltip();
-  drawChart(chartState.series);
+  drawChart(chartState.series, chartState.tradeMarkers);
 }
 
 function positionChartTooltip(point) {
@@ -2669,7 +2809,7 @@ function hideChartTooltip() {
   if (els.chartTooltip) els.chartTooltip.hidden = true;
 }
 
-function renderEmbeddedPriceChart(root, series = [], formatter = yen) {
+function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarkers = []) {
   const canvas = root?.querySelector("[data-us-price-chart]");
   const tooltip = root?.querySelector("[data-us-chart-tooltip]");
   const timingNode = root?.querySelector("[data-us-chart-timing]");
@@ -2704,7 +2844,8 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen) {
       renderEmbeddedChartTiming(timingNode, null, formatter);
       return;
     }
-    const values = cleanSeries.map((point) => point.close);
+    const markers = resolveChartTradeMarkers(cleanSeries, tradeMarkers);
+    const values = [...cleanSeries.map((point) => point.close), ...markers.map((marker) => marker.price)];
     const min = Math.min(...values);
     const max = Math.max(...values);
     const span = max - min || 1;
@@ -2759,6 +2900,13 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen) {
       else context.lineTo(px, py);
     });
     context.stroke();
+    drawChartTradeMarkers(context, markers, x, y, {
+      top: pad.top,
+      bottom: height - pad.bottom,
+      left: pad.left,
+      right: width - pad.right,
+      formatter,
+    });
     context.fillStyle = "#1a2428";
     context.font = "12px system-ui";
     context.fillText("3年", pad.left, 16);
@@ -4368,8 +4516,9 @@ function renderCandidateList() {
     const positionText = source.searchPositionUsed ? "検索順位に出る業績・割安材料も採点しています。" : "";
     const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
     const avoidText = source.avoidedBusiness ? `${source.avoidedBusiness}。` : "";
+    const peSourceText = source.peLearningSources?.length ? "日本M&AセンターのTOB/MBO実例も参照します。" : "";
     const peText = source.peCriteria?.length
-      ? `PE買収狙いは日本株だけを別レポートで見ます。${source.peCriteria.join("・")}を重視します。`
+      ? `PE買収狙いは日本株だけを別レポートで見ます。${source.peCriteria.join("・")}を重視します。${peSourceText}`
       : "";
     const earlyText = "買い場以下・反発初動・短期非過熱に加えて、ゴールデンクロスと大引けの強さも見ます。";
     const learnText = source.performance?.evaluated

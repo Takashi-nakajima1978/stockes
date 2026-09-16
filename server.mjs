@@ -144,12 +144,24 @@ const PE_STRONG_MIN_SCORE = 55;
 const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|trading house|commodity trader|wholesale distributor)/i;
 const DISCOVERY_IT_VENTURE_PATTERN = /(情報|IT|ＳＩ|SI|ソフトウェア|クラウド|SaaS|アプリ|ネット|メディア|広告|ゲーム|DX|AI)/i;
 const DISCOVERY_IT_STABLE_PATTERN = /(通信|インフラ|データセンター|セキュリティ|半導体|NTT|KDDI|ソフトバンク|SoftBank|SIer|公共|基幹|mature|enterprise|consulting|infrastructure|security|cybersecurity|semiconductor|data center|platform|payments|mission critical|recurring revenue|automation|medical device)/i;
-const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "private equity", "buyout", "take private", "tender offer", "activist", "shareholder", "stake", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
-const PE_DIRECT_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "private equity", "buyout", "take private", "tender offer", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "ベイン", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス"];
+const PE_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "大量保有", "株主", "物言う株主", "アクティビスト", "private equity", "buyout", "take private", "tender offer", "activist", "shareholder", "stake", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "EQT", "Integral", "JIP", "NIC", "ベイン", "ベインキャピタル", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス", "インテグラル", "日本産業パートナーズ", "日本革新投資", "EQT", "エフィッシモ", "旧村上", "Oasis", "3D Investment"];
+const PE_DIRECT_BUYER_WORDS = ["PEファンド", "プライベートエクイティ", "投資ファンド", "TOB", "MBO", "買収", "非公開化", "private equity", "buyout", "take private", "tender offer", "Bain", "KKR", "Carlyle", "Blackstone", "Apollo", "CVC", "MBK", "EQT", "Integral", "JIP", "NIC", "ベイン", "ベインキャピタル", "カーライル", "ブラックストーン", "アドバンテッジパートナーズ", "ポラリス", "インテグラル", "日本産業パートナーズ", "日本革新投資"];
+const PE_TAKE_PRIVATE_MOTIVE_WORDS = [
+  "中長期的な成長施策", "中長期的な企業価値", "短期的な株価変動", "短期的な市場評価", "上場維持", "上場維持コスト",
+  "非公開化", "上場廃止", "スクイーズアウト", "買付予定数の上限なし", "応募推奨", "賛同", "迅速かつ柔軟",
+  "機動的", "成長投資", "マーケティング投資", "高付加価値", "海外展開", "M&A", "人材採用", "構造改革",
+  "take private", "delisting", "tender offer", "no maximum", "long-term growth", "strategic investment",
+];
+const PE_DEAL_SOURCE_URLS = [
+  "https://www.nihon-ma.co.jp/news/",
+  "https://www.nihon-ma.co.jp/news/keyword/takeoverbit/",
+];
 const PE_RECENT_TENDENCIES = [
   "直近数年の国内PE・MBO案件は、低PBR、ネットキャッシュ、安定CF、株主還元余地、上場維持コストが重い会社を重視して採点",
   "時価総額は50億-500億円を強い条件、500億-3000億円を大型PEでも検討し得る範囲、3000億-1兆円をJSR級の大型・特殊案件として扱う",
+  "日本M&AセンターのTOB/MBO実例を参照し、非公開化の理由、買付予定数の上限なし、賛同・応募推奨の有無を強い材料として扱う",
   "かどや製油のように、老舗ブランド、創業家の残存、大株主の持分整理、原材料高で中長期投資が必要な食品・生活必需品もPE候補として確認する",
+  "ボードルア型のITインフラ・セキュリティ、レオパレス型の構造改革案件、フジテック型の大型TOBも別枠で確認する",
   "単なる大型優良株や高値圏のテーマ株は、直接の買収・MBO・株主変化がなければPE候補から外す",
   "決算後に業績は悪くないのに還元不足で売られた銘柄を、アクティビスト/PEの入口候補として加点",
 ];
@@ -345,6 +357,7 @@ const PE_CRITERIA = [
   { key: "debt_capacity", label: "低負債・借入余地", words: ["無借金", "ネットキャッシュ", "財務健全", "自己資本比率", "低負債", "debt capacity", "low debt", "net cash", "strong balance sheet"], weight: 14 },
   { key: "governance", label: "株主還元・経営改善の余地", words: ["自社株買い", "増配", "政策保有株", "ROE", "資本効率", "中期経営計画", "buyback", "capital allocation", "margin improvement", "ROIC", "shareholder return"], weight: 13 },
   { key: "shareholder", label: "株主変化", words: ["大量保有", "保有割合", "株主", "大株主", "筆頭株主", "創業家", "支配株主", "不応募", "再投資", "物言う株主", "アクティビスト", "エフィッシモ", "Oasis", "旧村上", "activist", "shareholder", "stake", "13D", "13G", "founder", "family shareholder", "rollover"], weight: 20 },
+  { key: "take_private_motive", label: "非公開化の理由が明確", words: PE_TAKE_PRIVATE_MOTIVE_WORDS, weight: 22 },
   { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化", "事業売却", "構造改革", "再編", "親子上場", "買収提案", "対抗提案", "デューデリジェンス", "上場維持コスト", "持分整理", "政策保有", "buyout", "take private", "spin off", "divestiture", "strategic review", "tender offer"], weight: 20 },
   { key: "brand_staple", label: "老舗ブランド・生活必需品", words: ["老舗", "ブランド", "食品", "食料品", "調味料", "生活必需品", "海外展開", "原材料高", "価格転嫁", "consumer staples", "packaged foods", "brand", "raw material cost", "overseas expansion"], weight: 10 },
   { key: "sector_fit", label: "PEが扱いやすい業態", words: ["サービス", "ヘルスケア", "ソフトウェア", "不動産", "物流", "人材", "設備保守", "食品", "生活必需品", "services", "healthcare", "industrial", "maintenance", "logistics", "consumer staples"], weight: 9 },
@@ -4054,6 +4067,10 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
   const financialFail = new Set(financialCriteria.filter((item) => item.status === "fail").map((item) => item.key));
   const buyerHits = PE_BUYER_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 8);
   const directBuyerHits = PE_DIRECT_BUYER_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 6);
+  const takePrivateMotiveHits = PE_TAKE_PRIVATE_MOTIVE_WORDS.filter((word) => text.includes(word.toLowerCase())).slice(0, 8);
+  const dealSourceHits = relevantResults
+    .filter((item) => /nihon-ma\.co\.jp/i.test(hostOf(item.url)))
+    .slice(0, 3);
   const ownerDealHits = ["創業家", "支配株主", "大株主", "筆頭株主", "不応募", "再投資", "三菱商事", "三井物産", "商社", "政策保有", "持分整理", "上場維持コスト", "事業承継", "founder", "family shareholder", "rollover"]
     .filter((word) => text.includes(word.toLowerCase()))
     .slice(0, 8);
@@ -4070,6 +4087,9 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
   if (/銀行|保険|電力|資源|航空|鉄道|防衛|半導体|bank|insurance|utility|airline|aerospace|semiconductor/i.test(sector)) score -= 6;
   if (directBuyerHits.length) score += Math.min(20, directBuyerHits.length * 5);
   else if (buyerHits.length) score += Math.min(8, buyerHits.length * 2);
+  if (takePrivateMotiveHits.length >= 2) score += Math.min(20, takePrivateMotiveHits.length * 4);
+  else if (takePrivateMotiveHits.length) score += 4;
+  if (dealSourceHits.length) score += Math.min(12, dealSourceHits.length * 6);
   if (ownerDealHits.length >= 2) score += Math.min(18, ownerDealHits.length * 4);
   if (brandTakePrivateHits.length >= 2 && (ownerDealHits.length || directBuyerHits.length)) {
     score += Math.min(12, brandTakePrivateHits.length * 3);
@@ -4084,6 +4104,7 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
   const hasHardSignal = Boolean(directBuyerHits.length)
     || positiveKeys.has("shareholder")
     || positiveKeys.has("restructuring")
+    || (positiveKeys.has("take_private_motive") && (dealSourceHits.length || directBuyerHits.length || takePrivateMotiveHits.length >= 2))
     || ownerDealHits.length >= 2
     || (ownerDealHits.length > 0 && brandTakePrivateHits.length >= 2)
     || disappointmentHits.length >= 2;
@@ -4099,10 +4120,14 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
     && (financialPass.has("net_cash") || financialWatch.has("net_cash"))
     && (financialPass.has("ev_ebitda") || financialPass.has("pbr") || positiveKeys.has("undervalued"))
     && !hasOperatingCashflowConcern;
+  const sourceBackedDealBase = marketCapAccepted
+    && !hasOperatingCashflowConcern
+    && (dealSourceHits.length || positiveKeys.has("take_private_motive"))
+    && (directBuyerHits.length || positiveKeys.has("restructuring"));
   const hasLboBase = hasFinancialBase || (
     positiveKeys.has("cashflow")
     && (positiveKeys.has("undervalued") || positiveKeys.has("debt_capacity") || positiveKeys.has("sector_fit"))
-  ) || kadoyaStyleBase;
+  ) || kadoyaStyleBase || sourceBackedDealBase;
   if (!financialCriteria.length || financialCriteria.every((item) => item.status === "unknown")) {
     score = Math.min(score, 44);
   }
@@ -4110,7 +4135,8 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
   else if (!hasHardSignal) score = Math.min(score, 54);
   const matchScore = clamp(Math.round(score), 0, 100);
   const evidence = relevantResults
-    .filter((item) => PE_DIRECT_BUYER_WORDS.some((word) => businessContextText(`${item.title} ${item.snippet}`).includes(word.toLowerCase())))
+    .filter((item) => /nihon-ma\.co\.jp/i.test(hostOf(item.url))
+      || PE_DIRECT_BUYER_WORDS.some((word) => businessContextText(`${item.title} ${item.snippet}`).includes(word.toLowerCase())))
     .slice(0, 3)
     .map((item) => ({
       title: item.title,
@@ -4154,16 +4180,20 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
     ownerDealHits,
     brandTakePrivateHits,
     disappointmentHits,
-    reportEligible: matchScore >= PE_PRIORITY_MIN_SCORE && (hasFinancialBase || kadoyaStyleBase) && (hasHardSignal || matchScore >= PE_STRONG_MIN_SCORE),
+    takePrivateMotiveHits,
+    dealSourceHits: dealSourceHits.map((item) => ({ title: item.title, url: item.url, source: hostOf(item.url) })),
+    reportEligible: matchScore >= PE_PRIORITY_MIN_SCORE && (hasFinancialBase || kadoyaStyleBase || sourceBackedDealBase) && (hasHardSignal || matchScore >= PE_STRONG_MIN_SCORE),
     evidence,
     summary: peSignalSummary(label, criteria, buyerHits, {
       directBuyerHits,
       ownerDealHits,
       brandTakePrivateHits,
       disappointmentHits,
+      takePrivateMotiveHits,
+      dealSourceHits,
       hasHardSignal,
       hasLboBase,
-      hasFinancialBase: hasFinancialBase || kadoyaStyleBase,
+      hasFinancialBase: hasFinancialBase || kadoyaStyleBase || sourceBackedDealBase,
       financialCriteria,
       matchScore,
     }),
@@ -4181,8 +4211,10 @@ function peSignalSummary(label, criteria = [], buyerHits = [], options = {}) {
   if (financialHits.length) parts.push(`財務条件: ${financialHits.join("・")}`);
   if (positives.length) parts.push(`${positives.join("・")}に該当`);
   if (options.directBuyerHits?.length) parts.push(`直接材料: ${options.directBuyerHits.slice(0, 3).join("、")}`);
+  if (options.dealSourceHits?.length) parts.push("M&A実例: 日本M&AセンターのTOB/MBO記事");
   if (options.ownerDealHits?.length) parts.push(`株主構造: ${options.ownerDealHits.slice(0, 3).join("、")}`);
   if (options.brandTakePrivateHits?.length) parts.push(`かどや型材料: ${options.brandTakePrivateHits.slice(0, 3).join("、")}`);
+  if (options.takePrivateMotiveHits?.length) parts.push(`非公開化理由: ${options.takePrivateMotiveHits.slice(0, 3).join("、")}`);
   if (options.disappointmentHits?.length) parts.push(`失望売り/還元不足材料: ${options.disappointmentHits.slice(0, 3).join("、")}`);
   else if (buyerHits.length) parts.push(`周辺語: ${buyerHits.slice(0, 3).join("、")}`);
   if (risk) parts.push(`注意: ${risk}`);
@@ -4303,6 +4335,8 @@ async function discoverySearchResults(limit) {
     "高配当 低PBR 上方修正 日本株",
     "PEファンド 日本企業 買収 TOB MBO 傾向 株主",
     "大量保有報告書 物言う株主 TOB 候補 日本株",
+    "site:nihon-ma.co.jp/news/keyword/takeoverbit TOB MBO 非公開化 投資ファンド 日本企業",
+    "site:nihon-ma.co.jp/news/ インテグラル ベイン MBK EQT TOB 非公開化",
     `US stocks earnings beat raised guidance free cash flow buyback ${year}`,
     "NYSE NASDAQ undervalued growth stocks pullback earnings beat",
     "AI infrastructure semiconductor data center power stocks earnings guidance",
@@ -4310,11 +4344,68 @@ async function discoverySearchResults(limit) {
   ];
   const perQueryLimit = Math.max(4, Math.ceil(limit / queries.length));
   const results = [];
+  const directPeNews = await fetchNihonMaPeNews(Math.max(8, Math.ceil(limit / 3))).catch(() => []);
+  results.push(...directPeNews);
   for (const query of queries) {
     const page = await searchGoogle(query, { limit: perQueryLimit }).catch(() => []);
     results.push(...page);
   }
   return uniqueBy(results, (item) => item.url).slice(0, Math.max(limit, queries.length * Math.min(perQueryLimit, 4)));
+}
+
+async function fetchNihonMaPeNews(limit = 12) {
+  const pages = await mapLimit(PE_DEAL_SOURCE_URLS, 2, async (url) => {
+    const page = await fetchPageText(url).catch(() => null);
+    return page ? { ...page, url } : null;
+  });
+  return uniqueBy(pages
+    .filter(Boolean)
+    .flatMap((page) => extractNihonMaNewsResults(page.html, page.url, limit)), (item) => item.url)
+    .slice(0, limit);
+}
+
+function extractNihonMaNewsResults(html = "", pageUrl = "", limit = 12) {
+  const results = [];
+  const linkPattern = /<a\b[^>]*href=["']([^"']*\/news\/(\d{8})_(\d{4})-[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+  while ((match = linkPattern.exec(html)) && results.length < limit) {
+    const [, rawHref, rawDate, code, rawTitle] = match;
+    const title = cleanText(htmlToText(rawTitle));
+    if (!title || /一覧|もっと見る|詳細/.test(title)) continue;
+    let url = "";
+    try {
+      url = new URL(rawHref, pageUrl).href;
+    } catch {
+      continue;
+    }
+    const target = nihonMaTargetName(title);
+    const candidateTitle = `${target ? `${target}<${code}> ` : `<${code}> `}${title}`;
+    results.push({
+      title: candidateTitle,
+      url,
+      snippet: cleanText(`日本M&AセンターのTOB/MBO速報。${title}。公開買付・MBO・非公開化・投資ファンド・上場廃止の実例として確認。`),
+      publishedDate: `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`,
+      source: "日本M&Aセンター",
+    });
+  }
+  return results;
+}
+
+function nihonMaTargetName(title = "") {
+  const text = cleanText(title);
+  const patterns = [
+    /、([^、。]{2,28}?)にTOB/,
+    /が([^、。]{2,28}?)にTOB/,
+    /^([^、。]{2,28}?)がMBO/,
+    /、([^、。]{2,28}?)へのTOB/,
+    /投資ファンド[^、。]*、([^、。]{2,28}?)へのTOB/,
+    /([^、。]{2,28}?)へのTOB/,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return cleanCandidateName(match[1]);
+  }
+  return "";
 }
 
 function extractDiscoveryCandidates(searchResults, existing = new Set(), excluded = new Set()) {
@@ -5308,7 +5399,7 @@ async function aiDiscoveryReviewChunk(model, items) {
     "Evaluate 3-year trend distance, 1-year buy line, early-entry score, dividend yield, golden cross, closing strength, search-rank evidence, short-term overheat, downside risk, and evidence quality.",
     "For Japanese stocks, factor in demand before dividend or shareholder-benefit record dates. Do not raise the score just because of an imminent ex-rights drop or post-rights rebound risk.",
     "Add positive adjustment when price is below the 1-year buy line and business evidence is solid. Apply negative adjustment for extended high-price charts.",
-    "Evaluate PE/take-private potential separately: apparent undervaluation, stable cash flow, shareholder changes, restructuring optionality, and reasons a buyout would be difficult. Do not justify buying at an expensive chart level only because PE-related keywords exist.",
+    "Evaluate PE/take-private potential separately: apparent undervaluation, stable cash flow, shareholder changes, restructuring optionality, and reasons a buyout would be difficult. Use Nihon M&A Center TOB/MBO examples as learning evidence: clear take-private motive, no tender-offer maximum, board support, delisting plan, long-term investment need, and difficulty of reform while listed. Do not justify buying at an expensive chart level only because PE-related keywords exist.",
     "Use natural Japanese for summary, positives, and risks. Avoid vague jargon; state the concrete reason and how it affects the buy decision.",
     "adjustment must be an integer from -8 to 8. Use 0 or lower when evidence is thin. Use a negative value when bad news or high-price risk is material.",
     "Return strict JSON only in this schema: {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"]}]}. For US stocks, return plain tickers such as IBM.",
@@ -5356,7 +5447,7 @@ async function aiMarketTrendBrief(searchResults = [], universeCount = 0) {
     "Analyze the search evidence in English even when the source text is Japanese. Write all output fields in natural Japanese.",
     "Return strict JSON only in this schema: {\"summary\":\"...\",\"themes\":[\"...\"],\"avoid\":[\"...\"],\"keywords\":[\"...\"]}.",
     "The user is not day-trading. Find themes useful for holdings over several weeks to months: business momentum with prices that are not already too expensive.",
-    "If evidence mentions PE funds, TOB, MBO, large shareholdings, or activists, summarize the concrete pattern seen in recent buyout targets.",
+    "If evidence mentions PE funds, TOB, MBO, large shareholdings, activists, or Nihon M&A Center deal articles, summarize the concrete pattern seen in recent buyout targets.",
     "",
     JSON.stringify({ universe: `東証プライム ${universeCount}銘柄`, evidence }),
   ].join("\n");
@@ -5505,6 +5596,7 @@ function jpStockEvidenceQueries(stock = {}) {
     { text: `site:kabutan.jp/stock/news?code=${code} ${name} 決算 業績 配当 自社株買い`, topic: "company" },
     { text: `site:finance.yahoo.co.jp/quote/${code}.T ${name} ニュース 決算 業績 配当 株主優待`, topic: "company" },
     { text: `site:irbank.net/${code} ${name} PBR PER 時価総額 キャッシュフロー`, topic: "company" },
+    { text: `site:nihon-ma.co.jp/news/ ${code} ${name} TOB MBO 非公開化 投資ファンド`, topic: "company" },
     ...normalizedBase.map((text) => ({ text, topic: "company" })),
   ];
 }
@@ -5551,7 +5643,7 @@ function jpStockEvidenceScore(item = {}, stock = {}) {
   let score = 0;
   if (code && jpEvidenceHasCode(item, code)) score += 45;
   if (hasStrongCompanyName(item, stock)) score += 18;
-  if (/kabutan\.jp|finance\.yahoo\.co\.jp|tdnet|jpx|irbank\.net|nikkei\.com|buffett-code|minkabu/.test(host)) score += 24;
+  if (/kabutan\.jp|finance\.yahoo\.co\.jp|tdnet|jpx|irbank\.net|nikkei\.com|buffett-code|minkabu|nihon-ma\.co\.jp/.test(host)) score += 24;
   if (/決算|業績|上方修正|下方修正|配当|増配|減配|株主優待|優待|権利確定|権利落ち|配当落ち|自社株買い|株主還元|中期経営|受注|営業利益|キャッシュフロー|pbr|per|ev.?ebitda|tob|mbo|大量保有|アクティビスト/i.test(text)) score += 16;
   if (item.publishedDate && isRecentSearchDate(item.publishedDate, 120)) score += 8;
   return score;
@@ -10390,9 +10482,10 @@ function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = [])
       ? {
         ...result.sourceSummary,
         strictBuyTarget: true,
-        avoidedBusiness: result.sourceSummary.avoidedBusiness || "卸売・食品、情報系ベンチャー寄りは候補から除外",
+        avoidedBusiness: result.sourceSummary.avoidedBusiness || "卸売・商社寄り、情報系ベンチャー寄りは候補から除外。食品・生活必需品は老舗ブランドや株主変化があれば確認",
         peCriteria: result.sourceSummary.peCriteria || PE_FINANCIAL_CRITERIA.map((item) => item.label),
         peTendencies: result.sourceSummary.peTendencies || PE_RECENT_TENDENCIES,
+        peLearningSources: result.sourceSummary.peLearningSources || PE_DEAL_SOURCE_URLS,
         stageStats,
         excludedCount: excludedCandidates.length,
         suggestionCount: suggestions.length,
@@ -13012,9 +13105,10 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     settingsChanged: Boolean(budget.settingsChanged),
     message: String(budget.message || ""),
     strictBuyTarget: true,
-    avoidedBusiness: "卸売・食品、情報系ベンチャー寄りは候補から除外",
+    avoidedBusiness: "卸売・商社寄り、情報系ベンチャー寄りは候補から除外。食品・生活必需品は老舗ブランドや株主変化があれば確認",
     peCriteria: PE_FINANCIAL_CRITERIA.map((item) => item.label),
     peTendencies: PE_RECENT_TENDENCIES,
+    peLearningSources: PE_DEAL_SOURCE_URLS,
     unitSize,
     unitBudget,
     unitBudgetUnlimited,

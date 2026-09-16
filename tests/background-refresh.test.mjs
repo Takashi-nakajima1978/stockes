@@ -263,6 +263,14 @@ test("detail pages show absolute dividend amounts without changing watchlist div
   assert.match(appSource, /function usPositionEditor[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
 });
 
+test("price charts show visible purchase and sale markers", () => {
+  assert.match(appSource, /function chartTradeMarkers/);
+  assert.match(appSource, /function drawChartTradeMarkers/);
+  assert.match(appSource, /drawChart\(analysis\?\.price\?\.series \|\| \[\], stock \? chartTradeMarkers\(stock\) : \[\]\)/);
+  assert.match(appSource, /renderEmbeddedPriceChart\(els\.usDetail, analysis\?\.price\?\.series \|\| \[\], usd, chartTradeMarkers\(stock\)\)/);
+  assert.match(appSource, /const label = marker\.type === "sell" \? "売" : "買"/);
+});
+
 test("dividend estimates prefer forecast annual dividend over stale trailing events", () => {
   const enrich = loadFunction(serverSource, "enrichPriceDividendForecast", {
     nullablePositiveNumber: (value) => {
@@ -306,6 +314,7 @@ test("Kadoya-style PE take-private pattern is not filtered out as food", () => {
     ],
     PE_BUYER_WORDS: ["投資ファンド", "TOB", "株主"],
     PE_DIRECT_BUYER_WORDS: ["投資ファンド", "TOB", "非公開化"],
+    PE_TAKE_PRIVATE_MOTIVE_WORDS: [],
     PE_PRIORITY_MIN_SCORE: 45,
     PE_STRONG_MIN_SCORE: 55,
     PE_RECENT_TENDENCIES: [],
@@ -336,6 +345,80 @@ test("Kadoya-style PE take-private pattern is not filtered out as food", () => {
   assert.equal(signal.reportEligible, true);
   assert.ok(signal.matchScore >= 55);
   assert.match(signal.summary, /株主構造|かどや型材料/);
+});
+
+test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
+  assert.match(serverSource, /PE_DEAL_SOURCE_URLS[\s\S]*nihon-ma\.co\.jp\/news\/keyword\/takeoverbit/);
+  assert.match(serverSource, /site:nihon-ma\.co\.jp\/news\/keyword\/takeoverbit/);
+  assert.match(serverSource, /function fetchNihonMaPeNews/);
+  assert.match(serverSource, /日本M&AセンターのTOB\/MBO実例/);
+  assert.match(appSource, /日本M&AセンターのTOB\/MBO実例も参照/);
+
+  const cleanTextForTest = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  const cleanCandidateNameForTest = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  const nihonMaTargetName = loadFunction(serverSource, "nihonMaTargetName", {
+    cleanText: cleanTextForTest,
+    cleanCandidateName: cleanCandidateNameForTest,
+  });
+  const extractNihonMaNewsResults = loadFunction(serverSource, "extractNihonMaNewsResults", {
+    URL,
+    cleanText: cleanTextForTest,
+    htmlToText: (value) => String(value || "").replace(/<[^>]+>/g, " "),
+    cleanCandidateName: cleanCandidateNameForTest,
+    nihonMaTargetName,
+  });
+  const rows = extractNihonMaNewsResults(
+    '<a href="/news/20260914_2612-5/">インテグラル傘下のITG-G HDがかどや製油にTOBへ</a>',
+    "https://www.nihon-ma.co.jp/news/",
+    5,
+  );
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].title, /かどや製油<2612>/);
+  assert.match(rows[0].snippet, /公開買付|非公開化|投資ファンド/);
+
+  const searchPeSignal = loadFunction(serverSource, "searchPeSignal", {
+    PE_CRITERIA: [
+      { key: "take_private_motive", label: "非公開化の理由が明確", words: ["中長期的な成長施策", "短期的な株価変動", "買付予定数の上限なし"], weight: 22 },
+      { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化"], weight: 20 },
+      { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益"], weight: 14 },
+    ],
+    PE_BUYER_WORDS: ["投資ファンド", "TOB", "MBO"],
+    PE_DIRECT_BUYER_WORDS: ["投資ファンド", "TOB", "MBO", "非公開化", "ベイン"],
+    PE_TAKE_PRIVATE_MOTIVE_WORDS: ["中長期的な成長施策", "短期的な株価変動", "買付予定数の上限なし"],
+    PE_PRIORITY_MIN_SCORE: 45,
+    PE_STRONG_MIN_SCORE: 55,
+    PE_RECENT_TENDENCIES: [],
+    businessContextText: (value) => String(value || "").toLowerCase(),
+    normalizeFinancialCriteria: (items) => items,
+    financialCriteriaScore: () => 45,
+    isHighChaseChart: () => false,
+    clamp: (value, min, max) => Math.min(max, Math.max(min, value)),
+    hostOf: (url) => new URL(url).hostname,
+    normalizeFinancialSnapshot: (value) => value,
+    uniqueText: (items) => [...new Set(items)],
+    peSignalSummary: (_label, _criteria, _buyerHits, options = {}) => [
+      ...(options.dealSourceHits?.length ? ["日本M&Aセンター"] : []),
+      ...(options.takePrivateMotiveHits?.length ? ["非公開化理由"] : []),
+    ].join("・"),
+  });
+  const signal = searchPeSignal(
+    { symbol: "4413.T", name: "ボードルア", sector: "IT", notes: "安定収益 ITインフラ セキュリティ" },
+    [],
+    [{
+      title: "ボードルア<4413>がMBOで非公開化へ 米ベインキャピタルがTOB",
+      snippet: "中長期的な成長施策を迅速に実行するため。短期的な株価変動に左右されない体制へ。買付予定数の上限なし。",
+      url: "https://www.nihon-ma.co.jp/news/20260819_4413-24/",
+    }],
+    { criteria: [
+      { key: "market_cap", label: "時価総額", status: "pass", summary: "対象範囲" },
+      { key: "operating_cf", label: "営業CF", status: "pass", summary: "プラス" },
+      { key: "net_cash", label: "ネットキャッシュ", status: "watch", summary: "一定あり" },
+      { key: "pbr", label: "PBR", status: "watch", summary: "確認" },
+    ] },
+  );
+  assert.equal(signal.reportEligible, true);
+  assert.ok(signal.matchScore >= 65);
+  assert.match(signal.summary, /日本M&Aセンター|非公開化理由/);
 });
 
 test("slow Japan refresh does not delay US or crypto, or depend on AI job state", async () => {
