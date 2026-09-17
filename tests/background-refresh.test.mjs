@@ -271,6 +271,16 @@ test("price charts show visible purchase and sale markers", () => {
   assert.match(appSource, /const label = marker\.type === "sell" \? "売" : "買"/);
 });
 
+test("mobile position entry is not closed by keyboard resize or background refresh", () => {
+  assert.match(appSource, /const DETAIL_FORM_EDIT_HOLD_MS = 8000/);
+  assert.match(appSource, /function attachDetailFormEditGuard/);
+  assert.match(appSource, /window\.addEventListener\("resize", \(\) => \{[\s\S]*if \(isDetailFormEditing\(\)\) return;[\s\S]*renderSelection\(\);[\s\S]*\}\)/);
+  assert.match(appSource, /if \(!isDetailFormEditing\(\) && !document\.activeElement\?\.closest\("form"\)\) renderSelection\(\)/);
+  assert.match(appSource, /function attachPositionForm\(symbol\)[\s\S]*attachDetailFormEditGuard\(form\)/);
+  assert.match(appSource, /function attachUsPositionForm\(symbol\)[\s\S]*attachDetailFormEditGuard\(form\)/);
+  assert.match(appSource, /function attachCryptoPositionForm\(\)[\s\S]*attachDetailFormEditGuard\(form\)/);
+});
+
 test("dividend estimates prefer forecast annual dividend over stale trailing events", () => {
   const enrich = loadFunction(serverSource, "enrichPriceDividendForecast", {
     nullablePositiveNumber: (value) => {

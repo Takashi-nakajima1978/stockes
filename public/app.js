@@ -63,6 +63,9 @@ const reorderState = {
   moved: false,
 };
 
+const DETAIL_FORM_EDIT_HOLD_MS = 8000;
+let detailFormEditHoldUntil = 0;
+
 const els = {
   viewButtons: [...document.querySelectorAll("[data-view-target]")],
   viewPanels: [...document.querySelectorAll("[data-view]")],
@@ -455,7 +458,7 @@ async function loadAnalysisCache(background = false) {
     renderTable();
     renderProfitSummary();
     renderSummary();
-    if (!document.activeElement?.closest("form")) renderSelection();
+    if (!isDetailFormEditing() && !document.activeElement?.closest("form")) renderSelection();
   } else render();
 }
 
@@ -466,7 +469,7 @@ async function loadUsAnalysisCache(background = false) {
   if (background) {
     renderUsSummary();
     renderUsTable();
-    if (!document.activeElement?.closest("form")) renderUsDetail();
+    if (!isDetailFormEditing() && !document.activeElement?.closest("form")) renderUsDetail();
   } else renderUs();
 }
 
@@ -474,7 +477,7 @@ async function loadCrypto(background = false) {
   const payload = await request("/api/crypto");
   if (background && !acceptBackgroundCache("crypto", payload)) return;
   applyCryptoPayload(payload);
-  if (!background || !document.activeElement?.closest("form")) renderCrypto();
+  if (!background || (!isDetailFormEditing() && !document.activeElement?.closest("form"))) renderCrypto();
 }
 
 const backgroundCacheVersions = new Map();
@@ -610,6 +613,29 @@ function render() {
   safeRender("米国株分析ジョブ", renderUsAnalysisJob);
   safeRender("米国株", renderUs);
   safeRender("BTC・為替", renderCrypto);
+}
+
+function noteDetailFormEdit() {
+  detailFormEditHoldUntil = Date.now() + DETAIL_FORM_EDIT_HOLD_MS;
+}
+
+function clearDetailFormEdit() {
+  detailFormEditHoldUntil = 0;
+}
+
+function activeDetailForm() {
+  return document.activeElement?.closest?.("#positionForm, #usPositionForm, #cryptoPositionForm, .position-form") || null;
+}
+
+function isDetailFormEditing() {
+  return Boolean(activeDetailForm()) || Date.now() < detailFormEditHoldUntil;
+}
+
+function attachDetailFormEditGuard(form) {
+  if (!form) return;
+  ["pointerdown", "touchstart", "focusin", "input", "change"].forEach((eventName) => {
+    form.addEventListener(eventName, noteDetailFormEdit, { passive: true });
+  });
 }
 
 function safeRender(label, fn) {
@@ -1431,6 +1457,7 @@ function cryptoSaleRow(lot = {}) {
 function attachCryptoPositionForm() {
   const form = document.getElementById("cryptoPositionForm");
   if (!form) return;
+  attachDetailFormEditGuard(form);
   form.querySelector("[data-add-crypto-lot]")?.addEventListener("click", () => {
     form.querySelector(".crypto-lot-list")?.insertAdjacentHTML("beforeend", cryptoLotRow());
   });
@@ -1467,6 +1494,7 @@ function attachCryptoPositionForm() {
       });
       applyCryptoPayload(saved);
       toast("BTCの保有情報を保存しました。");
+      clearDetailFormEdit();
       await analyzeCrypto({ source: "save" });
     } catch (error) {
       toast(error.message);
@@ -1822,6 +1850,7 @@ function usPositionEditor(stock, position, price = {}) {
 function attachUsPositionForm(symbol) {
   const form = document.getElementById("usPositionForm");
   if (!form) return;
+  attachDetailFormEditGuard(form);
   form.querySelector("[data-add-lot]")?.addEventListener("click", () => {
     const list = form.querySelector(".lot-list");
     list.insertAdjacentHTML("beforeend", lotRow({ purchaseDate: "", purchasePrice: null, quantity: null }));
@@ -1862,6 +1891,7 @@ function attachUsPositionForm(symbol) {
       state.usStocks = result.stocks || [];
       state.usSummary = null;
       toast("米国株の保有情報を保存しました。");
+      clearDetailFormEdit();
       renderUs();
     } catch (error) {
       toast(error.message);
@@ -4281,6 +4311,7 @@ function positionEditor(stock, position, analysis) {
 function attachPositionForm(symbol) {
   const form = document.getElementById("positionForm");
   if (!form) return;
+  attachDetailFormEditGuard(form);
   form.querySelector("[data-add-lot]")?.addEventListener("click", () => {
     const list = form.querySelector(".lot-list");
     list.insertAdjacentHTML("beforeend", lotRow({ purchaseDate: "", purchasePrice: null, quantity: null, accountType: defaultJpAccountType() }, { accountType: true }));
@@ -4326,6 +4357,7 @@ function attachPositionForm(symbol) {
       });
       state.stocks = result.stocks;
       toast("保有情報を保存しました。分析更新で損益・配当・判定に反映されます。");
+      clearDetailFormEdit();
       render();
     } catch (error) {
       toast(error.message);
@@ -5534,7 +5566,10 @@ els.financialCheckButton?.addEventListener("click", checkFinancials);
 els.testNotificationButton?.addEventListener("click", testNotification);
 els.chart?.addEventListener("pointermove", updateChartHover);
 els.chart?.addEventListener("pointerleave", clearChartHover);
-window.addEventListener("resize", () => renderSelection());
+window.addEventListener("resize", () => {
+  if (isDetailFormEditing()) return;
+  renderSelection();
+});
 
 await loadInitialData();
 void refreshAfterBrowserReload();
