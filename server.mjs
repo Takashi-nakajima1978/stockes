@@ -9643,8 +9643,10 @@ function resolveMinimumHoldQuantity(stock, quantity) {
 function positionMetrics(stock, price = {}) {
   const positions = normalizePositions(stock);
   const sales = normalizeSales(stock);
-  const aggregate = aggregatePositions(positions);
-  const lotState = positionLotState(positions, sales);
+  const activePositions = currentCyclePositions(positions, sales);
+  const activeSales = currentCycleSales(positions, sales);
+  const aggregate = aggregatePositions(activePositions);
+  const lotState = positionLotState(activePositions, activeSales);
   const grossQuantity = aggregate.quantity || 0;
   const grossInvested = aggregate.invested || 0;
   const soldQuantity = lotState.soldQuantity || 0;
@@ -9655,7 +9657,7 @@ function positionMetrics(stock, price = {}) {
     : aggregate.purchasePrice;
   const realizedProceeds = lotState.realizedProceeds || null;
   const realizedCost = lotState.realizedCost || 0;
-  const salesAggregate = aggregateSales(currentCycleSales(positions, sales, remainingQuantity));
+  const salesAggregate = aggregateSales(activeSales);
   const averageSellPrice = salesAggregate.sellPrice;
   const realizedPnlAmount = Number.isFinite(realizedProceeds) && Number.isFinite(realizedCost) && soldQuantity
     ? realizedProceeds - realizedCost
@@ -9669,7 +9671,10 @@ function positionMetrics(stock, price = {}) {
   const pnlAmount = pnlParts.length ? pnlParts.reduce((sum, value) => sum + value, 0) : null;
   const pnlPct = grossInvested && Number.isFinite(pnlAmount) ? (pnlAmount / grossInvested) * 100 : null;
   const marketValue = current && remainingQuantity ? current * remainingQuantity : null;
-  const dividendReceived = dividendsForPositionHistory(positions, sales, price.dividendEvents || []);
+  const dividendReceived = dividendsForPositionHistory(activePositions, activeSales, price.dividendEvents || [], {
+    symbol: stock.symbol,
+    market: stock.market,
+  });
   const annualPerShare = annualDividendPerShare(price);
   const annualDividendEstimate = annualPerShare && remainingQuantity
     ? annualPerShare * remainingQuantity
@@ -9862,21 +9867,106 @@ function cryptoPortfolioSummary(position = {}) {
   };
 }
 
-function dividendsForPositionHistory(positions, sales, dividendEvents = []) {
+function dividendsForPositionHistory(positions, sales, dividendEvents = [], context = {}) {
+  const market = dividendMarket(context);
   return dividendEvents.reduce((sum, event) => {
-    const eventTime = event.date ? new Date(`${event.date}T00:00:00`).getTime() : null;
-    const amount = Number(event.amount);
-    if (!Number.isFinite(eventTime) || !Number.isFinite(amount)) return sum;
+    const entitlement = dividendEntitlementEvent(event, market);
+    if (!entitlement) return sum;
+    const cutoffTime = dividendDateTime(entitlement.cutoffDate);
+    const amount = Number(entitlement.amount);
+    if (!Number.isFinite(cutoffTime) || !Number.isFinite(amount)) return sum;
     const bought = positions.reduce((qty, lot) => {
-      const time = lot.purchaseDate ? new Date(`${lot.purchaseDate}T00:00:00`).getTime() : -Infinity;
-      return Number.isFinite(time) && time <= eventTime ? qty + lot.quantity : qty;
+      const time = dividendDateTime(lot.purchaseDate) ?? -Infinity;
+      return Number.isFinite(time) && time <= cutoffTime ? qty + lot.quantity : qty;
     }, 0);
     const sold = sales.reduce((qty, lot) => {
-      const time = lot.sellDate ? new Date(`${lot.sellDate}T00:00:00`).getTime() : Infinity;
-      return Number.isFinite(time) && time <= eventTime ? qty + lot.quantity : qty;
+      const time = dividendDateTime(lot.sellDate) ?? Infinity;
+      return Number.isFinite(time) && time <= cutoffTime ? qty + lot.quantity : qty;
     }, 0);
     return sum + (Math.max(0, bought - sold) * amount);
   }, 0);
+}
+
+function dividendEntitlementEvent(event = {}, market = "JP") {
+  const amount = Number(event.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const eventDate = dividendDate(event.date);
+  const explicitExDate = dividendDate(event.exDividendDate || event.exDate);
+  const recordDate = dividendDate(event.recordDate);
+  const role = String(event.dateRole || event.role || "").toLowerCase();
+  const isJapan = market === "JP";
+
+  if (recordDate || role.includes("record")) {
+    const basisDate = recordDate || eventDate;
+    if (!basisDate) return null;
+    return {
+      amount,
+      basis: "record_date",
+      basisDate,
+      cutoffDate: shiftBusinessDays(basisDate, isJapan ? -2 : -1),
+    };
+  }
+
+  if (!explicitExDate && isJapan && eventDate && isCalendarMonthEnd(eventDate)) {
+    return {
+      amount,
+      basis: "estimated_record_date",
+      basisDate: eventDate,
+      cutoffDate: shiftBusinessDays(eventDate, -2),
+    };
+  }
+
+  const exDate = explicitExDate || eventDate;
+  if (!exDate) return null;
+  return {
+    amount,
+    basis: explicitExDate ? "ex_dividend_date" : "event_ex_dividend_date",
+    basisDate: exDate,
+    cutoffDate: shiftBusinessDays(exDate, -1),
+  };
+}
+
+function dividendMarket(context = {}) {
+  const symbol = String(context.symbol || "").toUpperCase();
+  const market = String(context.market || "").toUpperCase();
+  if (symbol.endsWith(".T") || market.includes("東") || market === "JP") return "JP";
+  return "US";
+}
+
+function dividendDate(value = "") {
+  const text = String(value || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
+  const date = new Date(`${text}T00:00:00Z`);
+  return Number.isNaN(date.getTime()) ? "" : text;
+}
+
+function dividendDateTime(value = "") {
+  const ymd = dividendDate(value);
+  if (!ymd) return null;
+  const time = new Date(`${ymd}T00:00:00Z`).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function shiftBusinessDays(value = "", offset = 0) {
+  const ymd = dividendDate(value);
+  if (!ymd) return "";
+  const date = new Date(`${ymd}T00:00:00Z`);
+  const direction = offset >= 0 ? 1 : -1;
+  let remaining = Math.abs(offset);
+  while (remaining > 0) {
+    date.setUTCDate(date.getUTCDate() + direction);
+    const day = date.getUTCDay();
+    if (day !== 0 && day !== 6) remaining -= 1;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function isCalendarMonthEnd(value = "") {
+  const ymd = dividendDate(value);
+  if (!ymd) return false;
+  const date = new Date(`${ymd}T00:00:00Z`);
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  return date.getUTCDate() === lastDay;
 }
 
 function evaluateEntryPrice(targetBuyPrice, price = {}) {
@@ -10034,6 +10124,14 @@ function aggregateSales(sales) {
     quantity: quantity || null,
     proceeds: proceeds || null,
   };
+}
+
+function currentCyclePositions(positions = [], sales = []) {
+  const resetDate = lastZeroPositionDate(positions, sales);
+  if (!resetDate) return positions;
+  const hasBuyAfterReset = positions.some((lot) => lot.purchaseDate && lot.purchaseDate > resetDate);
+  if (!hasBuyAfterReset) return positions;
+  return positions.filter((lot) => lot.purchaseDate && lot.purchaseDate > resetDate);
 }
 
 function currentCycleSales(positions = [], sales = [], remainingQuantity = 0) {

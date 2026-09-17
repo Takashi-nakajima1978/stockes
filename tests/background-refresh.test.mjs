@@ -16,6 +16,14 @@ function loadFunction(source, name, globals) {
   return vm.runInNewContext(`${source.slice(start, end)}; ${name}`, globals);
 }
 
+function loadFunctionBlock(source, name, endName, globals = {}) {
+  const start = source.search(new RegExp(`^function ${name}\\(`, "m"));
+  assert.notEqual(start, -1);
+  const end = source.search(new RegExp(`^function ${endName}\\(`, "m"));
+  assert.ok(end > start);
+  return vm.runInNewContext(`${source.slice(start, end)}; ${name}`, globals);
+}
+
 test("overlapping refreshes share work and can retry after a failure", async () => {
   const run = createSingleFlight();
   let release;
@@ -307,6 +315,43 @@ test("dividend estimates prefer forecast annual dividend over stale trailing eve
   assert.match(serverSource, /const anchorTime = Date\.now\(\)/);
   assert.match(serverSource, /includeDividendForecast: true/);
   assert.match(appSource, /function annualDividendPerShare/);
+});
+
+test("dividend-included return uses rights/ex-dividend entitlement dates", () => {
+  const serverDividends = loadFunctionBlock(serverSource, "dividendsForPositionHistory", "evaluateEntryPrice");
+  const appDividends = loadFunctionBlock(appSource, "dividendsForPositionHistory", "positionPnl");
+  for (const dividends of [serverDividends, appDividends]) {
+    assert.equal(dividends(
+      [{ purchaseDate: "2026-03-27", purchasePrice: 1000, quantity: 100 }],
+      [],
+      [{ date: "2026-03-31", amount: 30 }],
+      { symbol: "9005.T" },
+    ), 3000);
+    assert.equal(dividends(
+      [{ purchaseDate: "2026-03-30", purchasePrice: 1000, quantity: 100 }],
+      [],
+      [{ date: "2026-03-31", amount: 30 }],
+      { symbol: "9005.T" },
+    ), 0);
+    assert.equal(dividends(
+      [{ purchaseDate: "2026-03-20", purchasePrice: 1000, quantity: 100 }],
+      [{ sellDate: "2026-03-27", sellPrice: 1000, quantity: 100 }],
+      [{ date: "2026-03-31", amount: 30 }],
+      { symbol: "9005.T" },
+    ), 0);
+    assert.equal(dividends(
+      [{ purchaseDate: "2026-07-08", purchasePrice: 40, quantity: 10 }],
+      [{ sellDate: "2026-07-09", sellPrice: 40, quantity: 10 }],
+      [{ exDividendDate: "2026-07-09", amount: 1.5 }],
+      { symbol: "NKE", market: "NYSE" },
+    ), 15);
+    assert.equal(dividends(
+      [{ purchaseDate: "2026-07-09", purchasePrice: 40, quantity: 10 }],
+      [],
+      [{ exDividendDate: "2026-07-09", amount: 1.5 }],
+      { symbol: "NKE", market: "NYSE" },
+    ), 0);
+  }
 });
 
 test("Kadoya-style PE take-private pattern is not filtered out as food", () => {
