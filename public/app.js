@@ -1842,6 +1842,7 @@ function usPositionEditor(stock, position, price = {}) {
         <span><strong>残り元本</strong>${usd(metrics.invested)}</span>
         <span><strong>評価額</strong>${usd(metrics.marketValue)}</span>
       </div>
+      ${priceReservationEditor(stock, usd, "予約価格 USD")}
       <button type="submit">保存</button>
     </form>
   `;
@@ -1883,6 +1884,7 @@ function attachUsPositionForm(symbol) {
         holding: form.elements.holding.checked,
         positions: readLotRows(form),
         sales: readSaleRows(form),
+        priceReservation: readPriceReservation(form),
       };
       const result = await request(`/api/us-stocks/${encodeURIComponent(symbol)}`, {
         method: "PATCH",
@@ -4400,6 +4402,8 @@ function positionEditor(stock, position, analysis) {
         <span><strong>残す株数</strong>${metrics.minimumHoldQuantity ? `${metrics.minimumHoldQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
         <span><strong>判定対象</strong>${metrics.sellableQuantity ? `${metrics.sellableQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
       </div>
+      ${priceReservationEditor(stock, yen, "予約価格")}
+      ${jpAccountRecommendationHtml(stock, analysis, metrics)}
       <button type="submit">保存</button>
     </form>
   `;
@@ -4447,6 +4451,7 @@ function attachPositionForm(symbol) {
         sales: readSaleRows(form),
         targetBuyPrice: valueOrNull(form.elements.targetBuyPrice.value),
         minimumHoldQuantity: valueOrZero(form.elements.minimumHoldQuantity.value),
+        priceReservation: readPriceReservation(form),
       };
       const result = await request(`/api/stocks/${encodeURIComponent(symbol)}`, {
         method: "PATCH",
@@ -5406,6 +5411,168 @@ function readSaleRows(form) {
     }))
     .filter((lot) => lot.sellPrice && lot.quantity)
     .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99"));
+}
+
+function priceReservationEditor(stock, formatter = yen, priceLabel = "予約価格") {
+  const reservation = priceReservationValue(stock);
+  return `
+    <div class="price-reservation" aria-label="価格予約">
+      <div class="reservation-title">
+        <strong>価格予約</strong>
+        <span>証券口座で入れた指値や予約注文を控える欄です。</span>
+      </div>
+      <div class="reservation-grid">
+        <label>
+          <span>種類</span>
+          <select name="reservationSide">
+            ${reservationSideOptions(reservation.side)}
+          </select>
+        </label>
+        <label>
+          <span>${escapeHtml(priceLabel)}</span>
+          <input name="reservationPrice" type="number" min="0" step="0.01" value="${numberValue(reservation.price)}" placeholder="例: 2500">
+        </label>
+        <label>
+          <span>株数</span>
+          <input name="reservationQuantity" type="number" min="0" step="0.0001" value="${numberValue(reservation.quantity)}" placeholder="例: 100">
+        </label>
+        <label>
+          <span>期限</span>
+          <input name="reservationExpiresAt" type="date" value="${escapeAttr(reservation.expiresAt)}">
+        </label>
+        <label class="reservation-note">
+          <span>メモ</span>
+          <input name="reservationNote" type="text" maxlength="80" value="${escapeAttr(reservation.note)}" placeholder="例: 決算後に見直し">
+        </label>
+      </div>
+      <div class="reservation-summary">
+        <strong>現在の予約</strong>
+        <span>${escapeHtml(priceReservationSummary(reservation, formatter))}</span>
+      </div>
+    </div>
+  `;
+}
+
+function priceReservationValue(stock = {}) {
+  const source = stock.priceReservation || {};
+  const side = ["buy", "sell"].includes(source.side) ? source.side : "";
+  return {
+    side,
+    price: finiteOrNull(source.price),
+    quantity: finiteOrNull(source.quantity),
+    expiresAt: dateInputValue(source.expiresAt),
+    note: String(source.note || "").trim().slice(0, 80),
+  };
+}
+
+function reservationSideOptions(selected = "") {
+  return [
+    ["", "未設定"],
+    ["buy", "買い予約"],
+    ["sell", "売り予約"],
+  ].map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("");
+}
+
+function reservationSideLabel(value = "") {
+  return value === "buy" ? "買い予約" : value === "sell" ? "売り予約" : "";
+}
+
+function priceReservationSummary(reservation, formatter = yen) {
+  const parts = [];
+  const side = reservationSideLabel(reservation.side);
+  if (side) parts.push(side);
+  if (Number.isFinite(reservation.price)) parts.push(formatter(reservation.price));
+  if (Number.isFinite(reservation.quantity)) parts.push(shareCount(reservation.quantity));
+  if (reservation.expiresAt) parts.push(`${reservation.expiresAt}まで`);
+  if (reservation.note) parts.push(reservation.note);
+  return parts.length ? parts.join(" / ") : "未入力";
+}
+
+function readPriceReservation(form) {
+  if (!form.elements.reservationSide) return null;
+  const side = ["buy", "sell"].includes(form.elements.reservationSide.value) ? form.elements.reservationSide.value : "";
+  const reservation = {
+    side,
+    price: valueOrNull(form.elements.reservationPrice.value),
+    quantity: valueOrNull(form.elements.reservationQuantity.value),
+    expiresAt: dateInputValue(form.elements.reservationExpiresAt.value),
+    note: String(form.elements.reservationNote.value || "").trim().slice(0, 80),
+  };
+  return reservation.side || reservation.price || reservation.quantity || reservation.expiresAt || reservation.note
+    ? reservation
+    : null;
+}
+
+function jpAccountRecommendationHtml(stock = {}, analysis = {}, metrics = {}) {
+  const recommendation = jpAccountRecommendation(stock, analysis, metrics);
+  return `
+    <div class="account-recommendation ${recommendation.level}">
+      <div class="reservation-title">
+        <strong>NISA / 一般・特定の目安</strong>
+        <span>${escapeHtml(recommendation.badge)}</span>
+      </div>
+      <p>${escapeHtml(recommendation.summary)}</p>
+      <div class="recommendation-metrics">
+        <span><strong>判定額</strong>${recommendation.orderAmount ? yen(recommendation.orderAmount) : "-"}</span>
+        <span><strong>今年の残り枠</strong>${yen(recommendation.allowance.nisaYearRemaining)}</span>
+        <span><strong>生涯の残り枠</strong>${yen(recommendation.allowance.nisaLifetimeRemaining)}</span>
+      </div>
+      <div class="recommendation-reasons">
+        ${recommendation.reasons.map((reason) => `<span>${escapeHtml(reason)}</span>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function jpAccountRecommendation(stock = {}, analysis = {}, metrics = {}) {
+  const allowance = nisaAllowanceSummary();
+  const reservation = priceReservationValue(stock);
+  const targetPrice = finiteOrNull(stock.targetBuyPrice);
+  const currentPrice = finiteOrNull(analysis?.price?.current);
+  const unitPrice = reservation.side === "buy" && reservation.price
+    ? reservation.price
+    : targetPrice || currentPrice;
+  const quantity = reservation.side === "buy" && reservation.quantity
+    ? reservation.quantity
+    : 100;
+  const orderAmount = unitPrice && quantity ? unitPrice * quantity : null;
+  const remaining = allowance.nisaRemaining;
+  const exitLevel = String(analysis?.exitPlan?.alertLevel || analysis?.growthExit?.level || analysis?.ai?.growthExit?.level || "").toLowerCase();
+  const sellSoon = exitLevel === "exit_alert" || exitLevel === "watch";
+  const sellReservation = reservation.side === "sell";
+  const fitsNisa = Number.isFinite(orderAmount) && orderAmount > 0 && orderAmount <= remaining;
+  const reasons = [];
+  if (sellReservation) reasons.push("売り予約が入っているため、追加購入は急がず確認します。");
+  if (sellSoon) reasons.push("出口ルールが見直し寄りなので、非課税枠を使う前に保有理由を確認します。");
+  if (!orderAmount) reasons.push("予約価格または買いたい価格が未入力なので、概算額は未判定です。");
+  if (orderAmount && !fitsNisa) reasons.push(`想定額が残りNISA枠${yen(remaining)}を超えます。`);
+  if (fitsNisa) reasons.push("今年の成長投資枠と生涯枠の両方に収まります。");
+  const dividendYield = finiteOrNull(analysis?.price?.dividendYield);
+  if (fitsNisa && dividendYield && dividendYield >= 2) reasons.push(`配当利回り${dividendYield.toFixed(1)}%なので、配当非課税の効果もあります。`);
+  const recommendNisa = fitsNisa && !sellSoon && !sellReservation;
+  if (recommendNisa) {
+    return {
+      level: "good",
+      badge: "NISA候補",
+      summary: "長めに持つ前提ならNISAを優先してよい候補です。短期で売る予定が出たら一般/特定に切り替えて見ます。",
+      orderAmount,
+      allowance,
+      reasons,
+    };
+  }
+  return {
+    level: "watch",
+    badge: "一般/特定を優先",
+    summary: "短期で売る可能性や枠不足があるため、まず一般/特定で見た方が無難です。",
+    orderAmount,
+    allowance,
+    reasons,
+  };
+}
+
+function dateInputValue(value = "") {
+  const text = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
 }
 
 function readCryptoLotRows(form) {

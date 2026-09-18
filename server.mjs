@@ -260,6 +260,17 @@ const JP_SECTOR_BY_SYMBOL = {
   "9936.T": "外食",
   "9984.T": "投資",
 };
+const JP_COMPANY_ALIASES_BY_SYMBOL = {
+  "4755.T": ["楽天グループ", "楽天", "Rakuten Group", "Rakuten"],
+  "9005.T": ["東急", "東急株式会社", "Tokyu"],
+  "9201.T": ["日本航空", "JAL", "Japan Airlines"],
+  "9432.T": ["日本電信電話", "NTT"],
+  "9434.T": ["ソフトバンク", "SoftBank"],
+  "7203.T": ["トヨタ自動車", "トヨタ", "Toyota"],
+  "6804.T": ["ホシデン", "Hosiden"],
+  "8111.T": ["ゴールドウイン", "ゴールドウィン", "Goldwin"],
+  "5930.T": ["文化シヤッター", "文化シャッター", "Bunka Shutter"],
+};
 const JP_SECTOR_NAME_ALIASES = {
   "水産・農林業": "食品",
   "鉱業": "資源",
@@ -946,6 +957,7 @@ async function handleApi(req, res, url) {
       sales: body.sales,
       minimumHoldQuantity: body.minimumHoldQuantity,
       targetBuyPrice: body.targetBuyPrice,
+      priceReservation: body.priceReservation,
     });
     stocks.push(stock);
     await saveWatchlist(stocks);
@@ -1024,6 +1036,7 @@ async function handleApi(req, res, url) {
       accountType: body.accountType,
       positions: body.positions,
       sales: body.sales,
+      priceReservation: body.priceReservation,
     });
     stocks.push(stock);
     await saveUsWatchlist(stocks);
@@ -1052,6 +1065,7 @@ async function handleApi(req, res, url) {
       sales: body.sales,
       minimumHoldQuantity: body.minimumHoldQuantity,
       targetBuyPrice: body.targetBuyPrice,
+      priceReservation: body.priceReservation,
     });
     await saveWatchlist(stocks);
     return json(res, 200, { stock: stocks[index], stocks });
@@ -1068,6 +1082,7 @@ async function handleApi(req, res, url) {
       holding: Boolean(body.holding),
       positions: body.positions,
       sales: body.sales,
+      priceReservation: body.priceReservation,
     });
     await saveUsWatchlist(stocks);
     return json(res, 200, { stock: stocks[index], stocks });
@@ -5580,23 +5595,24 @@ function relevantSearchResults(candidate, results) {
 function jpStockEvidenceQueries(stock = {}) {
   const code = jpStockCode(stock.symbol);
   const name = stock.name || code;
+  const officialName = preferredJpCompanyName(stock) || name;
   const sector = stockSector(stock);
   const base = [
-    `${code} ${name} 株価 ニュース 決算 業績予想 事業変化 配当 株主優待 Yahoo 株探`,
-    `${code} ${name} 決算後 急落 失望売り 自社株買いなし 増配なし 株主還元`,
-    `${code} ${name} 中期経営計画 受注 利益率 ガイダンス 上方修正 下方修正 TDnet`,
-    `${code} ${name} 時価総額 PBR PER EV EBITDA ネットキャッシュ 営業キャッシュフロー`,
-    `${code} ${name} 信用倍率 空売り 需給 大量保有 アクティビスト TOB MBO PEファンド`,
-    `${code} ${name} 株主優待 配当 権利確定 権利落ち 配当落ち`,
-    sector && sector !== "その他" ? `${code} ${name} ${sector} 事業環境 業界動向 需要 競合 為替` : "",
+    `${code} ${officialName} ${name} 株価 ニュース 決算 業績予想 事業変化 配当 株主優待 Yahoo 株探`,
+    `${code} ${officialName} 決算後 急落 失望売り 自社株買いなし 増配なし 株主還元`,
+    `${code} ${officialName} 中期経営計画 受注 利益率 ガイダンス 上方修正 下方修正 TDnet`,
+    `${code} ${officialName} 時価総額 PBR PER EV EBITDA ネットキャッシュ 営業キャッシュフロー`,
+    `${code} ${officialName} 信用倍率 空売り 需給 大量保有 アクティビスト TOB MBO PEファンド`,
+    `${code} ${officialName} 株主優待 配当 権利確定 権利落ち 配当落ち`,
+    sector && sector !== "その他" ? `${code} ${officialName} ${sector} 事業環境 業界動向 需要 競合 為替` : "",
   ];
   const normalizedBase = base.filter(Boolean);
   if (!code) return normalizedBase.map((text) => ({ text: text.trim(), topic: "company" }));
   return [
-    { text: `site:kabutan.jp/stock/news?code=${code} ${name} 決算 業績 配当 自社株買い`, topic: "company" },
-    { text: `site:finance.yahoo.co.jp/quote/${code}.T ${name} ニュース 決算 業績 配当 株主優待`, topic: "company" },
-    { text: `site:irbank.net/${code} ${name} PBR PER 時価総額 キャッシュフロー`, topic: "company" },
-    { text: `site:nihon-ma.co.jp/news/ ${code} ${name} TOB MBO 非公開化 投資ファンド`, topic: "company" },
+    { text: `site:kabutan.jp/stock/news?code=${code} ${officialName} 決算 業績 配当 自社株買い`, topic: "company" },
+    { text: `site:finance.yahoo.co.jp/quote/${code}.T ${officialName} ニュース 決算 業績 配当 株主優待`, topic: "company" },
+    { text: `site:irbank.net/${code} ${officialName} PBR PER 時価総額 キャッシュフロー`, topic: "company" },
+    { text: `site:nihon-ma.co.jp/news/ ${code} ${officialName} TOB MBO 非公開化 投資ファンド`, topic: "company" },
     ...normalizedBase.map((text) => ({ text, topic: "company" })),
   ];
 }
@@ -5607,9 +5623,11 @@ async function searchJpStockEvidence(stock = {}, websiteLimit = 20) {
   const pages = await mapLimit(queries, 2, async (query) => (
     searchGoogle(query.text, { limit: perQueryLimit, language: "ja-JP" }).catch(() => [])
   ));
-  return uniqueBy(pages.flat(), (item) => item.url)
+  const filtered = uniqueBy(pages.flat(), (item) => item.url)
     .filter((item) => isJpStockSpecificEvidence(item, stock))
     .sort((a, b) => jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock))
+    .slice(0, websiteLimit);
+  return uniqueBy([...filtered, ...jpStockFallbackEvidence(stock)], (item) => item.url)
     .slice(0, websiteLimit)
     .map((item, index) => ({ ...item, rank: index + 1 }));
 }
@@ -5621,6 +5639,30 @@ function isJapaneseListedSymbol(symbol = "") {
 function jpStockCode(symbol = "") {
   const match = String(symbol || "").toUpperCase().match(/(\d{4})(?:\.T)?/);
   return match ? match[1] : "";
+}
+
+function jpStockFallbackEvidence(stock = {}) {
+  const code = jpStockCode(stock.symbol);
+  if (!code) return [];
+  const name = preferredJpCompanyName(stock) || stock.name || code;
+  return [
+    {
+      title: `${name} 株探ニュース一覧`,
+      snippet: "決算、適時開示、業績修正、配当、自社株買いなどの株価材料を確認するためのニュース一覧です。",
+      url: `https://kabutan.jp/stock/news?code=${code}`,
+      source: "kabutan.jp",
+      publishedDate: "",
+      fallback: true,
+    },
+    {
+      title: `${name} Yahoo株ニュース一覧`,
+      snippet: "企業ニュース、決算、株価材料、掲示板ではなくニュース欄を確認するためのリンクです。",
+      url: `https://finance.yahoo.co.jp/quote/${code}.T/news`,
+      source: "finance.yahoo.co.jp",
+      publishedDate: "",
+      fallback: true,
+    },
+  ];
 }
 
 function isJpStockSpecificEvidence(item = {}, stock = {}) {
@@ -5654,7 +5696,7 @@ function jpEvidenceHasCode(item = {}, code = "") {
   const raw = `${item.title || ""} ${item.snippet || ""} ${item.url || ""}`;
   const normalized = raw.toLowerCase();
   const escaped = escapeRegExp(code);
-  return new RegExp(`(^|[^0-9])${escaped}(\\.t|[^0-9]|$)`, "i").test(raw)
+  return new RegExp(`(^|[^0-9a-z])${escaped}(\\.t|[^0-9a-z]|$)`, "i").test(raw)
     || new RegExp(`(code|quote|stock|stocks|symbol|銘柄コード|証券コード)[=/._-]*${escaped}`, "i").test(normalized)
     || normalized.includes(`/quote/${code}.t`)
     || normalized.includes(`code=${code}`)
@@ -5684,13 +5726,20 @@ function hasStrongCompanyName(item = {}, stock = {}) {
 }
 
 function jpCompanyAliases(stock = {}) {
+  const symbol = normalizeSymbol(stock.symbol || "");
   const rawValues = [
+    ...(JP_COMPANY_ALIASES_BY_SYMBOL[symbol] || []),
     stock.name,
     stock.shortName,
     stock.longName,
     ...(Array.isArray(stock.aliases) ? stock.aliases : []),
   ];
   return uniqueText(rawValues.map(normalizeCompanyKey).filter((value) => value.length >= 3));
+}
+
+function preferredJpCompanyName(stock = {}) {
+  const symbol = normalizeSymbol(stock.symbol || "");
+  return JP_COMPANY_ALIASES_BY_SYMBOL[symbol]?.[0] || stock.longName || stock.name || "";
 }
 
 function normalizeCompanyKey(value = "") {
@@ -5715,8 +5764,10 @@ function normalizeCompanyKey(value = "") {
 function isLowValueStockEvidence(item = {}, url = "") {
   const titleAndUrl = cleanText(`${item.title || ""} ${url}`).toLowerCase();
   const haystack = cleanText(`${item.title || ""} ${item.snippet || ""} ${url}`).toLowerCase();
+  const hasMarketContext = /株価|株式|銘柄|証券コード|決算|業績|配当|投資|ir|tdnet|pbr|per|market cap|earnings|dividend|stock/i.test(haystack);
   if (/porn|casino|betting|download|crack|torrent|login|sign in/.test(haystack)) return true;
   if (/careers?|jobs?|採用|求人|転職|ログイン|社員用|myappid|linkedin|wikipedia|facebook|instagram|youtube|x\.com|twitter/.test(titleAndUrl)) return true;
+  if (!hasMarketContext && /manual|support|setup|printer|driver|tr\d{4}|ij\.manual|ij\.start|サポート|マニュアル|取扱説明書|セットアップ|プリンタ|プリンター|ドライバ/.test(haystack)) return true;
   return false;
 }
 
@@ -6246,12 +6297,13 @@ async function researchStock(stock, options) {
     .filter((item) => item.topic !== "sector")
     .filter((item) => isJpStockSpecificEvidence(item, stock))
     .sort((a, b) => jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock)), (item) => item.url);
+  const companyEvidence = uniqueBy([...companyResults, ...jpStockFallbackEvidence(stock)], (item) => item.url);
   const sectorResults = uniqueBy(searchResults
     .filter((item) => item.topic === "sector")
     .filter((item) => isRelevantSectorEvidence(item, sector, stock)), (item) => item.url);
   const sectorLimit = Math.min(6, Math.max(2, Math.ceil(options.websiteLimit / 3)));
   const deduped = uniqueBy([
-    ...companyResults.slice(0, options.websiteLimit),
+    ...companyEvidence.slice(0, options.websiteLimit),
     ...sectorResults.slice(0, sectorLimit),
   ], (item) => item.url);
   const crawled = [];
@@ -9590,6 +9642,7 @@ function normalizeStock(stock) {
     sales,
     minimumHoldQuantity,
     targetBuyPrice: nullablePositiveNumber(stock.targetBuyPrice),
+    priceReservation: normalizePriceReservation(stock.priceReservation),
   };
 }
 
@@ -9614,7 +9667,20 @@ function normalizeUsStock(stock) {
     accountType: "revolut_us",
     positions,
     sales,
+    priceReservation: normalizePriceReservation(stock.priceReservation),
   };
+}
+
+function normalizePriceReservation(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const sideText = String(source.side || "").trim().toLowerCase();
+  const side = sideText === "buy" || sideText === "sell" ? sideText : "";
+  const price = nullablePositiveNumber(source.price);
+  const quantity = nullablePositiveNumber(source.quantity);
+  const expiresAt = normalizeDate(source.expiresAt);
+  const note = cleanText(source.note || "").slice(0, 80);
+  if (!side && !price && !quantity && !expiresAt && !note) return null;
+  return { side, price, quantity, expiresAt, note };
 }
 
 function normalizeCryptoHolding(holding = {}) {
@@ -10396,10 +10462,11 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
   });
   const price = analysis.price || {};
   const position = positionMetrics(resolvedStock, price);
+  const evidence = sanitizeJpAnalysisEvidence(analysis.evidence || [], resolvedStock);
   const initialAction = ["BUY", "HOLD", "SELL", "WATCH"].includes(analysis.action) ? analysis.action : "WATCH";
   const growthExit = enforceRecentGrowthExit(
     normalizeGrowthExit(analysis.growthExit || analysis.ai?.growthExit),
-    { evidence: analysis.evidence || [] },
+    { evidence },
     resolvedStock,
   );
   const safety = decisionSafetyOverride(resolvedStock, price, initialAction, position, { growthExit });
@@ -10411,9 +10478,9 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
     || ruleSellForecast({ price, position }, "JPY");
   const financials = analysis.financials ? normalizeFinancialSnapshot(analysis.financials) : analysis.financials;
   const cachedResearch = {
-    evidence: analysis.evidence || [],
-    contextText: (analysis.evidence || []).map((item) => `${item.title || ""}\n${item.summaryJa || item.snippet || ""}`).join("\n"),
-    searched: analysis.researchStats?.searched || (analysis.evidence || []).length,
+    evidence,
+    contextText: evidence.map((item) => `${item.title || ""}\n${item.summaryJa || item.snippet || ""}`).join("\n"),
+    searched: evidence.length,
   };
   const industryProfile = normalizeIndustryProfile(analysis.industryProfile || buildIndustryProfile(resolvedStock, cachedResearch, financials));
   return {
@@ -10430,6 +10497,8 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
       normalizeRiskChecks(analysis.riskChecks),
     ),
     position,
+    evidence,
+    researchStats: { ...(analysis.researchStats || {}), searched: evidence.length },
     growthExit,
     sellForecast,
     industryProfile,
@@ -10437,6 +10506,25 @@ function sanitizeCachedAnalysis(analysis = {}, stock = null) {
     ai: analysis.ai ? { ...analysis.ai, growthExit, sellForecast: normalizeSellForecast(analysis.ai.sellForecast) || sellForecast } : analysis.ai,
     entryValue: evaluateEntryPrice(resolvedStock.targetBuyPrice, price),
   };
+}
+
+function sanitizeJpAnalysisEvidence(items = [], stock = {}) {
+  const sector = stockSector(stock);
+  const filtered = uniqueBy((Array.isArray(items) ? items : [])
+    .filter((item) => {
+      if (item?.kind === "sector") return isRelevantSectorEvidence(item, sector, stock);
+      return isJpStockSpecificEvidence(item, stock) || isRelevantSectorEvidence(item, sector, stock);
+    })
+    .map((item) => ({
+      ...item,
+      title: String(item.title || "").slice(0, 180),
+      url: String(item.url || ""),
+      source: String(item.source || hostOf(item.url || "")),
+      snippet: cleanText(item.snippet || item.summary || "").slice(0, 300),
+      publishedDate: normalizeDate(item.publishedDate) || searchResultPublishedDate(item),
+    })), (item) => item.url || `${item.source}:${item.title}`);
+  return uniqueBy([...filtered, ...jpStockFallbackEvidence(stock)], (item) => item.url || `${item.source}:${item.title}`)
+    .slice(0, 20);
 }
 
 async function saveAnalysisCache(result) {

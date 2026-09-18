@@ -134,6 +134,46 @@ test("Japan watchlist resolves sectors and shows FX/overseas sales context", () 
   assert.match(appSource, /海外売上比率/);
 });
 
+test("Japan evidence search rejects product manuals that only contain ticker-like model numbers", () => {
+  const start = serverSource.indexOf("function jpStockEvidenceQueries");
+  const end = serverSource.indexOf("function buildDiscoveryProcess", start);
+  assert.ok(start > 0 && end > start);
+  const fns = vm.runInNewContext(`${serverSource.slice(start, end)}; ({ jpStockEvidenceQueries, jpStockFallbackEvidence, isJpStockSpecificEvidence, jpEvidenceHasCode })`, {
+    JP_COMPANY_ALIASES_BY_SYMBOL: { "4755.T": ["楽天グループ", "楽天", "Rakuten Group", "Rakuten"] },
+    normalizeUrl: (value = "") => String(value || ""),
+    cleanText: (value = "") => String(value || "").replace(/\s+/g, " ").trim(),
+    escapeRegExp: (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    uniqueText: (items = []) => [...new Set(items.filter(Boolean))],
+    normalizeSymbol: (value = "") => {
+      const symbol = String(value || "").trim().toUpperCase();
+      if (!symbol) return "";
+      return symbol.includes(".") ? symbol : `${symbol}.T`;
+    },
+    stockSector: () => "サービス",
+  });
+  const rakuten = { symbol: "4755.T", name: "楽天", market: "東証" };
+  const manual = {
+    title: "Canon : Manuals : TR4755i : Setup - Windows 11 in S mode",
+    snippet: "キヤノンTR4755iのセットアップガイド。プリンター接続方法を解説。",
+    url: "https://ij.manual.canon/ij/webmanual/TR4755i",
+  };
+  const yahoo = {
+    title: "楽天グループ【4755.T】ニュース",
+    snippet: "決算、業績、配当など株価材料を掲載。",
+    url: "https://finance.yahoo.co.jp/quote/4755.T/news",
+  };
+  assert.equal(fns.jpEvidenceHasCode(manual, "4755"), false);
+  assert.equal(fns.isJpStockSpecificEvidence(manual, rakuten), false);
+  assert.equal(fns.isJpStockSpecificEvidence(yahoo, rakuten), true);
+  assert.match(fns.jpStockEvidenceQueries(rakuten)[0].text, /楽天グループ/);
+  assert.equal(JSON.stringify(fns.jpStockFallbackEvidence(rakuten).map((item) => item.url)), JSON.stringify([
+    "https://kabutan.jp/stock/news?code=4755",
+    "https://finance.yahoo.co.jp/quote/4755.T/news",
+  ]));
+  assert.match(serverSource, /function sanitizeJpAnalysisEvidence/);
+  assert.match(serverSource, /const evidence = sanitizeJpAnalysisEvidence\(analysis\.evidence \|\| \[\], resolvedStock\)/);
+});
+
 test("LM prompts use English reasoning with Japanese output guardrails", () => {
   assert.match(serverSource, /LM_STRICT_JSON_INSTRUCTIONS/);
   assert.match(serverSource, /Use English for analysis, classification, scoring/);
@@ -287,6 +327,19 @@ test("mobile position entry is not closed by keyboard resize or background refre
   assert.match(appSource, /function attachPositionForm\(symbol\)[\s\S]*attachDetailFormEditGuard\(form\)/);
   assert.match(appSource, /function attachUsPositionForm\(symbol\)[\s\S]*attachDetailFormEditGuard\(form\)/);
   assert.match(appSource, /function attachCryptoPositionForm\(\)[\s\S]*attachDetailFormEditGuard\(form\)/);
+});
+
+test("position forms persist price reservations and show NISA account guidance", () => {
+  assert.match(appSource, /function priceReservationEditor/);
+  assert.match(appSource, /name="reservationPrice"/);
+  assert.match(appSource, /function readPriceReservation/);
+  assert.match(appSource, /function attachPositionForm\(symbol\)[\s\S]*priceReservation: readPriceReservation\(form\)/);
+  assert.match(appSource, /function attachUsPositionForm\(symbol\)[\s\S]*priceReservation: readPriceReservation\(form\)/);
+  assert.match(appSource, /function jpAccountRecommendationHtml/);
+  assert.match(appSource, /NISA \/ 一般・特定の目安/);
+  assert.match(serverSource, /function normalizePriceReservation/);
+  assert.match(serverSource, /function normalizeStock\(stock\)[\s\S]*priceReservation: normalizePriceReservation\(stock\.priceReservation\)/);
+  assert.match(serverSource, /function normalizeUsStock\(stock\)[\s\S]*priceReservation: normalizePriceReservation\(stock\.priceReservation\)/);
 });
 
 test("dividend estimates prefer forecast annual dividend over stale trailing events", () => {

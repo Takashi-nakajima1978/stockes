@@ -1323,6 +1323,115 @@ tr:hover .drag-handle,
   align-items: stretch;
 }
 
+.price-reservation {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  padding: 10px;
+}
+
+.account-recommendation {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--watch);
+  border-radius: 7px;
+  background: #fff;
+  padding: 10px;
+}
+
+.account-recommendation.good {
+  border-left-color: var(--buy);
+}
+
+.account-recommendation p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.reservation-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.reservation-title strong {
+  font-size: 13px;
+}
+
+.reservation-title span,
+.reservation-summary span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.reservation-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, 160px) repeat(3, minmax(120px, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.reservation-note {
+  grid-column: 1 / -1;
+}
+
+.reservation-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-radius: 7px;
+  background: #f3f7f6;
+  padding: 8px 10px;
+}
+
+.reservation-summary strong {
+  font-size: 12px;
+}
+
+.recommendation-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.recommendation-metrics span {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8faf9;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.recommendation-metrics strong {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.recommendation-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.recommendation-reasons span {
+  border-radius: 7px;
+  background: #f3f7f6;
+  color: var(--muted);
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .entry-evaluation {
   grid-column: 1 / -1;
   display: grid;
@@ -2585,6 +2694,8 @@ tr:hover .drag-handle,
 
   .position-fields,
   .entry-value,
+  .reservation-grid,
+  .recommendation-metrics,
   .lot-head,
   .lot-row,
   .crypto-chart-grid,
