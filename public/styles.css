@@ -2314,6 +2314,41 @@ tr:hover .drag-handle,
   font-weight: 900;
 }
 
+.daytrade-watchlist {
+  display: grid;
+  gap: 0;
+}
+
+.daytrade-watch-item {
+  display: grid;
+  grid-template-columns: 34px minmax(180px, 1fr) minmax(120px, auto) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfc;
+}
+
+.daytrade-watch-item.active {
+  background: #edf8f4;
+}
+
+.daytrade-watch-item div {
+  display: grid;
+  gap: 3px;
+}
+
+.daytrade-watch-item strong {
+  font-size: 14px;
+}
+
+.daytrade-watch-item span,
+.daytrade-watch-item small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .sell-plan {
   display: grid;
   grid-template-columns: repeat(2, minmax(120px, 0.24fr)) minmax(220px, 1fr);
@@ -2881,6 +2916,7 @@ tr:hover .drag-handle,
   .position-fields,
   .daytrade-form,
   .flow-split,
+  .daytrade-watch-item,
   .entry-value,
   .reservation-grid,
   .recommendation-metrics,

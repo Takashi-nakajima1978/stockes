@@ -119,13 +119,20 @@ test("technical entry uses golden cross and closing strength experience rules", 
 test("day trade feature has simulation, candidates, and guarded Rakuten RSS bridge", () => {
   assert.match(indexSource, /data-view-target="daytrade"/);
   assert.match(indexSource, /data-view="daytrade"/);
+  assert.match(indexSource, /dayTradeWatchlist/);
+  assert.match(indexSource, /dayTradeStopMode/);
+  assert.match(indexSource, /dayTradeChaseReference/);
   assert.match(indexSource, /data-settings-tab="broker"/);
   assert.match(indexSource, /settingsRakutenRssBridgeUrl/);
   assert.match(appSource, /\/api\/daytrade\/simulate/);
   assert.match(appSource, /\/api\/daytrade\/candidates/);
   assert.match(appSource, /\/api\/daytrade\/order/);
+  assert.match(appSource, /\/api\/daytrade-watchlist/);
   assert.match(serverSource, /function buildDayTradePlan/);
   assert.match(serverSource, /function dayTradeCandidates/);
+  assert.match(serverSource, /function readDayTradeWatchlist/);
+  assert.match(serverSource, /normalizeDayTradeOffsetMode/);
+  assert.match(serverSource, /東証プライム値動き検索/);
   assert.match(serverSource, /RssStockOrder/);
   assert.match(serverSource, /confirm=true/);
   assert.match(serverSource, /rakutenOrderEnabled/);

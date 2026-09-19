@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade">
+  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade-watchlist">
 </head>
 <body>
   <div class="app-shell">
@@ -457,6 +457,16 @@
           </article>
         </section>
 
+        <section class="research-panel">
+          <div class="panel-title">
+            <h3>デイトレWatchlist</h3>
+            <span id="dayTradeWatchlistCount">0件</span>
+          </div>
+          <div id="dayTradeWatchlist" class="daytrade-watchlist empty-state">
+            <p>下の候補検索から、値動きが大きい銘柄を追加してください。</p>
+          </div>
+        </section>
+
         <section class="content-grid daytrade-grid">
           <form id="dayTradeForm" class="stock-form daytrade-form">
             <div class="panel-title compact-title">
@@ -483,16 +493,51 @@
               <input id="dayTradeQuantity" type="number" min="0" step="1" placeholder="例: 100">
             </label>
             <label>
-              <span>損切り 円</span>
+              <span>損切り値</span>
               <input id="dayTradeStopYen" type="number" min="0.1" step="0.1" value="3">
             </label>
             <label>
-              <span>利確 円</span>
+              <span>損切りの計算</span>
+              <select id="dayTradeStopMode">
+                <option value="yen">円幅</option>
+                <option value="percent">%</option>
+                <option value="atr">ATR倍率</option>
+              </select>
+            </label>
+            <label>
+              <span>利確値</span>
               <input id="dayTradeProfitYen" type="number" min="0.1" step="0.1" value="10">
             </label>
             <label>
-              <span>追撃 円</span>
+              <span>利確の計算</span>
+              <select id="dayTradeProfitMode">
+                <option value="yen">円幅</option>
+                <option value="percent">%</option>
+                <option value="atr">ATR倍率</option>
+              </select>
+            </label>
+            <label>
+              <span>追撃値</span>
               <input id="dayTradeChaseYen" type="number" min="0.1" step="0.1" value="5">
+            </label>
+            <label>
+              <span>追撃の計算</span>
+              <select id="dayTradeChaseMode">
+                <option value="yen">円幅</option>
+                <option value="percent">%</option>
+                <option value="atr">ATR倍率</option>
+              </select>
+            </label>
+            <label>
+              <span>追撃基準</span>
+              <select id="dayTradeChaseReference">
+                <option value="take_profit">利確価格から</option>
+                <option value="recent_high">直近高値から</option>
+              </select>
+            </label>
+            <label class="checkbox-line setting-check compact-check">
+              <input id="dayTradeChaseEnabled" type="checkbox" checked>
+              <span>利確後に追撃する</span>
             </label>
             <label>
               <span>総資金</span>
@@ -513,6 +558,10 @@
                 <option value="manual">手動判断</option>
                 <option value="breakout">直近高値ブレイク重視</option>
               </select>
+            </label>
+            <label>
+              <span>候補検索数</span>
+              <input id="dayTradeScanLimit" type="number" min="50" max="1000" step="50" value="320">
             </label>
           </form>
 
@@ -973,6 +1022,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260919-daytrade" type="module"></script>
+  <script src="/app.js?v=20260919-daytrade-watchlist" type="module"></script>
 </body>
 </html>

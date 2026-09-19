@@ -16,6 +16,7 @@ loadLocalEnv(path.join(__dirname, ".env"));
 const PORT = Number(process.env.PORT || 5173);
 const HOST = process.env.HOST || "127.0.0.1";
 const WATCHLIST_PATH = path.join(__dirname, "data", "watchlist.json");
+const DAY_TRADE_WATCHLIST_PATH = path.join(__dirname, "data", "daytrade-watchlist.json");
 const US_WATCHLIST_PATH = path.join(__dirname, "data", "us-watchlist.json");
 const CRYPTO_HOLDING_PATH = path.join(__dirname, "data", "crypto-holding.json");
 const ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "analysis-cache.json");
@@ -410,8 +411,14 @@ const defaultSettings = {
   rakutenOrderEnabled: false,
   rakutenOrderUpperLimitYen: 500000,
   dayTradeStopYen: 3,
+  dayTradeStopMode: "yen",
   dayTradeProfitYen: 10,
+  dayTradeProfitMode: "yen",
   dayTradeChaseYen: 5,
+  dayTradeChaseMode: "yen",
+  dayTradeChaseReference: "take_profit",
+  dayTradeChaseEnabled: true,
+  dayTradeScanLimit: 320,
   dayTradeCapitalYen: 1000000,
   dayTradeRiskPct: 1,
   dayTradeMaxLossYen: 0,
@@ -805,7 +812,7 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/daytrade/simulate" && req.method === "POST") {
     const [body, settings] = await Promise.all([readJson(req), readSettings()]);
-    return json(res, 200, { plan: buildDayTradePlan(body, settings) });
+    return json(res, 200, { plan: buildDayTradePlan(await enrichDayTradeInput(body, settings), settings) });
   }
 
   if (url.pathname === "/api/daytrade/candidates" && req.method === "GET") {
@@ -813,9 +820,30 @@ async function handleApi(req, res, url) {
     return json(res, 200, await dayTradeCandidates(settings, Object.fromEntries(url.searchParams.entries())));
   }
 
+  if (url.pathname === "/api/daytrade-watchlist" && req.method === "GET") {
+    return json(res, 200, { stocks: await readDayTradeWatchlist() });
+  }
+
+  if (url.pathname === "/api/daytrade-watchlist" && req.method === "POST") {
+    const body = await readJson(req);
+    const item = normalizeDayTradeWatchItem(body);
+    if (!item.symbol) return json(res, 400, { error: "銘柄コードが必要です。" });
+    const current = await readDayTradeWatchlist();
+    const stocks = uniqueBy([item, ...current], (stock) => stock.symbol).slice(0, 80);
+    await saveDayTradeWatchlist(stocks);
+    return json(res, 200, { stocks });
+  }
+
+  if (url.pathname.startsWith("/api/daytrade-watchlist/") && req.method === "DELETE") {
+    const symbol = normalizeSymbol(decodeURIComponent(url.pathname.split("/").pop() || ""));
+    const stocks = (await readDayTradeWatchlist()).filter((stock) => stock.symbol !== symbol);
+    await saveDayTradeWatchlist(stocks);
+    return json(res, 200, { stocks });
+  }
+
   if (url.pathname === "/api/daytrade/order" && req.method === "POST") {
     const [body, settings] = await Promise.all([readJson(req), readSettings()]);
-    const plan = buildDayTradePlan(body, settings);
+    const plan = buildDayTradePlan(await enrichDayTradeInput(body, settings), settings);
     return json(res, 200, await rakutenDayTradeOrderPreview(plan, body, settings));
   }
 
@@ -13199,8 +13227,14 @@ function normalizeSettings(settings = {}) {
     rakutenOrderEnabled: settings.rakutenOrderEnabled === true,
     rakutenOrderUpperLimitYen: clamp(Number(settings.rakutenOrderUpperLimitYen ?? defaultSettings.rakutenOrderUpperLimitYen), 0, 100000000),
     dayTradeStopYen: clamp(Number(settings.dayTradeStopYen || defaultSettings.dayTradeStopYen), 0.1, 1000),
+    dayTradeStopMode: normalizeDayTradeOffsetMode(settings.dayTradeStopMode),
     dayTradeProfitYen: clamp(Number(settings.dayTradeProfitYen || defaultSettings.dayTradeProfitYen), 0.1, 10000),
+    dayTradeProfitMode: normalizeDayTradeOffsetMode(settings.dayTradeProfitMode),
     dayTradeChaseYen: clamp(Number(settings.dayTradeChaseYen || defaultSettings.dayTradeChaseYen), 0.1, 10000),
+    dayTradeChaseMode: normalizeDayTradeOffsetMode(settings.dayTradeChaseMode),
+    dayTradeChaseReference: normalizeDayTradeChaseReference(settings.dayTradeChaseReference),
+    dayTradeChaseEnabled: settings.dayTradeChaseEnabled !== false,
+    dayTradeScanLimit: clamp(Number(settings.dayTradeScanLimit || defaultSettings.dayTradeScanLimit), 50, 1000),
     dayTradeCapitalYen: clamp(Number(settings.dayTradeCapitalYen || defaultSettings.dayTradeCapitalYen), 0, 10000000000),
     dayTradeRiskPct: clamp(Number(settings.dayTradeRiskPct ?? defaultSettings.dayTradeRiskPct), 0, 20),
     dayTradeMaxLossYen: clamp(Number(settings.dayTradeMaxLossYen || defaultSettings.dayTradeMaxLossYen), 0, 100000000),
@@ -13265,8 +13299,14 @@ function applySettingsPatch(current, body = {}) {
   if (typeof body.rakutenOrderEnabled === "boolean") next.rakutenOrderEnabled = body.rakutenOrderEnabled;
   if (body.rakutenOrderUpperLimitYen !== undefined) next.rakutenOrderUpperLimitYen = body.rakutenOrderUpperLimitYen;
   if (body.dayTradeStopYen !== undefined) next.dayTradeStopYen = body.dayTradeStopYen;
+  if (body.dayTradeStopMode !== undefined) next.dayTradeStopMode = body.dayTradeStopMode;
   if (body.dayTradeProfitYen !== undefined) next.dayTradeProfitYen = body.dayTradeProfitYen;
+  if (body.dayTradeProfitMode !== undefined) next.dayTradeProfitMode = body.dayTradeProfitMode;
   if (body.dayTradeChaseYen !== undefined) next.dayTradeChaseYen = body.dayTradeChaseYen;
+  if (body.dayTradeChaseMode !== undefined) next.dayTradeChaseMode = body.dayTradeChaseMode;
+  if (body.dayTradeChaseReference !== undefined) next.dayTradeChaseReference = body.dayTradeChaseReference;
+  if (typeof body.dayTradeChaseEnabled === "boolean") next.dayTradeChaseEnabled = body.dayTradeChaseEnabled;
+  if (body.dayTradeScanLimit !== undefined) next.dayTradeScanLimit = body.dayTradeScanLimit;
   if (body.dayTradeCapitalYen !== undefined) next.dayTradeCapitalYen = body.dayTradeCapitalYen;
   if (body.dayTradeRiskPct !== undefined) next.dayTradeRiskPct = body.dayTradeRiskPct;
   if (body.dayTradeMaxLossYen !== undefined) next.dayTradeMaxLossYen = body.dayTradeMaxLossYen;
@@ -13328,8 +13368,14 @@ function publicSettings(settings) {
     rakutenOrderEnabled: settings.rakutenOrderEnabled,
     rakutenOrderUpperLimitYen: settings.rakutenOrderUpperLimitYen,
     dayTradeStopYen: settings.dayTradeStopYen,
+    dayTradeStopMode: settings.dayTradeStopMode,
     dayTradeProfitYen: settings.dayTradeProfitYen,
+    dayTradeProfitMode: settings.dayTradeProfitMode,
     dayTradeChaseYen: settings.dayTradeChaseYen,
+    dayTradeChaseMode: settings.dayTradeChaseMode,
+    dayTradeChaseReference: settings.dayTradeChaseReference,
+    dayTradeChaseEnabled: settings.dayTradeChaseEnabled,
+    dayTradeScanLimit: settings.dayTradeScanLimit,
     dayTradeCapitalYen: settings.dayTradeCapitalYen,
     dayTradeRiskPct: settings.dayTradeRiskPct,
     dayTradeMaxLossYen: settings.dayTradeMaxLossYen,
@@ -13353,21 +13399,72 @@ function publicSettings(settings) {
   };
 }
 
+function normalizeDayTradeOffsetMode(value = "") {
+  return ["yen", "percent", "atr"].includes(String(value)) ? String(value) : "yen";
+}
+
+function normalizeDayTradeChaseReference(value = "") {
+  return value === "recent_high" ? "recent_high" : "take_profit";
+}
+
 function normalizeDayTradeRules(input = {}, settings = defaultSettings) {
   return {
     stopYen: clamp(Number(input.stopYen || settings.dayTradeStopYen || defaultSettings.dayTradeStopYen), 0.1, 1000),
+    stopMode: normalizeDayTradeOffsetMode(input.stopMode || settings.dayTradeStopMode),
     profitYen: clamp(Number(input.profitYen || settings.dayTradeProfitYen || defaultSettings.dayTradeProfitYen), 0.1, 10000),
+    profitMode: normalizeDayTradeOffsetMode(input.profitMode || settings.dayTradeProfitMode),
     chaseYen: clamp(Number(input.chaseYen || settings.dayTradeChaseYen || defaultSettings.dayTradeChaseYen), 0.1, 10000),
+    chaseMode: normalizeDayTradeOffsetMode(input.chaseMode || settings.dayTradeChaseMode),
+    chaseReference: normalizeDayTradeChaseReference(input.chaseReference || settings.dayTradeChaseReference),
+    chaseEnabled: input.chaseEnabled === false || input.chaseEnabled === "false" ? false : settings.dayTradeChaseEnabled !== false,
     capitalYen: clamp(Number(input.capitalYen || settings.dayTradeCapitalYen || defaultSettings.dayTradeCapitalYen), 0, 10000000000),
     riskPct: clamp(Number(input.riskPct ?? settings.dayTradeRiskPct ?? defaultSettings.dayTradeRiskPct), 0, 20),
     maxLossYen: clamp(Number(input.maxLossYen || settings.dayTradeMaxLossYen || 0), 0, 100000000),
   };
 }
 
+function dayTradePriceContext(input = {}, price = {}) {
+  const series = Array.isArray(price.series) ? price.series : [];
+  const recentCloses = series.slice(-20).map((point) => nullablePositiveNumber(point.close)).filter(Boolean);
+  return {
+    atr14: nullablePositiveNumber(input.atr14) || nullablePositiveNumber(price.atr14),
+    recentHigh: nullablePositiveNumber(input.recentHigh) || (recentCloses.length ? Math.max(...recentCloses) : nullablePositiveNumber(price.high52)),
+    current: nullablePositiveNumber(input.currentPrice) || nullablePositiveNumber(price.current),
+  };
+}
+
+async function enrichDayTradeInput(input = {}, settings = defaultSettings) {
+  const rules = normalizeDayTradeRules(input, settings);
+  const context = dayTradePriceContext(input);
+  const needsPrice = !context.current
+    || ((rules.stopMode === "atr" || rules.profitMode === "atr" || rules.chaseMode === "atr") && !context.atr14)
+    || (rules.chaseReference === "recent_high" && !context.recentHigh);
+  const symbol = normalizeSymbol(input.symbol || input.code || "");
+  if (!needsPrice || !symbol) return input;
+  const price = await fetchPriceHistory(symbol, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch(() => emptyPrice());
+  const enriched = dayTradePriceContext(input, price);
+  return {
+    ...input,
+    currentPrice: input.currentPrice || enriched.current,
+    entryPrice: input.entryPrice || enriched.current,
+    atr14: input.atr14 || enriched.atr14,
+    recentHigh: input.recentHigh || enriched.recentHigh,
+  };
+}
+
+function dayTradeOffsetAmount(value, mode, entryPrice, context = {}) {
+  const number = nullablePositiveNumber(value);
+  if (!number) return null;
+  if (mode === "percent") return entryPrice * number / 100;
+  if (mode === "atr") return context.atr14 ? context.atr14 * number : null;
+  return number;
+}
+
 function buildDayTradePlan(input = {}, settings = defaultSettings) {
   const symbol = normalizeSymbol(input.symbol || input.code || "");
   const rules = normalizeDayTradeRules(input, settings);
   const entryPrice = nullablePositiveNumber(input.entryPrice);
+  const context = dayTradePriceContext(input);
   const stockName = String(input.name || "").trim();
   if (!symbol || !entryPrice) {
     return {
@@ -13380,18 +13477,24 @@ function buildDayTradePlan(input = {}, settings = defaultSettings) {
   }
   const allowedLoss = rules.maxLossYen > 0 ? rules.maxLossYen : rules.capitalYen * rules.riskPct / 100;
   const unitSize = clamp(Number(settings.unitSize || defaultSettings.unitSize), 1, 1000);
-  const perShareRisk = rules.stopYen;
+  const stopYen = dayTradeOffsetAmount(rules.stopYen, rules.stopMode, entryPrice, context) || rules.stopYen;
+  const profitYen = dayTradeOffsetAmount(rules.profitYen, rules.profitMode, entryPrice, context) || rules.profitYen;
+  const chaseYen = dayTradeOffsetAmount(rules.chaseYen, rules.chaseMode, entryPrice, context) || rules.chaseYen;
+  const perShareRisk = stopYen;
   const suggestedRaw = allowedLoss > 0 && perShareRisk > 0 ? allowedLoss / perShareRisk : unitSize;
   const suggestedQuantity = Math.max(unitSize, Math.floor(suggestedRaw / unitSize) * unitSize);
   const quantity = nullablePositiveNumber(input.quantity) || suggestedQuantity;
-  const stopPrice = roundPrice(entryPrice - rules.stopYen);
-  const takeProfitPrice = roundPrice(entryPrice + rules.profitYen);
-  const chaseTriggerPrice = roundPrice(takeProfitPrice + rules.chaseYen);
+  const stopPrice = roundPrice(entryPrice - stopYen);
+  const takeProfitPrice = roundPrice(entryPrice + profitYen);
+  const chaseBasePrice = rules.chaseReference === "recent_high" && context.recentHigh
+    ? Math.max(takeProfitPrice, context.recentHigh)
+    : takeProfitPrice;
+  const chaseTriggerPrice = rules.chaseEnabled ? roundPrice(chaseBasePrice + chaseYen) : null;
   const reEntryPrice = chaseTriggerPrice;
-  const reStopPrice = roundPrice(reEntryPrice - rules.stopYen);
-  const reTakeProfitPrice = roundPrice(reEntryPrice + rules.profitYen);
-  const maxLoss = rules.stopYen * quantity;
-  const firstProfit = rules.profitYen * quantity;
+  const reStopPrice = rules.chaseEnabled ? roundPrice(reEntryPrice - stopYen) : null;
+  const reTakeProfitPrice = rules.chaseEnabled ? roundPrice(reEntryPrice + profitYen) : null;
+  const maxLoss = stopYen * quantity;
+  const firstProfit = profitYen * quantity;
   const orderAmount = entryPrice * quantity;
   const mode = String(input.mode || settings.rakutenApiMode || "test") === "api" ? "api" : "test";
   return {
@@ -13401,9 +13504,19 @@ function buildDayTradePlan(input = {}, settings = defaultSettings) {
     mode,
     signal: String(input.signal || "technical"),
     entryPrice: roundPrice(entryPrice),
-    stopYen: rules.stopYen,
-    profitYen: rules.profitYen,
-    chaseYen: rules.chaseYen,
+    stopYen,
+    stopMode: rules.stopMode,
+    stopInputValue: rules.stopYen,
+    profitYen,
+    profitMode: rules.profitMode,
+    profitInputValue: rules.profitYen,
+    chaseYen,
+    chaseMode: rules.chaseMode,
+    chaseInputValue: rules.chaseYen,
+    chaseReference: rules.chaseReference,
+    chaseEnabled: rules.chaseEnabled,
+    chaseBasePrice,
+    atr14: context.atr14,
     quantity,
     unitSize,
     suggestedQuantity,
@@ -13435,14 +13548,18 @@ function buildDayTradePlan(input = {}, settings = defaultSettings) {
       `新規買い ${formatMoney(entryPrice, "JPY")}`,
       `下落時は ${formatMoney(stopPrice, "JPY")} で損切りして終了`,
       `上昇時は ${formatMoney(takeProfitPrice, "JPY")} で利確して一度ゼロにする`,
-      `利確後に ${formatMoney(chaseTriggerPrice, "JPY")} まで上がれば追撃買い`,
-      `追撃後は ${formatMoney(reStopPrice, "JPY")} / ${formatMoney(reTakeProfitPrice, "JPY")} のOCOを再設定`,
+      rules.chaseEnabled
+        ? `${rules.chaseReference === "recent_high" ? "直近高値" : "利確価格"}基準で ${formatMoney(chaseTriggerPrice, "JPY")} まで上がれば追撃買い`
+        : "利確後は追撃せずに終了",
+      rules.chaseEnabled
+        ? `追撃後は ${formatMoney(reStopPrice, "JPY")} / ${formatMoney(reTakeProfitPrice, "JPY")} のOCOを再設定`
+        : "追撃用の再エントリー注文は作成しない",
     ],
   };
 }
 
 function rakutenRssOrderPreview(plan = {}) {
-  return [
+  const orders = [
     {
       step: "entry",
       label: "新規買い",
@@ -13476,7 +13593,9 @@ function rakutenRssOrderPreview(plan = {}) {
       orderType: "limit",
       price: roundPrice(plan.takeProfitPrice),
     },
-    {
+  ];
+  if (plan.chaseEnabled !== false && plan.reEntryPrice) {
+    orders.push({
       step: "chase_entry",
       label: "追撃買い条件",
       rssFunction: "RssStockOrder",
@@ -13487,8 +13606,9 @@ function rakutenRssOrderPreview(plan = {}) {
       orderType: "conditional",
       price: roundPrice(plan.reEntryPrice),
       condition: `利確後に${formatMoney(plan.chaseTriggerPrice, "JPY")}へ到達`,
-    },
-  ];
+    });
+  }
+  return orders;
 }
 
 async function rakutenDayTradeOrderPreview(plan = {}, input = {}, settings = defaultSettings) {
@@ -13537,28 +13657,39 @@ async function rakutenDayTradeOrderPreview(plan = {}, input = {}, settings = def
 
 async function dayTradeCandidates(settings = defaultSettings, options = {}) {
   const rules = normalizeDayTradeRules(options, settings);
-  const [watchlist, discovery] = await Promise.all([
-    readWatchlist().catch(() => []),
+  const scanLimit = clamp(Number(options.scanLimit || settings.dayTradeScanLimit || defaultSettings.dayTradeScanLimit), 50, 1000);
+  const [dayTradeWatchlist, discovery, primeUniverse] = await Promise.all([
+    readDayTradeWatchlist().catch(() => []),
     discoveryCacheForCurrentSettings().catch(() => ({ suggestions: [] })),
+    readPrimeUniverse().catch(() => []),
   ]);
-  const fromWatchlist = watchlist.map((stock) => ({
+  const fromWatchlist = dayTradeWatchlist.map((stock) => ({
     symbol: normalizeSymbol(stock.symbol),
     name: stock.name || stock.symbol,
-    sector: stockSector(stock),
-    source: "Watchlist",
+    sector: stock.sector || "その他",
+    source: "デイトレWatchlist",
   }));
+  const fromPrimeUniverse = primeUniverse
+    .slice(0, scanLimit)
+    .map((item) => ({
+      symbol: normalizeSymbol(item.symbol),
+      name: item.name || item.symbol,
+      sector: item.sector || item.sector17 || "その他",
+      source: "東証プライム値動き検索",
+    }));
   const fromDiscovery = (discovery.suggestions || [])
     .filter((item) => !isUsDiscoveryCandidate(item))
+    .slice(0, 120)
     .map((item) => ({
       symbol: normalizeDiscoverySymbol(item.symbol, item),
       name: item.name || item.symbol,
       sector: item.sector || "その他",
-      source: "候補検索",
+      source: "通常候補",
     }));
-  const pool = uniqueBy([...fromWatchlist, ...fromDiscovery], (item) => item.symbol)
+  const pool = uniqueBy([...fromWatchlist, ...fromPrimeUniverse, ...fromDiscovery], (item) => item.symbol)
     .filter((item) => /\.T$/.test(item.symbol))
-    .slice(0, 120);
-  const checked = await mapLimit(pool, 6, async (item) => {
+    .slice(0, Math.max(scanLimit, fromWatchlist.length));
+  const checked = await mapLimit(pool, 8, async (item) => {
     const price = await fetchPriceHistory(item.symbol, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch(() => emptyPrice());
     return scoreDayTradeCandidate(item, price, rules);
   });
@@ -13570,6 +13701,7 @@ async function dayTradeCandidates(settings = defaultSettings, options = {}) {
     generatedAt: new Date().toISOString(),
     rules,
     checked: pool.length,
+    scanLimit,
     candidates,
   };
 }
@@ -13577,6 +13709,10 @@ async function dayTradeCandidates(settings = defaultSettings, options = {}) {
 function scoreDayTradeCandidate(item = {}, price = {}, rules = {}) {
   const current = nullablePositiveNumber(price.current);
   if (!current) return null;
+  const context = dayTradePriceContext({ entryPrice: current }, price);
+  const stopYen = dayTradeOffsetAmount(rules.stopYen, rules.stopMode, current, context) || rules.stopYen;
+  const profitYen = dayTradeOffsetAmount(rules.profitYen, rules.profitMode, current, context) || rules.profitYen;
+  const chaseYen = dayTradeOffsetAmount(rules.chaseYen, rules.chaseMode, current, context) || rules.chaseYen;
   const atr14 = nullablePositiveNumber(price.atr14);
   const atrPct = nullablePositiveNumber(price.atrPct);
   const volumeRatio20 = nullablePositiveNumber(price.volumeRatio20);
@@ -13584,10 +13720,10 @@ function scoreDayTradeCandidate(item = {}, price = {}, rules = {}) {
   let score = 30;
   const reasons = [];
   const risks = [];
-  if (atr14 && atr14 >= rules.stopYen && atr14 <= rules.profitYen * 2.5) {
+  if (atr14 && atr14 >= stopYen && atr14 <= profitYen * 2.5) {
     score += 22;
-    reasons.push(`ATRが${formatMoney(atr14, "JPY")}で、${formatMoney(rules.stopYen, "JPY")}損切りに対して値幅がある`);
-  } else if (atr14 && atr14 < rules.stopYen) {
+    reasons.push(`ATRが${formatMoney(atr14, "JPY")}で、${formatMoney(stopYen, "JPY")}損切りに対して値幅がある`);
+  } else if (atr14 && atr14 < stopYen) {
     score -= 14;
     risks.push("値幅が小さく、損切りだけが先に当たりやすい");
   } else if (atr14) {
@@ -13644,7 +13780,8 @@ function scoreDayTradeCandidate(item = {}, price = {}, rules = {}) {
     atrPct,
     rsi14,
     volumeRatio20,
-    summary: `${formatMoney(current, "JPY")}前後。${formatMoney(rules.stopYen, "JPY")}損切り / ${formatMoney(rules.profitYen, "JPY")}利確 / ${formatMoney(rules.chaseYen, "JPY")}追撃のテスト対象。`,
+    currentPrice: current,
+    summary: `${formatMoney(current, "JPY")}前後。${formatMoney(stopYen, "JPY")}損切り / ${formatMoney(profitYen, "JPY")}利確 / ${rules.chaseEnabled ? `${formatMoney(chaseYen, "JPY")}追撃` : "追撃なし"}のテスト対象。`,
     reasons: uniqueText(reasons).slice(0, 5),
     risks: uniqueText(risks).slice(0, 4),
   };
@@ -13727,6 +13864,43 @@ async function readWatchlist() {
 async function saveWatchlist(stocks) {
   await mkdir(path.dirname(WATCHLIST_PATH), { recursive: true });
   await writeFile(WATCHLIST_PATH, JSON.stringify(stocks.slice(0, MAX_MANAGED_STOCKS).map(normalizeStock), null, 2));
+}
+
+async function readDayTradeWatchlist() {
+  try {
+    const stocks = JSON.parse(await readFile(DAY_TRADE_WATCHLIST_PATH, "utf8"));
+    if (Array.isArray(stocks)) return stocks.map(normalizeDayTradeWatchItem).filter((stock) => stock.symbol).slice(0, 80);
+  } catch {
+    // Start empty. This list is built from the day-trade candidate search.
+  }
+  return [];
+}
+
+async function saveDayTradeWatchlist(stocks = []) {
+  await mkdir(path.dirname(DAY_TRADE_WATCHLIST_PATH), { recursive: true });
+  await writeFile(DAY_TRADE_WATCHLIST_PATH, JSON.stringify(
+    uniqueBy(stocks.map(normalizeDayTradeWatchItem).filter((stock) => stock.symbol), (stock) => stock.symbol).slice(0, 80),
+    null,
+    2,
+  ));
+}
+
+function normalizeDayTradeWatchItem(item = {}) {
+  const symbol = normalizeSymbol(item.symbol || item.code);
+  return {
+    symbol,
+    name: String(item.name || symbol).trim(),
+    market: String(item.market || "東証").trim(),
+    sector: String(item.sector || "その他").trim(),
+    source: String(item.source || "デイトレ候補").trim(),
+    currentPrice: nullablePositiveNumber(item.currentPrice ?? item.current),
+    atr14: nullablePositiveNumber(item.atr14),
+    atrPct: nullablePositiveNumber(item.atrPct),
+    rsi14: numberOrNull(item.rsi14),
+    volumeRatio20: numberOrNull(item.volumeRatio20),
+    score: nullableNonNegativeNumber(item.score),
+    addedAt: item.addedAt || new Date().toISOString(),
+  };
 }
 
 async function readUsWatchlist() {
