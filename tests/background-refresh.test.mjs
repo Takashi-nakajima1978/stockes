@@ -468,12 +468,29 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
     cleanText: cleanTextForTest,
     cleanCandidateName: cleanCandidateNameForTest,
   });
+  const normalizeSymbolForTest = (value = "") => {
+    const symbol = String(value || "").trim().toUpperCase();
+    return symbol.includes(".") ? symbol : `${symbol}.T`;
+  };
+  const hostOfForTest = (value = "") => {
+    try {
+      return new URL(value).hostname.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
+  };
+  const isNihonMaPublisherCandidate = loadFunction(serverSource, "isNihonMaPublisherCandidate", {
+    cleanText: cleanTextForTest,
+    hostOf: hostOfForTest,
+  });
   const extractNihonMaNewsResults = loadFunction(serverSource, "extractNihonMaNewsResults", {
     URL,
     cleanText: cleanTextForTest,
     htmlToText: (value) => String(value || "").replace(/<[^>]+>/g, " "),
     cleanCandidateName: cleanCandidateNameForTest,
     nihonMaTargetName,
+    normalizeSymbol: normalizeSymbolForTest,
+    isNihonMaPublisherCandidate,
   });
   const rows = extractNihonMaNewsResults(
     '<a href="/news/20260914_2612-5/">インテグラル傘下のITG-G HDがかどや製油にTOBへ</a>',
@@ -483,6 +500,51 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
   assert.equal(rows.length, 1);
   assert.match(rows[0].title, /かどや製油<2612>/);
   assert.match(rows[0].snippet, /公開買付|非公開化|投資ファンド/);
+  assert.equal(extractNihonMaNewsResults(
+    '<a href="/news/20260914_3395-1/">日本M&AセンターのTOB/MBO実例</a>',
+    "https://www.nihon-ma.co.jp/news/",
+    5,
+  ).length, 0);
+
+  const extractDiscoveryCandidates = loadFunctionBlock(serverSource, "extractDiscoveryCandidates", "resolveCandidateFromPrice", {
+    cleanText: cleanTextForTest,
+    normalizeSymbol: normalizeSymbolForTest,
+    normalizeUsSymbol: (value = "") => String(value || "").trim().toUpperCase(),
+    cleanTextForTest,
+    uniqueBy: (items = [], keyFn) => {
+      const seen = new Set();
+      return items.filter((item) => {
+        const key = keyFn(item);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    },
+    US_TICKER_STOPWORDS: new Set(),
+    isNihonMaPublisherCandidate,
+  });
+  assert.equal(extractDiscoveryCandidates([{
+    title: "日本M&AセンターのTOB<3395>",
+    snippet: "日本M&AセンターのTOB/MBO記事一覧",
+    url: "https://www.nihon-ma.co.jp/news/20260914_3395-1/",
+  }]).length, 0);
+  const reconcileSearchCandidateNames = loadFunction(serverSource, "reconcileSearchCandidateNames", {
+    normalizeDiscoverySymbol: normalizeSymbolForTest,
+  });
+  const [resolved] = reconcileSearchCandidateNames([{
+    symbol: "3395.T",
+    name: "日本M&AセンターのTOB",
+    market: "東証",
+    sector: "検索発掘",
+  }], [{
+    symbol: "3395.T",
+    name: "サンマルクホールディングス",
+    market: "東証プライム",
+    sector: "小売業",
+  }]);
+  assert.equal(resolved.name, "サンマルクホールディングス");
+  assert.equal(resolved.sector, "小売業");
+  assert.equal(resolved.officialNameResolved, true);
 
   const searchPeSignal = loadFunction(serverSource, "searchPeSignal", {
     PE_CRITERIA: [

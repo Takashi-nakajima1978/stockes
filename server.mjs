@@ -3482,6 +3482,8 @@ async function discoverStocks(options = {}, job = null) {
   const sectorCounts = sectorCount([...stocks, ...usStocks]);
   const searchCandidates = extractDiscoveryCandidates(search, existing, excluded);
   const primeUniverse = await readPrimeUniverse();
+  const officialUniverse = [...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse];
+  const resolvedSearchCandidates = reconcileSearchCandidateNames(searchCandidates, officialUniverse);
   updateDiscoveryJob(job, { phase: "LM Studioで市場トレンドを要約中" });
   const marketBrief = search.length
     ? await withTimeout(aiMarketTrendBrief(search, primeUniverse.length), 45000).catch(() => null)
@@ -3490,7 +3492,7 @@ async function discoverStocks(options = {}, job = null) {
   const financialCache = await readFinancialCache();
   let financialBySymbol = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
   const fxContext = await readUsdJpyContext().catch(() => normalizeUsdJpyContext({}));
-  const baseCandidateUniverse = uniqueBy([...searchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse], (candidate) => candidate.symbol);
+  const baseCandidateUniverse = uniqueBy([...resolvedSearchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse], (candidate) => candidate.symbol);
   const candidateUniverse = baseCandidateUniverse
     .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
     .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate));
@@ -3581,10 +3583,10 @@ async function discoverStocks(options = {}, job = null) {
         searchCount: search.length + individualSearchCount,
         candidateLimit,
         unitSize,
-        unitBudget,
-        unitBudgetUnlimited,
-        searchCandidates,
-        candidateUniverse,
+      unitBudget,
+      unitBudgetUnlimited,
+      searchCandidates: resolvedSearchCandidates,
+      candidateUniverse,
         usedDiscoveryAi: false,
         fullScan,
         marketBrief,
@@ -4277,9 +4279,9 @@ async function savePartialDiscovery({
   candidateLimit,
   unitSize,
   unitBudget,
-  unitBudgetUnlimited,
-  searchCandidates,
-  candidateUniverse,
+      unitBudgetUnlimited,
+      searchCandidates: resolvedSearchCandidates,
+      candidateUniverse,
   usedDiscoveryAi,
   fullScan,
   marketBrief,
@@ -4340,6 +4342,28 @@ async function readPrimeUniverse() {
   return primeUniverseCache;
 }
 
+function reconcileSearchCandidateNames(searchCandidates = [], officialUniverse = []) {
+  const officialBySymbol = new Map(officialUniverse
+    .map((candidate) => [normalizeDiscoverySymbol(candidate.symbol, candidate), candidate])
+    .filter(([symbol]) => symbol));
+  return searchCandidates.map((candidate) => {
+    const symbol = normalizeDiscoverySymbol(candidate.symbol, candidate);
+    const official = officialBySymbol.get(symbol);
+    if (!official) return candidate;
+    return {
+      ...candidate,
+      symbol,
+      name: official.name || candidate.name,
+      market: official.market || candidate.market,
+      sector: official.sector || candidate.sector,
+      sector17: official.sector17 || candidate.sector17,
+      size: official.size || candidate.size,
+      notes: candidate.notes || official.notes,
+      officialNameResolved: official.name && official.name !== candidate.name,
+    };
+  });
+}
+
 async function discoverySearchResults(limit) {
   const year = new Date().getFullYear();
   const queries = [
@@ -4394,6 +4418,7 @@ function extractNihonMaNewsResults(html = "", pageUrl = "", limit = 12) {
       continue;
     }
     const target = nihonMaTargetName(title);
+    if (!target || isNihonMaPublisherCandidate(normalizeSymbol(code), target, { url })) continue;
     const candidateTitle = `${target ? `${target}<${code}> ` : `<${code}> `}${title}`;
     results.push({
       title: candidateTitle,
@@ -4423,12 +4448,19 @@ function nihonMaTargetName(title = "") {
   return "";
 }
 
+function isNihonMaPublisherCandidate(symbol = "", name = "", item = {}) {
+  const host = hostOf(item.url || "");
+  const normalizedName = cleanText(name).replace(/[＆]/g, "&");
+  return host === "nihon-ma.co.jp"
+    && (symbol === "3395.T" || /日本M&Aセンター|日本M&A|日本MA/.test(normalizedName));
+}
+
 function extractDiscoveryCandidates(searchResults, existing = new Set(), excluded = new Set()) {
   const found = new Map();
   const add = (code, rawName, item) => {
     const symbol = normalizeSymbol(code);
     const name = cleanCandidateName(rawName);
-    if (!symbol || existing.has(symbol) || excluded.has(symbol) || !isLikelyCandidateName(name)) return;
+    if (!symbol || existing.has(symbol) || excluded.has(symbol) || !isLikelyCandidateName(name) || isNihonMaPublisherCandidate(symbol, name, item)) return;
     const previous = found.get(symbol);
     const evidence = {
       title: item.title,
@@ -4518,6 +4550,7 @@ function cleanCandidateName(value = "") {
   text = text.split(/---|--|－{2,}|[、，。／/【】\[\]「」]/)[0] || text;
   text = text
     .replace(/^(?:東証[ＰPＳSＧG]|東証プライム|東証スタンダード|東証グロース)\s*/i, "")
+    .replace(/(?:が|は|の)(?:TOB|MBO|公開買付|非公開化|買収).*$/i, "")
     .replace(/\s+(?:が|は|の)\s+.*$/, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -4553,6 +4586,7 @@ function isLikelyCandidateName(name = "") {
   if (/^\d+$/.test(text)) return false;
   if (/[。！？]/.test(text)) return false;
   if (/日本株|銘柄|ランキング|一覧|決算|ニュース|速報|上方修正|最高益|増配|割安|株価|市場|特集|材料|今期|前期|本日|今日/.test(text)) return false;
+  if (/(?:TOB|MBO|公開買付|非公開化|買収)$/.test(text)) return false;
   if ((text.match(/[0-9０-９]/g) || []).length > 2) return false;
   return true;
 }
