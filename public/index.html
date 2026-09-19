@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260906-nisa-lifetime-limit">
+  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade">
 </head>
 <body>
   <div class="app-shell">
@@ -22,6 +22,7 @@
         <button type="button" data-view-target="stocks">保有を入力</button>
         <button type="button" data-view-target="us">米国株</button>
         <button type="button" data-view-target="crypto">BTC・為替</button>
+        <button type="button" data-view-target="daytrade">デイトレ</button>
         <button type="button" data-view-target="ideas">候補を探す</button>
         <button type="button" data-view-target="settings">設定</button>
       </nav>
@@ -420,6 +421,124 @@
         </section>
       </section>
 
+      <section class="view-panel" data-view="daytrade">
+        <section class="command-band">
+          <div>
+            <p class="eyebrow">Day Trade</p>
+            <h2>デイトレ・ルール検証</h2>
+          </div>
+          <div class="actions">
+            <button id="dayTradeFindCandidatesButton" type="button" class="secondary">適用しやすい銘柄</button>
+            <button id="dayTradeApiPreviewButton" type="button" class="secondary">APIプレビュー</button>
+            <button id="dayTradeSimulateButton" type="button">シミュレーション</button>
+          </div>
+        </section>
+
+        <section class="profit-summary daytrade-summary" aria-live="polite">
+          <article class="profit-card primary">
+            <span>モード</span>
+            <strong id="dayTradeModeLabel">テスト</strong>
+            <small id="dayTradeApiStatus">実発注なし</small>
+          </article>
+          <article class="profit-card">
+            <span>選択銘柄</span>
+            <strong id="dayTradeSelectedLabel">-</strong>
+            <small id="dayTradeCurrentPrice">現在値未取得</small>
+          </article>
+          <article class="profit-card">
+            <span>基準単位</span>
+            <strong id="dayTradeUnitLabel">-3 / +10 / +5</strong>
+            <small>損切り / 利確 / 追撃</small>
+          </article>
+          <article class="profit-card">
+            <span>許容損失</span>
+            <strong id="dayTradeRiskLabel">-</strong>
+            <small id="dayTradeRiskNote">資金管理</small>
+          </article>
+        </section>
+
+        <section class="content-grid daytrade-grid">
+          <form id="dayTradeForm" class="stock-form daytrade-form">
+            <div class="panel-title compact-title">
+              <h3>ルール入力</h3>
+              <span>まずはテストで確認</span>
+            </div>
+            <label>
+              <span>銘柄</span>
+              <select id="dayTradeSymbol"></select>
+            </label>
+            <label>
+              <span>モード</span>
+              <select id="dayTradeMode">
+                <option value="test">テストモード</option>
+                <option value="api">API接続モード</option>
+              </select>
+            </label>
+            <label>
+              <span>エントリー価格</span>
+              <input id="dayTradeEntryPrice" type="number" min="0" step="0.1" placeholder="現在値から自動入力">
+            </label>
+            <label>
+              <span>株数</span>
+              <input id="dayTradeQuantity" type="number" min="0" step="1" placeholder="例: 100">
+            </label>
+            <label>
+              <span>損切り 円</span>
+              <input id="dayTradeStopYen" type="number" min="0.1" step="0.1" value="3">
+            </label>
+            <label>
+              <span>利確 円</span>
+              <input id="dayTradeProfitYen" type="number" min="0.1" step="0.1" value="10">
+            </label>
+            <label>
+              <span>追撃 円</span>
+              <input id="dayTradeChaseYen" type="number" min="0.1" step="0.1" value="5">
+            </label>
+            <label>
+              <span>総資金</span>
+              <input id="dayTradeCapitalYen" type="number" min="0" step="10000" value="1000000">
+            </label>
+            <label>
+              <span>許容損失 %</span>
+              <input id="dayTradeRiskPct" type="number" min="0" max="20" step="0.1" value="1">
+            </label>
+            <label>
+              <span>許容損失 円</span>
+              <input id="dayTradeMaxLossYen" type="number" min="0" step="1000" placeholder="未入力なら%で計算">
+            </label>
+            <label>
+              <span>初動条件</span>
+              <select id="dayTradeSignal">
+                <option value="technical">移動平均・高値ブレイク</option>
+                <option value="manual">手動判断</option>
+                <option value="breakout">直近高値ブレイク重視</option>
+              </select>
+            </label>
+          </form>
+
+          <div class="table-panel daytrade-plan-panel">
+            <div class="panel-title">
+              <h3>注文ルール</h3>
+              <span id="dayTradePlanStatus">未計算</span>
+            </div>
+            <div id="dayTradePlan" class="daytrade-plan empty-state">
+              <p>銘柄とエントリー価格を入れると、損切り・利確・追撃の価格を表示します。</p>
+            </div>
+            <div id="dayTradeFlow" class="daytrade-flow"></div>
+          </div>
+        </section>
+
+        <section class="research-panel">
+          <div class="panel-title">
+            <h3>このルールを当てやすい銘柄</h3>
+            <span id="dayTradeCandidateProgress">未検索</span>
+          </div>
+          <div id="dayTradeCandidates" class="suggestion-list daytrade-candidates empty-state">
+            <p>「適用しやすい銘柄」を押すと、保存済み候補とWatchlistから、値幅・出来高・反転条件が合う銘柄を探します。</p>
+          </div>
+        </section>
+      </section>
+
       <section class="view-panel" data-view="ideas">
         <section class="command-band">
           <div>
@@ -485,6 +604,7 @@
             <button type="button" data-settings-tab="search" class="active">検索</button>
             <button type="button" data-settings-tab="ai">AI</button>
             <button type="button" data-settings-tab="trading">売買/口座</button>
+            <button type="button" data-settings-tab="broker">証券API</button>
             <button type="button" data-settings-tab="monitoring">監視</button>
             <button type="button" data-settings-tab="notifications">Teams</button>
           </div>
@@ -683,6 +803,41 @@
             </div>
           </div>
 
+          <div class="settings-tab-panel" data-settings-panel="broker" hidden>
+            <div class="settings-card">
+              <div class="panel-title compact-title">
+                <h3>楽天証券 API接続</h3>
+                <span>デイトレ用</span>
+              </div>
+              <section class="control-strip" aria-label="楽天証券API接続">
+                <label>
+                  <span>接続モード</span>
+                  <select id="settingsRakutenApiMode">
+                    <option value="test">テストのみ</option>
+                    <option value="rss_bridge">MarketSpeed II RSSブリッジ</option>
+                  </select>
+                </label>
+                <label>
+                  <span>RSSブリッジURL</span>
+                  <input id="settingsRakutenRssBridgeUrl" placeholder="例: http://127.0.0.1:5055/rakuten-rss/order">
+                </label>
+                <label>
+                  <span>接続トークン</span>
+                  <input id="settingsRakutenApiToken" type="password" autocomplete="off" placeholder="保存済みの場合は空欄で維持">
+                </label>
+                <label>
+                  <span>1回の上限金額</span>
+                  <input id="settingsRakutenOrderUpperLimitYen" type="number" min="0" step="10000" value="500000">
+                </label>
+                <label class="checkbox-line setting-check">
+                  <input id="settingsRakutenOrderEnabled" type="checkbox">
+                  <span>API発注を明示的に許可する</span>
+                </label>
+              </section>
+              <p class="settings-help">楽天証券のMarketSpeed II RSSはExcel関数で情報取得・注文を行う仕組みです。このアプリは直接発注せず、RSSを操作するローカルブリッジへ注文案を送る前提にしています。初期状態ではテストとプレビューだけです。</p>
+            </div>
+          </div>
+
           <div class="settings-tab-panel" data-settings-panel="monitoring" hidden>
             <div class="settings-card">
               <div class="panel-title compact-title">
@@ -818,6 +973,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260910-background-prices" type="module"></script>
+  <script src="/app.js?v=20260919-daytrade" type="module"></script>
 </body>
 </html>

@@ -2135,6 +2135,185 @@ tr:hover .drag-handle,
   flex-basis: 100%;
 }
 
+.daytrade-summary {
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+}
+
+.daytrade-grid {
+  grid-template-columns: minmax(320px, 0.72fr) minmax(0, 1.28fr);
+}
+
+.daytrade-form {
+  grid-template-columns: repeat(2, minmax(130px, 1fr));
+  align-content: start;
+}
+
+.daytrade-form .compact-title {
+  grid-column: 1 / -1;
+}
+
+.daytrade-plan-panel {
+  padding: 14px;
+}
+
+.daytrade-plan {
+  display: grid;
+  gap: 12px;
+}
+
+.daytrade-price-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.daytrade-metric {
+  min-height: 82px;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.daytrade-metric span,
+.daytrade-metric small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.daytrade-metric strong {
+  font-size: 20px;
+}
+
+.daytrade-metric.buy {
+  border-color: #b8ddcc;
+  background: #f1faf6;
+}
+
+.daytrade-metric.danger {
+  border-color: #efc3c5;
+  background: #fff7f7;
+}
+
+.daytrade-note {
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.daytrade-note.ok {
+  background: #edf8f3;
+  color: var(--buy);
+}
+
+.daytrade-note.bad,
+#dayTradePlanStatus.bad {
+  background: #fff0f0;
+  color: var(--danger);
+}
+
+.daytrade-flow {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.flow-step,
+.flow-split article {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8faf9;
+  padding: 12px;
+}
+
+.flow-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 900;
+}
+
+.flow-step small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.flow-step.muted {
+  justify-content: center;
+  color: var(--muted);
+}
+
+.flow-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.flow-split article {
+  display: grid;
+  gap: 5px;
+}
+
+.flow-split span,
+.flow-split small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.score-pill {
+  border-radius: 999px;
+  background: #e6f3ef;
+  color: var(--accent);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.candidate-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(90px, 1fr));
+  gap: 8px;
+}
+
+.candidate-metrics span {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  padding: 7px 9px;
+  font-size: 13px;
+}
+
+.candidate-metrics strong {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.reason-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reason-tags span {
+  border-radius: 7px;
+  background: #e8f5f1;
+  color: var(--accent);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .sell-plan {
   display: grid;
   grid-template-columns: repeat(2, minmax(120px, 0.24fr)) minmax(220px, 1fr);
@@ -2637,6 +2816,10 @@ tr:hover .drag-handle,
     grid-template-columns: 1fr;
   }
 
+  .daytrade-grid {
+    grid-template-columns: 1fr;
+  }
+
   .manage-grid {
     grid-template-columns: 1fr;
   }
@@ -2679,6 +2862,9 @@ tr:hover .drag-handle,
 
   .control-strip,
   .profit-summary,
+  .daytrade-summary,
+  .daytrade-price-grid,
+  .candidate-metrics,
   .crypto-profit-summary,
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2693,6 +2879,8 @@ tr:hover .drag-handle,
   }
 
   .position-fields,
+  .daytrade-form,
+  .flow-split,
   .entry-value,
   .reservation-grid,
   .recommendation-metrics,

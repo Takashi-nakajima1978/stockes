@@ -404,6 +404,17 @@ const defaultSettings = {
   edinetApiKey: process.env.EDINET_API_KEY || "",
   rakutenAccountMemo: "",
   revolutAccountMemo: "",
+  rakutenApiMode: "test",
+  rakutenRssBridgeUrl: process.env.RAKUTEN_RSS_BRIDGE_URL || "",
+  rakutenApiToken: process.env.RAKUTEN_API_TOKEN || "",
+  rakutenOrderEnabled: false,
+  rakutenOrderUpperLimitYen: 500000,
+  dayTradeStopYen: 3,
+  dayTradeProfitYen: 10,
+  dayTradeChaseYen: 5,
+  dayTradeCapitalYen: 1000000,
+  dayTradeRiskPct: 1,
+  dayTradeMaxLossYen: 0,
   notificationsEnabled: false,
   notificationMinConfidence: 78,
   notificationMinNetEdgeYen: 5000,
@@ -790,6 +801,22 @@ async function handleApi(req, res, url) {
       discoveryReset,
       discovery,
     });
+  }
+
+  if (url.pathname === "/api/daytrade/simulate" && req.method === "POST") {
+    const [body, settings] = await Promise.all([readJson(req), readSettings()]);
+    return json(res, 200, { plan: buildDayTradePlan(body, settings) });
+  }
+
+  if (url.pathname === "/api/daytrade/candidates" && req.method === "GET") {
+    const settings = await readSettings();
+    return json(res, 200, await dayTradeCandidates(settings, Object.fromEntries(url.searchParams.entries())));
+  }
+
+  if (url.pathname === "/api/daytrade/order" && req.method === "POST") {
+    const [body, settings] = await Promise.all([readJson(req), readSettings()]);
+    const plan = buildDayTradePlan(body, settings);
+    return json(res, 200, await rakutenDayTradeOrderPreview(plan, body, settings));
   }
 
   if (url.pathname === "/api/stocks" && req.method === "GET") {
@@ -13166,6 +13193,17 @@ function normalizeSettings(settings = {}) {
     edinetApiKey: String(settings.edinetApiKey || "").trim(),
     rakutenAccountMemo: String(settings.rakutenAccountMemo || "").slice(0, 500),
     revolutAccountMemo: String(settings.revolutAccountMemo || "").slice(0, 500),
+    rakutenApiMode: String(settings.rakutenApiMode || "test") === "rss_bridge" ? "rss_bridge" : "test",
+    rakutenRssBridgeUrl: normalizeUrl(settings.rakutenRssBridgeUrl) || "",
+    rakutenApiToken: String(settings.rakutenApiToken || "").trim(),
+    rakutenOrderEnabled: settings.rakutenOrderEnabled === true,
+    rakutenOrderUpperLimitYen: clamp(Number(settings.rakutenOrderUpperLimitYen ?? defaultSettings.rakutenOrderUpperLimitYen), 0, 100000000),
+    dayTradeStopYen: clamp(Number(settings.dayTradeStopYen || defaultSettings.dayTradeStopYen), 0.1, 1000),
+    dayTradeProfitYen: clamp(Number(settings.dayTradeProfitYen || defaultSettings.dayTradeProfitYen), 0.1, 10000),
+    dayTradeChaseYen: clamp(Number(settings.dayTradeChaseYen || defaultSettings.dayTradeChaseYen), 0.1, 10000),
+    dayTradeCapitalYen: clamp(Number(settings.dayTradeCapitalYen || defaultSettings.dayTradeCapitalYen), 0, 10000000000),
+    dayTradeRiskPct: clamp(Number(settings.dayTradeRiskPct ?? defaultSettings.dayTradeRiskPct), 0, 20),
+    dayTradeMaxLossYen: clamp(Number(settings.dayTradeMaxLossYen || defaultSettings.dayTradeMaxLossYen), 0, 100000000),
     notificationsEnabled: settings.notificationsEnabled === true,
     notificationMinConfidence: clamp(Number(settings.notificationMinConfidence || defaultSettings.notificationMinConfidence), 50, 100),
     notificationMinNetEdgeYen: clamp(Number(settings.notificationMinNetEdgeYen ?? defaultSettings.notificationMinNetEdgeYen), 0, 1000000),
@@ -13220,6 +13258,18 @@ function applySettingsPatch(current, body = {}) {
   if (body.clearEdinetApiKey) next.edinetApiKey = "";
   if (typeof body.rakutenAccountMemo === "string") next.rakutenAccountMemo = body.rakutenAccountMemo;
   if (typeof body.revolutAccountMemo === "string") next.revolutAccountMemo = body.revolutAccountMemo;
+  if (typeof body.rakutenApiMode === "string") next.rakutenApiMode = body.rakutenApiMode;
+  if (typeof body.rakutenRssBridgeUrl === "string") next.rakutenRssBridgeUrl = body.rakutenRssBridgeUrl;
+  if (typeof body.rakutenApiToken === "string" && body.rakutenApiToken.trim()) next.rakutenApiToken = body.rakutenApiToken;
+  if (body.clearRakutenApiToken) next.rakutenApiToken = "";
+  if (typeof body.rakutenOrderEnabled === "boolean") next.rakutenOrderEnabled = body.rakutenOrderEnabled;
+  if (body.rakutenOrderUpperLimitYen !== undefined) next.rakutenOrderUpperLimitYen = body.rakutenOrderUpperLimitYen;
+  if (body.dayTradeStopYen !== undefined) next.dayTradeStopYen = body.dayTradeStopYen;
+  if (body.dayTradeProfitYen !== undefined) next.dayTradeProfitYen = body.dayTradeProfitYen;
+  if (body.dayTradeChaseYen !== undefined) next.dayTradeChaseYen = body.dayTradeChaseYen;
+  if (body.dayTradeCapitalYen !== undefined) next.dayTradeCapitalYen = body.dayTradeCapitalYen;
+  if (body.dayTradeRiskPct !== undefined) next.dayTradeRiskPct = body.dayTradeRiskPct;
+  if (body.dayTradeMaxLossYen !== undefined) next.dayTradeMaxLossYen = body.dayTradeMaxLossYen;
   if (typeof body.notificationsEnabled === "boolean") next.notificationsEnabled = body.notificationsEnabled;
   if (body.notificationMinConfidence) next.notificationMinConfidence = body.notificationMinConfidence;
   if (body.notificationMinNetEdgeYen !== undefined) next.notificationMinNetEdgeYen = body.notificationMinNetEdgeYen;
@@ -13272,6 +13322,17 @@ function publicSettings(settings) {
     hasEdinetApiKey: Boolean(settings.edinetApiKey),
     rakutenAccountMemo: settings.rakutenAccountMemo,
     revolutAccountMemo: settings.revolutAccountMemo,
+    rakutenApiMode: settings.rakutenApiMode,
+    rakutenRssBridgeUrl: settings.rakutenRssBridgeUrl,
+    hasRakutenApiToken: Boolean(settings.rakutenApiToken),
+    rakutenOrderEnabled: settings.rakutenOrderEnabled,
+    rakutenOrderUpperLimitYen: settings.rakutenOrderUpperLimitYen,
+    dayTradeStopYen: settings.dayTradeStopYen,
+    dayTradeProfitYen: settings.dayTradeProfitYen,
+    dayTradeChaseYen: settings.dayTradeChaseYen,
+    dayTradeCapitalYen: settings.dayTradeCapitalYen,
+    dayTradeRiskPct: settings.dayTradeRiskPct,
+    dayTradeMaxLossYen: settings.dayTradeMaxLossYen,
     notificationsEnabled: settings.notificationsEnabled,
     notificationMinConfidence: settings.notificationMinConfidence,
     notificationMinNetEdgeYen: settings.notificationMinNetEdgeYen,
@@ -13289,6 +13350,303 @@ function publicSettings(settings) {
     graphClientId: settings.graphClientId,
     hasGraphAccessToken: Boolean(settings.graphAccessToken),
     hasGraphClientSecret: Boolean(settings.graphClientSecret),
+  };
+}
+
+function normalizeDayTradeRules(input = {}, settings = defaultSettings) {
+  return {
+    stopYen: clamp(Number(input.stopYen || settings.dayTradeStopYen || defaultSettings.dayTradeStopYen), 0.1, 1000),
+    profitYen: clamp(Number(input.profitYen || settings.dayTradeProfitYen || defaultSettings.dayTradeProfitYen), 0.1, 10000),
+    chaseYen: clamp(Number(input.chaseYen || settings.dayTradeChaseYen || defaultSettings.dayTradeChaseYen), 0.1, 10000),
+    capitalYen: clamp(Number(input.capitalYen || settings.dayTradeCapitalYen || defaultSettings.dayTradeCapitalYen), 0, 10000000000),
+    riskPct: clamp(Number(input.riskPct ?? settings.dayTradeRiskPct ?? defaultSettings.dayTradeRiskPct), 0, 20),
+    maxLossYen: clamp(Number(input.maxLossYen || settings.dayTradeMaxLossYen || 0), 0, 100000000),
+  };
+}
+
+function buildDayTradePlan(input = {}, settings = defaultSettings) {
+  const symbol = normalizeSymbol(input.symbol || input.code || "");
+  const rules = normalizeDayTradeRules(input, settings);
+  const entryPrice = nullablePositiveNumber(input.entryPrice);
+  const stockName = String(input.name || "").trim();
+  if (!symbol || !entryPrice) {
+    return {
+      ready: false,
+      symbol,
+      name: stockName || symbol,
+      message: "銘柄とエントリー価格が必要です。",
+      rules,
+    };
+  }
+  const allowedLoss = rules.maxLossYen > 0 ? rules.maxLossYen : rules.capitalYen * rules.riskPct / 100;
+  const unitSize = clamp(Number(settings.unitSize || defaultSettings.unitSize), 1, 1000);
+  const perShareRisk = rules.stopYen;
+  const suggestedRaw = allowedLoss > 0 && perShareRisk > 0 ? allowedLoss / perShareRisk : unitSize;
+  const suggestedQuantity = Math.max(unitSize, Math.floor(suggestedRaw / unitSize) * unitSize);
+  const quantity = nullablePositiveNumber(input.quantity) || suggestedQuantity;
+  const stopPrice = roundPrice(entryPrice - rules.stopYen);
+  const takeProfitPrice = roundPrice(entryPrice + rules.profitYen);
+  const chaseTriggerPrice = roundPrice(takeProfitPrice + rules.chaseYen);
+  const reEntryPrice = chaseTriggerPrice;
+  const reStopPrice = roundPrice(reEntryPrice - rules.stopYen);
+  const reTakeProfitPrice = roundPrice(reEntryPrice + rules.profitYen);
+  const maxLoss = rules.stopYen * quantity;
+  const firstProfit = rules.profitYen * quantity;
+  const orderAmount = entryPrice * quantity;
+  const mode = String(input.mode || settings.rakutenApiMode || "test") === "api" ? "api" : "test";
+  return {
+    ready: true,
+    symbol,
+    name: stockName || symbol,
+    mode,
+    signal: String(input.signal || "technical"),
+    entryPrice: roundPrice(entryPrice),
+    stopYen: rules.stopYen,
+    profitYen: rules.profitYen,
+    chaseYen: rules.chaseYen,
+    quantity,
+    unitSize,
+    suggestedQuantity,
+    capitalYen: rules.capitalYen,
+    riskPct: rules.riskPct,
+    allowedLoss,
+    maxLoss,
+    firstProfit,
+    orderAmount,
+    riskOk: allowedLoss <= 0 || maxLoss <= allowedLoss,
+    stopPrice,
+    takeProfitPrice,
+    chaseTriggerPrice,
+    reEntryPrice,
+    reStopPrice,
+    reTakeProfitPrice,
+    orderPreview: rakutenRssOrderPreview({
+      symbol,
+      quantity,
+      entryPrice,
+      stopPrice,
+      takeProfitPrice,
+      chaseTriggerPrice,
+      reEntryPrice,
+      reStopPrice,
+      reTakeProfitPrice,
+    }),
+    flow: [
+      `新規買い ${formatMoney(entryPrice, "JPY")}`,
+      `下落時は ${formatMoney(stopPrice, "JPY")} で損切りして終了`,
+      `上昇時は ${formatMoney(takeProfitPrice, "JPY")} で利確して一度ゼロにする`,
+      `利確後に ${formatMoney(chaseTriggerPrice, "JPY")} まで上がれば追撃買い`,
+      `追撃後は ${formatMoney(reStopPrice, "JPY")} / ${formatMoney(reTakeProfitPrice, "JPY")} のOCOを再設定`,
+    ],
+  };
+}
+
+function rakutenRssOrderPreview(plan = {}) {
+  return [
+    {
+      step: "entry",
+      label: "新規買い",
+      rssFunction: "RssStockOrder",
+      trigger: 0,
+      symbol: plan.symbol,
+      side: "buy",
+      quantity: plan.quantity,
+      orderType: "limit",
+      price: roundPrice(plan.entryPrice),
+    },
+    {
+      step: "oco_stop",
+      label: "損切り逆指値",
+      rssFunction: "RssStockOrder",
+      trigger: 0,
+      symbol: plan.symbol,
+      side: "sell",
+      quantity: plan.quantity,
+      orderType: "stop",
+      price: roundPrice(plan.stopPrice),
+    },
+    {
+      step: "oco_profit",
+      label: "利確指値",
+      rssFunction: "RssStockOrder",
+      trigger: 0,
+      symbol: plan.symbol,
+      side: "sell",
+      quantity: plan.quantity,
+      orderType: "limit",
+      price: roundPrice(plan.takeProfitPrice),
+    },
+    {
+      step: "chase_entry",
+      label: "追撃買い条件",
+      rssFunction: "RssStockOrder",
+      trigger: 0,
+      symbol: plan.symbol,
+      side: "buy",
+      quantity: plan.quantity,
+      orderType: "conditional",
+      price: roundPrice(plan.reEntryPrice),
+      condition: `利確後に${formatMoney(plan.chaseTriggerPrice, "JPY")}へ到達`,
+    },
+  ];
+}
+
+async function rakutenDayTradeOrderPreview(plan = {}, input = {}, settings = defaultSettings) {
+  if (!plan.ready) return { previewOnly: true, plan, message: plan.message || "注文案を作れませんでした。" };
+  const orderUpperLimit = Number(settings.rakutenOrderUpperLimitYen || 0);
+  const previewOnly = input.previewOnly !== false || input.confirm !== true;
+  const canSend = settings.rakutenApiMode === "rss_bridge"
+    && settings.rakutenOrderEnabled === true
+    && Boolean(settings.rakutenRssBridgeUrl)
+    && !previewOnly
+    && plan.riskOk
+    && (!orderUpperLimit || plan.orderAmount <= orderUpperLimit);
+  const base = {
+    previewOnly: !canSend,
+    plan,
+    mode: settings.rakutenApiMode,
+    orderPreview: plan.orderPreview,
+    message: canSend
+      ? "楽天RSSブリッジへ注文案を送信しました。"
+      : "安全のためプレビューのみです。実行には証券API設定、発注許可、上限金額、confirm=true が必要です。",
+    safeguards: [
+      "MarketSpeed II RSSの注文は、RSS接続・発注許可・楽天側の注文設定が必要です。",
+      "RssStockOrderのトリガーを不用意にTRUEにしない前提で、ここでは注文案を作成します。",
+      "損切り後のナンピンは行いません。利確後だけ追撃条件を確認します。",
+    ],
+  };
+  if (!canSend) return base;
+  const response = await fetchWithTimeout(settings.rakutenRssBridgeUrl, {
+    method: "POST",
+    timeout: 15000,
+    parseJson: true,
+    headers: {
+      "content-type": "application/json",
+      ...(settings.rakutenApiToken ? { authorization: `Bearer ${settings.rakutenApiToken}` } : {}),
+    },
+    body: JSON.stringify({
+      kind: "day_trade_plan",
+      symbol: plan.symbol,
+      quantity: plan.quantity,
+      plan,
+      orders: plan.orderPreview,
+    }),
+  });
+  return { ...base, previewOnly: false, bridgeResponse: response };
+}
+
+async function dayTradeCandidates(settings = defaultSettings, options = {}) {
+  const rules = normalizeDayTradeRules(options, settings);
+  const [watchlist, discovery] = await Promise.all([
+    readWatchlist().catch(() => []),
+    discoveryCacheForCurrentSettings().catch(() => ({ suggestions: [] })),
+  ]);
+  const fromWatchlist = watchlist.map((stock) => ({
+    symbol: normalizeSymbol(stock.symbol),
+    name: stock.name || stock.symbol,
+    sector: stockSector(stock),
+    source: "Watchlist",
+  }));
+  const fromDiscovery = (discovery.suggestions || [])
+    .filter((item) => !isUsDiscoveryCandidate(item))
+    .map((item) => ({
+      symbol: normalizeDiscoverySymbol(item.symbol, item),
+      name: item.name || item.symbol,
+      sector: item.sector || "その他",
+      source: "候補検索",
+    }));
+  const pool = uniqueBy([...fromWatchlist, ...fromDiscovery], (item) => item.symbol)
+    .filter((item) => /\.T$/.test(item.symbol))
+    .slice(0, 120);
+  const checked = await mapLimit(pool, 6, async (item) => {
+    const price = await fetchPriceHistory(item.symbol, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch(() => emptyPrice());
+    return scoreDayTradeCandidate(item, price, rules);
+  });
+  const candidates = checked
+    .filter((item) => item && item.current && item.score >= 45)
+    .sort((a, b) => b.score - a.score || b.current - a.current)
+    .slice(0, 30);
+  return {
+    generatedAt: new Date().toISOString(),
+    rules,
+    checked: pool.length,
+    candidates,
+  };
+}
+
+function scoreDayTradeCandidate(item = {}, price = {}, rules = {}) {
+  const current = nullablePositiveNumber(price.current);
+  if (!current) return null;
+  const atr14 = nullablePositiveNumber(price.atr14);
+  const atrPct = nullablePositiveNumber(price.atrPct);
+  const volumeRatio20 = nullablePositiveNumber(price.volumeRatio20);
+  const rsi14 = Number.isFinite(Number(price.rsi14)) ? Number(price.rsi14) : null;
+  let score = 30;
+  const reasons = [];
+  const risks = [];
+  if (atr14 && atr14 >= rules.stopYen && atr14 <= rules.profitYen * 2.5) {
+    score += 22;
+    reasons.push(`ATRが${formatMoney(atr14, "JPY")}で、${formatMoney(rules.stopYen, "JPY")}損切りに対して値幅がある`);
+  } else if (atr14 && atr14 < rules.stopYen) {
+    score -= 14;
+    risks.push("値幅が小さく、損切りだけが先に当たりやすい");
+  } else if (atr14) {
+    score -= 8;
+    risks.push("値幅が大きく、基準単位を広げる必要があります");
+  } else {
+    risks.push("ATR未取得");
+  }
+  if (atrPct && atrPct >= 1 && atrPct <= 5) {
+    score += 12;
+    reasons.push(`日中値幅の目安が${atrPct.toFixed(1)}%で極端ではない`);
+  } else if (atrPct && atrPct > 7) {
+    score -= 10;
+    risks.push("値動きが荒く、テスト幅では振らされやすい");
+  }
+  if (volumeRatio20 && volumeRatio20 >= 0.8) {
+    score += 10;
+    reasons.push("出来高が20日平均から大きく落ちていない");
+  } else {
+    score -= 5;
+    risks.push("出来高が細い可能性があります");
+  }
+  if (price.sma5CrossUp || price.maCrossSignal === "golden") {
+    score += 12;
+    reasons.push("短期線の上向き・ゴールデンクロス系の初動がある");
+  }
+  if (price.technicalEntry?.ready) {
+    score += 10;
+    reasons.push("5日線・RSI・ローソク足の反転確認が揃い始めている");
+  }
+  if (rsi14 !== null && rsi14 >= 30 && rsi14 <= 60) {
+    score += 7;
+    reasons.push(`RSI ${rsi14.toFixed(1)}で過熱しすぎていない`);
+  } else if (rsi14 !== null && rsi14 > 72) {
+    score -= 10;
+    risks.push("RSIが高く、追撃前に失速しやすい");
+  }
+  if (Number(price.return1m) > 12) {
+    score -= 8;
+    risks.push("直近1か月で上がりすぎている");
+  }
+  if (Number(price.return1m) < -12 && rsi14 !== null && rsi14 < 35) {
+    score += 6;
+    reasons.push("下落後の反転待ちとして監視しやすい");
+  }
+  return {
+    symbol: item.symbol,
+    name: item.name || item.symbol,
+    sector: item.sector || "その他",
+    source: item.source || "",
+    score: clamp(score, 0, 100),
+    current,
+    atr14,
+    atrPct,
+    rsi14,
+    volumeRatio20,
+    summary: `${formatMoney(current, "JPY")}前後。${formatMoney(rules.stopYen, "JPY")}損切り / ${formatMoney(rules.profitYen, "JPY")}利確 / ${formatMoney(rules.chaseYen, "JPY")}追撃のテスト対象。`,
+    reasons: uniqueText(reasons).slice(0, 5),
+    risks: uniqueText(risks).slice(0, 4),
   };
 }
 

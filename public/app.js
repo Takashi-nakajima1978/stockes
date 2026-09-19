@@ -1,5 +1,5 @@
 const MANAGED_STOCK_LIMIT = 50;
-const VIEW_KEYS = new Set(["analysis", "stocks", "us", "crypto", "ideas", "settings"]);
+const VIEW_KEYS = new Set(["analysis", "stocks", "us", "crypto", "daytrade", "ideas", "settings"]);
 const VIEW_STORAGE_KEY = "stockSignalActiveView";
 const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2400000;
 const NISA_GROWTH_LIFETIME_LIMIT_YEN = 12000000;
@@ -17,6 +17,10 @@ const state = {
   suggestions: [],
   excludedCandidates: [],
   sectorEvidence: [],
+  dayTradePlan: null,
+  dayTradeCandidates: [],
+  dayTradeApiResult: null,
+  dayTradeLoading: false,
   sourceSummary: null,
   candidatePerformance: null,
   analysisJob: null,
@@ -122,6 +126,33 @@ const els = {
   cryptoPnlUsd: document.getElementById("cryptoPnlUsd"),
   cryptoPnlUsdPct: document.getElementById("cryptoPnlUsdPct"),
   cryptoDetail: document.getElementById("cryptoDetail"),
+  dayTradeForm: document.getElementById("dayTradeForm"),
+  dayTradeSymbol: document.getElementById("dayTradeSymbol"),
+  dayTradeMode: document.getElementById("dayTradeMode"),
+  dayTradeEntryPrice: document.getElementById("dayTradeEntryPrice"),
+  dayTradeQuantity: document.getElementById("dayTradeQuantity"),
+  dayTradeStopYen: document.getElementById("dayTradeStopYen"),
+  dayTradeProfitYen: document.getElementById("dayTradeProfitYen"),
+  dayTradeChaseYen: document.getElementById("dayTradeChaseYen"),
+  dayTradeCapitalYen: document.getElementById("dayTradeCapitalYen"),
+  dayTradeRiskPct: document.getElementById("dayTradeRiskPct"),
+  dayTradeMaxLossYen: document.getElementById("dayTradeMaxLossYen"),
+  dayTradeSignal: document.getElementById("dayTradeSignal"),
+  dayTradeModeLabel: document.getElementById("dayTradeModeLabel"),
+  dayTradeApiStatus: document.getElementById("dayTradeApiStatus"),
+  dayTradeSelectedLabel: document.getElementById("dayTradeSelectedLabel"),
+  dayTradeCurrentPrice: document.getElementById("dayTradeCurrentPrice"),
+  dayTradeUnitLabel: document.getElementById("dayTradeUnitLabel"),
+  dayTradeRiskLabel: document.getElementById("dayTradeRiskLabel"),
+  dayTradeRiskNote: document.getElementById("dayTradeRiskNote"),
+  dayTradePlanStatus: document.getElementById("dayTradePlanStatus"),
+  dayTradePlan: document.getElementById("dayTradePlan"),
+  dayTradeFlow: document.getElementById("dayTradeFlow"),
+  dayTradeCandidateProgress: document.getElementById("dayTradeCandidateProgress"),
+  dayTradeCandidates: document.getElementById("dayTradeCandidates"),
+  dayTradeSimulateButton: document.getElementById("dayTradeSimulateButton"),
+  dayTradeApiPreviewButton: document.getElementById("dayTradeApiPreviewButton"),
+  dayTradeFindCandidatesButton: document.getElementById("dayTradeFindCandidatesButton"),
   discoverButton: document.getElementById("discoverButton"),
   websiteLimit: document.getElementById("websiteLimit"),
   depthLimit: document.getElementById("depthLimit"),
@@ -184,6 +215,11 @@ const els = {
   settingsEdinetApiKey: document.getElementById("settingsEdinetApiKey"),
   settingsRakutenAccountMemo: document.getElementById("settingsRakutenAccountMemo"),
   settingsRevolutAccountMemo: document.getElementById("settingsRevolutAccountMemo"),
+  settingsRakutenApiMode: document.getElementById("settingsRakutenApiMode"),
+  settingsRakutenRssBridgeUrl: document.getElementById("settingsRakutenRssBridgeUrl"),
+  settingsRakutenApiToken: document.getElementById("settingsRakutenApiToken"),
+  settingsRakutenOrderEnabled: document.getElementById("settingsRakutenOrderEnabled"),
+  settingsRakutenOrderUpperLimitYen: document.getElementById("settingsRakutenOrderUpperLimitYen"),
   settingsNotificationsEnabled: document.getElementById("settingsNotificationsEnabled"),
   settingsDefaultJpAccountType: document.getElementById("settingsDefaultJpAccountType"),
   settingsJpTaxableTradeFeeYen: document.getElementById("settingsJpTaxableTradeFeeYen"),
@@ -404,6 +440,21 @@ function applySettings(settings = {}) {
   }
   if (els.settingsRakutenAccountMemo) els.settingsRakutenAccountMemo.value = settings.rakutenAccountMemo || "";
   if (els.settingsRevolutAccountMemo) els.settingsRevolutAccountMemo.value = settings.revolutAccountMemo || "";
+  if (els.settingsRakutenApiMode) els.settingsRakutenApiMode.value = settings.rakutenApiMode || "test";
+  if (els.settingsRakutenRssBridgeUrl) els.settingsRakutenRssBridgeUrl.value = settings.rakutenRssBridgeUrl || "";
+  if (els.settingsRakutenApiToken) {
+    els.settingsRakutenApiToken.placeholder = settings.hasRakutenApiToken ? "保存済み。変更時だけ入力" : "任意のブリッジ用トークン";
+  }
+  if (els.settingsRakutenOrderEnabled) els.settingsRakutenOrderEnabled.checked = settings.rakutenOrderEnabled === true;
+  if (els.settingsRakutenOrderUpperLimitYen) els.settingsRakutenOrderUpperLimitYen.value = Number.isFinite(settings.rakutenOrderUpperLimitYen) ? settings.rakutenOrderUpperLimitYen : 500000;
+  if (els.dayTradeStopYen) els.dayTradeStopYen.value ||= Number.isFinite(settings.dayTradeStopYen) ? settings.dayTradeStopYen : 3;
+  if (els.dayTradeProfitYen) els.dayTradeProfitYen.value ||= Number.isFinite(settings.dayTradeProfitYen) ? settings.dayTradeProfitYen : 10;
+  if (els.dayTradeChaseYen) els.dayTradeChaseYen.value ||= Number.isFinite(settings.dayTradeChaseYen) ? settings.dayTradeChaseYen : 5;
+  if (els.dayTradeCapitalYen) els.dayTradeCapitalYen.value ||= Number.isFinite(settings.dayTradeCapitalYen) ? settings.dayTradeCapitalYen : 1000000;
+  if (els.dayTradeRiskPct) els.dayTradeRiskPct.value ||= Number.isFinite(settings.dayTradeRiskPct) ? settings.dayTradeRiskPct : 1;
+  if (els.dayTradeMaxLossYen && !els.dayTradeMaxLossYen.value && Number.isFinite(settings.dayTradeMaxLossYen) && settings.dayTradeMaxLossYen > 0) {
+    els.dayTradeMaxLossYen.value = settings.dayTradeMaxLossYen;
+  }
   if (els.settingsNotificationsEnabled) els.settingsNotificationsEnabled.checked = settings.notificationsEnabled === true;
   if (els.settingsDefaultJpAccountType) els.settingsDefaultJpAccountType.value = normalizeAccountType(settings.defaultJpAccountType || "taxable");
   if (els.stockAccountType) els.stockAccountType.value = normalizeAccountType(settings.defaultJpAccountType || "taxable");
@@ -613,6 +664,7 @@ function render() {
   safeRender("米国株分析ジョブ", renderUsAnalysisJob);
   safeRender("米国株", renderUs);
   safeRender("BTC・為替", renderCrypto);
+  safeRender("デイトレ", renderDayTrade);
 }
 
 function noteDetailFormEdit() {
@@ -656,6 +708,7 @@ function setView(view) {
   if (nextView === "analysis") renderSelection();
   if (nextView === "us") renderUs();
   if (nextView === "crypto") renderCrypto();
+  if (nextView === "daytrade") renderDayTrade();
 }
 
 function preferredView() {
@@ -1255,6 +1308,220 @@ function renderCryptoDetail() {
   attachCryptoPositionForm();
   renderEmbeddedPriceChart(els.cryptoDetail.querySelector(".crypto-chart-usd"), analysis?.btcUsd?.series || [], usd);
   renderEmbeddedPriceChart(els.cryptoDetail.querySelector(".crypto-chart-jpy"), analysis?.btcJpy?.series || [], yen);
+}
+
+function renderDayTrade() {
+  if (!els.dayTradeForm) return;
+  renderDayTradeStockOptions();
+  const input = dayTradeFormPayload();
+  const plan = state.dayTradePlan && state.dayTradePlan.symbol === input.symbol
+    ? state.dayTradePlan
+    : clientDayTradePlan(input);
+  renderDayTradeSummary(plan, input);
+  renderDayTradePlan(plan);
+  renderDayTradeCandidates();
+}
+
+function renderDayTradeStockOptions() {
+  if (!els.dayTradeSymbol) return;
+  const current = els.dayTradeSymbol.value;
+  const rows = state.stocks.map((stock) => {
+    const symbol = escapeHtml(stock.symbol);
+    const label = `${stock.name || stock.symbol} / ${stock.symbol}`;
+    return `<option value="${symbol}">${escapeHtml(label)}</option>`;
+  });
+  els.dayTradeSymbol.innerHTML = rows.length ? rows.join("") : "<option value=\"\">Watchlistに銘柄がありません</option>";
+  const preferred = current || state.selected || state.stocks[0]?.symbol || "";
+  if (preferred && state.stocks.some((stock) => stock.symbol === preferred)) {
+    els.dayTradeSymbol.value = preferred;
+  }
+  if (!els.dayTradeEntryPrice.value) {
+    const price = currentDayTradePrice(els.dayTradeSymbol.value);
+    if (price) els.dayTradeEntryPrice.value = String(price);
+  }
+}
+
+function currentDayTradePrice(symbol) {
+  const analysis = state.analyses?.[symbol];
+  return finiteNumber(analysis?.price?.current) || finiteNumber(state.stocks.find((stock) => stock.symbol === symbol)?.currentPrice) || null;
+}
+
+function dayTradeFormPayload() {
+  const symbol = els.dayTradeSymbol?.value || state.selected || "";
+  const settings = state.settings || {};
+  return {
+    symbol,
+    mode: els.dayTradeMode?.value || "test",
+    signal: els.dayTradeSignal?.value || "technical",
+    entryPrice: positiveInput(els.dayTradeEntryPrice) || currentDayTradePrice(symbol),
+    quantity: positiveInput(els.dayTradeQuantity),
+    stopYen: positiveInput(els.dayTradeStopYen) || settings.dayTradeStopYen || 3,
+    profitYen: positiveInput(els.dayTradeProfitYen) || settings.dayTradeProfitYen || 10,
+    chaseYen: positiveInput(els.dayTradeChaseYen) || settings.dayTradeChaseYen || 5,
+    capitalYen: positiveInput(els.dayTradeCapitalYen) || settings.dayTradeCapitalYen || 1000000,
+    riskPct: nonNegativeInput(els.dayTradeRiskPct) ?? settings.dayTradeRiskPct ?? 1,
+    maxLossYen: positiveInput(els.dayTradeMaxLossYen) || settings.dayTradeMaxLossYen || null,
+  };
+}
+
+function clientDayTradePlan(input = {}) {
+  const stock = state.stocks.find((item) => item.symbol === input.symbol) || {};
+  const entryPrice = finiteNumber(input.entryPrice);
+  if (!input.symbol || !entryPrice) {
+    return { symbol: input.symbol || "", name: stock.name || "", ready: false, message: "銘柄とエントリー価格を入れてください。" };
+  }
+  const stopYen = finiteNumber(input.stopYen) || 3;
+  const profitYen = finiteNumber(input.profitYen) || 10;
+  const chaseYen = finiteNumber(input.chaseYen) || 5;
+  const capitalYen = finiteNumber(input.capitalYen) || 0;
+  const riskPct = Number.isFinite(Number(input.riskPct)) ? Number(input.riskPct) : 1;
+  const allowedLoss = finiteNumber(input.maxLossYen) || (capitalYen > 0 ? capitalYen * riskPct / 100 : null);
+  const unitSize = Math.max(1, Number(state.settings?.unitSize || 100));
+  const suggestedQuantity = allowedLoss
+    ? Math.max(unitSize, Math.floor((allowedLoss / stopYen) / unitSize) * unitSize)
+    : unitSize;
+  const quantity = finiteNumber(input.quantity) || suggestedQuantity;
+  const maxLoss = stopYen * quantity;
+  const firstProfit = profitYen * quantity;
+  const takeProfitPrice = roundDisplayPrice(entryPrice + profitYen);
+  const chaseTriggerPrice = roundDisplayPrice(takeProfitPrice + chaseYen);
+  const reEntryPrice = chaseTriggerPrice;
+  return {
+    ready: true,
+    symbol: input.symbol,
+    name: stock.name || input.symbol,
+    mode: input.mode || "test",
+    signal: input.signal || "technical",
+    entryPrice: roundDisplayPrice(entryPrice),
+    stopYen,
+    profitYen,
+    chaseYen,
+    quantity,
+    unitSize,
+    suggestedQuantity,
+    capitalYen,
+    riskPct,
+    allowedLoss,
+    maxLoss,
+    firstProfit,
+    stopPrice: roundDisplayPrice(entryPrice - stopYen),
+    takeProfitPrice,
+    chaseTriggerPrice,
+    reEntryPrice,
+    reStopPrice: roundDisplayPrice(reEntryPrice - stopYen),
+    reTakeProfitPrice: roundDisplayPrice(reEntryPrice + profitYen),
+    riskOk: !allowedLoss || maxLoss <= allowedLoss,
+    orderPreview: [
+      "新規買い",
+      `OCO: 損切り ${yen(entryPrice - stopYen)} / 利確 ${yen(entryPrice + profitYen)}`,
+      `利確後、さらに ${yen(chaseYen)} 上なら追撃買い`,
+    ],
+  };
+}
+
+function renderDayTradeSummary(plan = {}, input = {}) {
+  const stock = state.stocks.find((item) => item.symbol === input.symbol) || {};
+  const current = currentDayTradePrice(input.symbol);
+  if (els.dayTradeModeLabel) els.dayTradeModeLabel.textContent = input.mode === "api" ? "API接続" : "テスト";
+  if (els.dayTradeApiStatus) {
+    if (input.mode !== "api") els.dayTradeApiStatus.textContent = "実発注なし";
+    else if (state.settings?.rakutenOrderEnabled) els.dayTradeApiStatus.textContent = "発注許可ON・確認必須";
+    else els.dayTradeApiStatus.textContent = "API設定はプレビューのみ";
+  }
+  if (els.dayTradeSelectedLabel) els.dayTradeSelectedLabel.textContent = stock.name || input.symbol || "-";
+  if (els.dayTradeCurrentPrice) els.dayTradeCurrentPrice.textContent = current ? `${input.symbol} / 現在 ${yen(current)}` : "現在値未取得";
+  if (els.dayTradeUnitLabel) els.dayTradeUnitLabel.textContent = `-${input.stopYen || 3} / +${input.profitYen || 10} / +${input.chaseYen || 5}`;
+  if (els.dayTradeRiskLabel) els.dayTradeRiskLabel.textContent = Number.isFinite(plan.allowedLoss) ? yen(plan.allowedLoss) : "-";
+  if (els.dayTradeRiskNote) {
+    els.dayTradeRiskNote.textContent = Number.isFinite(plan.maxLoss)
+      ? `この株数の最大損失 ${yen(plan.maxLoss)}`
+      : "資金管理";
+  }
+}
+
+function renderDayTradePlan(plan = {}) {
+  if (!els.dayTradePlan) return;
+  if (!plan.ready) {
+    if (els.dayTradePlanStatus) els.dayTradePlanStatus.textContent = "未計算";
+    if (els.dayTradePlanStatus) els.dayTradePlanStatus.classList.remove("bad");
+    els.dayTradePlan.classList.add("empty-state");
+    els.dayTradePlan.innerHTML = `<p>${escapeHtml(plan.message || "銘柄とエントリー価格を入れてください。")}</p>`;
+    if (els.dayTradeFlow) els.dayTradeFlow.innerHTML = "";
+    return;
+  }
+  if (els.dayTradePlanStatus) {
+    els.dayTradePlanStatus.textContent = plan.riskOk ? "資金管理OK" : "許容損失超過";
+    els.dayTradePlanStatus.classList.toggle("bad", !plan.riskOk);
+  }
+  els.dayTradePlan.classList.remove("empty-state");
+  els.dayTradePlan.innerHTML = `
+    <div class="daytrade-price-grid">
+      ${dayTradeMetric("新規買い", yen(plan.entryPrice), `${plan.quantity}株`)}
+      ${dayTradeMetric("損切り", yen(plan.stopPrice), `最大損失 ${yen(plan.maxLoss)}`, "danger")}
+      ${dayTradeMetric("利確", yen(plan.takeProfitPrice), `想定利益 ${yen(plan.firstProfit)}`, "buy")}
+      ${dayTradeMetric("追撃条件", yen(plan.chaseTriggerPrice), `利確後さらに +${yen(plan.chaseYen)}`)}
+      ${dayTradeMetric("追撃買い", yen(plan.reEntryPrice), `再設定: ${yen(plan.reStopPrice)} / ${yen(plan.reTakeProfitPrice)}`)}
+      ${dayTradeMetric("推奨株数", `${Math.round(plan.suggestedQuantity)}株`, `許容損失 ${yen(plan.allowedLoss)}`)}
+    </div>
+    <div class="daytrade-note ${plan.riskOk ? "ok" : "bad"}">
+      ${plan.riskOk
+        ? "この株数なら、損切りに到達しても設定した許容損失内に収まります。"
+        : "この株数だと許容損失を超えます。株数を減らすか、許容損失額を見直してください。"}
+    </div>
+  `;
+  if (els.dayTradeFlow) {
+    els.dayTradeFlow.innerHTML = `
+      <div class="flow-step">新規買い <strong>${yen(plan.entryPrice)}</strong></div>
+      <div class="flow-split">
+        <article><span>下落</span><strong>${yen(plan.stopPrice)}</strong><small>損切りして終了。ナンピンしない。</small></article>
+        <article><span>上昇</span><strong>${yen(plan.takeProfitPrice)}</strong><small>利確していったんゼロにする。</small></article>
+      </div>
+      <div class="flow-step muted">利確後さらに ${yen(plan.chaseYen)} 上昇</div>
+      <div class="flow-step">追撃買い <strong>${yen(plan.reEntryPrice)}</strong><small>新しい基準価格としてOCOを再設定</small></div>
+    `;
+  }
+}
+
+function dayTradeMetric(label, value, detail, tone = "") {
+  return `
+    <article class="daytrade-metric ${tone}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(detail || "")}</small>
+    </article>
+  `;
+}
+
+function renderDayTradeCandidates() {
+  if (!els.dayTradeCandidates) return;
+  if (!state.dayTradeCandidates.length) {
+    els.dayTradeCandidates.classList.add("empty-state");
+    els.dayTradeCandidates.innerHTML = "<p>まだ候補はありません。適用しやすい銘柄を検索してください。</p>";
+    return;
+  }
+  els.dayTradeCandidates.classList.remove("empty-state");
+  els.dayTradeCandidates.innerHTML = state.dayTradeCandidates.map((candidate, index) => `
+    <article class="suggestion-item daytrade-candidate">
+      <div class="suggestion-head">
+        <div>
+          <strong>${index + 1}. ${escapeHtml(candidate.name || candidate.symbol)}</strong>
+          <span>${symbolLinkHtml(candidate.symbol, "jp")} / ${escapeHtml(candidate.sector || "業種未設定")}</span>
+        </div>
+        <span class="score-pill">${Math.round(candidate.score || 0)}点</span>
+      </div>
+      <div class="candidate-metrics">
+        <span><strong>現在</strong>${yen(candidate.current)}</span>
+        <span><strong>ATR</strong>${yen(candidate.atr14)}</span>
+        <span><strong>RSI</strong>${Number.isFinite(candidate.rsi14) ? candidate.rsi14.toFixed(1) : "-"}</span>
+        <span><strong>出来高</strong>${Number.isFinite(candidate.volumeRatio20) ? `${candidate.volumeRatio20.toFixed(1)}倍` : "-"}</span>
+      </div>
+      <p>${escapeHtml(candidate.summary || "")}</p>
+      <div class="reason-tags">
+        ${(candidate.reasons || []).map((reason) => `<span>${escapeHtml(reason)}</span>`).join("")}
+      </div>
+      ${(candidate.risks || []).length ? `<ul class="risk-list">${candidate.risks.map((risk) => `<li>${escapeHtml(risk)}</li>`).join("")}</ul>` : ""}
+    </article>
+  `).join("");
 }
 
 function cryptoTimingHtml(analysis) {
@@ -5634,6 +5901,27 @@ function finiteOrZero(value) {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function positiveInput(input) {
+  return input ? finiteNumber(input.value) : null;
+}
+
+function nonNegativeInput(input) {
+  if (!input) return null;
+  const number = Number(input.value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function roundDisplayPrice(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.round(number * 10) / 10;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -5752,6 +6040,17 @@ els.settingsForm.addEventListener("submit", async (event) => {
         edinetApiKey: els.settingsEdinetApiKey?.value || "",
         rakutenAccountMemo: els.settingsRakutenAccountMemo?.value || "",
         revolutAccountMemo: els.settingsRevolutAccountMemo?.value || "",
+        rakutenApiMode: els.settingsRakutenApiMode?.value || "test",
+        rakutenRssBridgeUrl: els.settingsRakutenRssBridgeUrl?.value || "",
+        rakutenApiToken: els.settingsRakutenApiToken?.value || "",
+        rakutenOrderEnabled: els.settingsRakutenOrderEnabled?.checked === true,
+        rakutenOrderUpperLimitYen: valueOrZero(els.settingsRakutenOrderUpperLimitYen?.value),
+        dayTradeStopYen: valueOrZero(els.dayTradeStopYen?.value),
+        dayTradeProfitYen: valueOrZero(els.dayTradeProfitYen?.value),
+        dayTradeChaseYen: valueOrZero(els.dayTradeChaseYen?.value),
+        dayTradeCapitalYen: valueOrZero(els.dayTradeCapitalYen?.value),
+        dayTradeRiskPct: valueOrZero(els.dayTradeRiskPct?.value),
+        dayTradeMaxLossYen: valueOrZero(els.dayTradeMaxLossYen?.value),
         notificationsEnabled: els.settingsNotificationsEnabled?.checked === true,
         defaultJpAccountType: normalizeAccountType(els.settingsDefaultJpAccountType?.value || "taxable"),
         jpTaxableTradeFeeYen: valueOrZero(els.settingsJpTaxableTradeFeeYen?.value),
@@ -5779,6 +6078,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
     }
     els.settingsGoogleApiKey.value = "";
     if (els.settingsEdinetApiKey) els.settingsEdinetApiKey.value = "";
+    if (els.settingsRakutenApiToken) els.settingsRakutenApiToken.value = "";
     if (els.settingsTeamsWebhookUrl) els.settingsTeamsWebhookUrl.value = "";
     if (els.settingsGraphClientSecret) els.settingsGraphClientSecret.value = "";
     if (els.settingsGraphAccessToken) els.settingsGraphAccessToken.value = "";
@@ -5799,6 +6099,75 @@ els.settingsForm.addEventListener("submit", async (event) => {
 
 els.settingsUnitBudgetUnlimited?.addEventListener("change", () => {
   if (els.settingsUnitBudget) els.settingsUnitBudget.disabled = els.settingsUnitBudgetUnlimited.checked;
+});
+
+els.dayTradeForm?.addEventListener("input", () => {
+  state.dayTradePlan = null;
+  renderDayTrade();
+});
+
+els.dayTradeForm?.addEventListener("change", () => {
+  if (document.activeElement === els.dayTradeSymbol) {
+    const price = currentDayTradePrice(els.dayTradeSymbol.value);
+    if (price) els.dayTradeEntryPrice.value = String(price);
+  }
+  state.dayTradePlan = null;
+  renderDayTrade();
+});
+
+els.dayTradeSimulateButton?.addEventListener("click", async () => {
+  try {
+    state.dayTradeLoading = true;
+    if (els.dayTradePlanStatus) els.dayTradePlanStatus.textContent = "計算中";
+    const payload = await request("/api/daytrade/simulate", {
+      method: "POST",
+      body: JSON.stringify(dayTradeFormPayload()),
+    });
+    state.dayTradePlan = payload.plan || null;
+    renderDayTrade();
+    toast("デイトレのシミュレーションを更新しました。");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    state.dayTradeLoading = false;
+  }
+});
+
+els.dayTradeApiPreviewButton?.addEventListener("click", async () => {
+  try {
+    if (els.dayTradeApiStatus) els.dayTradeApiStatus.textContent = "API確認中";
+    const payload = await request("/api/daytrade/order", {
+      method: "POST",
+      body: JSON.stringify({ ...dayTradeFormPayload(), previewOnly: true }),
+    });
+    state.dayTradePlan = payload.plan || null;
+    state.dayTradeApiResult = payload;
+    if (els.dayTradeApiStatus) {
+      els.dayTradeApiStatus.textContent = payload.previewOnly ? "プレビューのみ" : "API応答あり";
+    }
+    renderDayTrade();
+    toast(payload.message || "API注文案をプレビューしました。");
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+els.dayTradeFindCandidatesButton?.addEventListener("click", async () => {
+  try {
+    if (els.dayTradeCandidateProgress) els.dayTradeCandidateProgress.textContent = "検索中";
+    const query = new URLSearchParams({
+      stopYen: String(positiveInput(els.dayTradeStopYen) || 3),
+      profitYen: String(positiveInput(els.dayTradeProfitYen) || 10),
+      chaseYen: String(positiveInput(els.dayTradeChaseYen) || 5),
+    });
+    const payload = await request(`/api/daytrade/candidates?${query.toString()}`);
+    state.dayTradeCandidates = payload.candidates || [];
+    if (els.dayTradeCandidateProgress) els.dayTradeCandidateProgress.textContent = `${state.dayTradeCandidates.length}件`;
+    renderDayTradeCandidates();
+  } catch (error) {
+    if (els.dayTradeCandidateProgress) els.dayTradeCandidateProgress.textContent = "失敗";
+    toast(error.message);
+  }
 });
 
 els.viewButtons.forEach((button) => {

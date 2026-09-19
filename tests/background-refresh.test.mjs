@@ -8,6 +8,7 @@ import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, pre
 
 const serverSource = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+const indexSource = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 
 function loadFunction(source, name, globals) {
   const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
@@ -113,6 +114,21 @@ test("technical entry uses golden cross and closing strength experience rules", 
   assert.match(appSource, /ゴールデンクロス/);
   assert.match(appSource, /大引けの強さ/);
   assert.match(appSource, /technicalExperienceBadge/);
+});
+
+test("day trade feature has simulation, candidates, and guarded Rakuten RSS bridge", () => {
+  assert.match(indexSource, /data-view-target="daytrade"/);
+  assert.match(indexSource, /data-view="daytrade"/);
+  assert.match(indexSource, /data-settings-tab="broker"/);
+  assert.match(indexSource, /settingsRakutenRssBridgeUrl/);
+  assert.match(appSource, /\/api\/daytrade\/simulate/);
+  assert.match(appSource, /\/api\/daytrade\/candidates/);
+  assert.match(appSource, /\/api\/daytrade\/order/);
+  assert.match(serverSource, /function buildDayTradePlan/);
+  assert.match(serverSource, /function dayTradeCandidates/);
+  assert.match(serverSource, /RssStockOrder/);
+  assert.match(serverSource, /confirm=true/);
+  assert.match(serverSource, /rakutenOrderEnabled/);
 });
 
 test("Japan watchlist resolves sectors and shows FX/overseas sales context", () => {
