@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade-multi-monitor">
+  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade-autopilot">
 </head>
 <body>
   <div class="app-shell">
@@ -428,6 +428,7 @@
             <h2>デイトレ・ルール検証</h2>
           </div>
           <div class="actions">
+            <button id="dayTradeAutopilotTopButton" type="button">AI自律運用</button>
             <button id="dayTradeFindCandidatesButton" type="button" class="secondary">適用しやすい銘柄</button>
             <button id="dayTradeApiPreviewButton" type="button" class="secondary">APIプレビュー</button>
             <button id="dayTradeSimulateButton" type="button" class="secondary">条件を計算</button>
@@ -462,6 +463,38 @@
             <strong id="dayTradeSimulationLabel">停止中</strong>
             <small id="dayTradeSimulationNote">開始で現在値監視</small>
           </article>
+        </section>
+
+        <section class="research-panel daytrade-autopilot-panel">
+          <div class="panel-title">
+            <h3>AI自律運用</h3>
+            <span id="dayTradeAutopilotStatus">待機中</span>
+          </div>
+          <div class="allocation-grid">
+            <label>
+              <span>Stocks</span>
+              <input id="dayTradeTargetStocksPct" type="number" min="0" max="100" step="1" value="59">
+            </label>
+            <label>
+              <span>Bonds</span>
+              <input id="dayTradeTargetBondsPct" type="number" min="0" max="100" step="1" value="39">
+            </label>
+            <label>
+              <span>Cash</span>
+              <input id="dayTradeTargetCashPct" type="number" min="0" max="100" step="1" value="2">
+            </label>
+            <label>
+              <span>最大監視銘柄</span>
+              <input id="dayTradeAutopilotMaxPositions" type="number" min="1" max="20" step="1" value="5">
+            </label>
+            <div class="autopilot-actions">
+              <button id="dayTradeAutopilotButton" type="button" class="secondary">候補を自動発掘</button>
+              <button id="dayTradeAutopilotStartButton" type="button">自動発掘して開始</button>
+            </div>
+          </div>
+          <div id="dayTradeAutopilotPlan" class="autopilot-plan empty-state">
+            <p>Stock 59% / Bonds 39% / Cash 2%を前提に、AIスコアで値動き・出来高・反転条件が合う銘柄を自動選択します。初期状態ではテスト監視のみです。</p>
+          </div>
         </section>
 
         <section class="research-panel">
@@ -1045,6 +1078,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260919-daytrade-multi-monitor" type="module"></script>
+  <script src="/app.js?v=20260919-daytrade-autopilot" type="module"></script>
 </body>
 </html>

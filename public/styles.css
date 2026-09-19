@@ -2174,6 +2174,125 @@ tr:hover .drag-handle,
   grid-column: 1 / -1;
 }
 
+.daytrade-autopilot-panel {
+  display: grid;
+  gap: 0;
+}
+
+.allocation-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.allocation-grid label {
+  display: grid;
+  gap: 5px;
+}
+
+.allocation-grid label span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.autopilot-actions {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.autopilot-actions button {
+  min-height: 43px;
+}
+
+.autopilot-plan {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.autopilot-allocation-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.autopilot-allocation-cards article {
+  display: grid;
+  gap: 4px;
+  min-height: 86px;
+  align-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.autopilot-allocation-cards span,
+.autopilot-allocation-cards small,
+.autopilot-allocation-cards em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.autopilot-allocation-cards strong {
+  font-size: 22px;
+}
+
+.autopilot-summary {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #cfe7dc;
+  border-radius: 8px;
+  background: #edf8f3;
+  color: var(--accent);
+  padding: 10px 12px;
+  font-weight: 900;
+}
+
+.autopilot-summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.autopilot-candidates {
+  display: grid;
+  gap: 8px;
+}
+
+.autopilot-candidates article {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.35fr) minmax(160px, 0.25fr) auto 1fr;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.autopilot-candidates span,
+.autopilot-candidates small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.autopilot-candidates em {
+  border-radius: 999px;
+  background: #e6f3ef;
+  color: var(--accent);
+  padding: 5px 8px;
+  font-style: normal;
+  font-weight: 900;
+}
+
 .daytrade-plan-panel {
   padding: 14px;
 }
@@ -3074,6 +3193,8 @@ tr:hover .drag-handle,
   .daytrade-summary,
   .daytrade-price-grid,
   .simulation-status-grid,
+  .allocation-grid,
+  .autopilot-allocation-cards,
   .candidate-metrics,
   .crypto-profit-summary,
   .summary-grid {
@@ -3093,6 +3214,7 @@ tr:hover .drag-handle,
   .flow-split,
   .daytrade-watch-item,
   .simulation-monitor,
+  .autopilot-candidates article,
   .entry-value,
   .reservation-grid,
   .recommendation-metrics,

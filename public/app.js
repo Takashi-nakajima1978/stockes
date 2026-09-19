@@ -26,6 +26,7 @@ const state = {
   dayTradeLoading: false,
   dayTradeSelected: null,
   dayTradeMultiSelected: [],
+  dayTradeAutopilot: null,
   dayTradeAutoEntry: {
     loading: false,
     timer: null,
@@ -197,6 +198,15 @@ const els = {
   dayTradeSimulation: document.getElementById("dayTradeSimulation"),
   dayTradeCandidateProgress: document.getElementById("dayTradeCandidateProgress"),
   dayTradeCandidates: document.getElementById("dayTradeCandidates"),
+  dayTradeAutopilotTopButton: document.getElementById("dayTradeAutopilotTopButton"),
+  dayTradeAutopilotButton: document.getElementById("dayTradeAutopilotButton"),
+  dayTradeAutopilotStartButton: document.getElementById("dayTradeAutopilotStartButton"),
+  dayTradeAutopilotStatus: document.getElementById("dayTradeAutopilotStatus"),
+  dayTradeAutopilotPlan: document.getElementById("dayTradeAutopilotPlan"),
+  dayTradeTargetStocksPct: document.getElementById("dayTradeTargetStocksPct"),
+  dayTradeTargetBondsPct: document.getElementById("dayTradeTargetBondsPct"),
+  dayTradeTargetCashPct: document.getElementById("dayTradeTargetCashPct"),
+  dayTradeAutopilotMaxPositions: document.getElementById("dayTradeAutopilotMaxPositions"),
   dayTradeSimulateButton: document.getElementById("dayTradeSimulateButton"),
   dayTradeStartButton: document.getElementById("dayTradeStartButton"),
   dayTradeStopButton: document.getElementById("dayTradeStopButton"),
@@ -1384,6 +1394,7 @@ function renderDayTrade() {
   renderDayTradePlan(plan);
   renderDayTradeAutoEntryNote();
   renderDayTradeSimulation();
+  renderDayTradeAutopilot();
   renderDayTradeWatchlist();
   renderDayTradeCandidates();
   ensureDayTradeAutoEntryTracking();
@@ -1474,6 +1485,70 @@ function dayTradeFormPayload() {
     atr14: context.atr14,
     recentHigh: context.recentHigh,
   };
+}
+
+function dayTradeAutopilotPayload() {
+  const form = dayTradeFormPayload();
+  return {
+    ...form,
+    targetStocksPct: nonNegativeInput(els.dayTradeTargetStocksPct) ?? 59,
+    targetBondsPct: nonNegativeInput(els.dayTradeTargetBondsPct) ?? 39,
+    targetCashPct: nonNegativeInput(els.dayTradeTargetCashPct) ?? 2,
+    maxPositions: positiveInput(els.dayTradeAutopilotMaxPositions) || 5,
+    scanLimit: positiveInput(els.dayTradeScanLimit) || 320,
+    saveToWatchlist: true,
+  };
+}
+
+function renderDayTradeAutopilot() {
+  if (!els.dayTradeAutopilotPlan) return;
+  const plan = state.dayTradeAutopilot;
+  if (!plan) {
+    if (els.dayTradeAutopilotStatus) els.dayTradeAutopilotStatus.textContent = "待機中";
+    els.dayTradeAutopilotPlan.classList.add("empty-state");
+    els.dayTradeAutopilotPlan.innerHTML = "<p>Stock 59% / Bonds 39% / Cash 2%を前提に、AIスコアで値動き・出来高・反転条件が合う銘柄を自動選択します。初期状態ではテスト監視のみです。</p>";
+    return;
+  }
+  const allocation = plan.allocation || {};
+  const candidates = plan.candidates || [];
+  if (els.dayTradeAutopilotStatus) {
+    els.dayTradeAutopilotStatus.textContent = `${candidates.length}銘柄 / ${escapeHtml(plan.modeLabel || "テスト")}`;
+  }
+  els.dayTradeAutopilotPlan.classList.remove("empty-state");
+  els.dayTradeAutopilotPlan.innerHTML = `
+    <div class="autopilot-allocation-cards">
+      ${autopilotAllocationCard("Stocks", allocation.stocksPct, allocation.stockBudget, "監視・売買候補")}
+      ${autopilotAllocationCard("Bonds", allocation.bondsPct, allocation.bondBudget, "株式リスクの受け皿")}
+      ${autopilotAllocationCard("Cash", allocation.cashPct, allocation.cashBudget, "発注余力として維持")}
+      ${autopilotAllocationCard("1銘柄あたり", null, allocation.perPositionBudget, "損失許容の計算元")}
+    </div>
+    <div class="autopilot-summary">
+      <strong>${escapeHtml(plan.summary || "AI自律運用の候補を準備しました。")}</strong>
+      <span>${escapeHtml(plan.guardrail || "テスト監視のみ。実発注にはAPI接続と明示設定が必要です。")}</span>
+    </div>
+    <div class="autopilot-candidates">
+      ${candidates.map((candidate, index) => `
+        <article>
+          <strong>${index + 1}. ${escapeHtml(candidate.name || candidate.symbol)}</strong>
+          <span>${symbolLinkHtml(candidate.symbol, "jp")} / ${escapeHtml(candidate.sector || "業種未設定")}</span>
+          <em>${Math.round(candidate.score || 0)}点</em>
+          <small>${escapeHtml(candidate.summary || "")}</small>
+        </article>
+      `).join("") || "<p>条件に合う候補がまだありません。</p>"}
+    </div>
+  `;
+}
+
+function autopilotAllocationCard(label, pct, amount, detail) {
+  const pctText = Number.isFinite(Number(pct)) ? `${Number(pct).toFixed(0)}%` : "";
+  return `
+    <article>
+      <span>${escapeHtml(label)}</span>
+      <strong>${pctText || yen(amount)}</strong>
+      <small>${pctText ? yen(amount) : escapeHtml(detail || "")}</small>
+      ${pctText ? `<em>${escapeHtml(detail || "")}</em>` : ""}
+    </article>
+  `;
 }
 
 function clientDayTradePlan(input = {}) {
@@ -2205,6 +2280,36 @@ async function pollDayTradeMultiSimulationPrices() {
   }
   state.dayTradeSimulation = sim;
   renderDayTradeSimulation();
+}
+
+async function runDayTradeAutopilot(startAfter = false) {
+  try {
+    state.dayTradeLoading = true;
+    if (els.dayTradeAutopilotStatus) els.dayTradeAutopilotStatus.textContent = "AI選定中";
+    const payload = await request("/api/daytrade/autopilot", {
+      method: "POST",
+      body: JSON.stringify(dayTradeAutopilotPayload()),
+    });
+    state.dayTradeAutopilot = payload;
+    state.dayTradeCandidates = payload.candidates || [];
+    state.dayTradeStocks = payload.stocks || state.dayTradeStocks;
+    state.dayTradeMultiSelected = payload.selectedSymbols || [];
+    state.dayTradeSelected = state.dayTradeMultiSelected[0] || state.dayTradeSelected;
+    if (els.dayTradeSymbol && state.dayTradeSelected) els.dayTradeSymbol.value = state.dayTradeSelected;
+    if (payload.allocation?.perPositionBudget && els.dayTradeCapitalYen) {
+      els.dayTradeCapitalYen.value = String(Math.round(payload.allocation.perPositionBudget));
+    }
+    state.dayTradePlan = null;
+    renderDayTrade();
+    toast(startAfter ? "AIが選んだ銘柄で自律監視を開始します。" : "AI自律運用の候補を準備しました。");
+    if (startAfter && state.dayTradeMultiSelected.length) await startDayTradeSimulation();
+  } catch (error) {
+    if (els.dayTradeAutopilotStatus) els.dayTradeAutopilotStatus.textContent = "失敗";
+    toast(error.message);
+  } finally {
+    state.dayTradeLoading = false;
+    renderDayTrade();
+  }
 }
 
 function chaseReferenceLabel(value) {
@@ -6917,6 +7022,18 @@ els.dayTradeStartButton?.addEventListener("click", () => {
 
 els.dayTradeStopButton?.addEventListener("click", () => {
   stopDayTradeSimulation("手動で停止しました。");
+});
+
+els.dayTradeAutopilotTopButton?.addEventListener("click", () => {
+  runDayTradeAutopilot(true);
+});
+
+els.dayTradeAutopilotButton?.addEventListener("click", () => {
+  runDayTradeAutopilot(false);
+});
+
+els.dayTradeAutopilotStartButton?.addEventListener("click", () => {
+  runDayTradeAutopilot(true);
 });
 
 els.dayTradeAutoEntryEnabled?.addEventListener("change", () => {

@@ -825,6 +825,11 @@ async function handleApi(req, res, url) {
     return json(res, 200, await buildDayTradeSimulation(body, settings));
   }
 
+  if (url.pathname === "/api/daytrade/autopilot" && req.method === "POST") {
+    const [body, settings] = await Promise.all([readJson(req), readSettings()]);
+    return json(res, 200, await buildDayTradeAutopilot(body, settings));
+  }
+
   if (url.pathname === "/api/daytrade/candidates" && req.method === "GET") {
     const settings = await readSettings();
     return json(res, 200, await dayTradeCandidates(settings, Object.fromEntries(url.searchParams.entries())));
@@ -13850,6 +13855,75 @@ async function dayTradeCandidates(settings = defaultSettings, options = {}) {
     checked: pool.length,
     scanLimit,
     candidates,
+  };
+}
+
+function normalizeDayTradeAllocation(input = {}) {
+  const rawStocks = clamp(Number(input.targetStocksPct ?? 59), 0, 100);
+  const rawBonds = clamp(Number(input.targetBondsPct ?? 39), 0, 100);
+  const rawCash = clamp(Number(input.targetCashPct ?? 2), 0, 100);
+  const total = rawStocks + rawBonds + rawCash || 100;
+  const stocksPct = (rawStocks / total) * 100;
+  const bondsPct = (rawBonds / total) * 100;
+  const cashPct = (rawCash / total) * 100;
+  const totalCapital = clamp(Number(input.capitalYen || input.totalCapitalYen || defaultSettings.dayTradeCapitalYen), 0, 10000000000);
+  const maxPositions = clamp(Number(input.maxPositions || 5), 1, 20);
+  const stockBudget = totalCapital * stocksPct / 100;
+  const bondBudget = totalCapital * bondsPct / 100;
+  const cashBudget = totalCapital * cashPct / 100;
+  return {
+    stocksPct,
+    bondsPct,
+    cashPct,
+    totalCapital,
+    stockBudget,
+    bondBudget,
+    cashBudget,
+    maxPositions,
+    perPositionBudget: stockBudget / maxPositions,
+  };
+}
+
+async function buildDayTradeAutopilot(input = {}, settings = defaultSettings) {
+  const allocation = normalizeDayTradeAllocation({
+    ...input,
+    capitalYen: input.capitalYen || settings.dayTradeCapitalYen || defaultSettings.dayTradeCapitalYen,
+  });
+  const scanLimit = clamp(Number(input.scanLimit || settings.dayTradeScanLimit || defaultSettings.dayTradeScanLimit), 50, 1000);
+  const candidatePayload = await dayTradeCandidates(settings, {
+    ...input,
+    scanLimit,
+    capitalYen: allocation.perPositionBudget,
+  });
+  const candidates = (candidatePayload.candidates || [])
+    .filter((candidate) => Number(candidate.score) >= 50)
+    .slice(0, allocation.maxPositions);
+  const selectedSymbols = candidates.map((candidate) => candidate.symbol);
+  let stocks = await readDayTradeWatchlist().catch(() => []);
+  if (input.saveToWatchlist !== false && candidates.length) {
+    stocks = uniqueBy([...candidates.map(normalizeDayTradeWatchItem), ...stocks], (stock) => stock.symbol).slice(0, 80);
+    await saveDayTradeWatchlist(stocks);
+  }
+  const testOnly = String(input.mode || settings.rakutenApiMode || "test") !== "api"
+    || settings.rakutenOrderEnabled !== true;
+  return {
+    generatedAt: new Date().toISOString(),
+    aiMode: "technical-ai-autopilot",
+    mode: testOnly ? "test" : "api_preview",
+    modeLabel: testOnly ? "テスト監視" : "APIプレビュー",
+    allocation,
+    checked: candidatePayload.checked,
+    scanLimit,
+    selectedSymbols,
+    candidates,
+    stocks,
+    summary: candidates.length
+      ? `AIスコアで${candidates.length}銘柄を選び、Stock枠${formatMoney(allocation.stockBudget, "JPY")}内で同時監視します。`
+      : "条件に合う銘柄が見つかりませんでした。検索数や基準単位を見直してください。",
+    guardrail: testOnly
+      ? "自律運用はテスト監視までです。実発注には証券API設定、発注許可、上限金額の確認が必要です。"
+      : "API接続モードでも、発注上限と注文プレビューを通してから送信します。",
+    targetRationale: "Stock 59% / Bonds 39% / Cash 2%を目標配分として、株式側だけを短期監視対象にします。",
   };
 }
 
