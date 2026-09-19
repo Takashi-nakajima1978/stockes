@@ -3,6 +3,8 @@ const VIEW_KEYS = new Set(["analysis", "stocks", "us", "crypto", "daytrade", "id
 const VIEW_STORAGE_KEY = "stockSignalActiveView";
 const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2400000;
 const NISA_GROWTH_LIFETIME_LIMIT_YEN = 12000000;
+const DAY_TRADE_AUTO_ENTRY_INTERVAL_MS = 20000;
+const DAY_TRADE_MONITOR_INTERVAL_MS = 6000;
 
 const state = {
   stocks: [],
@@ -23,11 +25,17 @@ const state = {
   dayTradeApiResult: null,
   dayTradeLoading: false,
   dayTradeSelected: null,
+  dayTradeAutoEntry: {
+    loading: false,
+    timer: null,
+    recommendation: null,
+    updatedAt: 0,
+  },
   dayTradeSimulation: {
     running: false,
     timer: null,
     status: "停止中",
-    note: "開始でテスト実行",
+    note: "開始で現在値監視",
     events: [],
     series: [],
     index: 0,
@@ -39,6 +47,7 @@ const state = {
     trades: 0,
     lastPrice: null,
     lastDate: "",
+    monitorMode: false,
   },
   sourceSummary: null,
   candidatePerformance: null,
@@ -149,6 +158,9 @@ const els = {
   dayTradeSymbol: document.getElementById("dayTradeSymbol"),
   dayTradeMode: document.getElementById("dayTradeMode"),
   dayTradeEntryPrice: document.getElementById("dayTradeEntryPrice"),
+  dayTradeAutoEntryNote: document.getElementById("dayTradeAutoEntryNote"),
+  dayTradeAutoEntryEnabled: document.getElementById("dayTradeAutoEntryEnabled"),
+  dayTradeFollowPrice: document.getElementById("dayTradeFollowPrice"),
   dayTradeQuantity: document.getElementById("dayTradeQuantity"),
   dayTradeStopYen: document.getElementById("dayTradeStopYen"),
   dayTradeStopMode: document.getElementById("dayTradeStopMode"),
@@ -1364,9 +1376,11 @@ function renderDayTrade() {
     : clientDayTradePlan(input);
   renderDayTradeSummary(plan, input);
   renderDayTradePlan(plan);
+  renderDayTradeAutoEntryNote();
   renderDayTradeSimulation();
   renderDayTradeWatchlist();
   renderDayTradeCandidates();
+  ensureDayTradeAutoEntryTracking();
 }
 
 function renderDayTradeStockOptions() {
@@ -1417,6 +1431,8 @@ function dayTradeFormPayload() {
     symbol,
     mode: els.dayTradeMode?.value || "test",
     signal: els.dayTradeSignal?.value || "technical",
+    autoEntryEnabled: els.dayTradeAutoEntryEnabled?.checked !== false,
+    followPrice: els.dayTradeFollowPrice?.checked !== false,
     entryPrice: positiveInput(els.dayTradeEntryPrice) || currentDayTradePrice(symbol),
     quantity: positiveInput(els.dayTradeQuantity),
     stopYen: positiveInput(els.dayTradeStopYen) || settings.dayTradeStopYen || 3,
@@ -1596,12 +1612,86 @@ function renderDayTradePlan(plan = {}) {
   }
 }
 
+function useDayTradeAutoEntry() {
+  return els.dayTradeAutoEntryEnabled?.checked !== false;
+}
+
+function renderDayTradeAutoEntryNote() {
+  if (!els.dayTradeAutoEntryNote) return;
+  const recommendation = state.dayTradeAutoEntry?.recommendation;
+  if (!useDayTradeAutoEntry()) {
+    els.dayTradeAutoEntryNote.textContent = "手入力のエントリー価格を使います";
+    return;
+  }
+  if (state.dayTradeAutoEntry?.loading) {
+    els.dayTradeAutoEntryNote.textContent = "AIが入口価格を確認中";
+    return;
+  }
+  if (!recommendation) {
+    els.dayTradeAutoEntryNote.textContent = "銘柄選択後にAIが自動設定";
+    return;
+  }
+  els.dayTradeAutoEntryNote.textContent = `${recommendation.label || "AI設定"}: ${yen(recommendation.entryPrice)} / 現在 ${yen(recommendation.currentPrice)} / 信頼度 ${Math.round(recommendation.confidence || 0)}%`;
+}
+
+function ensureDayTradeAutoEntryTracking() {
+  const symbol = els.dayTradeSymbol?.value || state.dayTradeSelected || "";
+  const shouldTrack = state.view === "daytrade"
+    && useDayTradeAutoEntry()
+    && Boolean(symbol)
+    && els.dayTradeFollowPrice?.checked !== false;
+  if (!shouldTrack) {
+    if (state.dayTradeAutoEntry?.timer) window.clearInterval(state.dayTradeAutoEntry.timer);
+    state.dayTradeAutoEntry.timer = null;
+    return;
+  }
+  if (!state.dayTradeAutoEntry.loading
+    && state.dayTradeAutoEntry.recommendation?.symbol !== symbol
+    && Date.now() - (state.dayTradeAutoEntry.updatedAt || 0) > 1200) {
+    state.dayTradeAutoEntry.updatedAt = Date.now();
+    window.setTimeout(() => applyDayTradeAutoEntry("initial"), 0);
+  }
+  if (state.dayTradeAutoEntry?.timer) return;
+  state.dayTradeAutoEntry.timer = window.setInterval(() => {
+    applyDayTradeAutoEntry("follow");
+  }, DAY_TRADE_AUTO_ENTRY_INTERVAL_MS);
+}
+
+async function applyDayTradeAutoEntry(reason = "auto") {
+  if (!useDayTradeAutoEntry()) return;
+  if (state.dayTradeSimulation?.running) return;
+  const symbol = els.dayTradeSymbol?.value || state.dayTradeSelected || "";
+  if (!symbol || state.dayTradeAutoEntry?.loading) return;
+  state.dayTradeAutoEntry.loading = true;
+  renderDayTradeAutoEntryNote();
+  try {
+    const payload = await request("/api/daytrade/entry", {
+      method: "POST",
+      body: JSON.stringify({ ...dayTradeFormPayload(), symbol }),
+    });
+    const recommendation = payload.recommendation || null;
+    if (recommendation?.entryPrice && els.dayTradeEntryPrice) {
+      els.dayTradeEntryPrice.value = String(recommendation.entryPrice);
+    }
+    state.dayTradeAutoEntry.recommendation = recommendation;
+    state.dayTradeAutoEntry.updatedAt = Date.now();
+    if (payload.plan) state.dayTradePlan = payload.plan;
+    if (reason === "toggle") toast("AIエントリー価格を更新しました。");
+    renderDayTrade();
+  } catch (error) {
+    if (reason !== "follow") toast(error.message);
+  } finally {
+    state.dayTradeAutoEntry.loading = false;
+    renderDayTradeAutoEntryNote();
+  }
+}
+
 function blankDayTradeSimulation(overrides = {}) {
   return {
     running: false,
     timer: null,
     status: "停止中",
-    note: "開始でテスト実行",
+    note: "開始で現在値監視",
     events: [],
     series: [],
     index: 0,
@@ -1613,6 +1703,7 @@ function blankDayTradeSimulation(overrides = {}) {
     trades: 0,
     lastPrice: null,
     lastDate: "",
+    monitorMode: false,
     ...overrides,
   };
 }
@@ -1657,18 +1748,19 @@ function renderDayTradeSimulation() {
   const sim = state.dayTradeSimulation || blankDayTradeSimulation();
   const symbol = els.dayTradeSymbol?.value || state.dayTradeSelected || "";
   if (els.dayTradeSimulationLabel) els.dayTradeSimulationLabel.textContent = sim.status || "停止中";
-  if (els.dayTradeSimulationNote) els.dayTradeSimulationNote.textContent = sim.note || "開始でテスト実行";
+  if (els.dayTradeSimulationNote) els.dayTradeSimulationNote.textContent = sim.note || "開始で現在値監視";
   if (els.dayTradeStartButton) els.dayTradeStartButton.disabled = sim.running || state.dayTradeLoading || !symbol;
   if (els.dayTradeStopButton) els.dayTradeStopButton.disabled = !sim.running;
   if (els.dayTradeSimulateButton) els.dayTradeSimulateButton.disabled = sim.running || state.dayTradeLoading;
   if (!els.dayTradeSimulation) return;
   if (!sim.events.length && !sim.series.length) {
     els.dayTradeSimulation.classList.add("empty-state");
-    els.dayTradeSimulation.innerHTML = "<p>開始を押すと、直近の価格データで損切り・利確・追撃を順に確認します。テストモードでは実発注しません。</p>";
+    els.dayTradeSimulation.innerHTML = "<p>開始を押すと、表示中のエントリー価格を基準に現在値を監視します。テストモードでは実発注しません。</p>";
     return;
   }
   els.dayTradeSimulation.classList.remove("empty-state");
   const progress = sim.series.length ? Math.min(100, Math.round((sim.index / sim.series.length) * 100)) : 0;
+  const progressLabel = sim.monitorMode ? "監視中" : `${progress}%`;
   const pnlClass = sim.pnl > 0 ? "positive" : sim.pnl < 0 ? "negative" : "";
   const events = sim.events.slice(-10).reverse().map((event) => `
     <article class="simulation-event ${escapeHtml(event.type || "info")}">
@@ -1683,7 +1775,7 @@ function renderDayTradeSimulation() {
       <span><strong>状態</strong>${escapeHtml(sim.status || "-")}</span>
       <span><strong>現在</strong>${sim.lastPrice ? `${yen(sim.lastPrice)} / ${escapeHtml(sim.lastDate || "")}` : "-"}</span>
       <span class="${pnlClass}"><strong>テスト損益</strong>${yen(sim.pnl || 0)}</span>
-      <span><strong>進捗</strong>${progress}%</span>
+      <span><strong>進捗</strong>${progressLabel}</span>
     </div>
     <div class="simulation-progress" aria-label="シミュレーション進捗"><i style="width: ${progress}%"></i></div>
     <div class="simulation-log">${events || "<p>ログはまだありません。</p>"}</div>
@@ -1710,7 +1802,7 @@ function stopDayTradeSimulation(reason = "手動停止", options = {}) {
   sim.running = false;
   sim.timer = null;
   sim.status = "停止中";
-  sim.note = options.silent ? "開始でテスト実行" : reason;
+  sim.note = options.silent ? "開始で現在値監視" : reason;
   state.dayTradeSimulation = options.reset ? blankDayTradeSimulation() : sim;
   if (!options.silent) renderDayTradeSimulation();
 }
@@ -1731,14 +1823,17 @@ async function startDayTradeSimulation() {
     const plan = payload.plan || null;
     const series = normalizeSimulationSeries(payload.series || []);
     if (!plan?.ready) throw new Error(plan?.message || "シミュレーション条件を作れませんでした。");
-    if (series.length < 5) throw new Error("シミュレーションに使える価格データが足りません。");
+    if (!payload.monitorMode && series.length < 5) throw new Error("シミュレーションに使える価格データが足りません。");
+    const quotePrice = finiteNumber(payload.quote?.currentPrice) || plan.entryPrice;
+    const quoteDate = payload.quote?.date || new Date().toISOString().slice(0, 10);
     state.dayTradePlan = plan;
     state.dayTradeSimulation = blankDayTradeSimulation({
       running: true,
-      status: "実行中",
-      note: "テストモード・実発注なし",
+      status: payload.monitorMode ? "監視中" : "実行中",
+      note: payload.monitorMode ? "現在値を監視中・実発注なし" : "テストモード・実発注なし",
       series,
       plan,
+      monitorMode: payload.monitorMode !== false,
       active: {
         label: "初回",
         entryPrice: plan.entryPrice,
@@ -1747,15 +1842,19 @@ async function startDayTradeSimulation() {
       },
       pnl: 0,
       trades: 1,
-      lastPrice: plan.entryPrice,
-      lastDate: series[0]?.date || "",
+      lastPrice: quotePrice,
+      lastDate: quoteDate,
       events: [
-        dayTradeSimulationEvent("新規買い", plan.entryPrice, `${Math.round(plan.quantity)}株 / テスト開始`, "buy", series[0]?.date || ""),
+        dayTradeSimulationEvent("新規買い", plan.entryPrice, `${Math.round(plan.quantity)}株 / テスト開始`, "buy", quoteDate),
       ],
     });
-    state.dayTradeSimulation.timer = window.setInterval(stepDayTradeSimulation, 650);
+    state.dayTradeSimulation.timer = window.setInterval(
+      payload.monitorMode !== false ? pollDayTradeSimulationPrice : stepDayTradeSimulation,
+      payload.monitorMode !== false ? DAY_TRADE_MONITOR_INTERVAL_MS : 650,
+    );
     renderDayTrade();
-    stepDayTradeSimulation();
+    if (payload.monitorMode !== false) pollDayTradeSimulationPrice();
+    else stepDayTradeSimulation();
   } catch (error) {
     state.dayTradeSimulation = blankDayTradeSimulation({
       status: "失敗",
@@ -1821,6 +1920,66 @@ function stepDayTradeSimulation() {
   sim.index += 1;
   state.dayTradeSimulation = sim;
   renderDayTradeSimulation();
+}
+
+async function pollDayTradeSimulationPrice() {
+  const sim = state.dayTradeSimulation;
+  if (!sim?.running) return;
+  try {
+    const payload = await request("/api/daytrade/entry", {
+      method: "POST",
+      body: JSON.stringify({ ...dayTradeFormPayload(), entryPrice: sim.plan?.entryPrice }),
+    });
+    const current = finiteNumber(payload.quote?.currentPrice) || finiteNumber(payload.recommendation?.currentPrice);
+    if (!current) return;
+    const date = payload.quote?.date || new Date().toISOString().slice(0, 10);
+    sim.lastPrice = current;
+    sim.lastDate = date;
+    if (sim.active) {
+      if (current <= sim.active.stopPrice) {
+        sim.pnl += (sim.active.stopPrice - sim.active.entryPrice) * (sim.plan?.quantity || 0);
+        sim.events.push(dayTradeSimulationEvent("損切り", sim.active.stopPrice, "現在値が損切りラインに到達したため終了。", "stop", date));
+        sim.active = null;
+        sim.done = true;
+        completeDayTradeSimulation("損切り終了", "このルールでは損失を小さく切って終了しました。");
+        return;
+      }
+      if (current >= sim.active.takeProfitPrice) {
+        sim.pnl += (sim.active.takeProfitPrice - sim.active.entryPrice) * (sim.plan?.quantity || 0);
+        sim.events.push(dayTradeSimulationEvent("利確", sim.active.takeProfitPrice, "現在値が利確ラインに到達し、いったんゼロにしました。", "sell", date));
+        sim.active = null;
+        if (sim.plan?.chaseEnabled && finiteNumber(sim.plan.chaseTriggerPrice)) {
+          sim.waitChase = true;
+          sim.status = "追撃待ち";
+          sim.note = `${yen(sim.plan.chaseTriggerPrice)} 到達で追撃買い`;
+        } else {
+          sim.done = true;
+          completeDayTradeSimulation("利確終了", "追撃なしの設定なので終了しました。");
+          return;
+        }
+      }
+    } else if (sim.waitChase && current >= sim.plan.chaseTriggerPrice) {
+      sim.waitChase = false;
+      sim.active = {
+        label: "追撃",
+        entryPrice: sim.plan.reEntryPrice,
+        stopPrice: sim.plan.reStopPrice,
+        takeProfitPrice: sim.plan.reTakeProfitPrice,
+      };
+      sim.trades += 1;
+      sim.status = "追撃保有中";
+      sim.note = "追撃後のOCOを再設定";
+      sim.events.push(dayTradeSimulationEvent("追撃買い", sim.plan.reEntryPrice, `${Math.round(sim.plan.quantity)}株 / 新しい基準価格`, "buy", date));
+    }
+    state.dayTradeSimulation = sim;
+    renderDayTradeSimulation();
+  } catch (error) {
+    const sim = state.dayTradeSimulation;
+    if (!sim?.running) return;
+    sim.note = `現在値の確認に失敗: ${error.message}`;
+    state.dayTradeSimulation = sim;
+    renderDayTradeSimulation();
+  }
 }
 
 function chaseReferenceLabel(value) {
@@ -6486,8 +6645,14 @@ els.dayTradeForm?.addEventListener("input", () => {
 els.dayTradeForm?.addEventListener("change", () => {
   if (document.activeElement === els.dayTradeSymbol) {
     state.dayTradeSelected = els.dayTradeSymbol.value;
-    const price = currentDayTradePrice(els.dayTradeSymbol.value);
-    if (price) els.dayTradeEntryPrice.value = String(price);
+    state.dayTradeAutoEntry.recommendation = null;
+    if (useDayTradeAutoEntry()) {
+      if (els.dayTradeEntryPrice) els.dayTradeEntryPrice.value = "";
+      applyDayTradeAutoEntry("select");
+    } else {
+      const price = currentDayTradePrice(els.dayTradeSymbol.value);
+      if (price) els.dayTradeEntryPrice.value = String(price);
+    }
   }
   stopDayTradeSimulation("条件を変更したため停止", { silent: true, reset: true });
   state.dayTradePlan = null;
@@ -6518,6 +6683,20 @@ els.dayTradeStartButton?.addEventListener("click", () => {
 
 els.dayTradeStopButton?.addEventListener("click", () => {
   stopDayTradeSimulation("手動で停止しました。");
+});
+
+els.dayTradeAutoEntryEnabled?.addEventListener("change", () => {
+  if (useDayTradeAutoEntry()) applyDayTradeAutoEntry("toggle");
+  else {
+    state.dayTradeAutoEntry.recommendation = null;
+    ensureDayTradeAutoEntryTracking();
+    renderDayTrade();
+  }
+});
+
+els.dayTradeFollowPrice?.addEventListener("change", () => {
+  ensureDayTradeAutoEntryTracking();
+  if (els.dayTradeFollowPrice.checked && useDayTradeAutoEntry()) applyDayTradeAutoEntry("toggle");
 });
 
 els.dayTradeApiPreviewButton?.addEventListener("click", async () => {

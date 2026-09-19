@@ -1143,6 +1143,15 @@ tr:hover .drag-handle,
   padding: 0;
 }
 
+.input-note {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
 .position-fields {
   display: grid;
   grid-template-columns: repeat(4, minmax(96px, 1fr));

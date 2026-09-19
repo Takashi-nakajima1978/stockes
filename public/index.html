@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade-runner">
+  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade-ai-entry">
 </head>
 <body>
   <div class="app-shell">
@@ -460,7 +460,7 @@
           <article class="profit-card">
             <span>シミュレーション</span>
             <strong id="dayTradeSimulationLabel">停止中</strong>
-            <small id="dayTradeSimulationNote">開始でテスト実行</small>
+            <small id="dayTradeSimulationNote">開始で現在値監視</small>
           </article>
         </section>
 
@@ -493,11 +493,20 @@
             </label>
             <label>
               <span>エントリー価格</span>
-              <input id="dayTradeEntryPrice" type="number" min="0" step="0.1" placeholder="現在値から自動入力">
+              <input id="dayTradeEntryPrice" type="number" min="0" step="0.1" placeholder="AIが自動設定">
+              <small id="dayTradeAutoEntryNote" class="input-note">AI自動設定中</small>
             </label>
             <label>
               <span>株数</span>
               <input id="dayTradeQuantity" type="number" min="0" step="1" placeholder="例: 100">
+            </label>
+            <label class="checkbox-line setting-check compact-check">
+              <input id="dayTradeAutoEntryEnabled" type="checkbox" checked>
+              <span>AIでエントリー価格を自動設定</span>
+            </label>
+            <label class="checkbox-line setting-check compact-check">
+              <input id="dayTradeFollowPrice" type="checkbox" checked>
+              <span>価格変動に追随</span>
             </label>
             <label>
               <span>損切り値</span>
@@ -582,7 +591,7 @@
             </div>
             <div id="dayTradeFlow" class="daytrade-flow"></div>
             <div id="dayTradeSimulation" class="daytrade-simulation empty-state">
-              <p>開始を押すと、直近の価格データで損切り・利確・追撃を順に確認します。テストモードでは実発注しません。</p>
+              <p>開始を押すと、表示中のエントリー価格を基準に現在値を監視します。テストモードでは実発注しません。</p>
             </div>
           </div>
         </section>
@@ -1032,6 +1041,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260919-daytrade-runner" type="module"></script>
+  <script src="/app.js?v=20260919-daytrade-ai-entry" type="module"></script>
 </body>
 </html>

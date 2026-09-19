@@ -815,6 +815,11 @@ async function handleApi(req, res, url) {
     return json(res, 200, { plan: buildDayTradePlan(await enrichDayTradeInput(body, settings), settings) });
   }
 
+  if (url.pathname === "/api/daytrade/entry" && req.method === "POST") {
+    const [body, settings] = await Promise.all([readJson(req), readSettings()]);
+    return json(res, 200, await buildDayTradeEntryRecommendation(body, settings));
+  }
+
   if (url.pathname === "/api/daytrade/simulation" && req.method === "POST") {
     const [body, settings] = await Promise.all([readJson(req), readSettings()]);
     return json(res, 200, await buildDayTradeSimulation(body, settings));
@@ -13457,36 +13462,138 @@ async function enrichDayTradeInput(input = {}, settings = defaultSettings) {
   };
 }
 
-async function buildDayTradeSimulation(input = {}, settings = defaultSettings) {
+async function buildDayTradeEntryRecommendation(input = {}, settings = defaultSettings) {
   const symbol = normalizeSymbol(input.symbol || input.code || "");
   const price = symbol
     ? await fetchPriceHistory(symbol, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch(() => emptyPrice())
     : emptyPrice();
-  const series = (price.series || [])
-    .map((point) => ({
-      date: normalizeDate(point.date),
-      open: nullablePositiveNumber(point.open),
-      high: nullablePositiveNumber(point.high),
-      low: nullablePositiveNumber(point.low),
-      close: nullablePositiveNumber(point.close),
-      volume: nullablePositiveNumber(point.volume),
-    }))
-    .filter((point) => point.date && point.close)
-    .slice(-120);
-  const startPrice = nullablePositiveNumber(series[0]?.close) || nullablePositiveNumber(input.entryPrice) || nullablePositiveNumber(price.current);
-  const highs = series.slice(0, 20).map((point) => nullablePositiveNumber(point.high || point.close)).filter(Boolean);
-  const simulationInput = {
+  const recommendation = recommendDayTradeEntryPrice(input, price, settings);
+  const planInput = {
     ...input,
     symbol,
-    currentPrice: nullablePositiveNumber(price.current) || input.currentPrice,
-    entryPrice: startPrice,
+    entryPrice: recommendation.entryPrice,
+    currentPrice: recommendation.currentPrice,
     atr14: input.atr14 || price.atr14,
-    recentHigh: input.recentHigh || (highs.length ? Math.max(...highs) : price.high52),
+    recentHigh: input.recentHigh || recommendation.recentHigh || price.high52,
+  };
+  return {
+    recommendation,
+    plan: buildDayTradePlan(planInput, settings),
+    quote: {
+      symbol,
+      currentPrice: recommendation.currentPrice,
+      date: new Date().toISOString().slice(0, 10),
+      fetchedAt: price.fetchedAt || new Date().toISOString(),
+    },
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function recommendDayTradeEntryPrice(input = {}, price = {}, settings = defaultSettings) {
+  const symbol = normalizeSymbol(input.symbol || input.code || "");
+  const current = nullablePositiveNumber(price.current) || nullablePositiveNumber(input.currentPrice) || nullablePositiveNumber(input.entryPrice);
+  const atr14 = nullablePositiveNumber(price.atr14);
+  const atrPct = nullablePositiveNumber(price.atrPct);
+  const sma5 = nullablePositiveNumber(price.sma5);
+  const buyLine = nullablePositiveNumber(price.technicalEntry?.atrAdjustedBuyLine)
+    || nullablePositiveNumber(price.technicalEntry?.buyLine)
+    || nullablePositiveNumber(price.buyLine1y);
+  const rsi14 = Number.isFinite(Number(price.rsi14)) ? Number(price.rsi14) : null;
+  const closeScore = Number(price.closeStrength?.score || 0);
+  const entryReady = price.technicalEntry?.ready === true;
+  const movingAveragePositive = price.sma5CrossUp || Number(price.maCrossSignal?.score || 0) > 0;
+  const strongClose = closeScore > 0;
+  const reasons = [];
+  const risks = [];
+  if (!current) {
+    return {
+      symbol,
+      entryPrice: null,
+      currentPrice: null,
+      recentHigh: null,
+      label: "未取得",
+      summary: "現在値を取得できず、エントリー価格を計算できませんでした。",
+      confidence: 0,
+      reasons,
+      risks: ["現在値未取得"],
+    };
+  }
+
+  const volatilityBuffer = atr14
+    ? atr14 * (Number.isFinite(atrPct) && atrPct >= 4 ? 0.35 : 0.2)
+    : current * 0.003;
+  let entryPrice = current;
+  let label = "現在値追随";
+  let confidence = 55;
+  let summary = "現在値を基準に、損切り・利確ラインを更新します。";
+
+  if (entryReady || movingAveragePositive || strongClose) {
+    entryPrice = current;
+    confidence += entryReady ? 18 : 0;
+    confidence += movingAveragePositive ? 10 : 0;
+    confidence += strongClose ? 8 : 0;
+    label = "現在値で入る候補";
+    summary = "反転確認または短期需給の改善があるため、現在値を入口候補にします。";
+    if (entryReady) reasons.push("5日線・RSI・ローソク足などの反転確認あり");
+    if (movingAveragePositive) reasons.push("短期線が上向き");
+    if (strongClose) reasons.push("大引けの買いが残っている");
+  } else if (buyLine && current > buyLine * 1.01) {
+    entryPrice = Math.max(buyLine, current - volatilityBuffer);
+    label = "指値で待つ";
+    confidence += 4;
+    summary = "反転確認が弱いため、現在値を追わず、買い場ラインに近い価格で待ちます。";
+    reasons.push("現在値を追わず、ATRを使って少し下に置く");
+    risks.push("反転サインはまだ弱い");
+  } else if (rsi14 !== null && rsi14 < 30) {
+    entryPrice = current;
+    label = "反転待ち";
+    confidence -= 4;
+    summary = "売られすぎですが、反転確認前なので小さく監視します。";
+    risks.push("RSIが低く、下落が続く可能性あり");
+  }
+
+  if (Number.isFinite(atrPct) && atrPct >= 6) {
+    entryPrice = Math.max(1, entryPrice - (atr14 || 0) * 0.15);
+    confidence -= 8;
+    risks.push("値動きが荒いため、入口を少し深めに調整");
+  }
+  const recentHigh = nullablePositiveNumber(price.high52) || nullablePositiveNumber(input.recentHigh);
+  return {
+    symbol,
+    entryPrice: roundPrice(entryPrice),
+    currentPrice: roundPrice(current),
+    recentHigh,
+    label,
+    summary,
+    confidence: clamp(Math.round(confidence), 0, 100),
+    reasons: uniqueText(reasons).slice(0, 4),
+    risks: uniqueText(risks).slice(0, 4),
+    atr14,
+    atrPct,
+    rsi14,
+    followPrice: input.followPrice !== false && input.followPrice !== "false",
+  };
+}
+
+async function buildDayTradeSimulation(input = {}, settings = defaultSettings) {
+  const entryPayload = await buildDayTradeEntryRecommendation(input, settings);
+  const recommendation = entryPayload.recommendation || {};
+  const startPrice = nullablePositiveNumber(input.entryPrice) || nullablePositiveNumber(recommendation.entryPrice) || nullablePositiveNumber(recommendation.currentPrice);
+  const simulationInput = {
+    ...input,
+    symbol: recommendation.symbol,
+    currentPrice: recommendation.currentPrice || input.currentPrice,
+    entryPrice: startPrice,
+    atr14: input.atr14 || recommendation.atr14,
+    recentHigh: input.recentHigh || recommendation.recentHigh,
     mode: input.mode || "test",
   };
   return {
     plan: buildDayTradePlan(simulationInput, settings),
-    series,
+    recommendation,
+    quote: entryPayload.quote,
+    series: [],
+    monitorMode: true,
     generatedAt: new Date().toISOString(),
     mode: simulationInput.mode === "api" ? "api" : "test",
   };
