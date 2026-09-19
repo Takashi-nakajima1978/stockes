@@ -2136,7 +2136,7 @@ tr:hover .drag-handle,
 }
 
 .daytrade-summary {
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
 }
 
 .daytrade-grid {
@@ -2221,6 +2221,103 @@ tr:hover .drag-handle,
   display: grid;
   gap: 10px;
   margin-top: 12px;
+}
+
+.daytrade-simulation {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfc;
+  padding: 12px;
+}
+
+.simulation-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(100px, 1fr));
+  gap: 8px;
+}
+
+.simulation-status-grid span {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.simulation-status-grid strong {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.simulation-status-grid .positive {
+  color: var(--buy);
+}
+
+.simulation-status-grid .negative {
+  color: var(--danger);
+}
+
+.simulation-progress {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7efec;
+}
+
+.simulation-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+.simulation-log {
+  display: grid;
+  gap: 7px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.simulation-event {
+  display: grid;
+  grid-template-columns: 90px minmax(96px, auto) minmax(90px, auto) 1fr;
+  gap: 8px;
+  align-items: center;
+  border-left: 4px solid #b7c4c0;
+  border-radius: 7px;
+  background: #fff;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.simulation-event.buy {
+  border-left-color: var(--buy);
+}
+
+.simulation-event.sell {
+  border-left-color: #2e6fae;
+}
+
+.simulation-event.stop {
+  border-left-color: var(--danger);
+}
+
+.simulation-event span,
+.simulation-event small {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.simulation-event em {
+  font-style: normal;
+  font-weight: 900;
 }
 
 .flow-step,
@@ -2899,6 +2996,7 @@ tr:hover .drag-handle,
   .profit-summary,
   .daytrade-summary,
   .daytrade-price-grid,
+  .simulation-status-grid,
   .candidate-metrics,
   .crypto-profit-summary,
   .summary-grid {
@@ -2933,6 +3031,10 @@ tr:hover .drag-handle,
   .suggestion-metrics,
   .forecast-lines,
   .sell-plan {
+    grid-template-columns: 1fr;
+  }
+
+  .simulation-event {
     grid-template-columns: 1fr;
   }
 

@@ -815,6 +815,11 @@ async function handleApi(req, res, url) {
     return json(res, 200, { plan: buildDayTradePlan(await enrichDayTradeInput(body, settings), settings) });
   }
 
+  if (url.pathname === "/api/daytrade/simulation" && req.method === "POST") {
+    const [body, settings] = await Promise.all([readJson(req), readSettings()]);
+    return json(res, 200, await buildDayTradeSimulation(body, settings));
+  }
+
   if (url.pathname === "/api/daytrade/candidates" && req.method === "GET") {
     const settings = await readSettings();
     return json(res, 200, await dayTradeCandidates(settings, Object.fromEntries(url.searchParams.entries())));
@@ -13449,6 +13454,41 @@ async function enrichDayTradeInput(input = {}, settings = defaultSettings) {
     entryPrice: input.entryPrice || enriched.current,
     atr14: input.atr14 || enriched.atr14,
     recentHigh: input.recentHigh || enriched.recentHigh,
+  };
+}
+
+async function buildDayTradeSimulation(input = {}, settings = defaultSettings) {
+  const symbol = normalizeSymbol(input.symbol || input.code || "");
+  const price = symbol
+    ? await fetchPriceHistory(symbol, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch(() => emptyPrice())
+    : emptyPrice();
+  const series = (price.series || [])
+    .map((point) => ({
+      date: normalizeDate(point.date),
+      open: nullablePositiveNumber(point.open),
+      high: nullablePositiveNumber(point.high),
+      low: nullablePositiveNumber(point.low),
+      close: nullablePositiveNumber(point.close),
+      volume: nullablePositiveNumber(point.volume),
+    }))
+    .filter((point) => point.date && point.close)
+    .slice(-120);
+  const startPrice = nullablePositiveNumber(series[0]?.close) || nullablePositiveNumber(input.entryPrice) || nullablePositiveNumber(price.current);
+  const highs = series.slice(0, 20).map((point) => nullablePositiveNumber(point.high || point.close)).filter(Boolean);
+  const simulationInput = {
+    ...input,
+    symbol,
+    currentPrice: nullablePositiveNumber(price.current) || input.currentPrice,
+    entryPrice: startPrice,
+    atr14: input.atr14 || price.atr14,
+    recentHigh: input.recentHigh || (highs.length ? Math.max(...highs) : price.high52),
+    mode: input.mode || "test",
+  };
+  return {
+    plan: buildDayTradePlan(simulationInput, settings),
+    series,
+    generatedAt: new Date().toISOString(),
+    mode: simulationInput.mode === "api" ? "api" : "test",
   };
 }
 

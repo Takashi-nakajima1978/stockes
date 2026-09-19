@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade-watchlist">
+  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade-runner">
 </head>
 <body>
   <div class="app-shell">
@@ -430,7 +430,9 @@
           <div class="actions">
             <button id="dayTradeFindCandidatesButton" type="button" class="secondary">適用しやすい銘柄</button>
             <button id="dayTradeApiPreviewButton" type="button" class="secondary">APIプレビュー</button>
-            <button id="dayTradeSimulateButton" type="button">シミュレーション</button>
+            <button id="dayTradeSimulateButton" type="button" class="secondary">条件を計算</button>
+            <button id="dayTradeStartButton" type="button">開始</button>
+            <button id="dayTradeStopButton" type="button" class="secondary" disabled>停止</button>
           </div>
         </section>
 
@@ -454,6 +456,11 @@
             <span>許容損失</span>
             <strong id="dayTradeRiskLabel">-</strong>
             <small id="dayTradeRiskNote">資金管理</small>
+          </article>
+          <article class="profit-card">
+            <span>シミュレーション</span>
+            <strong id="dayTradeSimulationLabel">停止中</strong>
+            <small id="dayTradeSimulationNote">開始でテスト実行</small>
           </article>
         </section>
 
@@ -574,6 +581,9 @@
               <p>銘柄とエントリー価格を入れると、損切り・利確・追撃の価格を表示します。</p>
             </div>
             <div id="dayTradeFlow" class="daytrade-flow"></div>
+            <div id="dayTradeSimulation" class="daytrade-simulation empty-state">
+              <p>開始を押すと、直近の価格データで損切り・利確・追撃を順に確認します。テストモードでは実発注しません。</p>
+            </div>
           </div>
         </section>
 
@@ -1022,6 +1032,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260919-daytrade-watchlist" type="module"></script>
+  <script src="/app.js?v=20260919-daytrade-runner" type="module"></script>
 </body>
 </html>
