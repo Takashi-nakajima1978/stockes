@@ -6643,7 +6643,7 @@ function jpAccountRecommendationHtml(stock = {}, analysis = {}, metrics = {}) {
   return `
     <div class="account-recommendation ${recommendation.level}">
       <div class="reservation-title">
-        <strong>NISA / 一般・特定の目安</strong>
+        <strong>この買い注文の口座判断</strong>
         <span>${escapeHtml(recommendation.badge)}</span>
       </div>
       <p>${escapeHtml(recommendation.summary)}</p>
@@ -6651,6 +6651,9 @@ function jpAccountRecommendationHtml(stock = {}, analysis = {}, metrics = {}) {
         <span><strong>判定額</strong>${recommendation.orderAmount ? yen(recommendation.orderAmount) : "-"}</span>
         <span><strong>今年の残り枠</strong>${yen(recommendation.allowance.nisaYearRemaining)}</span>
         <span><strong>生涯の残り枠</strong>${yen(recommendation.allowance.nisaLifetimeRemaining)}</span>
+        <span><strong>配当の非課税目安</strong>${yen(recommendation.dividendTaxSaving)}</span>
+        <span><strong>値上がり益の非課税目安</strong>${yen(recommendation.capitalGainTaxSaving)}</span>
+        <span><strong>NISA枠の使い方</strong>${escapeHtml(recommendation.fitText)}</span>
       </div>
       <div class="recommendation-reasons">
         ${recommendation.reasons.map((reason) => `<span>${escapeHtml(reason)}</span>`).join("")}
@@ -6676,33 +6679,91 @@ function jpAccountRecommendation(stock = {}, analysis = {}, metrics = {}) {
   const sellSoon = exitLevel === "exit_alert" || exitLevel === "watch";
   const sellReservation = reservation.side === "sell";
   const fitsNisa = Number.isFinite(orderAmount) && orderAmount > 0 && orderAmount <= remaining;
-  const reasons = [];
-  if (sellReservation) reasons.push("売り予約が入っているため、追加購入は急がず確認します。");
-  if (sellSoon) reasons.push("出口ルールが見直し寄りなので、非課税枠を使う前に保有理由を確認します。");
-  if (!orderAmount) reasons.push("予約価格または買いたい価格が未入力なので、概算額は未判定です。");
-  if (orderAmount && !fitsNisa) reasons.push(`想定額が残りNISA枠${yen(remaining)}を超えます。`);
-  if (fitsNisa) reasons.push("今年の成長投資枠と生涯枠の両方に収まります。");
+  const taxRate = clampPctValue(state.settings?.jpCapitalGainTaxPct ?? 20.315) / 100;
+  const annualPerShare = annualDividendPerShare(analysis?.price || {});
+  const annualDividend = annualPerShare && quantity
+    ? annualPerShare * quantity
+    : null;
+  const dividendTaxSaving = Number.isFinite(annualDividend) ? annualDividend * taxRate : null;
+  const expectedSellPrice = expectedJpSellPrice(stock, analysis, reservation);
+  const expectedGain = expectedSellPrice && unitPrice && quantity
+    ? Math.max(0, (expectedSellPrice - unitPrice) * quantity)
+    : null;
+  const capitalGainTaxSaving = Number.isFinite(expectedGain) ? expectedGain * taxRate : null;
+  const expectedGainPct = expectedSellPrice && unitPrice
+    ? ((expectedSellPrice - unitPrice) / unitPrice) * 100
+    : null;
   const dividendYield = finiteOrNull(analysis?.price?.dividendYield);
-  if (fitsNisa && dividendYield && dividendYield >= 2) reasons.push(`配当利回り${dividendYield.toFixed(1)}%なので、配当非課税の効果もあります。`);
-  const recommendNisa = fitsNisa && !sellSoon && !sellReservation;
+  const action = String(analysis?.action || "").toUpperCase();
+  const confidence = finiteOrNull(analysis?.confidence);
+  const hasTaxBenefit = (Number.isFinite(dividendTaxSaving) && dividendTaxSaving >= 500)
+    || (Number.isFinite(capitalGainTaxSaving) && capitalGainTaxSaving >= 500);
+  const highConviction = action === "BUY" || (action === "HOLD" && Number.isFinite(confidence) && confidence >= 55);
+  const reasons = [];
+  if (!orderAmount) reasons.push("買う金額が未入力なので、口座はまだ決めません。");
+  if (orderAmount && !fitsNisa) reasons.push(`この注文額は残りNISA枠${yen(remaining)}を超えます。`);
+  if (fitsNisa) reasons.push("今年の成長投資枠と生涯枠の両方に収まります。");
+  if (sellReservation) reasons.push("売り予約があるため、この追加購入にNISA枠は使いにくいです。");
+  if (sellSoon) reasons.push("出口ルールが見直し寄りなので、NISA枠を使う前に保有理由を確認します。");
+  if (action === "SELL") reasons.push("AI確認が見直し候補なので、NISAより一般/特定で様子を見る判断です。");
+  if (Number.isFinite(dividendYield)) reasons.push(`配当利回り${dividendYield.toFixed(1)}%、年間配当の税メリット目安は${yen(dividendTaxSaving)}です。`);
+  if (Number.isFinite(expectedGainPct)) reasons.push(`想定売却価格までの値上がり余地は${expectedGainPct.toFixed(1)}%、税メリット目安は${yen(capitalGainTaxSaving)}です。`);
+  if (!Number.isFinite(expectedGainPct) && !dividendYield) reasons.push("配当や売却目安が弱く、NISA枠を使う根拠がまだ薄いです。");
+  if (fitsNisa && !hasTaxBenefit) reasons.push("枠には収まりますが、非課税メリットがまだ小さいためNISAを急ぎません。");
+  if (fitsNisa && hasTaxBenefit && !highConviction) reasons.push("税メリットはありますが、買いの確信度が不足しているためNISAは保留寄りです。");
+  const recommendNisa = Boolean(fitsNisa && !sellSoon && !sellReservation && hasTaxBenefit && highConviction);
+  const fitText = orderAmount && allowance.nisaRemaining
+    ? `${Math.min(100, (orderAmount / allowance.nisaRemaining) * 100).toFixed(1)}%消費`
+    : "-";
+  if (!orderAmount) {
+    return {
+      level: "watch",
+      badge: "未判定",
+      summary: "買う価格と株数を入れてから、NISA枠を使う価値があるか判定します。",
+      orderAmount,
+      allowance,
+      dividendTaxSaving,
+      capitalGainTaxSaving,
+      fitText,
+      reasons,
+    };
+  }
   if (recommendNisa) {
     return {
       level: "good",
       badge: "NISA候補",
-      summary: "長めに持つ前提ならNISAを優先してよい候補です。短期で売る予定が出たら一般/特定に切り替えて見ます。",
+      summary: "この注文はNISA候補です。枠内に収まり、配当または値上がり益の非課税メリットが見込めます。",
       orderAmount,
       allowance,
+      dividendTaxSaving,
+      capitalGainTaxSaving,
+      fitText,
       reasons,
     };
   }
   return {
     level: "watch",
     badge: "一般/特定を優先",
-    summary: "短期で売る可能性や枠不足があるため、まず一般/特定で見た方が無難です。",
+    summary: "この注文は一般/特定を優先します。NISA枠を使うには、保有期間・売却目安・税メリットをもう少し確認します。",
     orderAmount,
     allowance,
+    dividendTaxSaving,
+    capitalGainTaxSaving,
+    fitText,
     reasons,
   };
+}
+
+function expectedJpSellPrice(stock = {}, analysis = {}, reservation = {}) {
+  if (reservation.side === "sell" && Number.isFinite(reservation.price)) return reservation.price;
+  const forecast = analysis?.exitPlan?.aiSellForecast || analysis?.sellForecast || analysis?.ai?.sellForecast || {};
+  return finiteOrNull(forecast.targetPrice || forecast.reviewPrice);
+}
+
+function clampPctValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 20.315;
+  return Math.max(0, Math.min(numeric, 60));
 }
 
 function dateInputValue(value = "") {

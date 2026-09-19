@@ -385,7 +385,9 @@ test("position forms persist price reservations and show NISA account guidance",
   assert.match(appSource, /function attachPositionForm\(symbol\)[\s\S]*priceReservation: readPriceReservation\(form\)/);
   assert.match(appSource, /function attachUsPositionForm\(symbol\)[\s\S]*priceReservation: readPriceReservation\(form\)/);
   assert.match(appSource, /function jpAccountRecommendationHtml/);
-  assert.match(appSource, /NISA \/ 一般・特定の目安/);
+  assert.match(appSource, /この買い注文の口座判断/);
+  assert.match(appSource, /配当の非課税目安/);
+  assert.match(appSource, /値上がり益の非課税目安/);
   assert.match(serverSource, /function normalizePriceReservation/);
   assert.match(serverSource, /function normalizeStock\(stock\)[\s\S]*priceReservation: normalizePriceReservation\(stock\.priceReservation\)/);
   assert.match(serverSource, /function normalizeUsStock\(stock\)[\s\S]*priceReservation: normalizePriceReservation\(stock\.priceReservation\)/);
