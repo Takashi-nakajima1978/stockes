@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Stock Signal</title>
-  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade-ai-entry">
+  <link rel="stylesheet" href="/styles.css?v=20260919-daytrade-multi-monitor">
 </head>
 <body>
   <div class="app-shell">
@@ -467,7 +467,11 @@
         <section class="research-panel">
           <div class="panel-title">
             <h3>デイトレWatchlist</h3>
-            <span id="dayTradeWatchlistCount">0件</span>
+            <div class="mini-actions">
+              <span id="dayTradeWatchlistCount">0件</span>
+              <button id="dayTradeSelectAllButton" type="button" class="secondary">全選択</button>
+              <button id="dayTradeClearSelectionButton" type="button" class="secondary">解除</button>
+            </div>
           </div>
           <div id="dayTradeWatchlist" class="daytrade-watchlist empty-state">
             <p>下の候補検索から、値動きが大きい銘柄を追加してください。</p>
@@ -1041,6 +1045,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260919-daytrade-ai-entry" type="module"></script>
+  <script src="/app.js?v=20260919-daytrade-multi-monitor" type="module"></script>
 </body>
 </html>

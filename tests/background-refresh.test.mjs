@@ -127,6 +127,8 @@ test("day trade feature has simulation, candidates, and guarded Rakuten RSS brid
   assert.match(indexSource, /dayTradeSimulation/);
   assert.match(indexSource, /dayTradeAutoEntryEnabled/);
   assert.match(indexSource, /dayTradeFollowPrice/);
+  assert.match(indexSource, /dayTradeSelectAllButton/);
+  assert.match(indexSource, /dayTradeClearSelectionButton/);
   assert.match(indexSource, /data-settings-tab="broker"/);
   assert.match(indexSource, /settingsRakutenRssBridgeUrl/);
   assert.match(appSource, /\/api\/daytrade\/simulate/);
@@ -134,6 +136,9 @@ test("day trade feature has simulation, candidates, and guarded Rakuten RSS brid
   assert.match(appSource, /\/api\/daytrade\/simulation/);
   assert.match(appSource, /applyDayTradeAutoEntry/);
   assert.match(appSource, /pollDayTradeSimulationPrice/);
+  assert.match(appSource, /dayTradeMultiSelected/);
+  assert.match(appSource, /startDayTradeMultiMonitor/);
+  assert.match(appSource, /pollDayTradeMultiSimulationPrices/);
   assert.match(appSource, /startDayTradeSimulation/);
   assert.match(appSource, /stopDayTradeSimulation/);
   assert.match(appSource, /\/api\/daytrade\/candidates/);

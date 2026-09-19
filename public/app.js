@@ -25,6 +25,7 @@ const state = {
   dayTradeApiResult: null,
   dayTradeLoading: false,
   dayTradeSelected: null,
+  dayTradeMultiSelected: [],
   dayTradeAutoEntry: {
     loading: false,
     timer: null,
@@ -48,6 +49,8 @@ const state = {
     lastPrice: null,
     lastDate: "",
     monitorMode: false,
+    multi: false,
+    monitors: [],
   },
   sourceSummary: null,
   candidatePerformance: null,
@@ -177,6 +180,8 @@ const els = {
   dayTradeScanLimit: document.getElementById("dayTradeScanLimit"),
   dayTradeWatchlistCount: document.getElementById("dayTradeWatchlistCount"),
   dayTradeWatchlist: document.getElementById("dayTradeWatchlist"),
+  dayTradeSelectAllButton: document.getElementById("dayTradeSelectAllButton"),
+  dayTradeClearSelectionButton: document.getElementById("dayTradeClearSelectionButton"),
   dayTradeModeLabel: document.getElementById("dayTradeModeLabel"),
   dayTradeApiStatus: document.getElementById("dayTradeApiStatus"),
   dayTradeSelectedLabel: document.getElementById("dayTradeSelectedLabel"),
@@ -537,6 +542,7 @@ async function loadStocks() {
 async function loadDayTradeWatchlist() {
   const payload = await request("/api/daytrade-watchlist");
   state.dayTradeStocks = payload.stocks || [];
+  normalizeDayTradeMultiSelection();
   if (!state.dayTradeSelected && state.dayTradeStocks.length) state.dayTradeSelected = state.dayTradeStocks[0].symbol;
   renderDayTrade();
 }
@@ -1411,6 +1417,25 @@ function currentDayTradePrice(symbol) {
     || null;
 }
 
+function normalizeDayTradeMultiSelection() {
+  const available = new Set(state.dayTradeStocks.map((stock) => stock.symbol));
+  state.dayTradeMultiSelected = [...new Set(state.dayTradeMultiSelected || [])].filter((symbol) => available.has(symbol));
+}
+
+function selectedDayTradeSymbols() {
+  normalizeDayTradeMultiSelection();
+  if (state.dayTradeMultiSelected.length) return state.dayTradeMultiSelected;
+  const symbol = els.dayTradeSymbol?.value || state.dayTradeSelected || "";
+  return symbol ? [symbol] : [];
+}
+
+function dayTradeStockLabel(symbol) {
+  const stock = state.dayTradeStocks.find((item) => item.symbol === symbol)
+    || state.stocks.find((item) => item.symbol === symbol)
+    || {};
+  return stock.name || symbol;
+}
+
 function currentDayTradeContext(symbol) {
   const price = state.analyses?.[symbol]?.price || {};
   const saved = state.dayTradeStocks.find((stock) => stock.symbol === symbol) || {};
@@ -1538,9 +1563,11 @@ function dayTradeRuleLabel(value, mode, actual) {
 }
 
 function renderDayTradeSummary(plan = {}, input = {}) {
+  normalizeDayTradeMultiSelection();
   const stock = state.dayTradeStocks.find((item) => item.symbol === input.symbol)
     || state.stocks.find((item) => item.symbol === input.symbol)
     || {};
+  const multiCount = state.dayTradeMultiSelected.length;
   const current = currentDayTradePrice(input.symbol);
   if (els.dayTradeModeLabel) els.dayTradeModeLabel.textContent = input.mode === "api" ? "API接続" : "テスト";
   if (els.dayTradeApiStatus) {
@@ -1548,8 +1575,14 @@ function renderDayTradeSummary(plan = {}, input = {}) {
     else if (state.settings?.rakutenOrderEnabled) els.dayTradeApiStatus.textContent = "発注許可ON・確認必須";
     else els.dayTradeApiStatus.textContent = "API設定はプレビューのみ";
   }
-  if (els.dayTradeSelectedLabel) els.dayTradeSelectedLabel.textContent = stock.name || input.symbol || "-";
-  if (els.dayTradeCurrentPrice) els.dayTradeCurrentPrice.textContent = current ? `${input.symbol} / 現在 ${yen(current)}` : "現在値未取得";
+  if (els.dayTradeSelectedLabel) {
+    els.dayTradeSelectedLabel.textContent = multiCount > 1 ? `${multiCount}銘柄選択中` : stock.name || input.symbol || "-";
+  }
+  if (els.dayTradeCurrentPrice) {
+    els.dayTradeCurrentPrice.textContent = multiCount > 1
+      ? "開始で選択銘柄を同時監視"
+      : current ? `${input.symbol} / 現在 ${yen(current)}` : "現在値未取得";
+  }
   if (els.dayTradeUnitLabel) {
     els.dayTradeUnitLabel.textContent = plan.ready
       ? `${dayTradeRuleLabel(plan.stopInputValue, plan.stopMode, plan.stopYen)} / ${dayTradeRuleLabel(plan.profitInputValue, plan.profitMode, plan.profitYen)} / ${plan.chaseEnabled ? dayTradeRuleLabel(plan.chaseInputValue, plan.chaseMode, plan.chaseYen) : "追撃なし"}`
@@ -1704,6 +1737,8 @@ function blankDayTradeSimulation(overrides = {}) {
     lastPrice: null,
     lastDate: "",
     monitorMode: false,
+    multi: false,
+    monitors: [],
     ...overrides,
   };
 }
@@ -1746,13 +1781,53 @@ function dayTradeSimulationEvent(action, price, detail = "", type = "info", date
 
 function renderDayTradeSimulation() {
   const sim = state.dayTradeSimulation || blankDayTradeSimulation();
-  const symbol = els.dayTradeSymbol?.value || state.dayTradeSelected || "";
+  const symbols = selectedDayTradeSymbols();
   if (els.dayTradeSimulationLabel) els.dayTradeSimulationLabel.textContent = sim.status || "停止中";
   if (els.dayTradeSimulationNote) els.dayTradeSimulationNote.textContent = sim.note || "開始で現在値監視";
-  if (els.dayTradeStartButton) els.dayTradeStartButton.disabled = sim.running || state.dayTradeLoading || !symbol;
+  if (els.dayTradeStartButton) els.dayTradeStartButton.disabled = sim.running || state.dayTradeLoading || !symbols.length;
   if (els.dayTradeStopButton) els.dayTradeStopButton.disabled = !sim.running;
   if (els.dayTradeSimulateButton) els.dayTradeSimulateButton.disabled = sim.running || state.dayTradeLoading;
   if (!els.dayTradeSimulation) return;
+  if (sim.multi && sim.monitors?.length) {
+    els.dayTradeSimulation.classList.remove("empty-state");
+    const activeCount = sim.monitors.filter((monitor) => monitor.running).length;
+    const eventRows = sim.monitors
+      .flatMap((monitor) => (monitor.events || []).map((event) => ({ ...event, symbol: monitor.symbol })))
+      .slice(-12)
+      .reverse()
+      .map((event) => `
+        <article class="simulation-event ${escapeHtml(event.type || "info")}">
+          <span>${escapeHtml(event.date || event.at || "")}</span>
+          <strong>${escapeHtml(event.symbol || "")} ${escapeHtml(event.action || "")}</strong>
+          <em>${event.price ? yen(event.price) : "-"}</em>
+          <small>${escapeHtml(event.detail || "")}</small>
+        </article>
+      `).join("");
+    els.dayTradeSimulation.innerHTML = `
+      <div class="simulation-status-grid">
+        <span><strong>状態</strong>${escapeHtml(sim.status || "-")}</span>
+        <span><strong>監視中</strong>${activeCount}/${sim.monitors.length}銘柄</span>
+        <span><strong>テスト損益</strong>${yen(sim.monitors.reduce((sum, monitor) => sum + (monitor.pnl || 0), 0))}</span>
+        <span><strong>進捗</strong>同時監視</span>
+      </div>
+      <div class="simulation-monitor-list">
+        ${sim.monitors.map((monitor) => `
+          <article class="simulation-monitor ${monitor.running ? "running" : "done"}">
+            <div>
+              <strong>${escapeHtml(monitor.name || monitor.symbol)}</strong>
+              <span>${escapeHtml(monitor.symbol)} / ${escapeHtml(monitor.status || "-")}</span>
+            </div>
+            <span><b>現在</b>${monitor.lastPrice ? yen(monitor.lastPrice) : "-"}</span>
+            <span><b>入口</b>${yen(monitor.plan?.entryPrice)}</span>
+            <span><b>損切り</b>${yen(monitor.plan?.stopPrice)}</span>
+            <span><b>利確</b>${yen(monitor.plan?.takeProfitPrice)}</span>
+          </article>
+        `).join("")}
+      </div>
+      <div class="simulation-log">${eventRows || "<p>ログはまだありません。</p>"}</div>
+    `;
+    return;
+  }
   if (!sim.events.length && !sim.series.length) {
     els.dayTradeSimulation.classList.add("empty-state");
     els.dayTradeSimulation.innerHTML = "<p>開始を押すと、表示中のエントリー価格を基準に現在値を監視します。テストモードでは実発注しません。</p>";
@@ -1808,6 +1883,11 @@ function stopDayTradeSimulation(reason = "手動停止", options = {}) {
 }
 
 async function startDayTradeSimulation() {
+  const targets = selectedDayTradeSymbols();
+  if (targets.length > 1) {
+    await startDayTradeMultiMonitor(targets);
+    return;
+  }
   stopDayTradeSimulation("再開始", { silent: true, reset: true });
   state.dayTradeLoading = true;
   state.dayTradeSimulation = blankDayTradeSimulation({
@@ -1823,17 +1903,17 @@ async function startDayTradeSimulation() {
     const plan = payload.plan || null;
     const series = normalizeSimulationSeries(payload.series || []);
     if (!plan?.ready) throw new Error(plan?.message || "シミュレーション条件を作れませんでした。");
-    if (!payload.monitorMode && series.length < 5) throw new Error("シミュレーションに使える価格データが足りません。");
+    const monitorMode = payload.monitorMode !== false || series.length < 5;
     const quotePrice = finiteNumber(payload.quote?.currentPrice) || plan.entryPrice;
     const quoteDate = payload.quote?.date || new Date().toISOString().slice(0, 10);
     state.dayTradePlan = plan;
     state.dayTradeSimulation = blankDayTradeSimulation({
       running: true,
-      status: payload.monitorMode ? "監視中" : "実行中",
-      note: payload.monitorMode ? "現在値を監視中・実発注なし" : "テストモード・実発注なし",
+      status: monitorMode ? "監視中" : "実行中",
+      note: monitorMode ? "現在値を監視中・実発注なし" : "テストモード・実発注なし",
       series,
       plan,
-      monitorMode: payload.monitorMode !== false,
+      monitorMode,
       active: {
         label: "初回",
         entryPrice: plan.entryPrice,
@@ -1849,12 +1929,86 @@ async function startDayTradeSimulation() {
       ],
     });
     state.dayTradeSimulation.timer = window.setInterval(
-      payload.monitorMode !== false ? pollDayTradeSimulationPrice : stepDayTradeSimulation,
-      payload.monitorMode !== false ? DAY_TRADE_MONITOR_INTERVAL_MS : 650,
+      monitorMode ? pollDayTradeSimulationPrice : stepDayTradeSimulation,
+      monitorMode ? DAY_TRADE_MONITOR_INTERVAL_MS : 650,
     );
     renderDayTrade();
-    if (payload.monitorMode !== false) pollDayTradeSimulationPrice();
+    if (monitorMode) pollDayTradeSimulationPrice();
     else stepDayTradeSimulation();
+  } catch (error) {
+    state.dayTradeSimulation = blankDayTradeSimulation({
+      status: "失敗",
+      note: error.message,
+      events: [dayTradeSimulationEvent("失敗", null, error.message, "stop")],
+    });
+    renderDayTradeSimulation();
+    toast(error.message);
+  } finally {
+    state.dayTradeLoading = false;
+    renderDayTradeSimulation();
+  }
+}
+
+async function startDayTradeMultiMonitor(symbols = []) {
+  stopDayTradeSimulation("再開始", { silent: true, reset: true });
+  state.dayTradeLoading = true;
+  state.dayTradeSimulation = blankDayTradeSimulation({
+    status: "準備中",
+    note: `${symbols.length}銘柄のAIエントリーを確認中`,
+    multi: true,
+  });
+  renderDayTradeSimulation();
+  try {
+    const basePayload = dayTradeFormPayload();
+    const payloads = await Promise.all(symbols.map((symbol) => request("/api/daytrade/simulation", {
+      method: "POST",
+      body: JSON.stringify({
+        ...basePayload,
+        symbol,
+        entryPrice: null,
+        currentPrice: null,
+      }),
+    })));
+    const monitors = payloads
+      .map((payload, index) => {
+        const plan = payload.plan || null;
+        if (!plan?.ready) return null;
+        const quotePrice = finiteNumber(payload.quote?.currentPrice) || plan.entryPrice;
+        const quoteDate = payload.quote?.date || new Date().toISOString().slice(0, 10);
+        return {
+          symbol: plan.symbol || symbols[index],
+          name: dayTradeStockLabel(plan.symbol || symbols[index]),
+          running: true,
+          status: "監視中",
+          plan,
+          active: {
+            label: "初回",
+            entryPrice: plan.entryPrice,
+            stopPrice: plan.stopPrice,
+            takeProfitPrice: plan.takeProfitPrice,
+          },
+          waitChase: false,
+          pnl: 0,
+          lastPrice: quotePrice,
+          lastDate: quoteDate,
+          events: [
+            dayTradeSimulationEvent("新規買い", plan.entryPrice, `${Math.round(plan.quantity)}株 / テスト開始`, "buy", quoteDate),
+          ],
+        };
+      })
+      .filter(Boolean);
+    if (!monitors.length) throw new Error("選択銘柄の監視条件を作れませんでした。");
+    state.dayTradeSimulation = blankDayTradeSimulation({
+      running: true,
+      status: "複数監視中",
+      note: `${monitors.length}銘柄を現在値で監視中・実発注なし`,
+      multi: true,
+      monitorMode: true,
+      monitors,
+    });
+    state.dayTradeSimulation.timer = window.setInterval(pollDayTradeMultiSimulationPrices, DAY_TRADE_MONITOR_INTERVAL_MS);
+    renderDayTrade();
+    pollDayTradeMultiSimulationPrices();
   } catch (error) {
     state.dayTradeSimulation = blankDayTradeSimulation({
       status: "失敗",
@@ -1982,13 +2136,89 @@ async function pollDayTradeSimulationPrice() {
   }
 }
 
+async function pollDayTradeMultiSimulationPrices() {
+  const sim = state.dayTradeSimulation;
+  if (!sim?.running || !sim.multi) return;
+  const basePayload = dayTradeFormPayload();
+  await Promise.all((sim.monitors || []).map(async (monitor) => {
+    if (!monitor.running) return;
+    try {
+      const payload = await request("/api/daytrade/entry", {
+        method: "POST",
+        body: JSON.stringify({
+          ...basePayload,
+          symbol: monitor.symbol,
+          entryPrice: monitor.plan?.entryPrice,
+        }),
+      });
+      const current = finiteNumber(payload.quote?.currentPrice) || finiteNumber(payload.recommendation?.currentPrice);
+      if (!current) return;
+      const date = payload.quote?.date || new Date().toISOString().slice(0, 10);
+      monitor.lastPrice = current;
+      monitor.lastDate = date;
+      if (monitor.active) {
+        if (current <= monitor.active.stopPrice) {
+          monitor.pnl += (monitor.active.stopPrice - monitor.active.entryPrice) * (monitor.plan?.quantity || 0);
+          monitor.events.push(dayTradeSimulationEvent("損切り", monitor.active.stopPrice, "現在値が損切りラインに到達したため終了。", "stop", date));
+          monitor.active = null;
+          monitor.running = false;
+          monitor.status = "損切り終了";
+          return;
+        }
+        if (current >= monitor.active.takeProfitPrice) {
+          monitor.pnl += (monitor.active.takeProfitPrice - monitor.active.entryPrice) * (monitor.plan?.quantity || 0);
+          monitor.events.push(dayTradeSimulationEvent("利確", monitor.active.takeProfitPrice, "現在値が利確ラインに到達し、いったんゼロにしました。", "sell", date));
+          monitor.active = null;
+          if (monitor.plan?.chaseEnabled && finiteNumber(monitor.plan.chaseTriggerPrice)) {
+            monitor.waitChase = true;
+            monitor.status = "追撃待ち";
+          } else {
+            monitor.running = false;
+            monitor.status = "利確終了";
+          }
+          return;
+        }
+      }
+      if (monitor.waitChase && current >= monitor.plan.chaseTriggerPrice) {
+        monitor.waitChase = false;
+        monitor.active = {
+          label: "追撃",
+          entryPrice: monitor.plan.reEntryPrice,
+          stopPrice: monitor.plan.reStopPrice,
+          takeProfitPrice: monitor.plan.reTakeProfitPrice,
+        };
+        monitor.status = "追撃保有中";
+        monitor.events.push(dayTradeSimulationEvent("追撃買い", monitor.plan.reEntryPrice, `${Math.round(monitor.plan.quantity)}株 / 新しい基準価格`, "buy", date));
+      }
+    } catch (error) {
+      monitor.status = "確認失敗";
+      monitor.events.push(dayTradeSimulationEvent("確認失敗", monitor.lastPrice, error.message, "stop", monitor.lastDate));
+    }
+  }));
+  const activeCount = sim.monitors.filter((monitor) => monitor.running).length;
+  sim.status = activeCount ? "複数監視中" : "終了";
+  sim.note = activeCount ? `${activeCount}/${sim.monitors.length}銘柄を監視中` : "選択銘柄の監視が完了しました。";
+  if (!activeCount) {
+    if (sim.timer) window.clearInterval(sim.timer);
+    sim.running = false;
+    sim.timer = null;
+  }
+  state.dayTradeSimulation = sim;
+  renderDayTradeSimulation();
+}
+
 function chaseReferenceLabel(value) {
   return value === "recent_high" ? "直近高値" : "利確価格";
 }
 
 function renderDayTradeWatchlist() {
   if (!els.dayTradeWatchlist) return;
-  if (els.dayTradeWatchlistCount) els.dayTradeWatchlistCount.textContent = `${state.dayTradeStocks.length}件`;
+  normalizeDayTradeMultiSelection();
+  if (els.dayTradeWatchlistCount) {
+    els.dayTradeWatchlistCount.textContent = state.dayTradeMultiSelected.length
+      ? `${state.dayTradeStocks.length}件 / 選択 ${state.dayTradeMultiSelected.length}件`
+      : `${state.dayTradeStocks.length}件`;
+  }
   if (!state.dayTradeStocks.length) {
     els.dayTradeWatchlist.classList.add("empty-state");
     els.dayTradeWatchlist.innerHTML = "<p>デイトレ用の銘柄はまだありません。下の候補検索から追加してください。</p>";
@@ -1996,7 +2226,11 @@ function renderDayTradeWatchlist() {
   }
   els.dayTradeWatchlist.classList.remove("empty-state");
   els.dayTradeWatchlist.innerHTML = state.dayTradeStocks.map((stock) => `
-    <article class="daytrade-watch-item ${stock.symbol === state.dayTradeSelected ? "active" : ""}">
+    <article class="daytrade-watch-item ${stock.symbol === state.dayTradeSelected ? "active" : ""} ${state.dayTradeMultiSelected.includes(stock.symbol) ? "selected" : ""}">
+      <label class="daytrade-row-check" title="同時監視に含める">
+        <input type="checkbox" data-daytrade-toggle="${escapeHtml(stock.symbol)}" ${state.dayTradeMultiSelected.includes(stock.symbol) ? "checked" : ""}>
+        <span></span>
+      </label>
       <button type="button" class="icon" data-daytrade-select="${escapeHtml(stock.symbol)}" title="選択">☰</button>
       <div>
         <strong>${escapeHtml(stock.name || stock.symbol)}</strong>
@@ -6764,6 +6998,19 @@ els.dayTradeCandidates?.addEventListener("click", async (event) => {
 });
 
 els.dayTradeWatchlist?.addEventListener("click", async (event) => {
+  const toggle = event.target.closest("[data-daytrade-toggle]");
+  if (toggle) {
+    const symbol = toggle.dataset.daytradeToggle;
+    if (toggle.checked) {
+      state.dayTradeMultiSelected = [...new Set([...(state.dayTradeMultiSelected || []), symbol])];
+      state.dayTradeSelected = state.dayTradeSelected || symbol;
+      if (els.dayTradeSymbol && !els.dayTradeSymbol.value) els.dayTradeSymbol.value = symbol;
+    } else {
+      state.dayTradeMultiSelected = (state.dayTradeMultiSelected || []).filter((item) => item !== symbol);
+    }
+    renderDayTrade();
+    return;
+  }
   const selectButton = event.target.closest("[data-daytrade-select]");
   if (selectButton) {
     const symbol = selectButton.dataset.daytradeSelect;
@@ -6781,12 +7028,24 @@ els.dayTradeWatchlist?.addEventListener("click", async (event) => {
   try {
     const payload = await request(`/api/daytrade-watchlist/${encodeURIComponent(symbol)}`, { method: "DELETE" });
     state.dayTradeStocks = payload.stocks || [];
+    state.dayTradeMultiSelected = (state.dayTradeMultiSelected || []).filter((item) => item !== symbol);
     if (state.dayTradeSelected === symbol) state.dayTradeSelected = state.dayTradeStocks[0]?.symbol || null;
     state.dayTradePlan = null;
     renderDayTrade();
   } catch (error) {
     toast(error.message);
   }
+});
+
+els.dayTradeSelectAllButton?.addEventListener("click", () => {
+  state.dayTradeMultiSelected = state.dayTradeStocks.map((stock) => stock.symbol);
+  if (!state.dayTradeSelected && state.dayTradeMultiSelected.length) state.dayTradeSelected = state.dayTradeMultiSelected[0];
+  renderDayTrade();
+});
+
+els.dayTradeClearSelectionButton?.addEventListener("click", () => {
+  state.dayTradeMultiSelected = [];
+  renderDayTrade();
 });
 
 els.viewButtons.forEach((button) => {
