@@ -94,7 +94,16 @@ button:disabled {
 
 .brand-block {
   justify-content: flex-start;
+  gap: 11px;
   min-width: 0;
+}
+
+.brand-logo {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 10px;
+  box-shadow: 0 10px 22px rgba(11, 107, 88, 0.18);
 }
 
 .eyebrow {

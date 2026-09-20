@@ -9,6 +9,7 @@ import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, pre
 const serverSource = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 const indexSource = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+const logoSource = await readFile(new URL("../public/stock-signal-logo.svg", import.meta.url), "utf8");
 
 function loadFunction(source, name, globals) {
   const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
@@ -114,6 +115,13 @@ test("technical entry uses golden cross and closing strength experience rules", 
   assert.match(appSource, /ゴールデンクロス/);
   assert.match(appSource, /大引けの強さ/);
   assert.match(appSource, /technicalExperienceBadge/);
+});
+
+test("browser logo is wired to favicon and app brand", () => {
+  assert.match(indexSource, /rel="icon" href="\/stock-signal-logo\.svg"/);
+  assert.match(indexSource, /class="brand-logo"/);
+  assert.match(logoSource, /viewBox="0 0 64 64"/);
+  assert.match(logoSource, /#0b6b58/);
 });
 
 test("day trade feature has simulation, candidates, and guarded Rakuten RSS bridge", () => {

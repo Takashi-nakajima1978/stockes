@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Stock Signal</title>
+  <desc id="desc">A simple stock signal logo with a subtle intelligent signal mark.</desc>
+  <rect width="64" height="64" rx="14" fill="#ffffff"/>
+  <rect x="3" y="3" width="58" height="58" rx="13" fill="none" stroke="#0b6b58" stroke-width="4"/>
+  <path d="M17 43l10-9 8 4 13-16" fill="none" stroke="#0b6b58" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M44 22h5v5" fill="none" stroke="#0b6b58" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M22 18v8M18 22h8" fill="none" stroke="#1a2428" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M18 48h28" fill="none" stroke="#dbe2e4" stroke-width="3" stroke-linecap="round"/>
+</svg>
