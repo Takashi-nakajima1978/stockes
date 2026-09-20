@@ -1551,11 +1551,12 @@ function renderDayTradeAutopilot() {
       <strong>${escapeHtml(plan.summary || "AI自律運用の候補を準備しました。")}</strong>
       <span>${escapeHtml(plan.guardrail || "テスト監視のみ。実発注にはAPI接続と明示設定が必要です。")}</span>
     </div>
+    ${autopilotPolicyHtml(plan.policy, plan.allocationPlan, plan.learningOverview)}
     ${autopilotRegimeHtml(plan.marketRegime)}
     ${operationPlan ? `<ul class="autopilot-operation">${operationPlan}</ul>` : ""}
     <div class="autopilot-candidates">
       ${candidates.map((candidate, index) => `
-        <article>
+        <article class="${candidate.policyPass ? "policy-pass" : "policy-watch"}">
           <div>
             <strong>${index + 1}. ${escapeHtml(candidate.name || candidate.symbol)}</strong>
             ${aiStateBadge(candidate.aiState)}
@@ -1564,9 +1565,46 @@ function renderDayTradeAutopilot() {
           <em>${Math.round(candidate.score || 0)}点</em>
           <small>${escapeHtml(candidate.summary || "")}</small>
           <small>${escapeHtml(candidate.aiDecision?.nextCheck || "")}</small>
-          <div class="autopilot-rule-line">${adaptiveRuleText(candidate.adaptiveRules)}</div>
+          <div class="autopilot-rule-line">
+            <span>${escapeHtml(candidate.policyPass ? "自律監視対象" : candidate.policyNote || "条件確認中")}</span>
+            ${adaptiveRuleText(candidate.adaptiveRules)}
+          </div>
         </article>
       `).join("") || "<p>条件に合う候補がまだありません。</p>"}
+    </div>
+  `;
+}
+
+function autopilotPolicyHtml(policy = null, allocationPlan = null, learning = null) {
+  if (!policy && !allocationPlan && !learning) return "";
+  const checks = (policy?.checks || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+  const learningText = learning?.trades
+    ? `過去テスト ${learning.trades}回 / 勝率 ${Math.round((learning.winRate || 0) * 100)}% / 累計 ${yen(learning.pnl || 0)}`
+    : "過去テストはまだ不足";
+  return `
+    <div class="autopilot-policy">
+      <article>
+        <strong>採用基準</strong>
+        <p>${escapeHtml(policy?.summary || "スコア・信頼度・相場状態で入る銘柄を絞ります。")}</p>
+        <div>${checks}</div>
+      </article>
+      <article>
+        <strong>資金配分</strong>
+        <p>${escapeHtml(allocationPlan?.summary || "株式枠だけを短期監視に使い、残りは余力として残します。")}</p>
+        <div>
+          <span>使用上限 ${yen(allocationPlan?.activeStockBudget || 0)}</span>
+          <span>余力 ${yen(allocationPlan?.reserveBudget || 0)}</span>
+          <span>1銘柄 ${yen(allocationPlan?.perEntryBudget || 0)}</span>
+        </div>
+      </article>
+      <article>
+        <strong>学習状況</strong>
+        <p>${escapeHtml(learningText)}</p>
+        <div>
+          <span>${learning?.recentTrades ? `直近${learning.recentTrades}回 勝率${Math.round((learning.recentWinRate || 0) * 100)}%` : "直近データなし"}</span>
+          <span>${learning?.lastOutcome ? `前回 ${learning.lastOutcome === "win" ? "利確" : learning.lastOutcome === "loss" ? "損切り" : "横ばい"}` : "前回なし"}</span>
+        </div>
+      </article>
     </div>
   `;
 }
@@ -2394,8 +2432,11 @@ async function pollDayTradeMultiSimulationPrices() {
 }
 
 function recordDayTradeLearningFromMonitor(monitor = {}, outcome = "flat", exitPrice = null, reason = "") {
-  if (!monitor.symbol || monitor.learningRecorded) return;
-  monitor.learningRecorded = true;
+  if (!monitor.symbol) return;
+  const learningKey = `${outcome}:${reason}:${exitPrice}:${monitor.events?.length || 0}`;
+  monitor.learningKeys = Array.isArray(monitor.learningKeys) ? monitor.learningKeys : [];
+  if (monitor.learningKeys.includes(learningKey)) return;
+  monitor.learningKeys.push(learningKey);
   request("/api/daytrade/learning", {
     method: "POST",
     body: JSON.stringify({
@@ -2428,13 +2469,20 @@ async function runDayTradeAutopilot(startAfter = false) {
     state.dayTradeMultiSelected = payload.selectedSymbols || [];
     state.dayTradeSelected = state.dayTradeMultiSelected[0] || state.dayTradeSelected;
     if (els.dayTradeSymbol && state.dayTradeSelected) els.dayTradeSymbol.value = state.dayTradeSelected;
-    if (payload.allocation?.perPositionBudget && els.dayTradeCapitalYen) {
-      els.dayTradeCapitalYen.value = String(Math.round(payload.allocation.perPositionBudget));
+    const perEntryBudget = payload.allocationPlan?.perEntryBudget || payload.allocation?.perPositionBudget;
+    if (perEntryBudget && els.dayTradeCapitalYen) {
+      els.dayTradeCapitalYen.value = String(Math.round(perEntryBudget));
     }
     state.dayTradePlan = null;
     renderDayTrade();
-    toast(startAfter ? "AIが選んだ銘柄で自律監視を開始します。" : "AI自律運用の候補を準備しました。");
-    if (startAfter && state.dayTradeMultiSelected.length) await startDayTradeSimulation();
+    if (startAfter && state.dayTradeMultiSelected.length) {
+      toast("AIが採用基準を満たした銘柄で自律監視を開始します。");
+      await startDayTradeSimulation();
+    } else if (startAfter) {
+      toast("自律監視の基準に届く銘柄がまだありません。候補だけ更新しました。");
+    } else {
+      toast("AI自律運用の候補を準備しました。");
+    }
   } catch (error) {
     if (els.dayTradeAutopilotStatus) els.dayTradeAutopilotStatus.textContent = "失敗";
     toast(error.message);

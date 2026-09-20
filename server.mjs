@@ -13919,6 +13919,78 @@ function normalizeDayTradeAllocation(input = {}) {
   };
 }
 
+function dayTradeAutopilotPolicy(marketRegime = {}, allocation = {}, input = {}) {
+  const riskLevel = ["low", "medium", "high"].includes(String(marketRegime.riskLevel))
+    ? String(marketRegime.riskLevel)
+    : "medium";
+  const maxPositions = clamp(Number(allocation.maxPositions || input.maxPositions || 5), 1, 20);
+  const baseMinScore = riskLevel === "high" ? 66 : riskLevel === "low" ? 54 : 60;
+  const baseMinConfidence = riskLevel === "high" ? 70 : riskLevel === "low" ? 58 : 64;
+  const minScore = clamp(Number(input.minAutopilotScore || baseMinScore), 45, 90);
+  const minConfidence = clamp(Number(input.minAutopilotConfidence || baseMinConfidence), 45, 90);
+  const entrySlots = clamp(
+    riskLevel === "high"
+      ? Math.max(1, Math.floor(maxPositions * 0.4))
+      : riskLevel === "low"
+      ? maxPositions
+      : Math.max(1, Math.ceil(maxPositions * 0.7)),
+    1,
+    maxPositions,
+  );
+  const activeStockPct = riskLevel === "high"
+    ? Math.min(Number(allocation.stocksPct || 59), 35)
+    : riskLevel === "medium"
+    ? Math.min(Number(allocation.stocksPct || 59), 50)
+    : Number(allocation.stocksPct || 59);
+  return {
+    riskLevel,
+    minScore,
+    minConfidence,
+    entrySlots,
+    maxWatch: maxPositions,
+    activeStockPct,
+    reservePct: Math.max(0, 100 - activeStockPct),
+    allowChase: riskLevel !== "high",
+    summary: riskLevel === "high"
+      ? "相場が荒いため、入る基準を上げて同時監視数と株式使用額を絞ります。"
+      : riskLevel === "low"
+      ? "相場が安定しているため、条件を満たす銘柄は通常どおり監視します。"
+      : "相場は中立です。スコアと信頼度の両方を満たした銘柄だけ監視します。",
+    checks: [
+      `スコア${minScore}点以上`,
+      `AI信頼度${minConfidence}%以上`,
+      `同時監視${entrySlots}銘柄まで`,
+      riskLevel === "high" ? "追撃は抑制" : "追撃は条件付きで許可",
+    ],
+  };
+}
+
+function candidatePassesAutopilotPolicy(candidate = {}, policy = {}) {
+  const score = Number(candidate.score || 0);
+  const confidence = Number(candidate.aiDecision?.confidence || 0);
+  const action = String(candidate.aiState?.action || "wait");
+  return score >= Number(policy.minScore || 0)
+    && confidence >= Number(policy.minConfidence || 0)
+    && action !== "pause";
+}
+
+function dayTradeAllocationPlan(allocation = {}, policy = {}) {
+  const totalCapital = Number(allocation.totalCapital || 0);
+  const activeStockBudget = totalCapital * Number(policy.activeStockPct || allocation.stocksPct || 0) / 100;
+  const reserveBudget = Math.max(0, totalCapital - activeStockBudget);
+  const perEntryBudget = activeStockBudget / Math.max(1, Number(policy.entrySlots || allocation.maxPositions || 1));
+  return {
+    targetStocksPct: allocation.stocksPct,
+    targetBondsPct: allocation.bondsPct,
+    targetCashPct: allocation.cashPct,
+    activeStockPct: policy.activeStockPct,
+    activeStockBudget,
+    reserveBudget,
+    perEntryBudget,
+    summary: `株式は最大${Math.round(policy.activeStockPct || allocation.stocksPct || 0)}%だけ使い、残りは急変時の余力として残します。`,
+  };
+}
+
 async function buildDayTradeAutopilot(input = {}, settings = defaultSettings) {
   const allocation = normalizeDayTradeAllocation({
     ...input,
@@ -13930,11 +14002,28 @@ async function buildDayTradeAutopilot(input = {}, settings = defaultSettings) {
     scanLimit,
     capitalYen: allocation.perPositionBudget,
   });
+  const learning = await readDayTradeLearning().catch(() => ({ items: [] }));
+  const learningOverview = dayTradeLearningOverview(learning);
+  const policy = dayTradeAutopilotPolicy(candidatePayload.marketRegime, allocation, input);
+  const allocationPlan = dayTradeAllocationPlan(allocation, policy);
   const candidates = (candidatePayload.candidates || [])
-    .filter((candidate) => Number(candidate.score) >= 50)
+    .map((candidate) => {
+      const policyPass = candidatePassesAutopilotPolicy(candidate, policy);
+      return {
+        ...candidate,
+        policyPass,
+        policyNote: policyPass
+          ? "自律監視対象"
+          : `監視候補。スコア${policy.minScore}点・信頼度${policy.minConfidence}%の両方を確認`,
+      };
+    })
+    .filter((candidate) => Number(candidate.score) >= 45)
     .filter((candidate) => candidate.aiState?.action !== "pause")
-    .slice(0, allocation.maxPositions);
-  const selectedSymbols = candidates.map((candidate) => candidate.symbol);
+    .slice(0, policy.maxWatch);
+  const selectedSymbols = candidates
+    .filter((candidate) => candidate.policyPass)
+    .slice(0, policy.entrySlots)
+    .map((candidate) => candidate.symbol);
   let stocks = await readDayTradeWatchlist().catch(() => []);
   if (input.saveToWatchlist !== false && candidates.length) {
     stocks = uniqueBy([...candidates.map(normalizeDayTradeWatchItem), ...stocks], (stock) => stock.symbol).slice(0, 80);
@@ -13948,14 +14037,19 @@ async function buildDayTradeAutopilot(input = {}, settings = defaultSettings) {
     mode: testOnly ? "test" : "api_preview",
     modeLabel: testOnly ? "テスト監視" : "APIプレビュー",
     allocation,
+    allocationPlan,
+    policy,
+    learningOverview,
     checked: candidatePayload.checked,
     scanLimit,
     marketRegime: candidatePayload.marketRegime,
     selectedSymbols,
     candidates,
     stocks,
-    summary: candidates.length
-      ? `${candidatePayload.marketRegime?.label || "相場"}を前提に、AIが${candidates.length}銘柄を選び、Stock枠${formatMoney(allocation.stockBudget, "JPY")}内で同時監視します。`
+    summary: selectedSymbols.length
+      ? `${candidatePayload.marketRegime?.label || "相場"}を前提に、AIが${selectedSymbols.length}銘柄を自律監視対象にしました。${formatMoney(allocationPlan.activeStockBudget, "JPY")}を上限に運用します。`
+      : candidates.length
+      ? "候補はありますが、自律監視の基準にはまだ届いていません。条件点灯まで候補だけ更新します。"
       : "条件に合う銘柄が見つかりませんでした。検索数や基準単位を見直してください。",
     guardrail: testOnly
       ? "自律運用はテスト監視までです。実発注には証券API設定、発注許可、上限金額の確認が必要です。"
@@ -13965,6 +14059,7 @@ async function buildDayTradeAutopilot(input = {}, settings = defaultSettings) {
       "候補発掘: ATR・出来高・RSI・移動平均・ローソク足・過去勝敗でスコア化",
       "入口判断: 入る/反転待ち/押し目待ち/停止を銘柄ごとに分ける",
       "ルール補正: ATRに応じて損切り・利確・追撃幅を自動補正",
+      "採用基準: 相場レジームに応じて必要スコア・信頼度・同時監視数を変更",
       "監視: 待機中はエントリー価格を再計算し、条件点灯時だけテスト買いに進む",
       "学習: 利確/損切り結果を保存し、次回スコアに反映",
     ],
@@ -14432,6 +14527,28 @@ function dayTradeLearningBySymbol(learning = {}) {
     map.set(symbol, row);
   }
   return map;
+}
+
+function dayTradeLearningOverview(learning = {}) {
+  const items = Array.isArray(learning.items) ? learning.items : [];
+  const wins = items.filter((item) => item.outcome === "win").length;
+  const losses = items.filter((item) => item.outcome === "loss").length;
+  const pnl = items.reduce((sum, item) => Number.isFinite(item.pnl) ? sum + item.pnl : sum, 0);
+  const recent = items.slice(-20);
+  const recentWins = recent.filter((item) => item.outcome === "win").length;
+  const recentLosses = recent.filter((item) => item.outcome === "loss").length;
+  return {
+    trades: items.length,
+    wins,
+    losses,
+    winRate: items.length ? wins / items.length : null,
+    pnl,
+    averagePnl: items.length ? pnl / items.length : null,
+    recentTrades: recent.length,
+    recentWinRate: recent.length ? recentWins / Math.max(1, recentWins + recentLosses) : null,
+    lastOutcome: items.at(-1)?.outcome || "",
+    lastAt: items.at(-1)?.at || "",
+  };
 }
 
 function dayTradeLearningScore(summary = null) {
