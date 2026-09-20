@@ -460,6 +460,8 @@ const mime = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml; charset=utf-8",
+  ".ico": "image/x-icon",
 };
 
 const actionLabels = {
@@ -774,7 +776,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     if (url.pathname === "/") return await serveFile(res, path.join(PUBLIC_DIR, "index.html"));
-    if (url.pathname === "/favicon.ico") return empty(res, 204);
+    if (url.pathname === "/favicon.ico") return await serveFile(res, path.join(PUBLIC_DIR, "stock-signal-logo.svg"));
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
     return await serveFile(res, path.join(PUBLIC_DIR, sanitizePath(url.pathname)));
   } catch (error) {

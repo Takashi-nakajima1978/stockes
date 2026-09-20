@@ -122,6 +122,8 @@ test("browser logo is wired to favicon and app brand", () => {
   assert.match(indexSource, /class="brand-logo"/);
   assert.match(logoSource, /viewBox="0 0 64 64"/);
   assert.match(logoSource, /#0b6b58/);
+  assert.match(serverSource, /"\.svg": "image\/svg\+xml; charset=utf-8"/);
+  assert.match(serverSource, /stock-signal-logo\.svg/);
 });
 
 test("day trade feature has simulation, candidates, and guarded Rakuten RSS bridge", () => {
