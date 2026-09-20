@@ -17,6 +17,7 @@ const PORT = Number(process.env.PORT || 5173);
 const HOST = process.env.HOST || "127.0.0.1";
 const WATCHLIST_PATH = path.join(__dirname, "data", "watchlist.json");
 const DAY_TRADE_WATCHLIST_PATH = path.join(__dirname, "data", "daytrade-watchlist.json");
+const DAY_TRADE_LEARNING_PATH = path.join(__dirname, "data", "daytrade-learning.json");
 const US_WATCHLIST_PATH = path.join(__dirname, "data", "us-watchlist.json");
 const CRYPTO_HOLDING_PATH = path.join(__dirname, "data", "crypto-holding.json");
 const ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "analysis-cache.json");
@@ -828,6 +829,15 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/daytrade/autopilot" && req.method === "POST") {
     const [body, settings] = await Promise.all([readJson(req), readSettings()]);
     return json(res, 200, await buildDayTradeAutopilot(body, settings));
+  }
+
+  if (url.pathname === "/api/daytrade/learning" && req.method === "GET") {
+    return json(res, 200, await readDayTradeLearning());
+  }
+
+  if (url.pathname === "/api/daytrade/learning" && req.method === "POST") {
+    const body = await readJson(req);
+    return json(res, 200, await recordDayTradeLearning(body));
   }
 
   if (url.pathname === "/api/daytrade/candidates" && req.method === "GET") {
@@ -13497,6 +13507,9 @@ async function buildDayTradeEntryRecommendation(input = {}, settings = defaultSe
 function recommendDayTradeEntryPrice(input = {}, price = {}, settings = defaultSettings) {
   const symbol = normalizeSymbol(input.symbol || input.code || "");
   const current = nullablePositiveNumber(price.current) || nullablePositiveNumber(input.currentPrice) || nullablePositiveNumber(input.entryPrice);
+  const rules = normalizeDayTradeRules(input, settings);
+  const pricedContext = { ...price, current: current || price.current };
+  const adaptiveRules = dayTradeAdaptiveRules(rules, pricedContext);
   const atr14 = nullablePositiveNumber(price.atr14);
   const atrPct = nullablePositiveNumber(price.atrPct);
   const sma5 = nullablePositiveNumber(price.sma5);
@@ -13519,6 +13532,8 @@ function recommendDayTradeEntryPrice(input = {}, price = {}, settings = defaultS
       label: "未取得",
       summary: "現在値を取得できず、エントリー価格を計算できませんでした。",
       confidence: 0,
+      aiState: { action: "pause", label: "停止", tone: "high", reason: "現在値を取得できません。" },
+      adaptiveRules,
       reasons,
       risks: ["現在値未取得"],
     };
@@ -13563,6 +13578,7 @@ function recommendDayTradeEntryPrice(input = {}, price = {}, settings = defaultS
     risks.push("値動きが荒いため、入口を少し深めに調整");
   }
   const recentHigh = nullablePositiveNumber(price.high52) || nullablePositiveNumber(input.recentHigh);
+  const aiState = dayTradeAiState(pricedContext, confidence, { reasons, risks, adaptiveRules });
   return {
     symbol,
     entryPrice: roundPrice(entryPrice),
@@ -13571,6 +13587,8 @@ function recommendDayTradeEntryPrice(input = {}, price = {}, settings = defaultS
     label,
     summary,
     confidence: clamp(Math.round(confidence), 0, 100),
+    aiState,
+    adaptiveRules,
     reasons: uniqueText(reasons).slice(0, 4),
     risks: uniqueText(risks).slice(0, 4),
     atr14,
@@ -13593,8 +13611,21 @@ async function buildDayTradeSimulation(input = {}, settings = defaultSettings) {
     recentHigh: input.recentHigh || recommendation.recentHigh,
     mode: input.mode || "test",
   };
+  const autopilot = input.autopilot === true || input.autopilot === "true";
+  const adaptive = recommendation.adaptiveRules || {};
+  const planInput = autopilot && adaptive.stopYen && adaptive.profitYen
+    ? {
+      ...simulationInput,
+      stopYen: adaptive.stopYen,
+      stopMode: "yen",
+      profitYen: adaptive.profitYen,
+      profitMode: "yen",
+      chaseYen: adaptive.chaseYen || simulationInput.chaseYen,
+      chaseMode: "yen",
+    }
+    : simulationInput;
   return {
-    plan: buildDayTradePlan(simulationInput, settings),
+    plan: buildDayTradePlan(planInput, settings),
     recommendation,
     quote: entryPayload.quote,
     series: [],
@@ -13810,11 +13841,13 @@ async function rakutenDayTradeOrderPreview(plan = {}, input = {}, settings = def
 async function dayTradeCandidates(settings = defaultSettings, options = {}) {
   const rules = normalizeDayTradeRules(options, settings);
   const scanLimit = clamp(Number(options.scanLimit || settings.dayTradeScanLimit || defaultSettings.dayTradeScanLimit), 50, 1000);
-  const [dayTradeWatchlist, discovery, primeUniverse] = await Promise.all([
+  const [dayTradeWatchlist, discovery, primeUniverse, learning] = await Promise.all([
     readDayTradeWatchlist().catch(() => []),
     discoveryCacheForCurrentSettings().catch(() => ({ suggestions: [] })),
     readPrimeUniverse().catch(() => []),
+    readDayTradeLearning().catch(() => ({ items: [] })),
   ]);
+  const learningBySymbol = dayTradeLearningBySymbol(learning);
   const fromWatchlist = dayTradeWatchlist.map((stock) => ({
     symbol: normalizeSymbol(stock.symbol),
     name: stock.name || stock.symbol,
@@ -13843,8 +13876,9 @@ async function dayTradeCandidates(settings = defaultSettings, options = {}) {
     .slice(0, Math.max(scanLimit, fromWatchlist.length));
   const checked = await mapLimit(pool, 8, async (item) => {
     const price = await fetchPriceHistory(item.symbol, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch(() => emptyPrice());
-    return scoreDayTradeCandidate(item, price, rules);
+    return scoreDayTradeCandidate(item, price, rules, learningBySymbol.get(item.symbol));
   });
+  const marketRegime = dayTradeMarketRegime(checked.filter(Boolean));
   const candidates = checked
     .filter((item) => item && item.current && item.score >= 45)
     .sort((a, b) => b.score - a.score || b.current - a.current)
@@ -13854,6 +13888,7 @@ async function dayTradeCandidates(settings = defaultSettings, options = {}) {
     rules,
     checked: pool.length,
     scanLimit,
+    marketRegime,
     candidates,
   };
 }
@@ -13897,6 +13932,7 @@ async function buildDayTradeAutopilot(input = {}, settings = defaultSettings) {
   });
   const candidates = (candidatePayload.candidates || [])
     .filter((candidate) => Number(candidate.score) >= 50)
+    .filter((candidate) => candidate.aiState?.action !== "pause")
     .slice(0, allocation.maxPositions);
   const selectedSymbols = candidates.map((candidate) => candidate.symbol);
   let stocks = await readDayTradeWatchlist().catch(() => []);
@@ -13914,30 +13950,40 @@ async function buildDayTradeAutopilot(input = {}, settings = defaultSettings) {
     allocation,
     checked: candidatePayload.checked,
     scanLimit,
+    marketRegime: candidatePayload.marketRegime,
     selectedSymbols,
     candidates,
     stocks,
     summary: candidates.length
-      ? `AIスコアで${candidates.length}銘柄を選び、Stock枠${formatMoney(allocation.stockBudget, "JPY")}内で同時監視します。`
+      ? `${candidatePayload.marketRegime?.label || "相場"}を前提に、AIが${candidates.length}銘柄を選び、Stock枠${formatMoney(allocation.stockBudget, "JPY")}内で同時監視します。`
       : "条件に合う銘柄が見つかりませんでした。検索数や基準単位を見直してください。",
     guardrail: testOnly
       ? "自律運用はテスト監視までです。実発注には証券API設定、発注許可、上限金額の確認が必要です。"
       : "API接続モードでも、発注上限と注文プレビューを通してから送信します。",
     targetRationale: "Stock 59% / Bonds 39% / Cash 2%を目標配分として、株式側だけを短期監視対象にします。",
+    operationPlan: [
+      "候補発掘: ATR・出来高・RSI・移動平均・ローソク足・過去勝敗でスコア化",
+      "入口判断: 入る/反転待ち/押し目待ち/停止を銘柄ごとに分ける",
+      "ルール補正: ATRに応じて損切り・利確・追撃幅を自動補正",
+      "監視: 待機中はエントリー価格を再計算し、条件点灯時だけテスト買いに進む",
+      "学習: 利確/損切り結果を保存し、次回スコアに反映",
+    ],
   };
 }
 
-function scoreDayTradeCandidate(item = {}, price = {}, rules = {}) {
+function scoreDayTradeCandidate(item = {}, price = {}, rules = {}, learningSummary = null) {
   const current = nullablePositiveNumber(price.current);
   if (!current) return null;
   const context = dayTradePriceContext({ entryPrice: current }, price);
-  const stopYen = dayTradeOffsetAmount(rules.stopYen, rules.stopMode, current, context) || rules.stopYen;
-  const profitYen = dayTradeOffsetAmount(rules.profitYen, rules.profitMode, current, context) || rules.profitYen;
-  const chaseYen = dayTradeOffsetAmount(rules.chaseYen, rules.chaseMode, current, context) || rules.chaseYen;
+  const adaptiveRules = dayTradeAdaptiveRules(rules, price);
+  const stopYen = adaptiveRules.stopYen || dayTradeOffsetAmount(rules.stopYen, rules.stopMode, current, context) || rules.stopYen;
+  const profitYen = adaptiveRules.profitYen || dayTradeOffsetAmount(rules.profitYen, rules.profitMode, current, context) || rules.profitYen;
+  const chaseYen = adaptiveRules.chaseYen || dayTradeOffsetAmount(rules.chaseYen, rules.chaseMode, current, context) || rules.chaseYen;
   const atr14 = nullablePositiveNumber(price.atr14);
   const atrPct = nullablePositiveNumber(price.atrPct);
   const volumeRatio20 = nullablePositiveNumber(price.volumeRatio20);
   const rsi14 = Number.isFinite(Number(price.rsi14)) ? Number(price.rsi14) : null;
+  const learningScore = dayTradeLearningScore(learningSummary);
   let score = 30;
   const reasons = [];
   const risks = [];
@@ -13967,7 +14013,7 @@ function scoreDayTradeCandidate(item = {}, price = {}, rules = {}) {
     score -= 5;
     risks.push("出来高が細い可能性があります");
   }
-  if (price.sma5CrossUp || price.maCrossSignal === "golden") {
+  if (price.sma5CrossUp || Number(price.maCrossSignal?.score || 0) > 0) {
     score += 12;
     reasons.push("短期線の上向き・ゴールデンクロス系の初動がある");
   }
@@ -13990,21 +14036,138 @@ function scoreDayTradeCandidate(item = {}, price = {}, rules = {}) {
     score += 6;
     reasons.push("下落後の反転待ちとして監視しやすい");
   }
+  if (price.regime?.label === "安定上昇") {
+    score += 6;
+    reasons.push("レジームは安定上昇寄り");
+  } else if (price.regime?.label === "調整/下落") {
+    score -= 6;
+    risks.push("レジームは調整/下落寄り");
+  }
+  if (learningScore) {
+    score += learningScore;
+    if (learningScore > 0) reasons.push(`過去のテスト結果を${learningScore}点加点`);
+    if (learningScore < 0) risks.push(`過去のテスト結果を${Math.abs(learningScore)}点減点`);
+  }
+  score = clamp(Math.round(score), 0, 100);
+  const aiState = dayTradeAiState(price, score, { reasons, risks, adaptiveRules, learningSummary });
+  const aiDecision = dayTradeAiDecision(item, price, aiState, adaptiveRules, learningSummary);
   return {
     symbol: item.symbol,
     name: item.name || item.symbol,
     sector: item.sector || "その他",
     source: item.source || "",
-    score: clamp(score, 0, 100),
+    score,
     current,
     atr14,
     atrPct,
     rsi14,
     volumeRatio20,
     currentPrice: current,
-    summary: `${formatMoney(current, "JPY")}前後。${formatMoney(stopYen, "JPY")}損切り / ${formatMoney(profitYen, "JPY")}利確 / ${rules.chaseEnabled ? `${formatMoney(chaseYen, "JPY")}追撃` : "追撃なし"}のテスト対象。`,
+    regime: price.regime || null,
+    aiState,
+    aiDecision,
+    adaptiveRules,
+    learning: learningSummary || null,
+    summary: `${formatMoney(current, "JPY")}前後。${formatMoney(stopYen, "JPY")}損切り / ${formatMoney(profitYen, "JPY")}利確 / ${rules.chaseEnabled ? `${formatMoney(chaseYen, "JPY")}追撃` : "追撃なし"}。${aiState.label}。`,
     reasons: uniqueText(reasons).slice(0, 5),
     risks: uniqueText(risks).slice(0, 4),
+  };
+}
+
+function dayTradeAdaptiveRules(rules = {}, price = {}) {
+  const current = nullablePositiveNumber(price.current);
+  const context = dayTradePriceContext({ entryPrice: current }, price);
+  const baseStop = dayTradeOffsetAmount(rules.stopYen, rules.stopMode, current, context) || rules.stopYen;
+  const baseProfit = dayTradeOffsetAmount(rules.profitYen, rules.profitMode, current, context) || rules.profitYen;
+  const baseChase = dayTradeOffsetAmount(rules.chaseYen, rules.chaseMode, current, context) || rules.chaseYen;
+  const atr14 = nullablePositiveNumber(price.atr14);
+  const atrPct = nullablePositiveNumber(price.atrPct);
+  let stopYen = baseStop;
+  let profitYen = baseProfit;
+  let chaseYen = baseChase;
+  const notes = [];
+  if (atr14 && current) {
+    const atrStop = atr14 * (atrPct && atrPct >= 5 ? 0.45 : 0.35);
+    const cap = current * (atrPct && atrPct >= 5 ? 0.045 : 0.03);
+    stopYen = roundPrice(Math.max(baseStop, Math.min(atrStop, cap)));
+    profitYen = roundPrice(Math.max(baseProfit, stopYen * (atrPct && atrPct >= 5 ? 2.2 : 2.6)));
+    chaseYen = roundPrice(Math.max(baseChase, stopYen * 1.1));
+    notes.push(`ATR ${formatMoney(atr14, "JPY")}を使って幅を補正`);
+  }
+  if (atrPct && atrPct > 7) notes.push("値動きが大きいため小さく試す");
+  if (atrPct && atrPct < 1) notes.push("値幅が小さく、無理に入らない");
+  return {
+    stopYen,
+    profitYen,
+    chaseYen,
+    stopMode: "ai",
+    profitMode: "ai",
+    chaseMode: "ai",
+    confidence: atr14 ? 70 : 48,
+    notes,
+  };
+}
+
+function dayTradeAiState(price = {}, score = 0, context = {}) {
+  const atrPct = nullablePositiveNumber(price.atrPct);
+  const rsi14 = Number.isFinite(Number(price.rsi14)) ? Number(price.rsi14) : null;
+  const volumeRatio20 = nullablePositiveNumber(price.volumeRatio20);
+  const regimeLabel = price.regime?.label || "判定待ち";
+  const technicalReady = price.technicalEntry?.ready === true;
+  const maScore = Number(price.maCrossSignal?.score || 0);
+  const closeScore = Number(price.closeStrength?.score || 0);
+  if (!price.current) return { action: "pause", label: "停止", tone: "high", reason: "現在値が取得できません。" };
+  if (atrPct && atrPct >= 8) return { action: "pause", label: "停止", tone: "high", reason: "値動きが大きすぎるため、自律エントリーは止めます。" };
+  if (volumeRatio20 && volumeRatio20 < 0.45) return { action: "wait", label: "流動性待ち", tone: "medium", reason: "出来高が細く、約定と急変リスクを確認します。" };
+  if (score >= 72 && (technicalReady || maScore > 0 || closeScore > 0)) {
+    return { action: "enter_now", label: "入る候補", tone: "low", reason: "値幅・出来高・反転材料が揃い、テストエントリー候補です。" };
+  }
+  if (rsi14 !== null && rsi14 < 30) return { action: "wait", label: "反転待ち", tone: "medium", reason: "売られすぎですが、反転確認を待ちます。" };
+  if (regimeLabel === "調整/下落") return { action: "wait", label: "下落確認", tone: "medium", reason: "下落レジームのため、5日線・RSIの反転確認まで待ちます。" };
+  if (score >= 58) return { action: "watch", label: "監視候補", tone: "low", reason: "条件は近いので、入口価格を自動更新しながら待ちます。" };
+  return { action: "wait", label: "押し目待ち", tone: "medium", reason: "まだ条件が弱く、追わずに待ちます。" };
+}
+
+function dayTradeAiDecision(item = {}, price = {}, state = {}, adaptiveRules = {}, learningSummary = null) {
+  const points = [
+    price.regime?.summary,
+    Number.isFinite(price.atrPct) ? `ATRは現在値の${price.atrPct.toFixed(1)}%` : "",
+    price.technicalEntry?.summary,
+    price.closeStrength?.summary,
+    learningSummary?.trades ? `過去${learningSummary.trades}回のテスト勝率${Math.round(learningSummary.winRate * 100)}%` : "",
+  ].filter(Boolean);
+  return {
+    title: state.label || "監視",
+    summary: `${item.name || item.symbol}は${state.reason || "条件を確認中です"}`,
+    action: state.action || "wait",
+    confidence: clamp(Math.round((Number(price.technicalEntry?.score) || 45) + (Number(adaptiveRules.confidence) || 0) / 5), 0, 100),
+    reasons: uniqueText(points).slice(0, 5),
+    nextCheck: state.action === "enter_now"
+      ? "エントリー後はOCOで損切り・利確を固定します。"
+      : "現在値・5日線・RSI・大引けの強さを更新して入口を再計算します。",
+  };
+}
+
+function dayTradeMarketRegime(candidates = []) {
+  const usable = candidates.filter((item) => item?.regime?.label);
+  if (!usable.length) {
+    return { label: "判定待ち", summary: "候補の価格履歴が不足しています。", riskLevel: "medium", counts: {} };
+  }
+  const counts = usable.reduce((acc, item) => {
+    const label = item.regime.label || "判定待ち";
+    acc[label] = (acc[label] || 0) + 1;
+    return acc;
+  }, {});
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const label = sorted[0]?.[0] || "判定待ち";
+  const avgAtrPct = average(usable.map((item) => item.atrPct).filter(Number.isFinite));
+  const riskLevel = label === "調整/下落" || (Number.isFinite(avgAtrPct) && avgAtrPct >= 5) ? "high" : label === "レンジ" ? "medium" : "low";
+  return {
+    label,
+    riskLevel,
+    counts,
+    avgAtrPct,
+    summary: `候補${usable.length}銘柄から、${label}が最多。平均ATRは${Number.isFinite(avgAtrPct) ? `${avgAtrPct.toFixed(1)}%` : "未取得"}です。`,
   };
 }
 
@@ -14120,8 +14283,162 @@ function normalizeDayTradeWatchItem(item = {}) {
     rsi14: numberOrNull(item.rsi14),
     volumeRatio20: numberOrNull(item.volumeRatio20),
     score: nullableNonNegativeNumber(item.score),
+    regime: normalizeDayTradeRegime(item.regime),
+    aiState: normalizeDayTradeAiState(item.aiState),
+    aiDecision: normalizeDayTradeAiDecision(item.aiDecision),
+    adaptiveRules: normalizeDayTradeAdaptiveRules(item.adaptiveRules),
+    learning: normalizeDayTradeLearningSummary(item.learning),
     addedAt: item.addedAt || new Date().toISOString(),
   };
+}
+
+function normalizeDayTradeRegime(value = {}) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    label: String(value.label || "").slice(0, 40),
+    riskLevel: String(value.riskLevel || "").slice(0, 20),
+    stableUptrendPct: numberOrNull(value.stableUptrendPct),
+    panicPullbackPct: numberOrNull(value.panicPullbackPct),
+    rangePct: numberOrNull(value.rangePct),
+    summary: String(value.summary || "").slice(0, 180),
+  };
+}
+
+function normalizeDayTradeAiState(value = {}) {
+  if (!value || typeof value !== "object") return null;
+  const action = ["enter_now", "watch", "wait", "pause"].includes(String(value.action)) ? String(value.action) : "wait";
+  return {
+    action,
+    label: String(value.label || action).slice(0, 40),
+    tone: String(value.tone || "medium").slice(0, 20),
+    reason: String(value.reason || "").slice(0, 180),
+  };
+}
+
+function normalizeDayTradeAiDecision(value = {}) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    title: String(value.title || "").slice(0, 60),
+    summary: String(value.summary || "").slice(0, 180),
+    action: String(value.action || "").slice(0, 30),
+    confidence: nullableNonNegativeNumber(value.confidence),
+    reasons: asStringArray(value.reasons).slice(0, 5),
+    nextCheck: String(value.nextCheck || "").slice(0, 180),
+  };
+}
+
+function normalizeDayTradeAdaptiveRules(value = {}) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    stopYen: nullablePositiveNumber(value.stopYen),
+    profitYen: nullablePositiveNumber(value.profitYen),
+    chaseYen: nullablePositiveNumber(value.chaseYen),
+    stopMode: String(value.stopMode || "ai").slice(0, 20),
+    profitMode: String(value.profitMode || "ai").slice(0, 20),
+    chaseMode: String(value.chaseMode || "ai").slice(0, 20),
+    confidence: nullableNonNegativeNumber(value.confidence),
+    notes: asStringArray(value.notes).slice(0, 5),
+  };
+}
+
+function normalizeDayTradeLearningSummary(value = {}) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    trades: Math.max(0, Math.round(Number(value.trades || 0))),
+    wins: Math.max(0, Math.round(Number(value.wins || 0))),
+    losses: Math.max(0, Math.round(Number(value.losses || 0))),
+    winRate: numberOrNull(value.winRate),
+    pnl: numberOrNull(value.pnl),
+    averagePnl: numberOrNull(value.averagePnl),
+    lastOutcome: String(value.lastOutcome || "").slice(0, 30),
+    lastAt: String(value.lastAt || "").slice(0, 30),
+  };
+}
+
+async function readDayTradeLearning() {
+  try {
+    const parsed = JSON.parse(await readFile(DAY_TRADE_LEARNING_PATH, "utf8"));
+    const items = Array.isArray(parsed.items) ? parsed.items.map(normalizeDayTradeLearningEvent).filter((item) => item.symbol) : [];
+    return { items };
+  } catch {
+    return { items: [] };
+  }
+}
+
+async function saveDayTradeLearning(payload = {}) {
+  await mkdir(path.dirname(DAY_TRADE_LEARNING_PATH), { recursive: true });
+  const items = Array.isArray(payload.items) ? payload.items.map(normalizeDayTradeLearningEvent).filter((item) => item.symbol).slice(-1000) : [];
+  await writeFile(DAY_TRADE_LEARNING_PATH, JSON.stringify({ items }, null, 2));
+  return { items };
+}
+
+async function recordDayTradeLearning(input = {}) {
+  const current = await readDayTradeLearning();
+  const item = normalizeDayTradeLearningEvent(input);
+  if (!item.symbol) return { ...current, summary: dayTradeLearningBySymbol(current).get("") || null };
+  const next = { items: [...current.items, item].slice(-1000) };
+  await saveDayTradeLearning(next);
+  return {
+    ...next,
+    summary: dayTradeLearningBySymbol(next).get(item.symbol) || null,
+  };
+}
+
+function normalizeDayTradeLearningEvent(value = {}) {
+  const symbol = normalizeSymbol(value.symbol || value.code || "");
+  const pnl = numberOrNull(value.pnl);
+  const outcomeText = String(value.outcome || value.status || "").toLowerCase();
+  const outcome = outcomeText.includes("profit") || outcomeText.includes("win") || outcomeText.includes("利確")
+    ? "win"
+    : outcomeText.includes("loss") || outcomeText.includes("stop") || outcomeText.includes("損切")
+    ? "loss"
+    : Number.isFinite(pnl) && pnl > 0
+    ? "win"
+    : Number.isFinite(pnl) && pnl < 0
+    ? "loss"
+    : "flat";
+  return {
+    symbol,
+    name: String(value.name || symbol).slice(0, 80),
+    outcome,
+    pnl,
+    entryPrice: nullablePositiveNumber(value.entryPrice),
+    exitPrice: nullablePositiveNumber(value.exitPrice),
+    quantity: nullablePositiveNumber(value.quantity),
+    score: nullableNonNegativeNumber(value.score),
+    regimeLabel: String(value.regimeLabel || value.regime?.label || "").slice(0, 40),
+    aiAction: String(value.aiAction || value.aiState?.action || "").slice(0, 40),
+    reason: String(value.reason || "").slice(0, 180),
+    at: value.at || new Date().toISOString(),
+  };
+}
+
+function dayTradeLearningBySymbol(learning = {}) {
+  const map = new Map();
+  for (const item of learning.items || []) {
+    if (!item.symbol) continue;
+    const prev = map.get(item.symbol) || { trades: 0, wins: 0, losses: 0, pnl: 0, lastOutcome: "", lastAt: "" };
+    prev.trades += 1;
+    if (item.outcome === "win") prev.wins += 1;
+    if (item.outcome === "loss") prev.losses += 1;
+    if (Number.isFinite(item.pnl)) prev.pnl += item.pnl;
+    prev.lastOutcome = item.outcome;
+    prev.lastAt = item.at;
+    map.set(item.symbol, prev);
+  }
+  for (const [symbol, row] of map) {
+    row.winRate = row.trades ? row.wins / row.trades : null;
+    row.averagePnl = row.trades ? row.pnl / row.trades : null;
+    map.set(symbol, row);
+  }
+  return map;
+}
+
+function dayTradeLearningScore(summary = null) {
+  if (!summary || summary.trades < 2) return 0;
+  const winRatePart = Number.isFinite(summary.winRate) ? (summary.winRate - 0.5) * 24 : 0;
+  const pnlPart = Number.isFinite(summary.averagePnl) ? clamp(summary.averagePnl / 1000, -8, 8) : 0;
+  return Math.round(clamp(winRatePart + pnlPart, -14, 14));
 }
 
 async function readUsWatchlist() {

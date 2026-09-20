@@ -2261,6 +2261,43 @@ tr:hover .drag-handle,
   font-size: 12px;
 }
 
+.autopilot-regime {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--watch);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.autopilot-regime.low {
+  border-left-color: var(--buy);
+}
+
+.autopilot-regime.high {
+  border-left-color: var(--sell);
+}
+
+.autopilot-regime span,
+.autopilot-regime small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.autopilot-operation {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  border-radius: 8px;
+  background: #f3f7f6;
+  padding: 10px 12px 10px 28px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .autopilot-candidates {
   display: grid;
   gap: 8px;
@@ -2291,6 +2328,45 @@ tr:hover .drag-handle,
   padding: 5px 8px;
   font-style: normal;
   font-weight: 900;
+}
+
+.autopilot-rule-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.autopilot-rule-line span,
+.ai-state {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border-radius: 999px;
+  background: #eef4f2;
+  color: var(--muted);
+  padding: 4px 7px;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.ai-state.enter_now {
+  background: #e0f4ea;
+  color: var(--accent);
+}
+
+.ai-state.watch {
+  background: #edf4ff;
+  color: #2e6fae;
+}
+
+.ai-state.pause {
+  background: #fdebed;
+  color: var(--sell);
+}
+
+.ai-state.wait {
+  background: #fff4d7;
+  color: #9a6b0f;
 }
 
 .daytrade-plan-panel {
@@ -2433,7 +2509,7 @@ tr:hover .drag-handle,
 
 .simulation-monitor {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) repeat(4, minmax(92px, auto));
+  grid-template-columns: minmax(180px, 1fr) repeat(4, minmax(92px, auto)) minmax(180px, 0.8fr);
   gap: 8px;
   align-items: center;
   border: 1px solid var(--line);

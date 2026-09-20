@@ -138,7 +138,11 @@ test("day trade feature has simulation, candidates, and guarded Rakuten RSS brid
   assert.match(appSource, /\/api\/daytrade\/entry/);
   assert.match(appSource, /\/api\/daytrade\/simulation/);
   assert.match(appSource, /\/api\/daytrade\/autopilot/);
+  assert.match(appSource, /\/api\/daytrade\/learning/);
   assert.match(appSource, /runDayTradeAutopilot/);
+  assert.match(appSource, /recordDayTradeLearningFromMonitor/);
+  assert.match(appSource, /dayTradeAdaptivePayload/);
+  assert.match(appSource, /aiStateBadge/);
   assert.match(appSource, /applyDayTradeAutoEntry/);
   assert.match(appSource, /pollDayTradeSimulationPrice/);
   assert.match(appSource, /dayTradeMultiSelected/);
@@ -153,6 +157,10 @@ test("day trade feature has simulation, candidates, and guarded Rakuten RSS brid
   assert.match(serverSource, /function buildDayTradeEntryRecommendation/);
   assert.match(serverSource, /function buildDayTradeSimulation/);
   assert.match(serverSource, /function buildDayTradeAutopilot/);
+  assert.match(serverSource, /function dayTradeAdaptiveRules/);
+  assert.match(serverSource, /function dayTradeAiState/);
+  assert.match(serverSource, /function dayTradeLearningScore/);
+  assert.match(serverSource, /function recordDayTradeLearning/);
   assert.match(serverSource, /Stock 59% \/ Bonds 39% \/ Cash 2%/);
   assert.match(serverSource, /monitorMode: true/);
   assert.match(serverSource, /function dayTradeCandidates/);

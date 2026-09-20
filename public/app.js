@@ -1441,10 +1441,34 @@ function selectedDayTradeSymbols() {
 }
 
 function dayTradeStockLabel(symbol) {
-  const stock = state.dayTradeStocks.find((item) => item.symbol === symbol)
-    || state.stocks.find((item) => item.symbol === symbol)
-    || {};
+  const stock = dayTradeStockBySymbol(symbol) || {};
   return stock.name || symbol;
+}
+
+function dayTradeStockBySymbol(symbol) {
+  return state.dayTradeStocks.find((item) => item.symbol === symbol)
+    || state.dayTradeCandidates.find((item) => item.symbol === symbol)
+    || state.stocks.find((item) => item.symbol === symbol)
+    || null;
+}
+
+function isDayTradeAutopilotSymbol(symbol) {
+  const stock = dayTradeStockBySymbol(symbol);
+  return Boolean(stock?.aiState || stock?.adaptiveRules || state.dayTradeAutopilot?.selectedSymbols?.includes(symbol));
+}
+
+function dayTradeAdaptivePayload(symbolOrStock) {
+  const stock = typeof symbolOrStock === "string" ? dayTradeStockBySymbol(symbolOrStock) : symbolOrStock;
+  const rules = stock?.adaptiveRules;
+  if (!rules) return {};
+  return {
+    stopYen: finiteNumber(rules.stopYen) || undefined,
+    stopMode: finiteNumber(rules.stopYen) ? "yen" : undefined,
+    profitYen: finiteNumber(rules.profitYen) || undefined,
+    profitMode: finiteNumber(rules.profitYen) ? "yen" : undefined,
+    chaseYen: finiteNumber(rules.chaseYen) || undefined,
+    chaseMode: finiteNumber(rules.chaseYen) ? "yen" : undefined,
+  };
 }
 
 function currentDayTradeContext(symbol) {
@@ -1506,11 +1530,12 @@ function renderDayTradeAutopilot() {
   if (!plan) {
     if (els.dayTradeAutopilotStatus) els.dayTradeAutopilotStatus.textContent = "待機中";
     els.dayTradeAutopilotPlan.classList.add("empty-state");
-    els.dayTradeAutopilotPlan.innerHTML = "<p>Stock 59% / Bonds 39% / Cash 2%を前提に、AIスコアで値動き・出来高・反転条件が合う銘柄を自動選択します。初期状態ではテスト監視のみです。</p>";
+    els.dayTradeAutopilotPlan.innerHTML = "<p>Stock 59% / Bonds 39% / Cash 2%を前提に、相場レジーム、ATR、出来高、RSI、移動平均、過去テスト結果から、入る・待つ・停止を自動判定します。初期状態ではテスト監視のみです。</p>";
     return;
   }
   const allocation = plan.allocation || {};
   const candidates = plan.candidates || [];
+  const operationPlan = (plan.operationPlan || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   if (els.dayTradeAutopilotStatus) {
     els.dayTradeAutopilotStatus.textContent = `${candidates.length}銘柄 / ${escapeHtml(plan.modeLabel || "テスト")}`;
   }
@@ -1526,17 +1551,54 @@ function renderDayTradeAutopilot() {
       <strong>${escapeHtml(plan.summary || "AI自律運用の候補を準備しました。")}</strong>
       <span>${escapeHtml(plan.guardrail || "テスト監視のみ。実発注にはAPI接続と明示設定が必要です。")}</span>
     </div>
+    ${autopilotRegimeHtml(plan.marketRegime)}
+    ${operationPlan ? `<ul class="autopilot-operation">${operationPlan}</ul>` : ""}
     <div class="autopilot-candidates">
       ${candidates.map((candidate, index) => `
         <article>
-          <strong>${index + 1}. ${escapeHtml(candidate.name || candidate.symbol)}</strong>
-          <span>${symbolLinkHtml(candidate.symbol, "jp")} / ${escapeHtml(candidate.sector || "業種未設定")}</span>
+          <div>
+            <strong>${index + 1}. ${escapeHtml(candidate.name || candidate.symbol)}</strong>
+            ${aiStateBadge(candidate.aiState)}
+          </div>
+          <span>${symbolLinkHtml(candidate.symbol, "jp")} / ${escapeHtml(candidate.sector || "業種未設定")} / ${escapeHtml(candidate.regime?.label || "レジーム未判定")}</span>
           <em>${Math.round(candidate.score || 0)}点</em>
           <small>${escapeHtml(candidate.summary || "")}</small>
+          <small>${escapeHtml(candidate.aiDecision?.nextCheck || "")}</small>
+          <div class="autopilot-rule-line">${adaptiveRuleText(candidate.adaptiveRules)}</div>
         </article>
       `).join("") || "<p>条件に合う候補がまだありません。</p>"}
     </div>
   `;
+}
+
+function autopilotRegimeHtml(regime = null) {
+  if (!regime) return "";
+  const counts = Object.entries(regime.counts || {})
+    .map(([label, count]) => `${label} ${count}`)
+    .join(" / ");
+  return `
+    <div class="autopilot-regime ${escapeHtml(regime.riskLevel || "medium")}">
+      <strong>相場レジーム: ${escapeHtml(regime.label || "判定待ち")}</strong>
+      <span>${escapeHtml(regime.summary || "")}</span>
+      ${counts ? `<small>${escapeHtml(counts)}</small>` : ""}
+    </div>
+  `;
+}
+
+function aiStateBadge(state = null) {
+  if (!state) return `<span class="ai-state wait">AI待機</span>`;
+  return `<span class="ai-state ${escapeHtml(state.action || "wait")}">${escapeHtml(state.label || "AI待機")}</span>`;
+}
+
+function adaptiveRuleText(rules = null) {
+  if (!rules) return "";
+  const parts = [
+    Number.isFinite(rules.stopYen) ? `損切り ${yen(rules.stopYen)}` : "",
+    Number.isFinite(rules.profitYen) ? `利確 ${yen(rules.profitYen)}` : "",
+    Number.isFinite(rules.chaseYen) ? `追撃 ${yen(rules.chaseYen)}` : "",
+    ...(rules.notes || []),
+  ].filter(Boolean);
+  return parts.map((part) => `<span>${escapeHtml(part)}</span>`).join("");
 }
 
 function autopilotAllocationCard(label, pct, amount, detail) {
@@ -1891,11 +1953,13 @@ function renderDayTradeSimulation() {
             <div>
               <strong>${escapeHtml(monitor.name || monitor.symbol)}</strong>
               <span>${escapeHtml(monitor.symbol)} / ${escapeHtml(monitor.status || "-")}</span>
+              ${aiStateBadge(monitor.aiState)}
             </div>
             <span><b>現在</b>${monitor.lastPrice ? yen(monitor.lastPrice) : "-"}</span>
             <span><b>入口</b>${yen(monitor.plan?.entryPrice)}</span>
             <span><b>損切り</b>${yen(monitor.plan?.stopPrice)}</span>
             <span><b>利確</b>${yen(monitor.plan?.takeProfitPrice)}</span>
+            <small>${escapeHtml(monitor.aiDecision?.nextCheck || monitor.aiState?.reason || "")}</small>
           </article>
         `).join("")}
       </div>
@@ -2039,36 +2103,49 @@ async function startDayTradeMultiMonitor(symbols = []) {
       method: "POST",
       body: JSON.stringify({
         ...basePayload,
+        ...dayTradeAdaptivePayload(symbol),
         symbol,
         entryPrice: null,
         currentPrice: null,
+        autopilot: isDayTradeAutopilotSymbol(symbol),
       }),
     })));
     const monitors = payloads
       .map((payload, index) => {
         const plan = payload.plan || null;
         if (!plan?.ready) return null;
+        const aiState = payload.recommendation?.aiState || dayTradeStockBySymbol(plan.symbol || symbols[index])?.aiState || null;
+        const enterNow = aiState?.action === "enter_now" || !isDayTradeAutopilotSymbol(plan.symbol || symbols[index]);
         const quotePrice = finiteNumber(payload.quote?.currentPrice) || plan.entryPrice;
         const quoteDate = payload.quote?.date || new Date().toISOString().slice(0, 10);
         return {
           symbol: plan.symbol || symbols[index],
           name: dayTradeStockLabel(plan.symbol || symbols[index]),
           running: true,
-          status: "監視中",
+          status: enterNow ? "保有中" : (aiState?.label || "AI待機"),
           plan,
-          active: {
+          active: enterNow ? {
             label: "初回",
             entryPrice: plan.entryPrice,
             stopPrice: plan.stopPrice,
             takeProfitPrice: plan.takeProfitPrice,
-          },
+          } : null,
+          aiState,
+          aiDecision: payload.recommendation ? {
+            summary: payload.recommendation.summary,
+            nextCheck: aiState?.reason || payload.recommendation.summary,
+            confidence: payload.recommendation.confidence,
+          } : null,
+          adaptiveRules: payload.recommendation?.adaptiveRules || dayTradeStockBySymbol(plan.symbol || symbols[index])?.adaptiveRules || null,
+          regime: dayTradeStockBySymbol(plan.symbol || symbols[index])?.regime || null,
           waitChase: false,
+          waitingEntry: !enterNow,
           pnl: 0,
           lastPrice: quotePrice,
           lastDate: quoteDate,
-          events: [
-            dayTradeSimulationEvent("新規買い", plan.entryPrice, `${Math.round(plan.quantity)}株 / テスト開始`, "buy", quoteDate),
-          ],
+          events: enterNow
+            ? [dayTradeSimulationEvent("AI新規買い", plan.entryPrice, `${Math.round(plan.quantity)}株 / 条件点灯`, "buy", quoteDate)]
+            : [dayTradeSimulationEvent("AI待機", quotePrice, aiState?.reason || "条件点灯まで入口を再計算します。", "info", quoteDate)],
         };
       })
       .filter(Boolean);
@@ -2222,19 +2299,52 @@ async function pollDayTradeMultiSimulationPrices() {
         method: "POST",
         body: JSON.stringify({
           ...basePayload,
+          ...dayTradeAdaptivePayload(monitor.symbol),
           symbol: monitor.symbol,
           entryPrice: monitor.plan?.entryPrice,
+          autopilot: true,
         }),
       });
       const current = finiteNumber(payload.quote?.currentPrice) || finiteNumber(payload.recommendation?.currentPrice);
       if (!current) return;
       const date = payload.quote?.date || new Date().toISOString().slice(0, 10);
+      if (payload.plan?.ready) monitor.plan = payload.plan;
+      if (payload.recommendation?.aiState) monitor.aiState = payload.recommendation.aiState;
+      if (payload.recommendation) {
+        monitor.aiDecision = {
+          summary: payload.recommendation.summary,
+          nextCheck: payload.recommendation.aiState?.reason || payload.recommendation.summary,
+          confidence: payload.recommendation.confidence,
+        };
+        monitor.adaptiveRules = payload.recommendation.adaptiveRules || monitor.adaptiveRules;
+      }
       monitor.lastPrice = current;
       monitor.lastDate = date;
+      if (!monitor.active && !monitor.waitChase) {
+        if (monitor.aiState?.action === "enter_now" && monitor.plan?.ready) {
+          monitor.waitingEntry = false;
+          monitor.active = {
+            label: "初回",
+            entryPrice: monitor.plan.entryPrice,
+            stopPrice: monitor.plan.stopPrice,
+            takeProfitPrice: monitor.plan.takeProfitPrice,
+          };
+          monitor.status = "AI条件点灯";
+          monitor.events.push(dayTradeSimulationEvent("AI新規買い", monitor.plan.entryPrice, `${Math.round(monitor.plan.quantity)}株 / 条件点灯`, "buy", date));
+        } else {
+          monitor.waitingEntry = true;
+          monitor.status = monitor.aiState?.label || "AI待機";
+          if (!(monitor.events || []).length || monitor.events.at(-1)?.action !== monitor.status) {
+            monitor.events.push(dayTradeSimulationEvent(monitor.status, current, monitor.aiState?.reason || "入口を再計算中です。", "info", date));
+          }
+          return;
+        }
+      }
       if (monitor.active) {
         if (current <= monitor.active.stopPrice) {
           monitor.pnl += (monitor.active.stopPrice - monitor.active.entryPrice) * (monitor.plan?.quantity || 0);
           monitor.events.push(dayTradeSimulationEvent("損切り", monitor.active.stopPrice, "現在値が損切りラインに到達したため終了。", "stop", date));
+          recordDayTradeLearningFromMonitor(monitor, "loss", monitor.active.stopPrice, "損切り");
           monitor.active = null;
           monitor.running = false;
           monitor.status = "損切り終了";
@@ -2243,6 +2353,7 @@ async function pollDayTradeMultiSimulationPrices() {
         if (current >= monitor.active.takeProfitPrice) {
           monitor.pnl += (monitor.active.takeProfitPrice - monitor.active.entryPrice) * (monitor.plan?.quantity || 0);
           monitor.events.push(dayTradeSimulationEvent("利確", monitor.active.takeProfitPrice, "現在値が利確ラインに到達し、いったんゼロにしました。", "sell", date));
+          recordDayTradeLearningFromMonitor(monitor, "win", monitor.active.takeProfitPrice, "利確");
           monitor.active = null;
           if (monitor.plan?.chaseEnabled && finiteNumber(monitor.plan.chaseTriggerPrice)) {
             monitor.waitChase = true;
@@ -2280,6 +2391,27 @@ async function pollDayTradeMultiSimulationPrices() {
   }
   state.dayTradeSimulation = sim;
   renderDayTradeSimulation();
+}
+
+function recordDayTradeLearningFromMonitor(monitor = {}, outcome = "flat", exitPrice = null, reason = "") {
+  if (!monitor.symbol || monitor.learningRecorded) return;
+  monitor.learningRecorded = true;
+  request("/api/daytrade/learning", {
+    method: "POST",
+    body: JSON.stringify({
+      symbol: monitor.symbol,
+      name: monitor.name,
+      outcome,
+      pnl: monitor.pnl,
+      entryPrice: monitor.active?.entryPrice || monitor.plan?.entryPrice,
+      exitPrice,
+      quantity: monitor.plan?.quantity,
+      score: dayTradeStockBySymbol(monitor.symbol)?.score,
+      regimeLabel: monitor.regime?.label || dayTradeStockBySymbol(monitor.symbol)?.regime?.label,
+      aiAction: monitor.aiState?.action,
+      reason,
+    }),
+  }).catch(() => {});
 }
 
 async function runDayTradeAutopilot(startAfter = false) {
@@ -2373,6 +2505,7 @@ function renderDayTradeCandidates() {
           <span>${symbolLinkHtml(candidate.symbol, "jp")} / ${escapeHtml(candidate.sector || "業種未設定")}</span>
         </div>
         <div class="suggestion-actions">
+          ${aiStateBadge(candidate.aiState)}
           <span class="score-pill">${Math.round(candidate.score || 0)}点</span>
           <button type="button" class="secondary" data-daytrade-add="${escapeHtml(candidate.symbol)}">Watchlistに追加</button>
         </div>
@@ -2382,8 +2515,10 @@ function renderDayTradeCandidates() {
         <span><strong>ATR</strong>${yen(candidate.atr14)}</span>
         <span><strong>RSI</strong>${Number.isFinite(candidate.rsi14) ? candidate.rsi14.toFixed(1) : "-"}</span>
         <span><strong>出来高</strong>${Number.isFinite(candidate.volumeRatio20) ? `${candidate.volumeRatio20.toFixed(1)}倍` : "-"}</span>
+        <span><strong>レジーム</strong>${escapeHtml(candidate.regime?.label || "-")}</span>
       </div>
       <p>${escapeHtml(candidate.summary || "")}</p>
+      <div class="autopilot-rule-line">${adaptiveRuleText(candidate.adaptiveRules)}</div>
       <div class="reason-tags">
         ${(candidate.reasons || []).map((reason) => `<span>${escapeHtml(reason)}</span>`).join("")}
       </div>
