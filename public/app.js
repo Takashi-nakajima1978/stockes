@@ -281,6 +281,12 @@ const els = {
   settingsRakutenApiToken: document.getElementById("settingsRakutenApiToken"),
   settingsRakutenOrderEnabled: document.getElementById("settingsRakutenOrderEnabled"),
   settingsRakutenOrderUpperLimitYen: document.getElementById("settingsRakutenOrderUpperLimitYen"),
+  settingsDayTradeStopYen: document.getElementById("settingsDayTradeStopYen"),
+  settingsDayTradeStopMode: document.getElementById("settingsDayTradeStopMode"),
+  settingsDayTradeProfitYen: document.getElementById("settingsDayTradeProfitYen"),
+  settingsDayTradeProfitMode: document.getElementById("settingsDayTradeProfitMode"),
+  settingsDayTradeChaseYen: document.getElementById("settingsDayTradeChaseYen"),
+  settingsDayTradeChaseMode: document.getElementById("settingsDayTradeChaseMode"),
   settingsNotificationsEnabled: document.getElementById("settingsNotificationsEnabled"),
   settingsDefaultJpAccountType: document.getElementById("settingsDefaultJpAccountType"),
   settingsJpTaxableTradeFeeYen: document.getElementById("settingsJpTaxableTradeFeeYen"),
@@ -508,12 +514,28 @@ function applySettings(settings = {}) {
   }
   if (els.settingsRakutenOrderEnabled) els.settingsRakutenOrderEnabled.checked = settings.rakutenOrderEnabled === true;
   if (els.settingsRakutenOrderUpperLimitYen) els.settingsRakutenOrderUpperLimitYen.value = Number.isFinite(settings.rakutenOrderUpperLimitYen) ? settings.rakutenOrderUpperLimitYen : 500000;
-  if (els.dayTradeStopYen) els.dayTradeStopYen.value ||= Number.isFinite(settings.dayTradeStopYen) ? settings.dayTradeStopYen : 3;
-  if (els.dayTradeStopMode) els.dayTradeStopMode.value = settings.dayTradeStopMode || "yen";
-  if (els.dayTradeProfitYen) els.dayTradeProfitYen.value ||= Number.isFinite(settings.dayTradeProfitYen) ? settings.dayTradeProfitYen : 10;
-  if (els.dayTradeProfitMode) els.dayTradeProfitMode.value = settings.dayTradeProfitMode || "yen";
-  if (els.dayTradeChaseYen) els.dayTradeChaseYen.value ||= Number.isFinite(settings.dayTradeChaseYen) ? settings.dayTradeChaseYen : 5;
-  if (els.dayTradeChaseMode) els.dayTradeChaseMode.value = settings.dayTradeChaseMode || "yen";
+  const dayTradeDefaults = {
+    stopYen: Number.isFinite(settings.dayTradeStopYen) ? settings.dayTradeStopYen : 3,
+    stopMode: settings.dayTradeStopMode || "yen",
+    profitYen: Number.isFinite(settings.dayTradeProfitYen) ? settings.dayTradeProfitYen : 10,
+    profitMode: settings.dayTradeProfitMode || "yen",
+    chaseYen: Number.isFinite(settings.dayTradeChaseYen) ? settings.dayTradeChaseYen : 5,
+    chaseMode: settings.dayTradeChaseMode || "yen",
+  };
+  if (els.settingsDayTradeStopYen) els.settingsDayTradeStopYen.value = dayTradeDefaults.stopYen;
+  if (els.settingsDayTradeStopMode) els.settingsDayTradeStopMode.value = dayTradeDefaults.stopMode;
+  if (els.settingsDayTradeProfitYen) els.settingsDayTradeProfitYen.value = dayTradeDefaults.profitYen;
+  if (els.settingsDayTradeProfitMode) els.settingsDayTradeProfitMode.value = dayTradeDefaults.profitMode;
+  if (els.settingsDayTradeChaseYen) els.settingsDayTradeChaseYen.value = dayTradeDefaults.chaseYen;
+  if (els.settingsDayTradeChaseMode) els.settingsDayTradeChaseMode.value = dayTradeDefaults.chaseMode;
+  if (!state.dayTradeSimulation?.running) {
+    if (els.dayTradeStopYen) els.dayTradeStopYen.value = dayTradeDefaults.stopYen;
+    if (els.dayTradeStopMode) els.dayTradeStopMode.value = dayTradeDefaults.stopMode;
+    if (els.dayTradeProfitYen) els.dayTradeProfitYen.value = dayTradeDefaults.profitYen;
+    if (els.dayTradeProfitMode) els.dayTradeProfitMode.value = dayTradeDefaults.profitMode;
+    if (els.dayTradeChaseYen) els.dayTradeChaseYen.value = dayTradeDefaults.chaseYen;
+    if (els.dayTradeChaseMode) els.dayTradeChaseMode.value = dayTradeDefaults.chaseMode;
+  }
   if (els.dayTradeChaseReference) els.dayTradeChaseReference.value = settings.dayTradeChaseReference || "take_profit";
   if (els.dayTradeChaseEnabled) els.dayTradeChaseEnabled.checked = settings.dayTradeChaseEnabled !== false;
   if (els.dayTradeScanLimit) els.dayTradeScanLimit.value ||= Number.isFinite(settings.dayTradeScanLimit) ? settings.dayTradeScanLimit : 320;
@@ -7322,12 +7344,12 @@ els.settingsForm.addEventListener("submit", async (event) => {
         rakutenApiToken: els.settingsRakutenApiToken?.value || "",
         rakutenOrderEnabled: els.settingsRakutenOrderEnabled?.checked === true,
         rakutenOrderUpperLimitYen: valueOrZero(els.settingsRakutenOrderUpperLimitYen?.value),
-        dayTradeStopYen: valueOrZero(els.dayTradeStopYen?.value),
-        dayTradeStopMode: els.dayTradeStopMode?.value || "yen",
-        dayTradeProfitYen: valueOrZero(els.dayTradeProfitYen?.value),
-        dayTradeProfitMode: els.dayTradeProfitMode?.value || "yen",
-        dayTradeChaseYen: valueOrZero(els.dayTradeChaseYen?.value),
-        dayTradeChaseMode: els.dayTradeChaseMode?.value || "yen",
+        dayTradeStopYen: valueOrZero(els.settingsDayTradeStopYen?.value || els.dayTradeStopYen?.value),
+        dayTradeStopMode: els.settingsDayTradeStopMode?.value || els.dayTradeStopMode?.value || "yen",
+        dayTradeProfitYen: valueOrZero(els.settingsDayTradeProfitYen?.value || els.dayTradeProfitYen?.value),
+        dayTradeProfitMode: els.settingsDayTradeProfitMode?.value || els.dayTradeProfitMode?.value || "yen",
+        dayTradeChaseYen: valueOrZero(els.settingsDayTradeChaseYen?.value || els.dayTradeChaseYen?.value),
+        dayTradeChaseMode: els.settingsDayTradeChaseMode?.value || els.dayTradeChaseMode?.value || "yen",
         dayTradeChaseReference: els.dayTradeChaseReference?.value || "take_profit",
         dayTradeChaseEnabled: els.dayTradeChaseEnabled?.checked !== false,
         dayTradeScanLimit: valueOrZero(els.dayTradeScanLimit?.value),

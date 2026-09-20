@@ -944,6 +944,52 @@
               </section>
               <p class="settings-help">楽天証券のMarketSpeed II RSSはExcel関数で情報取得・注文を行う仕組みです。このアプリは直接発注せず、RSSを操作するローカルブリッジへ注文案を送る前提にしています。初期状態ではテストとプレビューだけです。</p>
             </div>
+
+            <div class="settings-card">
+              <div class="panel-title compact-title">
+                <h3>デイトレ基準単位</h3>
+                <span>標準ルール</span>
+              </div>
+              <section class="control-strip" aria-label="デイトレ基準単位">
+                <label>
+                  <span>損切り値</span>
+                  <input id="settingsDayTradeStopYen" type="number" min="0.1" step="0.1" value="3">
+                </label>
+                <label>
+                  <span>損切りの計算</span>
+                  <select id="settingsDayTradeStopMode">
+                    <option value="yen">円幅</option>
+                    <option value="percent">%</option>
+                    <option value="atr">ATR倍率</option>
+                  </select>
+                </label>
+                <label>
+                  <span>利確値</span>
+                  <input id="settingsDayTradeProfitYen" type="number" min="0.1" step="0.1" value="10">
+                </label>
+                <label>
+                  <span>利確の計算</span>
+                  <select id="settingsDayTradeProfitMode">
+                    <option value="yen">円幅</option>
+                    <option value="percent">%</option>
+                    <option value="atr">ATR倍率</option>
+                  </select>
+                </label>
+                <label>
+                  <span>追撃値</span>
+                  <input id="settingsDayTradeChaseYen" type="number" min="0.1" step="0.1" value="5">
+                </label>
+                <label>
+                  <span>追撃の計算</span>
+                  <select id="settingsDayTradeChaseMode">
+                    <option value="yen">円幅</option>
+                    <option value="percent">%</option>
+                    <option value="atr">ATR倍率</option>
+                  </select>
+                </label>
+              </section>
+              <p class="settings-help">ここで保存した値が、デイトレ画面・候補検索・AI自律運用の初期ルールになります。個別銘柄ではデイトレ画面で一時的に上書きできます。</p>
+            </div>
           </div>
 
           <div class="settings-tab-panel" data-settings-panel="monitoring" hidden>
@@ -1081,6 +1127,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20260920-stock-signal-logo" type="module"></script>
+  <script src="/app.js?v=20260920-daytrade-base-unit-settings" type="module"></script>
 </body>
 </html>

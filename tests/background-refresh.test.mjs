@@ -144,6 +144,9 @@ test("day trade feature has simulation, candidates, and guarded Rakuten RSS brid
   assert.match(indexSource, /dayTradeTargetStocksPct/);
   assert.match(indexSource, /data-settings-tab="broker"/);
   assert.match(indexSource, /settingsRakutenRssBridgeUrl/);
+  assert.match(indexSource, /settingsDayTradeStopYen/);
+  assert.match(indexSource, /settingsDayTradeProfitYen/);
+  assert.match(indexSource, /settingsDayTradeChaseYen/);
   assert.match(appSource, /\/api\/daytrade\/simulate/);
   assert.match(appSource, /\/api\/daytrade\/entry/);
   assert.match(appSource, /\/api\/daytrade\/simulation/);
@@ -156,6 +159,7 @@ test("day trade feature has simulation, candidates, and guarded Rakuten RSS brid
   assert.match(appSource, /resumeDayTradeSimulation/);
   assert.match(appSource, /recordDayTradeLearningFromMonitor/);
   assert.match(appSource, /dayTradeAdaptivePayload/);
+  assert.match(appSource, /settingsDayTradeStopMode/);
   assert.match(appSource, /aiStateBadge/);
   assert.match(appSource, /autopilotPolicyHtml/);
   assert.match(appSource, /applyDayTradeAutoEntry/);
