@@ -5,6 +5,7 @@ const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2400000;
 const NISA_GROWTH_LIFETIME_LIMIT_YEN = 12000000;
 const DAY_TRADE_AUTO_ENTRY_INTERVAL_MS = 20000;
 const DAY_TRADE_MONITOR_INTERVAL_MS = 6000;
+const DAY_TRADE_RUNTIME_SOURCE = "browser";
 
 const state = {
   stocks: [],
@@ -27,6 +28,7 @@ const state = {
   dayTradeSelected: null,
   dayTradeMultiSelected: [],
   dayTradeAutopilot: null,
+  dayTradeRuntimeLoaded: false,
   dayTradeAutoEntry: {
     loading: false,
     timer: null,
@@ -554,6 +556,14 @@ async function loadDayTradeWatchlist() {
   state.dayTradeStocks = payload.stocks || [];
   normalizeDayTradeMultiSelection();
   if (!state.dayTradeSelected && state.dayTradeStocks.length) state.dayTradeSelected = state.dayTradeStocks[0].symbol;
+  renderDayTrade();
+}
+
+async function loadDayTradeRuntimeState() {
+  const payload = await request("/api/daytrade/runtime");
+  const restored = restoreDayTradeRuntime(payload.runtime);
+  state.dayTradeRuntimeLoaded = true;
+  if (restored) toast("前回のデイトレ監視状態を復元しました。開始で続きから確認します。");
   renderDayTrade();
 }
 
@@ -1918,6 +1928,146 @@ function blankDayTradeSimulation(overrides = {}) {
   };
 }
 
+function normalizeRestoredDayTradeSimulation(runtime = null) {
+  if (!runtime || typeof runtime !== "object") return null;
+  const monitors = Array.isArray(runtime.monitors)
+    ? runtime.monitors.map((monitor) => ({
+      ...monitor,
+      running: monitor.running !== false,
+      events: Array.isArray(monitor.events) ? monitor.events : [],
+      learningKeys: Array.isArray(monitor.learningKeys) ? monitor.learningKeys : [],
+    })).filter((monitor) => monitor.symbol)
+    : [];
+  const hasOpenState = monitors.some((monitor) => monitor.running || monitor.active || monitor.waitChase || monitor.waitingEntry)
+    || Boolean(runtime.active)
+    || runtime.waitChase === true;
+  if (!hasOpenState) return null;
+  return blankDayTradeSimulation({
+    ...runtime,
+    timer: null,
+    running: false,
+    resumeReady: true,
+    status: "再開待ち",
+    note: runtime.multi || monitors.length
+      ? "前回の保有・待機状態を確認済み。開始で続きから監視します。"
+      : "前回の保有状態を確認済み。開始で続きから監視します。",
+    events: Array.isArray(runtime.events) ? runtime.events : [],
+    monitors,
+    multi: Boolean(runtime.multi || monitors.length > 1),
+    monitorMode: runtime.monitorMode !== false,
+    restoredAt: new Date().toISOString(),
+  });
+}
+
+function restoreDayTradeRuntime(runtime = null) {
+  const sim = normalizeRestoredDayTradeSimulation(runtime);
+  if (!sim) return false;
+  state.dayTradeSimulation = sim;
+  const symbols = sim.multi
+    ? sim.monitors.map((monitor) => monitor.symbol).filter(Boolean)
+    : [sim.plan?.symbol].filter(Boolean);
+  state.dayTradeMultiSelected = [...new Set(symbols)];
+  state.dayTradeSelected = state.dayTradeMultiSelected[0] || state.dayTradeSelected;
+  if (els.dayTradeSymbol && state.dayTradeSelected) els.dayTradeSymbol.value = state.dayTradeSelected;
+  return true;
+}
+
+function dayTradeRuntimePayload(sim = state.dayTradeSimulation) {
+  if (!sim) return null;
+  const monitors = Array.isArray(sim.monitors)
+    ? sim.monitors.map((monitor) => ({
+      symbol: monitor.symbol,
+      name: monitor.name,
+      running: monitor.running !== false,
+      status: monitor.status,
+      plan: monitor.plan,
+      active: monitor.active,
+      waitChase: monitor.waitChase === true,
+      waitingEntry: monitor.waitingEntry === true,
+      aiState: monitor.aiState,
+      aiDecision: monitor.aiDecision,
+      adaptiveRules: monitor.adaptiveRules,
+      regime: monitor.regime,
+      pnl: monitor.pnl || 0,
+      lastPrice: monitor.lastPrice,
+      lastDate: monitor.lastDate,
+      events: (monitor.events || []).slice(-20),
+      learningKeys: (monitor.learningKeys || []).slice(-20),
+    }))
+    : [];
+  const hasOpenState = monitors.some((monitor) => monitor.running || monitor.active || monitor.waitChase || monitor.waitingEntry)
+    || Boolean(sim.active)
+    || sim.waitChase === true;
+  if (!hasOpenState) return null;
+  return {
+    restoredFrom: DAY_TRADE_RUNTIME_SOURCE,
+    mode: els.dayTradeMode?.value || sim.plan?.mode || "test",
+    modeLabel: els.dayTradeMode?.value === "api" ? "APIプレビュー" : "テスト監視",
+    running: sim.running === true,
+    resumeReady: sim.resumeReady === true,
+    status: sim.status,
+    note: sim.note,
+    monitorMode: sim.monitorMode !== false,
+    multi: sim.multi === true,
+    selectedSymbols: selectedDayTradeSymbols(),
+    plan: sim.plan,
+    active: sim.active,
+    waitChase: sim.waitChase === true,
+    pnl: sim.pnl || 0,
+    trades: sim.trades || 0,
+    lastPrice: sim.lastPrice,
+    lastDate: sim.lastDate,
+    events: (sim.events || []).slice(-30),
+    monitors,
+  };
+}
+
+function persistDayTradeRuntime(sim = state.dayTradeSimulation) {
+  const payload = dayTradeRuntimePayload(sim);
+  if (!payload) {
+    request("/api/daytrade/runtime", { method: "DELETE" }).catch(() => {});
+    return;
+  }
+  request("/api/daytrade/runtime", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  }).catch(() => {});
+}
+
+function canResumeDayTradeSimulation() {
+  const sim = state.dayTradeSimulation;
+  return Boolean(sim?.resumeReady && !sim.running && (
+    (sim.multi && sim.monitors?.length)
+    || sim.active
+    || sim.waitChase
+  ));
+}
+
+function resumeDayTradeSimulation() {
+  const sim = state.dayTradeSimulation;
+  if (!canResumeDayTradeSimulation()) return false;
+  sim.running = true;
+  sim.resumeReady = false;
+  sim.status = sim.multi ? "複数監視中" : (sim.active ? "保有中" : "追撃待ち");
+  sim.note = "前回の保有・待機状態を確認して、続きから監視しています。";
+  if (sim.multi) {
+    sim.monitors = (sim.monitors || []).map((monitor) => ({
+      ...monitor,
+      running: monitor.running !== false,
+    }));
+  }
+  sim.timer = window.setInterval(
+    sim.multi ? pollDayTradeMultiSimulationPrices : pollDayTradeSimulationPrice,
+    DAY_TRADE_MONITOR_INTERVAL_MS,
+  );
+  state.dayTradeSimulation = sim;
+  persistDayTradeRuntime(sim);
+  renderDayTradeSimulation();
+  if (sim.multi) pollDayTradeMultiSimulationPrices();
+  else pollDayTradeSimulationPrice();
+  return true;
+}
+
 function normalizeSimulationDate(value) {
   if (!value) return "";
   if (typeof value === "string") return value.slice(0, 10);
@@ -2042,6 +2192,7 @@ function completeDayTradeSimulation(status, note = "") {
   sim.status = status;
   sim.note = note || sim.note || "停止中";
   state.dayTradeSimulation = sim;
+  persistDayTradeRuntime(sim);
   renderDayTradeSimulation();
 }
 
@@ -2056,10 +2207,16 @@ function stopDayTradeSimulation(reason = "手動停止", options = {}) {
   sim.status = "停止中";
   sim.note = options.silent ? "開始で現在値監視" : reason;
   state.dayTradeSimulation = options.reset ? blankDayTradeSimulation() : sim;
+  persistDayTradeRuntime(state.dayTradeSimulation);
   if (!options.silent) renderDayTradeSimulation();
 }
 
 async function startDayTradeSimulation() {
+  if (canResumeDayTradeSimulation()) {
+    toast("前回の保有・待機状態を確認して、続きから監視します。");
+    resumeDayTradeSimulation();
+    return;
+  }
   const targets = selectedDayTradeSymbols();
   if (targets.length > 1) {
     await startDayTradeMultiMonitor(targets);
@@ -2109,6 +2266,7 @@ async function startDayTradeSimulation() {
       monitorMode ? pollDayTradeSimulationPrice : stepDayTradeSimulation,
       monitorMode ? DAY_TRADE_MONITOR_INTERVAL_MS : 650,
     );
+    persistDayTradeRuntime(state.dayTradeSimulation);
     renderDayTrade();
     if (monitorMode) pollDayTradeSimulationPrice();
     else stepDayTradeSimulation();
@@ -2118,6 +2276,7 @@ async function startDayTradeSimulation() {
       note: error.message,
       events: [dayTradeSimulationEvent("失敗", null, error.message, "stop")],
     });
+    persistDayTradeRuntime(state.dayTradeSimulation);
     renderDayTradeSimulation();
     toast(error.message);
   } finally {
@@ -2197,6 +2356,7 @@ async function startDayTradeMultiMonitor(symbols = []) {
       monitors,
     });
     state.dayTradeSimulation.timer = window.setInterval(pollDayTradeMultiSimulationPrices, DAY_TRADE_MONITOR_INTERVAL_MS);
+    persistDayTradeRuntime(state.dayTradeSimulation);
     renderDayTrade();
     pollDayTradeMultiSimulationPrices();
   } catch (error) {
@@ -2205,6 +2365,7 @@ async function startDayTradeMultiMonitor(symbols = []) {
       note: error.message,
       events: [dayTradeSimulationEvent("失敗", null, error.message, "stop")],
     });
+    persistDayTradeRuntime(state.dayTradeSimulation);
     renderDayTradeSimulation();
     toast(error.message);
   } finally {
@@ -2263,6 +2424,7 @@ function stepDayTradeSimulation() {
   }
   sim.index += 1;
   state.dayTradeSimulation = sim;
+  persistDayTradeRuntime(sim);
   renderDayTradeSimulation();
 }
 
@@ -2316,12 +2478,14 @@ async function pollDayTradeSimulationPrice() {
       sim.events.push(dayTradeSimulationEvent("追撃買い", sim.plan.reEntryPrice, `${Math.round(sim.plan.quantity)}株 / 新しい基準価格`, "buy", date));
     }
     state.dayTradeSimulation = sim;
+    persistDayTradeRuntime(sim);
     renderDayTradeSimulation();
   } catch (error) {
     const sim = state.dayTradeSimulation;
     if (!sim?.running) return;
     sim.note = `現在値の確認に失敗: ${error.message}`;
     state.dayTradeSimulation = sim;
+    persistDayTradeRuntime(sim);
     renderDayTradeSimulation();
   }
 }
@@ -2428,6 +2592,7 @@ async function pollDayTradeMultiSimulationPrices() {
     sim.timer = null;
   }
   state.dayTradeSimulation = sim;
+  persistDayTradeRuntime(sim);
   renderDayTradeSimulation();
 }
 
@@ -7470,8 +7635,9 @@ async function loadInitialData() {
     safeLoad("米国株分析ジョブ", loadUsAnalysisJob),
     safeLoad("BTC・為替", loadCrypto),
     safeLoad("候補検索", loadDiscoveryCache),
-    safeLoad("デイトレWatchlist", loadDayTradeWatchlist),
   ]);
+  await safeLoad("デイトレWatchlist", loadDayTradeWatchlist);
+  await safeLoad("デイトレ再開状態", loadDayTradeRuntimeState);
   render();
 }
 

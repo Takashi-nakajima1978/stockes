@@ -18,6 +18,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const WATCHLIST_PATH = path.join(__dirname, "data", "watchlist.json");
 const DAY_TRADE_WATCHLIST_PATH = path.join(__dirname, "data", "daytrade-watchlist.json");
 const DAY_TRADE_LEARNING_PATH = path.join(__dirname, "data", "daytrade-learning.json");
+const DAY_TRADE_RUNTIME_PATH = path.join(__dirname, "data", "daytrade-runtime.json");
 const US_WATCHLIST_PATH = path.join(__dirname, "data", "us-watchlist.json");
 const CRYPTO_HOLDING_PATH = path.join(__dirname, "data", "crypto-holding.json");
 const ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "analysis-cache.json");
@@ -838,6 +839,20 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/daytrade/learning" && req.method === "POST") {
     const body = await readJson(req);
     return json(res, 200, await recordDayTradeLearning(body));
+  }
+
+  if (url.pathname === "/api/daytrade/runtime" && req.method === "GET") {
+    return json(res, 200, { runtime: await readDayTradeRuntime() });
+  }
+
+  if (url.pathname === "/api/daytrade/runtime" && (req.method === "PUT" || req.method === "POST")) {
+    const body = await readJson(req);
+    return json(res, 200, { runtime: await saveDayTradeRuntime(body) });
+  }
+
+  if (url.pathname === "/api/daytrade/runtime" && req.method === "DELETE") {
+    await saveDayTradeRuntime(null);
+    return json(res, 200, { runtime: null });
   }
 
   if (url.pathname === "/api/daytrade/candidates" && req.method === "GET") {
@@ -14362,6 +14377,132 @@ async function saveDayTradeWatchlist(stocks = []) {
     null,
     2,
   ));
+}
+
+async function readDayTradeRuntime() {
+  try {
+    const parsed = JSON.parse(await readFile(DAY_TRADE_RUNTIME_PATH, "utf8"));
+    return normalizeDayTradeRuntime(parsed);
+  } catch {
+    return null;
+  }
+}
+
+async function saveDayTradeRuntime(runtime = null) {
+  await mkdir(path.dirname(DAY_TRADE_RUNTIME_PATH), { recursive: true });
+  const normalized = normalizeDayTradeRuntime(runtime);
+  await writeFile(DAY_TRADE_RUNTIME_PATH, JSON.stringify(normalized, null, 2));
+  return normalized;
+}
+
+function normalizeDayTradeRuntime(runtime = null) {
+  if (!runtime || typeof runtime !== "object") return null;
+  const monitors = Array.isArray(runtime.monitors)
+    ? runtime.monitors.map(normalizeDayTradeRuntimeMonitor).filter((monitor) => monitor.symbol).slice(0, 20)
+    : [];
+  const plan = normalizeDayTradeRuntimePlan(runtime.plan);
+  const active = normalizeDayTradeRuntimeActive(runtime.active);
+  const selectedSymbols = asStringArray(runtime.selectedSymbols)
+    .map(normalizeSymbol)
+    .filter(Boolean)
+    .slice(0, 20);
+  const hasOpenState = monitors.some((monitor) => monitor.running || monitor.active || monitor.waitChase || monitor.waitingEntry)
+    || Boolean(active)
+    || runtime.waitChase === true;
+  if (!hasOpenState && !runtime.status && !runtime.note) return null;
+  return {
+    savedAt: new Date().toISOString(),
+    restoredFrom: String(runtime.restoredFrom || "").slice(0, 40),
+    mode: String(runtime.mode || "test").slice(0, 20),
+    modeLabel: String(runtime.modeLabel || "").slice(0, 40),
+    status: String(runtime.status || "再開待ち").slice(0, 60),
+    note: String(runtime.note || "").slice(0, 180),
+    running: Boolean(runtime.running && hasOpenState),
+    resumeReady: Boolean(runtime.resumeReady || hasOpenState),
+    monitorMode: runtime.monitorMode !== false,
+    multi: Boolean(runtime.multi || monitors.length > 1),
+    selectedSymbols: selectedSymbols.length ? selectedSymbols : monitors.map((monitor) => monitor.symbol),
+    plan,
+    active,
+    waitChase: runtime.waitChase === true,
+    pnl: numberOrNull(runtime.pnl) || 0,
+    trades: nullableNonNegativeNumber(runtime.trades) || 0,
+    lastPrice: nullablePositiveNumber(runtime.lastPrice),
+    lastDate: String(runtime.lastDate || "").slice(0, 30),
+    events: normalizeDayTradeRuntimeEvents(runtime.events).slice(-30),
+    monitors,
+  };
+}
+
+function normalizeDayTradeRuntimeMonitor(monitor = {}) {
+  const symbol = normalizeSymbol(monitor.symbol || "");
+  return {
+    symbol,
+    name: String(monitor.name || symbol).slice(0, 80),
+    running: monitor.running !== false,
+    status: String(monitor.status || "再開待ち").slice(0, 60),
+    plan: normalizeDayTradeRuntimePlan(monitor.plan),
+    active: normalizeDayTradeRuntimeActive(monitor.active),
+    waitChase: monitor.waitChase === true,
+    waitingEntry: monitor.waitingEntry === true,
+    aiState: normalizeDayTradeAiState(monitor.aiState),
+    aiDecision: normalizeDayTradeAiDecision(monitor.aiDecision),
+    adaptiveRules: normalizeDayTradeAdaptiveRules(monitor.adaptiveRules),
+    regime: normalizeDayTradeRegime(monitor.regime),
+    pnl: numberOrNull(monitor.pnl) || 0,
+    lastPrice: nullablePositiveNumber(monitor.lastPrice),
+    lastDate: String(monitor.lastDate || "").slice(0, 30),
+    events: normalizeDayTradeRuntimeEvents(monitor.events).slice(-20),
+    learningKeys: asStringArray(monitor.learningKeys).slice(-20),
+  };
+}
+
+function normalizeDayTradeRuntimePlan(plan = {}) {
+  if (!plan || typeof plan !== "object") return null;
+  return {
+    ready: plan.ready === true,
+    symbol: normalizeSymbol(plan.symbol || ""),
+    name: String(plan.name || plan.symbol || "").slice(0, 80),
+    mode: String(plan.mode || "test").slice(0, 20),
+    entryPrice: nullablePositiveNumber(plan.entryPrice),
+    stopPrice: nullablePositiveNumber(plan.stopPrice),
+    takeProfitPrice: nullablePositiveNumber(plan.takeProfitPrice),
+    chaseTriggerPrice: nullablePositiveNumber(plan.chaseTriggerPrice),
+    reEntryPrice: nullablePositiveNumber(plan.reEntryPrice),
+    reStopPrice: nullablePositiveNumber(plan.reStopPrice),
+    reTakeProfitPrice: nullablePositiveNumber(plan.reTakeProfitPrice),
+    stopYen: nullablePositiveNumber(plan.stopYen),
+    profitYen: nullablePositiveNumber(plan.profitYen),
+    chaseYen: nullablePositiveNumber(plan.chaseYen),
+    chaseEnabled: plan.chaseEnabled !== false,
+    quantity: nullablePositiveNumber(plan.quantity),
+    riskOk: plan.riskOk !== false,
+  };
+}
+
+function normalizeDayTradeRuntimeActive(active = {}) {
+  if (!active || typeof active !== "object") return null;
+  const entryPrice = nullablePositiveNumber(active.entryPrice);
+  const stopPrice = nullablePositiveNumber(active.stopPrice);
+  const takeProfitPrice = nullablePositiveNumber(active.takeProfitPrice);
+  if (!entryPrice || !stopPrice || !takeProfitPrice) return null;
+  return {
+    label: String(active.label || "保有中").slice(0, 30),
+    entryPrice,
+    stopPrice,
+    takeProfitPrice,
+  };
+}
+
+function normalizeDayTradeRuntimeEvents(events = []) {
+  return Array.isArray(events) ? events.map((event) => ({
+    action: String(event.action || "").slice(0, 40),
+    price: nullablePositiveNumber(event.price),
+    detail: String(event.detail || "").slice(0, 180),
+    type: String(event.type || "info").slice(0, 20),
+    date: String(event.date || "").slice(0, 30),
+    at: String(event.at || "").slice(0, 30),
+  })).filter((event) => event.action || event.detail) : [];
 }
 
 function normalizeDayTradeWatchItem(item = {}) {
