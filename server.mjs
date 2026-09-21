@@ -42,7 +42,7 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 12;
+const DISCOVERY_SCORING_VERSION = 13;
 const SEASONAL_BUY_TARGET_ALLOWANCE = 0.02;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
@@ -3609,6 +3609,7 @@ async function discoverStocks(options = {}, job = null) {
   const baseCandidateUniverse = uniqueBy([...resolvedSearchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse], (candidate) => candidate.symbol);
   const candidateUniverse = baseCandidateUniverse
     .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
+    .filter(hasCleanDiscoveryCandidateName)
     .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate));
   const universeStats = discoveryUniverseStats(baseCandidateUniverse, candidateUniverse, existing, excluded);
   const candidateLimit = fullScan
@@ -3870,6 +3871,7 @@ function discoveryStageStats({
 function topDiscoverySuggestions(candidates = []) {
   return candidates
     .filter((candidate) => candidate && candidate.evidenceQuality !== "悪材料あり")
+    .filter(hasCleanDiscoveryCandidateName)
     .filter(isActionableDiscoveryCandidate)
     .sort(sortDiscoveryCandidates)
     .map((candidate) => ({
@@ -3990,6 +3992,12 @@ function isDiscoveryAvoidedBusiness(candidate = {}) {
   if (DISCOVERY_AVOID_SECTOR_PATTERN.test(sector)) return true;
   if (DISCOVERY_IT_VENTURE_PATTERN.test(`${sector} ${notes}`) && !DISCOVERY_IT_STABLE_PATTERN.test(`${sector} ${notes}`)) return true;
   return false;
+}
+
+function hasCleanDiscoveryCandidateName(candidate = {}) {
+  if (!candidate?.symbol) return false;
+  if (isUsDiscoveryCandidate(candidate)) return Boolean(String(candidate.name || candidate.symbol).trim());
+  return isLikelyCandidateName(candidate.name || "");
 }
 
 function isUsDiscoveryCandidate(candidate = {}) {
@@ -4718,12 +4726,15 @@ function isLikelyCandidateName(name = "") {
   if (/[。！？]/.test(text)) return false;
   if (/日本株|銘柄|ランキング|一覧|決算|ニュース|速報|上方修正|最高益|増配|割安|株価|市場|特集|材料|今期|前期|本日|今日/.test(text)) return false;
   if (/(?:TOB|MBO|公開買付|非公開化|買収)$/.test(text)) return false;
+  if (/(?:主たる目的|目的として|設立された会社|公開買付者|対象者|買付予定|応募契約|賛同表明|上場廃止|完全子会社|普通株式|本公開買付|本件|当社|同社|同氏|取締役会|するため|しており|される|された|について|により|として|および|及び|又は|または)/.test(text)) return false;
+  if (/(?:を|に|が|は|へ|で|から|まで|として|について).{0,12}(?:目的|設立|取得|保有|応募|賛同|実施|予定|発表|公開買付|TOB|MBO)/.test(text)) return false;
   if ((text.match(/[0-9０-９]/g) || []).length > 2) return false;
   return true;
 }
 
 function resolveCandidateFromPrice(candidate, price = {}) {
   if (!candidate.discoverySource) return candidate;
+  if (candidate.officialNameResolved && isLikelyCandidateName(candidate.name)) return candidate;
   const evidenceName = candidateNameFromEvidence(candidate);
   if (isLikelyCandidateName(evidenceName) && (evidenceName.length >= candidate.name.length || candidate.name.length < 4)) {
     return {
@@ -10834,6 +10845,7 @@ function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = [])
   const excluded = new Set(excludedCandidates.map((candidate) => candidate.symbol));
   const suggestions = (result.suggestions || [])
     .filter((candidate) => !excluded.has(candidate.symbol))
+    .filter(hasCleanDiscoveryCandidateName)
     .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate))
     .filter((candidate) => !isDiscoverySourceOnlyCandidate(candidate))
     .filter(isActionableDiscoveryCandidate)

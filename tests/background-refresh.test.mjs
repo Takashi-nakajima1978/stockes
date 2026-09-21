@@ -627,6 +627,11 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
   });
   assert.equal(extractDiscoveryCandidates(rows).length, 0);
   assert.equal(extractDiscoveryCandidates([{
+    title: "ぴ所存を主たる目的として設立された会社<5842>",
+    snippet: "公開買付者が対象者の普通株式を取得するために設立された会社です。",
+    url: "https://www.nihon-ma.co.jp/news/20260914_5842-1/",
+  }]).length, 0);
+  assert.equal(extractDiscoveryCandidates([{
     title: "日本M&AセンターのTOB<3395>",
     snippet: "日本M&AセンターのTOB/MBO記事一覧",
     url: "https://www.nihon-ma.co.jp/news/20260914_3395-1/",
@@ -663,6 +668,33 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
   assert.equal(resolved.name, "サンマルクホールディングス");
   assert.equal(resolved.sector, "小売業");
   assert.equal(resolved.officialNameResolved, true);
+  const cleanCandidateName = loadFunction(serverSource, "cleanCandidateName", {
+    cleanText: cleanTextForTest,
+  });
+  const isLikelyCandidateName = loadFunction(serverSource, "isLikelyCandidateName", {
+    cleanText: cleanTextForTest,
+  });
+  assert.equal(isLikelyCandidateName("ぴ所存を主たる目的として設立された会社"), false);
+  const resolveCandidateFromPrice = loadFunctionBlock(serverSource, "resolveCandidateFromPrice", "hasDiscoverySupport", {
+    cleanText: cleanTextForTest,
+    cleanCandidateName,
+    isLikelyCandidateName,
+  });
+  const officialResolved = resolveCandidateFromPrice({
+    symbol: "3395.T",
+    name: "サンマルクホールディングス",
+    market: "東証プライム",
+    sector: "小売業",
+    discoverySource: "検索結果",
+    officialNameResolved: true,
+    sourceEvidence: [{
+      title: "日本M&AセンターのTOB<3395>",
+      snippet: "日本M&AセンターのTOB/MBO記事一覧",
+      url: "https://www.nihon-ma.co.jp/news/20260914_3395-1/",
+    }],
+  }, {});
+  assert.equal(officialResolved.name, "サンマルクホールディングス");
+  assert.match(serverSource, /filterDiscoveryResultByExclusions[\s\S]*filter\(hasCleanDiscoveryCandidateName\)/);
 
   const searchPeSignal = loadFunction(serverSource, "searchPeSignal", {
     PE_CRITERIA: [
