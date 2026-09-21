@@ -56,6 +56,7 @@ const US_NEWS_MAX_AGE_DAYS = 45;
 const US_EVIDENCE_TRANSLATION_TIMEOUT_MS = 180000;
 const US_HOLDING_REVIEW_TIMEOUT_MS = 180000;
 const US_HOLDING_REVIEW_CHUNK_SIZE = 2;
+const LM_STUDIO_STATUS_CACHE_MS = 5 * 60 * 1000;
 const EDINET_API_BASE = "https://api.edinet-fsa.go.jp/api/v2";
 const EDINET_LOOKBACK_DAYS = 120;
 const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2_400_000;
@@ -477,6 +478,7 @@ const businessBadWords = ["下方修正", "減益", "赤字", "減配", "不祥�
 const SHAREHOLDER_BENEFIT_WORDS = ["株主優待", "優待", "優待券", "QUOカード", "クオカード", "カタログギフト", "食事券", "買物券", "自社商品", "優待利回り", "権利確定", "権利付き最終日"];
 
 let lmModelCache = { configuredUrl: "", url: "", model: "" };
+let lmStudioStatusCache = null;
 let primeUniverseCache = null;
 let secCompanyTickerCache = null;
 let analysisJob = null;
@@ -3248,7 +3250,18 @@ function discoveryJobSnapshot() {
       error: "",
     };
   }
+  if (!discoveryJob.running && isStaleDiscoverySearchCandidatesError(discoveryJob.error)) {
+    return {
+      ...discoveryJob,
+      phase: "待機中",
+      error: "",
+    };
+  }
   return { ...discoveryJob };
+}
+
+function isStaleDiscoverySearchCandidatesError(error = "") {
+  return /searchCandidates is not defined/.test(String(error || ""));
 }
 
 function scheduleHourlyRefresh() {
@@ -3582,8 +3595,12 @@ async function discoverStocks(options = {}, job = null) {
   const officialUniverse = [...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse];
   const resolvedSearchCandidates = reconcileSearchCandidateNames(searchCandidates, officialUniverse);
   updateDiscoveryJob(job, { phase: "LM Studioで市場トレンドを要約中" });
+  const aiWarnings = [];
   const marketBrief = search.length
-    ? await withTimeout(aiMarketTrendBrief(search, primeUniverse.length), 45000).catch(() => null)
+    ? await withTimeout(aiMarketTrendBrief(search, primeUniverse.length), 45000).catch((error) => {
+      aiWarnings.push(`市場メモ: ${error.message || "LM Studioが時間内に返りませんでした"}`);
+      return null;
+    })
     : null;
   const performance = candidatePerformanceSummary(await readCandidateHistory());
   const financialCache = await readFinancialCache();
@@ -3687,6 +3704,7 @@ async function discoverStocks(options = {}, job = null) {
         usedDiscoveryAi: false,
         fullScan,
         marketBrief,
+        discoveryAiWarning: aiWarnings.join(" / "),
         universeStats,
         financialStats,
       });
@@ -3721,8 +3739,9 @@ async function discoverStocks(options = {}, job = null) {
         }))
         .slice(0, MAX_DISCOVERY_SUGGESTIONS);
     }
-  } catch {
-    // Candidate discovery still works without the local model.
+  } catch (error) {
+    aiWarnings.push(`上位候補再点検: ${error.message || "LM Studioが時間内に返りませんでした"}`);
+    updateDiscoveryJob(job, { phase: "AI再点検は未完了。候補はルールで保存中" });
   }
   const stageStats = discoveryStageStats({
     scored,
@@ -3773,6 +3792,7 @@ async function discoverStocks(options = {}, job = null) {
       fullScan,
       searchPositionUsed: true,
       marketBrief,
+      discoveryAiWarning: aiWarnings.join(" / "),
       performance,
       stageStats,
       incomeSeasonalityUsed: true,
@@ -4382,6 +4402,7 @@ async function savePartialDiscovery({
   usedDiscoveryAi,
   fullScan,
   marketBrief,
+  discoveryAiWarning = "",
   universeStats = {},
   financialStats = {},
 }) {
@@ -4405,6 +4426,7 @@ async function savePartialDiscovery({
       incomeSeasonalityUsed: true,
       seasonalBuyPremiumPct: SEASONAL_BUY_TARGET_ALLOWANCE * 100,
       marketBrief,
+      discoveryAiWarning,
       ...financialStats,
       ...universeStats,
     }),
@@ -8277,6 +8299,7 @@ async function callLmStudioResponses(model, prompt, options = {}) {
   });
   const text = extractResponseText(data);
   if (!text) throw new Error("LM Studio responses output was empty");
+  rememberLmStudioOk(settings, baseUrl, model);
   return text;
 }
 
@@ -8300,7 +8323,9 @@ async function callLmStudioChat(model, prompt, options = {}) {
     }),
   });
   const message = data?.choices?.[0]?.message || {};
-  return message.content || message.reasoning_content || "";
+  const text = message.content || message.reasoning_content || "";
+  if (text) rememberLmStudioOk(settings, baseUrl, model);
+  return text;
 }
 
 async function getLmStudioModel() {
@@ -8314,7 +8339,7 @@ async function getLmStudioModel() {
       const models = await response.json();
       const model = models?.data?.[0]?.id || "";
       if (!model) throw new Error("LM Studio model not found");
-      lmModelCache = { configuredUrl: settings.lmStudioUrl, url, model };
+      rememberLmStudioOk(settings, url, model);
       return model;
     } catch (error) {
       lastError = error;
@@ -8322,6 +8347,32 @@ async function getLmStudioModel() {
   }
   lmModelCache = { configuredUrl: settings.lmStudioUrl, url: "", model: "" };
   throw lastError || new Error("LM Studio model not found");
+}
+
+function rememberLmStudioOk(settings = defaultSettings, url = "", model = "") {
+  const configuredUrl = settings.lmStudioUrl || defaultSettings.lmStudioUrl;
+  const activeUrl = normalizeUrl(url) || normalizeUrl(configuredUrl);
+  const activeModel = model || lmModelCache.model || "";
+  lmModelCache = { configuredUrl, url: activeUrl, model: activeModel };
+  lmStudioStatusCache = {
+    ok: true,
+    url: activeUrl,
+    configuredUrl,
+    model: activeModel,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function recentLmStudioStatus(settings = defaultSettings) {
+  if (!lmStudioStatusCache?.ok) return null;
+  if (lmStudioStatusCache.configuredUrl !== settings.lmStudioUrl) return null;
+  const age = Date.now() - new Date(lmStudioStatusCache.checkedAt || 0).getTime();
+  if (!Number.isFinite(age) || age > LM_STUDIO_STATUS_CACHE_MS) return null;
+  return {
+    ...lmStudioStatusCache,
+    cached: true,
+    busy: Boolean(discoveryJob?.running || analysisJob?.running || usAnalysisJob?.running),
+  };
 }
 
 function activeLmStudioUrl(settings = defaultSettings) {
@@ -9722,6 +9773,8 @@ async function checkSearchEngine(settings = null) {
 
 async function checkLmStudio(settings = null) {
   const resolved = settings || await readSettings();
+  const recent = recentLmStudioStatus(resolved);
+  if (recent?.busy) return recent;
   let lastError = null;
   for (const url of lmStudioCandidateUrls(resolved)) {
     for (const timeout of [4500, 9000]) {
@@ -9733,11 +9786,7 @@ async function checkLmStudio(settings = null) {
           continue;
         }
         if (response.ok) {
-          lmModelCache = {
-            configuredUrl: resolved.lmStudioUrl,
-            url,
-            model: data?.data?.[0]?.id || lmModelCache.model || "",
-          };
+          rememberLmStudioOk(resolved, url, data?.data?.[0]?.id || lmModelCache.model || "");
         }
         return {
           ok: response.ok,
@@ -9749,6 +9798,12 @@ async function checkLmStudio(settings = null) {
         lastError = error;
       }
     }
+  }
+  if (recent) {
+    return {
+      ...recent,
+      lastError: lastError?.message || "LM Studio状態確認が一時的に失敗しました",
+    };
   }
   return {
     ok: false,
@@ -14324,6 +14379,7 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     seasonalBuyPremiumPct: Number(budget.seasonalBuyPremiumPct || 0),
     stageStats: budget.stageStats || null,
     marketBrief: budget.marketBrief || null,
+    discoveryAiWarning: String(budget.discoveryAiWarning || ""),
     performance: budget.performance || null,
     settingsKey: discoverySettingsKey(settings),
     settingsChanged: Boolean(budget.settingsChanged),

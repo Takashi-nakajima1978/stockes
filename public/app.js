@@ -5244,6 +5244,10 @@ function renderDiscoveryJob() {
     return;
   }
   if (job?.error) {
+    if (/searchCandidates is not defined/.test(job.error || "") && state.sourceSummary?.settingsChanged) {
+      els.candidateProgress.textContent = "候補を検索してください";
+      return;
+    }
     els.candidateProgress.textContent = `失敗: ${job.error}`;
     return;
   }
@@ -6139,6 +6143,7 @@ function renderCandidateList() {
       : "";
     const discoveryText = `${discoveredText}${usUniverseText}検索抽出が少なくても、銘柄一覧は別で全件採点しています。`;
     const aiText = source.usedDiscoveryAi ? "最後にLM Studioで上位候補を再点検しています。" : "LM Studio再点検は未実行です。";
+    const aiWarningText = source.discoveryAiWarning ? `AI再点検メモ: ${source.discoveryAiWarning}。` : "";
     const edinetWarningText = source.edinetDiscoveryWarnings?.length
       ? `注意: ${source.edinetDiscoveryWarnings.slice(0, 2).join(" / ")}。`
       : "";
@@ -6172,7 +6177,7 @@ function renderCandidateList() {
     els.suggestionSource.textContent = source.settingsChanged
       ? `${source.message || "調査条件または採点ルールが変わりました。候補を探すで現在の条件に合わせて作り直してください。"}現在の日本株条件は${budgetText}、米国株条件は${usBudgetText}です。${earlyText}候補は自動追加されません。`
       : source.searchCount > 0
-      ? `${source.provider}で${source.searchCount}件確認しました。${engineText}${discoveryText}${poolText}${stageText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${edinetText}${seasonalText}${peText}${learnText}${aiText}候補は自動追加されません。${briefText}`
+      ? `${source.provider}で${source.searchCount}件確認しました。${engineText}${discoveryText}${poolText}${stageText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${edinetText}${seasonalText}${peText}${learnText}${aiText}${aiWarningText}候補は自動追加されません。${briefText}`
       : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${engineText}${poolText}${stageText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${edinetText}${seasonalText}${countText}${excludedText}`;
   }
   if (!state.suggestions.length) {

@@ -261,6 +261,12 @@ test("LM prompts use English reasoning with Japanese output guardrails", () => {
   assert.match(serverSource, /LM_STRICT_JSON_INSTRUCTIONS/);
   assert.match(serverSource, /Use English for analysis, classification, scoring/);
   assert.match(serverSource, /Write every user-facing natural-language field in clear, natural Japanese/);
+  assert.match(serverSource, /LM_STUDIO_STATUS_CACHE_MS/);
+  assert.match(serverSource, /function rememberLmStudioOk/);
+  assert.match(serverSource, /function recentLmStudioStatus/);
+  assert.match(serverSource, /discoveryAiWarning/);
+  assert.match(appSource, /AI再点検メモ/);
+  assert.match(appSource, /searchCandidates is not defined/);
   assert.doesNotMatch(serverSource, /あなたは(日本株|米国株|株主構成|.*AI)/);
   assert.doesNotMatch(serverSource, /出力はJSONのみ|返答はこのJSONだけ/);
 });
