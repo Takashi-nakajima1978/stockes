@@ -272,10 +272,15 @@ test("Japan discovery EDINET review is not capped to top candidates", () => {
   const refreshStart = serverSource.indexOf("async function refreshDiscoveryFinancials");
   const refreshEnd = serverSource.indexOf("function applyDiscoveryFinancialAdjustment", refreshStart);
   const refreshBody = serverSource.slice(refreshStart, refreshEnd);
+  const partialStart = serverSource.indexOf("async function savePartialDiscovery");
+  const partialEnd = serverSource.indexOf("async function readPrimeUniverse", partialStart);
+  const partialBody = serverSource.slice(partialStart, partialEnd);
   assert.doesNotMatch(discoverBody, /DISCOVERY_FINANCIAL_REVIEW_LIMIT|slice\(0,\s*48\)/);
   assert.doesNotMatch(refreshBody, /DISCOVERY_FINANCIAL_REVIEW_LIMIT|slice\(0,\s*48\)/);
   assert.ok(discoverBody.indexOf("refreshDiscoveryFinancials(pricedCandidates") < discoverBody.indexOf("const prelimPool = scored"));
   assert.match(discoverBody, /const shortlist = uniqueBy\(rawShortlist/);
+  assert.doesNotMatch(partialBody, /searchCandidates:\s*resolvedSearchCandidates/);
+  assert.match(partialBody, /searchCandidates = \[\]/);
 });
 
 test("Japan watchlist decisions do not mark unconfirmed pullbacks as buy candidates", () => {
