@@ -42,7 +42,7 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 11;
+const DISCOVERY_SCORING_VERSION = 12;
 const SEASONAL_BUY_TARGET_ALLOWANCE = 0.02;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
@@ -4505,7 +4505,7 @@ function extractNihonMaNewsResults(html = "", pageUrl = "", limit = 12) {
   const linkPattern = /<a\b[^>]*href=["']([^"']*\/news\/(\d{8})_(\d{4})-[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
   while ((match = linkPattern.exec(html)) && results.length < limit) {
-    const [, rawHref, rawDate, code, rawTitle] = match;
+    const [, rawHref, rawDate, _articleId, rawTitle] = match;
     const title = cleanText(htmlToText(rawTitle));
     if (!title || /一覧|もっと見る|詳細/.test(title)) continue;
     let url = "";
@@ -4515,10 +4515,9 @@ function extractNihonMaNewsResults(html = "", pageUrl = "", limit = 12) {
       continue;
     }
     const target = nihonMaTargetName(title);
-    if (!target || isNihonMaPublisherCandidate(normalizeSymbol(code), target, { url })) continue;
-    const candidateTitle = `${target ? `${target}<${code}> ` : `<${code}> `}${title}`;
+    if (!target || isNihonMaPublisherCandidate("", target, { url })) continue;
     results.push({
-      title: candidateTitle,
+      title: `${target} ${title}`,
       url,
       snippet: cleanText(`日本M&AセンターのTOB/MBO速報。${title}。公開買付・MBO・非公開化・投資ファンド・上場廃止の実例として確認。`),
       publishedDate: `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`,
@@ -4552,12 +4551,25 @@ function isNihonMaPublisherCandidate(symbol = "", name = "", item = {}) {
     && (symbol === "3395.T" || /日本M&Aセンター|日本M&A|日本MA/.test(normalizedName));
 }
 
+function isDiscoverySourceOnlyCandidate(candidate = {}) {
+  const name = cleanText(candidate.name || "").replace(/[＆]/g, "&");
+  const evidenceText = cleanText((candidate.sourceEvidence || [])
+    .map((item) => `${item.title || ""} ${item.snippet || ""} ${item.url || ""}`)
+    .join(" "));
+  const fromNihonMa = /nihon-ma\.co\.jp/i.test(evidenceText);
+  if (isNihonMaPublisherCandidate(candidate.symbol, name, { url: fromNihonMa ? "https://www.nihon-ma.co.jp/news/" : "" })) return true;
+  if (/日本M&Aセンター|日本M&A|日本MA/.test(name) && /TOB|MBO|公開買付|非公開化|記事|実例|一覧/.test(`${name} ${evidenceText}`)) return true;
+  if (fromNihonMa && /^(?:TOB|MBO|公開買付|非公開化|日本M&A|日本MA)|(?:のTOB|のMBO|記事一覧|実例)$/.test(name)) return true;
+  return false;
+}
+
 function extractDiscoveryCandidates(searchResults, existing = new Set(), excluded = new Set()) {
   const found = new Map();
   const add = (code, rawName, item) => {
     const symbol = normalizeSymbol(code);
     const name = cleanCandidateName(rawName);
     if (!symbol || existing.has(symbol) || excluded.has(symbol) || !isLikelyCandidateName(name) || isNihonMaPublisherCandidate(symbol, name, item)) return;
+    if (isDiscoverySourceOnlyCandidate({ symbol, name, sourceEvidence: [item], discoverySource: "検索結果" })) return;
     const previous = found.get(symbol);
     const evidence = {
       title: item.title,
@@ -10768,6 +10780,7 @@ function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = [])
   const suggestions = (result.suggestions || [])
     .filter((candidate) => !excluded.has(candidate.symbol))
     .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate))
+    .filter((candidate) => !isDiscoverySourceOnlyCandidate(candidate))
     .filter(isActionableDiscoveryCandidate)
     .map((candidate) => ({
       ...candidate,

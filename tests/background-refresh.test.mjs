@@ -583,7 +583,8 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
     5,
   );
   assert.equal(rows.length, 1);
-  assert.match(rows[0].title, /かどや製油<2612>/);
+  assert.match(rows[0].title, /かどや製油/);
+  assert.doesNotMatch(rows[0].title, /<2612>/);
   assert.match(rows[0].snippet, /公開買付|非公開化|投資ファンド/);
   assert.equal(extractNihonMaNewsResults(
     '<a href="/news/20260914_3395-1/">日本M&AセンターのTOB/MBO実例</a>',
@@ -591,6 +592,10 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
     5,
   ).length, 0);
 
+  const isDiscoverySourceOnlyCandidate = loadFunction(serverSource, "isDiscoverySourceOnlyCandidate", {
+    cleanText: cleanTextForTest,
+    isNihonMaPublisherCandidate,
+  });
   const extractDiscoveryCandidates = loadFunctionBlock(serverSource, "extractDiscoveryCandidates", "resolveCandidateFromPrice", {
     cleanText: cleanTextForTest,
     normalizeSymbol: normalizeSymbolForTest,
@@ -607,12 +612,29 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
     },
     US_TICKER_STOPWORDS: new Set(),
     isNihonMaPublisherCandidate,
+    isDiscoverySourceOnlyCandidate,
   });
+  assert.equal(extractDiscoveryCandidates(rows).length, 0);
   assert.equal(extractDiscoveryCandidates([{
     title: "日本M&AセンターのTOB<3395>",
     snippet: "日本M&AセンターのTOB/MBO記事一覧",
     url: "https://www.nihon-ma.co.jp/news/20260914_3395-1/",
   }]).length, 0);
+  assert.equal(extractDiscoveryCandidates([{
+    title: "3395 日本M&AセンターのTOB",
+    snippet: "日本M&AセンターのTOB/MBO記事一覧",
+    url: "https://www.nihon-ma.co.jp/news/20260914_3395-1/",
+  }]).length, 0);
+  assert.equal(isDiscoverySourceOnlyCandidate({
+    symbol: "3395.T",
+    name: "日本M&AセンターのTOB",
+    discoverySource: "検索結果",
+    sourceEvidence: [{
+      title: "3395 日本M&AセンターのTOB",
+      snippet: "日本M&AセンターのTOB/MBO記事一覧",
+      url: "https://www.nihon-ma.co.jp/news/20260914_3395-1/",
+    }],
+  }), true);
   const reconcileSearchCandidateNames = loadFunction(serverSource, "reconcileSearchCandidateNames", {
     normalizeDiscoverySymbol: normalizeSymbolForTest,
   });
