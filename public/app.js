@@ -743,7 +743,7 @@ async function loadUsAnalysisJob() {
 
 async function loadDiscoveryCache() {
   const payload = await request("/api/discovery");
-  state.suggestions = payload.suggestions || [];
+  state.suggestions = sanitizeDiscoverySuggestions(payload.suggestions || []);
   state.excludedCandidates = payload.excludedCandidates || [];
   state.sourceSummary = payload.sourceSummary || null;
   state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || null;
@@ -5194,7 +5194,7 @@ async function discover() {
       }),
     });
     const added = payload.added || [];
-    state.suggestions = payload.suggestions || [];
+    state.suggestions = sanitizeDiscoverySuggestions(payload.suggestions || []);
     state.excludedCandidates = payload.excludedCandidates || state.excludedCandidates;
     state.sourceSummary = payload.sourceSummary || null;
     state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || state.candidatePerformance;
@@ -5219,7 +5219,7 @@ async function pollDiscoveryJob() {
   for (let i = 0; i < 720; i += 1) {
     const payload = await request("/api/discovery").catch(() => null);
     if (!payload) return;
-    state.suggestions = payload.suggestions || state.suggestions;
+    state.suggestions = sanitizeDiscoverySuggestions(payload.suggestions || state.suggestions);
     state.excludedCandidates = payload.excludedCandidates || state.excludedCandidates;
     state.sourceSummary = payload.sourceSummary || state.sourceSummary;
     state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || state.candidatePerformance;
@@ -6118,6 +6118,7 @@ function entryGradeClass(grade = "") {
 
 function renderCandidateList() {
   if (!els.candidateList) return;
+  state.suggestions = sanitizeDiscoverySuggestions(state.suggestions);
   renderExcludedCandidates();
   renderCandidatePerformance();
   if (els.candidateSavedAt) {
@@ -6191,8 +6192,9 @@ function renderCandidateList() {
 }
 
 function candidateReportsHtml(items = []) {
-  const peItems = items.filter((item) => candidateTarget(item) === "jp" && isPeReportItem(item)).sort(sortPeReportItems);
-  const stockItems = items.filter((item) => candidateTarget(item) !== "jp" || !isPeReportItem(item)).sort(sortStockReportItems);
+  const cleanItems = sanitizeDiscoverySuggestions(items);
+  const peItems = cleanItems.filter((item) => candidateTarget(item) === "jp" && isPeReportItem(item)).sort(sortPeReportItems);
+  const stockItems = cleanItems.filter((item) => candidateTarget(item) !== "jp" || !isPeReportItem(item)).sort(sortStockReportItems);
   return [
     reportSectionHtml({
       title: "PEが買いそうな候補",
@@ -6209,6 +6211,36 @@ function candidateReportsHtml(items = []) {
       items: stockItems,
     }),
   ].join("");
+}
+
+function sanitizeDiscoverySuggestions(items = []) {
+  const seen = new Set();
+  return (Array.isArray(items) ? items : [])
+    .filter((item) => item?.symbol && isCleanDiscoveryCandidateName(item))
+    .filter((item) => {
+      const key = `${candidateTarget(item)}:${item.symbol}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function isCleanDiscoveryCandidateName(item = {}) {
+  if (candidateTarget(item) === "us") return Boolean(String(item.name || item.symbol || "").trim());
+  return isLikelyDisplayCandidateName(item.name || "");
+}
+
+function isLikelyDisplayCandidateName(name = "") {
+  const text = String(name || "").replace(/\s+/g, " ").trim();
+  if (text.length < 2 || text.length > 28) return false;
+  if (/^\d+$/.test(text)) return false;
+  if (/[。！？]/.test(text)) return false;
+  if (/日本株|銘柄|ランキング|一覧|決算|ニュース|速報|上方修正|最高益|増配|割安|株価|市場|特集|材料|今期|前期|本日|今日/.test(text)) return false;
+  if (/(?:TOB|MBO|公開買付|非公開化|買収)$/.test(text)) return false;
+  if (/(?:主たる目的|所有を主たる目的|目的として|設立された会社|公開買付者|対象者|買付予定|応募契約|賛同表明|上場廃止|完全子会社|普通株式|本公開買付|本件|当社|同社|同氏|取締役会|するため|しており|される|された|について|により|として|および|及び|又は|または)/.test(text)) return false;
+  if (/(?:を|に|が|は|へ|で|から|まで|として|について).{0,12}(?:目的|設立|取得|所有|保有|応募|賛同|実施|予定|発表|公開買付|TOB|MBO)/.test(text)) return false;
+  if ((text.match(/[0-9０-９]/g) || []).length > 2) return false;
+  return true;
 }
 
 function reportSectionHtml({ title, count, description, empty, items }) {
@@ -6713,7 +6745,7 @@ function attachSuggestionButtons() {
             currency: suggestion.currency || suggestion.price?.currency,
           }),
         });
-        state.suggestions = payload.suggestions || state.suggestions.filter((item) => item.symbol !== suggestion.symbol);
+        state.suggestions = sanitizeDiscoverySuggestions(payload.suggestions || state.suggestions.filter((item) => item.symbol !== suggestion.symbol));
         state.excludedCandidates = payload.excludedCandidates || state.excludedCandidates;
         state.sourceSummary = payload.sourceSummary || state.sourceSummary;
         toast(`${suggestion.name}を候補から外しました。`);
@@ -7381,7 +7413,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
     });
     applySettings(payload.settings);
     if (payload.discoveryReset) {
-      state.suggestions = payload.discovery?.suggestions || [];
+      state.suggestions = sanitizeDiscoverySuggestions(payload.discovery?.suggestions || []);
       state.sourceSummary = payload.discovery?.sourceSummary || null;
       state.discoveryGeneratedAt = payload.discovery?.generatedAt || "";
       renderCandidateList();

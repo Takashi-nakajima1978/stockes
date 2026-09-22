@@ -741,6 +741,20 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
   assert.match(signal.summary, /日本M&Aセンター|非公開化理由/);
 });
 
+test("discovery UI hides sentence-like candidate names from stale results", () => {
+  const sanitizeDiscoverySuggestions = loadFunctionBlock(appSource, "sanitizeDiscoverySuggestions", "reportSectionHtml", {
+    candidateTarget: (item = {}) => (item.currency === "USD" ? "us" : "jp"),
+  });
+  const rows = sanitizeDiscoverySuggestions([
+    { symbol: "5842.T", name: "ぴ所有を主たる目的として設立された会社", market: "東証", sector: "検索発掘" },
+    { symbol: "2612.T", name: "かどや製油", market: "東証", sector: "食品" },
+    { symbol: "IBM", name: "IBM", market: "NYSE", currency: "USD" },
+  ]);
+  assert.deepEqual(rows.map((item) => item.symbol), ["2612.T", "IBM"]);
+  assert.match(appSource, /function sanitizeDiscoverySuggestions/);
+  assert.match(appSource, /renderCandidateList\(\)[\s\S]*sanitizeDiscoverySuggestions\(state\.suggestions\)/);
+});
+
 test("slow Japan refresh does not delay US or crypto, or depend on AI job state", async () => {
   let finishJapan;
   const calls = [];
