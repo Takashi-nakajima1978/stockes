@@ -263,9 +263,11 @@ const JP_SECTOR_BY_SYMBOL = {
   "9843.T": "小売",
   "9936.T": "外食",
   "9984.T": "投資",
+  "5842.T": "金融",
 };
 const JP_COMPANY_ALIASES_BY_SYMBOL = {
   "4755.T": ["楽天グループ", "楽天", "Rakuten Group", "Rakuten"],
+  "5842.T": ["インテグラル", "インテグラル株式会社", "Integral"],
   "9005.T": ["東急", "東急株式会社", "Tokyu"],
   "9201.T": ["日本航空", "JAL", "Japan Airlines"],
   "9432.T": ["日本電信電話", "NTT"],
@@ -3606,7 +3608,8 @@ async function discoverStocks(options = {}, job = null) {
   const financialCache = await readFinancialCache();
   let financialBySymbol = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
   const fxContext = await readUsdJpyContext().catch(() => normalizeUsdJpyContext({}));
-  const baseCandidateUniverse = uniqueBy([...resolvedSearchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse], (candidate) => candidate.symbol);
+  const baseCandidateUniverse = uniqueBy([...resolvedSearchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse]
+    .map(normalizeDiscoveryCandidateName), (candidate) => candidate.symbol);
   const candidateUniverse = baseCandidateUniverse
     .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
     .filter(hasCleanDiscoveryCandidateName)
@@ -3870,6 +3873,7 @@ function discoveryStageStats({
 
 function topDiscoverySuggestions(candidates = []) {
   return candidates
+    .map(normalizeDiscoveryCandidateName)
     .filter((candidate) => candidate && candidate.evidenceQuality !== "悪材料あり")
     .filter(hasCleanDiscoveryCandidateName)
     .filter(isActionableDiscoveryCandidate)
@@ -3998,6 +4002,32 @@ function hasCleanDiscoveryCandidateName(candidate = {}) {
   if (!candidate?.symbol) return false;
   if (isUsDiscoveryCandidate(candidate)) return Boolean(String(candidate.name || candidate.symbol).trim());
   return isLikelyCandidateName(candidate.name || "");
+}
+
+function normalizeDiscoveryCandidateName(candidate = {}) {
+  const symbol = normalizeDiscoverySymbol(candidate.symbol, candidate);
+  if (!symbol) return candidate;
+  if (isUsDiscoveryCandidate({ ...candidate, symbol })) return { ...candidate, symbol };
+  const candidateName = cleanCandidateName(candidate.name || "");
+  if (isLikelyCandidateName(candidateName)) return { ...candidate, symbol, name: candidateName };
+  const fallbackName = jpCompanyNameForSymbol(symbol);
+  if (fallbackName) {
+    return {
+      ...candidate,
+      symbol,
+      name: fallbackName,
+      sector: candidate.sector && candidate.sector !== "検索発掘" ? candidate.sector : JP_SECTOR_BY_SYMBOL[symbol] || candidate.sector,
+      officialNameResolved: true,
+    };
+  }
+  const priceName = cleanCandidateName(candidate.price?.shortName || candidate.price?.longName || "");
+  if (isLikelyCandidateName(priceName)) return { ...candidate, symbol, name: priceName };
+  return { ...candidate, symbol, name: candidateName || candidate.name || symbol };
+}
+
+function jpCompanyNameForSymbol(symbol = "") {
+  const normalized = normalizeSymbol(symbol);
+  return JP_COMPANY_ALIASES_BY_SYMBOL[normalized]?.[0] || "";
 }
 
 function isUsDiscoveryCandidate(candidate = {}) {
@@ -4476,7 +4506,17 @@ function reconcileSearchCandidateNames(searchCandidates = [], officialUniverse =
   return searchCandidates.map((candidate) => {
     const symbol = normalizeDiscoverySymbol(candidate.symbol, candidate);
     const official = officialBySymbol.get(symbol);
-    if (!official) return candidate;
+    const fallbackName = !official ? jpCompanyNameForSymbol(symbol) : "";
+    if (!official && !fallbackName) return candidate;
+    if (!official) {
+      return {
+        ...candidate,
+        symbol,
+        name: fallbackName,
+        sector: candidate.sector && candidate.sector !== "検索発掘" ? candidate.sector : JP_SECTOR_BY_SYMBOL[symbol] || candidate.sector,
+        officialNameResolved: true,
+      };
+    }
     return {
       ...candidate,
       symbol,
@@ -4735,6 +4775,15 @@ function isLikelyCandidateName(name = "") {
 function resolveCandidateFromPrice(candidate, price = {}) {
   if (!candidate.discoverySource) return candidate;
   if (candidate.officialNameResolved && isLikelyCandidateName(candidate.name)) return candidate;
+  const fallbackName = jpCompanyNameForSymbol(candidate.symbol);
+  if (fallbackName && !isLikelyCandidateName(candidate.name)) {
+    return {
+      ...candidate,
+      name: fallbackName,
+      sector: candidate.sector && candidate.sector !== "検索発掘" ? candidate.sector : JP_SECTOR_BY_SYMBOL[candidate.symbol] || candidate.sector,
+      officialNameResolved: true,
+    };
+  }
   const evidenceName = candidateNameFromEvidence(candidate);
   if (isLikelyCandidateName(evidenceName) && (evidenceName.length >= candidate.name.length || candidate.name.length < 4)) {
     return {
@@ -10844,6 +10893,7 @@ async function saveDiscoveryCache(result) {
 function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = []) {
   const excluded = new Set(excludedCandidates.map((candidate) => candidate.symbol));
   const suggestions = (result.suggestions || [])
+    .map(normalizeDiscoveryCandidateName)
     .filter((candidate) => !excluded.has(candidate.symbol))
     .filter(hasCleanDiscoveryCandidateName)
     .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate))

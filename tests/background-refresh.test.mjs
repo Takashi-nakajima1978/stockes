@@ -653,6 +653,8 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
   }), true);
   const reconcileSearchCandidateNames = loadFunction(serverSource, "reconcileSearchCandidateNames", {
     normalizeDiscoverySymbol: normalizeSymbolForTest,
+    jpCompanyNameForSymbol: (symbol) => symbol === "5842.T" ? "インテグラル" : "",
+    JP_SECTOR_BY_SYMBOL: { "5842.T": "金融" },
   });
   const [resolved] = reconcileSearchCandidateNames([{
     symbol: "3395.T",
@@ -668,6 +670,14 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
   assert.equal(resolved.name, "サンマルクホールディングス");
   assert.equal(resolved.sector, "小売業");
   assert.equal(resolved.officialNameResolved, true);
+  const [growthResolved] = reconcileSearchCandidateNames([{
+    symbol: "5842.T",
+    name: "ぴ所有を主たる目的として設立された会社",
+    market: "東証",
+    sector: "検索発掘",
+  }], []);
+  assert.equal(growthResolved.name, "インテグラル");
+  assert.equal(growthResolved.sector, "金融");
   const cleanCandidateName = loadFunction(serverSource, "cleanCandidateName", {
     cleanText: cleanTextForTest,
   });
@@ -679,6 +689,8 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
     cleanText: cleanTextForTest,
     cleanCandidateName,
     isLikelyCandidateName,
+    jpCompanyNameForSymbol: (symbol) => symbol === "5842.T" ? "インテグラル" : "",
+    JP_SECTOR_BY_SYMBOL: { "5842.T": "金融" },
   });
   const officialResolved = resolveCandidateFromPrice({
     symbol: "3395.T",
@@ -694,6 +706,20 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
     }],
   }, {});
   assert.equal(officialResolved.name, "サンマルクホールディングス");
+  const codeResolved = resolveCandidateFromPrice({
+    symbol: "5842.T",
+    name: "ぴ所有を主たる目的として設立された会社",
+    market: "東証",
+    sector: "検索発掘",
+    discoverySource: "検索結果",
+    sourceEvidence: [{
+      title: "ぴ所有を主たる目的として設立された会社<5842>",
+      snippet: "公開買付者が対象者の普通株式を取得するために設立された会社です。",
+      url: "https://www.nihon-ma.co.jp/news/20260914_5842-1/",
+    }],
+  }, {});
+  assert.equal(codeResolved.name, "インテグラル");
+  assert.equal(codeResolved.sector, "金融");
   assert.match(serverSource, /filterDiscoveryResultByExclusions[\s\S]*filter\(hasCleanDiscoveryCandidateName\)/);
 
   const searchPeSignal = loadFunction(serverSource, "searchPeSignal", {
@@ -741,16 +767,22 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
   assert.match(signal.summary, /日本M&Aセンター|非公開化理由/);
 });
 
-test("discovery UI hides sentence-like candidate names from stale results", () => {
+test("discovery UI restores known company names in stale results", () => {
   const sanitizeDiscoverySuggestions = loadFunctionBlock(appSource, "sanitizeDiscoverySuggestions", "reportSectionHtml", {
     candidateTarget: (item = {}) => (item.currency === "USD" ? "us" : "jp"),
+    JP_DISCOVERY_NAME_BY_SYMBOL: { "5842.T": "インテグラル" },
+    JP_DISCOVERY_SECTOR_BY_SYMBOL: { "5842.T": "金融" },
   });
   const rows = sanitizeDiscoverySuggestions([
     { symbol: "5842.T", name: "ぴ所有を主たる目的として設立された会社", market: "東証", sector: "検索発掘" },
     { symbol: "2612.T", name: "かどや製油", market: "東証", sector: "食品" },
     { symbol: "IBM", name: "IBM", market: "NYSE", currency: "USD" },
   ]);
-  assert.deepEqual(rows.map((item) => item.symbol), ["2612.T", "IBM"]);
+  assert.deepEqual(rows.map((item) => `${item.symbol}:${item.name}:${item.sector}`), [
+    "5842.T:インテグラル:金融",
+    "2612.T:かどや製油:食品",
+    "IBM:IBM:undefined",
+  ]);
   assert.match(appSource, /function sanitizeDiscoverySuggestions/);
   assert.match(appSource, /renderCandidateList\(\)[\s\S]*sanitizeDiscoverySuggestions\(state\.suggestions\)/);
 });

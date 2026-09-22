@@ -6,6 +6,12 @@ const NISA_GROWTH_LIFETIME_LIMIT_YEN = 12000000;
 const DAY_TRADE_AUTO_ENTRY_INTERVAL_MS = 20000;
 const DAY_TRADE_MONITOR_INTERVAL_MS = 6000;
 const DAY_TRADE_RUNTIME_SOURCE = "browser";
+const JP_DISCOVERY_NAME_BY_SYMBOL = {
+  "5842.T": "インテグラル",
+};
+const JP_DISCOVERY_SECTOR_BY_SYMBOL = {
+  "5842.T": "金融",
+};
 
 const state = {
   stocks: [],
@@ -6216,6 +6222,7 @@ function candidateReportsHtml(items = []) {
 function sanitizeDiscoverySuggestions(items = []) {
   const seen = new Set();
   return (Array.isArray(items) ? items : [])
+    .map(normalizeDiscoverySuggestionName)
     .filter((item) => item?.symbol && isCleanDiscoveryCandidateName(item))
     .filter((item) => {
       const key = `${candidateTarget(item)}:${item.symbol}`;
@@ -6223,6 +6230,18 @@ function sanitizeDiscoverySuggestions(items = []) {
       seen.add(key);
       return true;
     });
+}
+
+function normalizeDiscoverySuggestionName(item = {}) {
+  if (!item?.symbol || candidateTarget(item) === "us") return item;
+  const symbol = String(item.symbol || "").trim().toUpperCase();
+  const name = JP_DISCOVERY_NAME_BY_SYMBOL[symbol];
+  if (!name || isLikelyDisplayCandidateName(item.name || "")) return item;
+  return {
+    ...item,
+    name,
+    sector: item.sector && item.sector !== "検索発掘" ? item.sector : JP_DISCOVERY_SECTOR_BY_SYMBOL[symbol] || item.sector,
+  };
 }
 
 function isCleanDiscoveryCandidateName(item = {}) {
