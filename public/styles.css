@@ -462,7 +462,7 @@ progress {
 
 .profit-summary {
   display: grid;
-  grid-template-columns: repeat(7, minmax(112px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 10px;
 }
 
@@ -482,7 +482,7 @@ progress {
 }
 
 .us-profit-summary {
-  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 }
 
 .crypto-profit-summary {

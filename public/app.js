@@ -146,6 +146,7 @@ const els = {
   usStockQuantity: document.getElementById("usStockQuantity"),
   usProfitAmount: document.getElementById("usProfitAmount"),
   usProfitPct: document.getElementById("usProfitPct"),
+  usDividendReceivedTotal: document.getElementById("usDividendReceivedTotal"),
   usInvestedTotal: document.getElementById("usInvestedTotal"),
   usMarketTotal: document.getElementById("usMarketTotal"),
   usWinCount: document.getElementById("usWinCount"),
@@ -232,6 +233,7 @@ const els = {
   profitPct: document.getElementById("profitPct"),
   totalReturnAmount: document.getElementById("totalReturnAmount"),
   totalReturnPct: document.getElementById("totalReturnPct"),
+  dividendReceivedTotal: document.getElementById("dividendReceivedTotal"),
   investedTotal: document.getElementById("investedTotal"),
   marketTotal: document.getElementById("marketTotal"),
   dividendIncomeTotal: document.getElementById("dividendIncomeTotal"),
@@ -1157,9 +1159,10 @@ function renderProfitSummary() {
   setMoneySummary(els.totalReturnAmount, summary.totalReturnAmount, "profit-big");
   if (els.totalReturnPct) {
     els.totalReturnPct.innerHTML = Number.isFinite(summary.totalReturnPct)
-      ? `${pct(summary.totalReturnPct)} / 配当 ${yen(summary.dividendReceived)}`
+      ? `${pct(summary.totalReturnPct)} / 配当込み`
       : "購入日・株数・配当データが必要";
   }
+  if (els.dividendReceivedTotal) els.dividendReceivedTotal.textContent = yen(summary.dividendReceived);
   if (els.investedTotal) els.investedTotal.textContent = yen(summary.invested);
   if (els.marketTotal) els.marketTotal.textContent = yen(summary.marketValue);
   if (els.dividendIncomeTotal) els.dividendIncomeTotal.textContent = yen(summary.annualDividendEstimate);
@@ -1191,9 +1194,10 @@ function renderUsSummary() {
   setMoneySummary(els.usProfitAmount, totalAmount, "profit-big", usd);
   if (els.usProfitPct) {
     els.usProfitPct.innerHTML = Number.isFinite(totalPct)
-      ? `<span class="${totalPct >= 0 ? "metric-pos" : "metric-neg"}">${signedPct(totalPct)}</span> / 配当 ${usd(summary.dividendReceived)}`
+      ? `<span class="${totalPct >= 0 ? "metric-pos" : "metric-neg"}">${signedPct(totalPct)}</span> / 配当込み`
       : "更新待ち";
   }
+  if (els.usDividendReceivedTotal) els.usDividendReceivedTotal.textContent = usd(summary.dividendReceived);
   setMoneySummary(els.usInvestedTotal, summary.invested, "profit-big", usd);
   setMoneySummary(els.usMarketTotal, summary.marketValue, "profit-big", usd);
   if (els.usWinCount) els.usWinCount.textContent = String(summary.winCount || 0);

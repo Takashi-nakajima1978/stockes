@@ -399,6 +399,12 @@ test("detail pages show absolute dividend amounts without changing watchlist div
   assert.match(appSource, /function dividendPerShareText/);
   assert.match(appSource, /function annualDividendText/);
   assert.match(appSource, /function dividendCell[\s\S]*<strong>\$\{yieldText\}<\/strong>/);
+  assert.match(indexSource, /id="dividendReceivedTotal"/);
+  assert.match(indexSource, /id="usDividendReceivedTotal"/);
+  assert.match(appSource, /dividendReceivedTotal: document\.getElementById\("dividendReceivedTotal"\)/);
+  assert.match(appSource, /usDividendReceivedTotal: document\.getElementById\("usDividendReceivedTotal"\)/);
+  assert.match(appSource, /els\.dividendReceivedTotal[\s\S]*summary\.dividendReceived/);
+  assert.match(appSource, /els\.usDividendReceivedTotal[\s\S]*summary\.dividendReceived/);
   assert.match(appSource, /function jpAiConfirmationHtml[\s\S]*<strong>配当利回り<\/strong>[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
   assert.match(appSource, /function renderUsDetail[\s\S]*<strong>配当利回り<\/strong>[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
   assert.match(appSource, /function positionEditor[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
