@@ -432,9 +432,14 @@ test("mobile position entry is not closed by keyboard resize or background refre
 test("position forms persist price reservations and show NISA account guidance", () => {
   assert.match(appSource, /function priceReservationEditor/);
   assert.match(appSource, /name="reservationPrice"/);
+  assert.match(appSource, /data-clear-reservation-expiry/);
   assert.match(appSource, /function readPriceReservation/);
+  assert.match(appSource, /function attachPriceReservationControls/);
+  assert.match(appSource, /expiryInput\.value = ""/);
   assert.match(appSource, /function attachPositionForm\(symbol\)[\s\S]*priceReservation: readPriceReservation\(form\)/);
   assert.match(appSource, /function attachUsPositionForm\(symbol\)[\s\S]*priceReservation: readPriceReservation\(form\)/);
+  assert.match(appSource, /function attachPositionForm\(symbol\)[\s\S]*attachPriceReservationControls\(form\)/);
+  assert.match(appSource, /function attachUsPositionForm\(symbol\)[\s\S]*attachPriceReservationControls\(form\)/);
   assert.match(appSource, /function jpAccountRecommendationHtml/);
   assert.match(appSource, /この買い注文の口座判断/);
   assert.match(appSource, /配当の非課税目安/);

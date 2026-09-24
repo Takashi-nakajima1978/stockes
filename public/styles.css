@@ -1413,6 +1413,19 @@ tr:hover .drag-handle,
   grid-column: 1 / -1;
 }
 
+.reservation-expiry-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.reservation-clear-button {
+  min-height: 38px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
 .reservation-summary {
   display: flex;
   align-items: center;

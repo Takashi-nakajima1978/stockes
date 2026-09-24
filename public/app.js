@@ -3375,6 +3375,7 @@ function attachUsPositionForm(symbol) {
     const list = form.querySelector(".sale-list");
     list.insertAdjacentHTML("beforeend", saleRow({ sellDate: "", sellPrice: null, quantity: null }));
   });
+  attachPriceReservationControls(form);
   form.addEventListener("click", (event) => {
     const saleButton = event.target.closest("[data-remove-sale]");
     if (saleButton) {
@@ -5940,6 +5941,7 @@ function attachPositionForm(symbol) {
     const list = form.querySelector(".sale-list");
     list.insertAdjacentHTML("beforeend", saleRow({ sellDate: "", sellPrice: null, quantity: null }));
   });
+  attachPriceReservationControls(form);
 
   form.addEventListener("click", (event) => {
     const saleButton = event.target.closest("[data-remove-sale]");
@@ -7001,10 +7003,13 @@ function priceReservationEditor(stock, formatter = yen, priceLabel = "予約価�
           <span>株数</span>
           <input name="reservationQuantity" type="number" min="0" step="0.0001" value="${numberValue(reservation.quantity)}" placeholder="例: 100">
         </label>
-        <label>
+        <div class="reservation-expiry-field">
+          <label>
           <span>期限</span>
           <input name="reservationExpiresAt" type="date" value="${escapeAttr(reservation.expiresAt)}">
-        </label>
+          </label>
+          <button type="button" class="secondary reservation-clear-button" data-clear-reservation-expiry aria-label="価格予約の期限を消す">期限を消す</button>
+        </div>
         <label class="reservation-note">
           <span>メモ</span>
           <input name="reservationNote" type="text" maxlength="80" value="${escapeAttr(reservation.note)}" placeholder="例: 決算後に見直し">
@@ -7066,6 +7071,17 @@ function readPriceReservation(form) {
   return reservation.side || reservation.price || reservation.quantity || reservation.expiresAt || reservation.note
     ? reservation
     : null;
+}
+
+function attachPriceReservationControls(form) {
+  const clearExpiryButton = form.querySelector("[data-clear-reservation-expiry]");
+  clearExpiryButton?.addEventListener("click", () => {
+    const expiryInput = form.elements.reservationExpiresAt;
+    if (!expiryInput) return;
+    expiryInput.value = "";
+    expiryInput.dispatchEvent(new Event("input", { bubbles: true }));
+    expiryInput.focus();
+  });
 }
 
 function jpAccountRecommendationHtml(stock = {}, analysis = {}, metrics = {}) {
