@@ -110,11 +110,78 @@ test("dividend seasonality flags upcoming rights demand", () => {
 test("technical entry uses golden cross and closing strength experience rules", () => {
   assert.match(serverSource, /function movingAverageCrossSignal/);
   assert.match(serverSource, /function closingStrengthSignal/);
+  assert.match(serverSource, /function latestCandlestickSignal/);
   assert.match(serverSource, /ゴールデンクロス/);
   assert.match(serverSource, /大引け強/);
+  assert.match(serverSource, /明けの明星/);
+  assert.match(serverSource, /黒三兵/);
   assert.match(appSource, /ゴールデンクロス/);
   assert.match(appSource, /大引けの強さ/);
+  assert.match(appSource, /ローソク足/);
   assert.match(appSource, /technicalExperienceBadge/);
+});
+
+test("candlestick rules classify buy and sell patterns separately", () => {
+  const latestCandlestickSignal = loadFunctionBlock(serverSource, "latestCandlestickSignal", "regimeAssessment", {
+    nullablePositiveNumber: (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    },
+    returnFrom: (series, days) => {
+      if (series.length <= days) return null;
+      const current = series.at(-1).close;
+      const previous = series[series.length - 1 - days].close;
+      return previous ? ((current - previous) / previous) * 100 : null;
+    },
+  });
+  const downtrend = Array.from({ length: 10 }, (_, index) => ({
+    open: 112 - index,
+    high: 113 - index,
+    low: 109 - index,
+    close: 110 - index,
+  }));
+  const morningStar = latestCandlestickSignal([
+    ...downtrend,
+    { open: 101, high: 102, low: 89, close: 90 },
+    { open: 89, high: 91, low: 87, close: 88.8 },
+    { open: 89, high: 99, low: 88, close: 97 },
+  ]);
+  assert.equal(morningStar.side, "buy");
+  assert.match(morningStar.label, /明けの明星/);
+
+  const threeBlack = latestCandlestickSignal([
+    { open: 90, high: 95, low: 89, close: 94 },
+    { open: 94, high: 99, low: 93, close: 98 },
+    { open: 99, high: 100, low: 93, close: 94 },
+    { open: 94, high: 95, low: 88, close: 89 },
+    { open: 89, high: 90, low: 82, close: 83 },
+  ]);
+  assert.equal(threeBlack.side, "sell");
+  assert.match(threeBlack.label, /黒三兵/);
+});
+
+test("holding discipline applies the attached 10-rule ladder", () => {
+  assert.match(serverSource, /function positionDisciplinePlan/);
+  assert.match(appSource, /10のルール/);
+  const positionDisciplinePlan = loadFunctionBlock(serverSource, "positionDisciplinePlan", "exitPlanSummary", {
+    nullablePositiveNumber: (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    },
+    formatSignedPercent: (value) => `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`,
+    roundSellQuantity: (value) => Math.ceil(value),
+    formatShareQuantity: (value) => `${value}`,
+  });
+  const buyMore = positionDisciplinePlan({ quantity: 100, purchasePrice: 100, unrealizedPnlPct: -25, sellableQuantity: 100 }, 75, "JPY");
+  assert.equal(buyMore.kind, "buy_more");
+  assert.equal(buyMore.buyPct, 25);
+  assert.equal(buyMore.suggestedBuyQuantity, 25);
+  const partialSell = positionDisciplinePlan({ quantity: 100, purchasePrice: 100, unrealizedPnlPct: 35, sellableQuantity: 100 }, 135, "JPY");
+  assert.equal(partialSell.kind, "sell");
+  assert.equal(partialSell.sellPct, 20);
+  assert.equal(partialSell.suggestedSellQuantity, 20);
+  const fullSell = positionDisciplinePlan({ quantity: 100, purchasePrice: 100, unrealizedPnlPct: 100, sellableQuantity: 100 }, 200, "JPY");
+  assert.equal(fullSell.sellPct, 100);
 });
 
 test("browser logo is wired to favicon and app brand", () => {
@@ -531,6 +598,7 @@ test("Kadoya-style PE take-private pattern is not filtered out as food", () => {
     PE_DIRECT_BUYER_WORDS: ["投資ファンド", "TOB", "非公開化"],
     PE_TAKE_PRIVATE_MOTIVE_WORDS: [],
     PE_PRIORITY_MIN_SCORE: 45,
+    PE_PRE_SIGNAL_MIN_SCORE: 48,
     PE_STRONG_MIN_SCORE: 55,
     PE_RECENT_TENDENCIES: [],
     businessContextText: (value) => String(value || "").toLowerCase(),
@@ -560,6 +628,50 @@ test("Kadoya-style PE take-private pattern is not filtered out as food", () => {
   assert.equal(signal.reportEligible, true);
   assert.ok(signal.matchScore >= 55);
   assert.match(signal.summary, /株主構造|かどや型材料/);
+});
+
+test("PE report includes pre-announcement candidates even before direct TOB news", () => {
+  assert.match(serverSource, /PE_PRE_SIGNAL_MIN_SCORE/);
+  assert.match(serverSource, /preSignalCandidate/);
+  assert.match(serverSource, /reportBucket === "pe" \|\| isActionableDiscoveryCandidate/);
+  assert.match(serverSource, /発表前候補/);
+  const searchPeSignal = loadFunction(serverSource, "searchPeSignal", {
+    PE_CRITERIA: [
+      { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益"], weight: 14 },
+      { key: "debt_capacity", label: "低負債・借入余地", words: ["無借金"], weight: 14 },
+      { key: "governance", label: "株主還元・経営改善の余地", words: ["自社株買いなし", "資本効率"], weight: 13 },
+      { key: "sector_fit", label: "PEが扱いやすい業態", words: ["サービス"], weight: 9 },
+    ],
+    PE_BUYER_WORDS: ["投資ファンド"],
+    PE_DIRECT_BUYER_WORDS: ["TOB", "MBO", "非公開化"],
+    PE_TAKE_PRIVATE_MOTIVE_WORDS: [],
+    PE_PRIORITY_MIN_SCORE: 45,
+    PE_PRE_SIGNAL_MIN_SCORE: 48,
+    PE_STRONG_MIN_SCORE: 55,
+    PE_RECENT_TENDENCIES: [],
+    businessContextText: (value) => String(value || "").toLowerCase(),
+    normalizeFinancialCriteria: (items) => items,
+    financialCriteriaScore: () => 34,
+    isHighChaseChart: () => false,
+    clamp: (value, min, max) => Math.min(max, Math.max(min, value)),
+    hostOf: () => "source.test",
+    normalizeFinancialSnapshot: (value) => value,
+    uniqueText: (items) => [...new Set(items)],
+    peSignalSummary: (_label, _criteria, _buyerHits, options = {}) => options.preSignalCandidate ? "発表前候補" : "",
+  });
+  const signal = searchPeSignal(
+    { symbol: "1234.T", name: "安定サービス", sector: "サービス", notes: "安定収益 無借金 資本効率 自社株買いなし" },
+    [],
+    [{ title: "決算後に急落", snippet: "還元不足が意識されるが、サービス事業は安定収益。", url: "https://source.test/pre" }],
+    { criteria: [
+      { key: "market_cap", label: "時価総額", status: "pass", summary: "対象範囲" },
+      { key: "operating_cf", label: "営業CF", status: "pass", summary: "プラス" },
+      { key: "net_cash", label: "ネットキャッシュ", status: "pass", summary: "厚い" },
+      { key: "pbr", label: "PBR", status: "pass", summary: "1倍割れ" },
+    ] },
+  );
+  assert.equal(signal.preSignalCandidate, true);
+  assert.equal(signal.reportEligible, true);
 });
 
 test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
@@ -743,6 +855,7 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
     PE_DIRECT_BUYER_WORDS: ["投資ファンド", "TOB", "MBO", "非公開化", "ベイン"],
     PE_TAKE_PRIVATE_MOTIVE_WORDS: ["中長期的な成長施策", "短期的な株価変動", "買付予定数の上限なし"],
     PE_PRIORITY_MIN_SCORE: 45,
+    PE_PRE_SIGNAL_MIN_SCORE: 48,
     PE_STRONG_MIN_SCORE: 55,
     PE_RECENT_TENDENCIES: [],
     businessContextText: (value) => String(value || "").toLowerCase(),

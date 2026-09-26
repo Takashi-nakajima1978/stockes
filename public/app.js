@@ -3668,6 +3668,17 @@ function technicalEntryHtml(price = {}, formatter = yen) {
             impact: "RSIが30を上回り直す、または5日線を上抜けるまでは、安く見えても待ちます。",
           })}
         </article>
+        <article class="risk-check ${candlestickLevel(price.candlestickSignal)}">
+          <div>
+            <strong>ローソク足</strong>
+            <span>${escapeHtml(price.candlestickSignal?.label || "未確認")}</span>
+          </div>
+          <p>${escapeHtml(price.candlestickSignal?.summary || "明けの明星、ピンバー、つつみ線、赤三兵、黒三兵などを買い/売りで分けて確認します。")}</p>
+          ${ruleGuideHtml({
+            standard: "買い足は下落後の反転、売り足は上昇後の失速として扱います。単独では決めず、買い場ライン・移動平均・大引けと合わせます。",
+            impact: "買い足なら入口候補の補助材料、売り足なら買い急ぎを避ける材料にします。",
+          })}
+        </article>
         <article class="risk-check ${maCrossLevel(price.maCrossSignal)}">
           <div>
             <strong>ゴールデンクロス</strong>
@@ -3711,6 +3722,12 @@ function maCrossLevel(signal = null) {
   if (!Number.isFinite(score)) return "medium";
   if (score >= 6) return "low";
   if (score < 0) return "high";
+  return "medium";
+}
+
+function candlestickLevel(signal = null) {
+  if (signal?.side === "buy") return "low";
+  if (signal?.side === "sell") return "high";
   return "medium";
 }
 
@@ -3870,6 +3887,7 @@ function exitPlanHtml(plan = {}) {
   const currency = plan.currency || "JPY";
   const growth = plan.growthExit || {};
   const onkabu = plan.onkabu || {};
+  const discipline = plan.discipline || {};
   const aiForecast = sellForecastCardHtml(plan.aiSellForecast, currency);
   const cards = [
     {
@@ -3902,6 +3920,17 @@ function exitPlanHtml(plan = {}) {
         impact: "元本を回収した後は、残りを長期で持ちやすくなります。",
       },
     },
+    {
+      label: "10のルール",
+      level: disciplineLevel(discipline),
+      status: discipline.action || "判定待ち",
+      summary: discipline.summary || "取得単価からの損益率で、買い増し・保有・一部売却・全売却の目安を出します。",
+      guide: {
+        standard: "-5%は何もしない、-15%は10%買い増し候補、-25%は25%買い増し候補。+5%/+15%は保有、+25%から段階的に一部売却、+100%で全売却を検討します。",
+        impact: "感情で動かず、売買量を先に決めるための目安です。買い増しは業績や悪材料が崩れていない場合だけ確認します。",
+      },
+      extra: disciplineRuleBadges(discipline),
+    },
   ];
   const alerts = (plan.alerts || []).map((alert) => `
     <article class="risk-check high">
@@ -3924,12 +3953,13 @@ function exitPlanHtml(plan = {}) {
           <article class="risk-check ${riskLevelClass(card.level)}">
             <div>
               <strong>${escapeHtml(card.label)}</strong>
-              <span>${escapeHtml(card.status)}</span>
-            </div>
-            <p>${escapeHtml(card.summary)}</p>
-            ${ruleGuideHtml(card.guide)}
-          </article>
-        `).join("")}
+            <span>${escapeHtml(card.status)}</span>
+          </div>
+          <p>${escapeHtml(card.summary)}</p>
+          ${ruleGuideHtml(card.guide)}
+          ${card.extra || ""}
+        </article>
+      `).join("")}
         ${aiForecast}
         ${alerts}
       </div>
@@ -3977,6 +4007,24 @@ function exitPlanStatusText(level = "") {
   if (level === "partial_profit") return "恩株化候補";
   if (level === "watch") return "接近中";
   return "保有継続";
+}
+
+function disciplineLevel(plan = {}) {
+  if (plan.kind === "sell") return Number(plan.sellPct || 0) >= 100 ? "high" : "medium";
+  if (plan.kind === "buy_more") return "medium";
+  if (plan.kind === "wait") return "medium";
+  return "low";
+}
+
+function disciplineRuleBadges(plan = {}) {
+  const values = [
+    Number.isFinite(plan.returnPct) ? `現在 ${signedPct(plan.returnPct)}` : "",
+    plan.label || "",
+    plan.suggestedBuyQuantity ? `買い増し ${shareCount(plan.suggestedBuyQuantity)}` : "",
+    plan.suggestedSellQuantity ? `売却 ${shareCount(plan.suggestedSellQuantity)}` : "",
+  ].filter(Boolean);
+  if (!values.length) return "";
+  return `<div class="entry-points">${values.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>`;
 }
 
 function shareholderInfoHtml(info = null) {

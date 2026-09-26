@@ -144,6 +144,7 @@ const SHAREHOLDER_KEYWORDS = [
   "株主", "保有割合", "持株比率", "外国法人", "金融機関",
 ];
 const PE_PRIORITY_MIN_SCORE = 45;
+const PE_PRE_SIGNAL_MIN_SCORE = 48;
 const PE_STRONG_MIN_SCORE = 55;
 const DISCOVERY_AVOID_SECTOR_PATTERN = /(卸売|商社|trading house|commodity trader|wholesale distributor)/i;
 const DISCOVERY_IT_VENTURE_PATTERN = /(情報|IT|ＳＩ|SI|ソフトウェア|クラウド|SaaS|アプリ|ネット|メディア|広告|ゲーム|DX|AI)/i;
@@ -164,6 +165,7 @@ const PE_RECENT_TENDENCIES = [
   "直近数年の国内PE・MBO案件は、低PBR、ネットキャッシュ、安定CF、株主還元余地、上場維持コストが重い会社を重視して採点",
   "時価総額は50億-500億円を強い条件、500億-3000億円を大型PEでも検討し得る範囲、3000億-1兆円をJSR級の大型・特殊案件として扱う",
   "日本M&AセンターのTOB/MBO実例を参照し、非公開化の理由、買付予定数の上限なし、賛同・応募推奨の有無を強い材料として扱う",
+  "発表前のPE候補は、直接のTOB材料がなくても、時価総額レンジ、低PBR/低EV、ネットキャッシュ、安定CF、株主還元余地、事業承継・創業家・政策保有株の整理余地で別枠確認する",
   "かどや製油のように、老舗ブランド、創業家の残存、大株主の持分整理、原材料高で中長期投資が必要な食品・生活必需品もPE候補として確認する",
   "ボードルア型のITインフラ・セキュリティ、レオパレス型の構造改革案件、フジテック型の大型TOBも別枠で確認する",
   "単なる大型優良株や高値圏のテーマ株は、直接の買収・MBO・株主変化がなければPE候補から外す",
@@ -373,7 +375,7 @@ const PE_CRITERIA = [
   { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益", "キャッシュフロー", "高配当", "営業CF", "ストック収益", "継続課金", "cash flow", "free cash flow", "recurring revenue", "stable revenue", "dividend"], weight: 14 },
   { key: "debt_capacity", label: "低負債・借入余地", words: ["無借金", "ネットキャッシュ", "財務健全", "自己資本比率", "低負債", "debt capacity", "low debt", "net cash", "strong balance sheet"], weight: 14 },
   { key: "governance", label: "株主還元・経営改善の余地", words: ["自社株買い", "増配", "政策保有株", "ROE", "資本効率", "中期経営計画", "buyback", "capital allocation", "margin improvement", "ROIC", "shareholder return"], weight: 13 },
-  { key: "shareholder", label: "株主変化", words: ["大量保有", "保有割合", "株主", "大株主", "筆頭株主", "創業家", "支配株主", "不応募", "再投資", "物言う株主", "アクティビスト", "エフィッシモ", "Oasis", "旧村上", "activist", "shareholder", "stake", "13D", "13G", "founder", "family shareholder", "rollover"], weight: 20 },
+  { key: "shareholder", label: "株主変化", words: ["大量保有", "保有割合", "株主", "大株主", "筆頭株主", "創業家", "支配株主", "不応募", "再投資", "物言う株主", "アクティビスト", "事業承継", "政策保有株", "持分整理", "エフィッシモ", "Oasis", "旧村上", "activist", "shareholder", "stake", "13D", "13G", "founder", "family shareholder", "rollover"], weight: 20 },
   { key: "take_private_motive", label: "非公開化の理由が明確", words: PE_TAKE_PRIVATE_MOTIVE_WORDS, weight: 22 },
   { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化", "事業売却", "構造改革", "再編", "親子上場", "買収提案", "対抗提案", "デューデリジェンス", "上場維持コスト", "持分整理", "政策保有", "buyout", "take private", "spin off", "divestiture", "strategic review", "tender offer"], weight: 20 },
   { key: "brand_staple", label: "老舗ブランド・生活必需品", words: ["老舗", "ブランド", "食品", "食料品", "調味料", "生活必需品", "海外展開", "原材料高", "価格転嫁", "consumer staples", "packaged foods", "brand", "raw material cost", "overseas expansion"], weight: 10 },
@@ -3876,14 +3878,14 @@ function topDiscoverySuggestions(candidates = []) {
     .map(normalizeDiscoveryCandidateName)
     .filter((candidate) => candidate && candidate.evidenceQuality !== "悪材料あり")
     .filter(hasCleanDiscoveryCandidateName)
-    .filter(isActionableDiscoveryCandidate)
-    .sort(sortDiscoveryCandidates)
     .map((candidate) => ({
       ...candidate,
       priorityScore: discoveryPriorityScore(candidate),
       pePriorityScore: pePriorityScore(candidate),
       reportBucket: isPeReportCandidate(candidate) ? "pe" : "stock",
     }))
+    .filter((candidate) => candidate.reportBucket === "pe" || isActionableDiscoveryCandidate(candidate))
+    .sort(sortDiscoveryCandidates)
     .slice(0, MAX_DISCOVERY_SUGGESTIONS);
 }
 
@@ -3903,6 +3905,7 @@ function candidatePeScore(candidate = {}) {
 function isPeReportCandidate(candidate = {}) {
   if (isUsDiscoveryCandidate(candidate)) return false;
   if (candidate.peSignal?.reportEligible === false) return false;
+  if (candidate.peSignal?.preSignalCandidate) return true;
   const pe = candidatePeScore(candidate);
   if (pe >= PE_STRONG_MIN_SCORE) return true;
   if (pe < PE_PRIORITY_MIN_SCORE) return false;
@@ -3973,7 +3976,8 @@ function pePriorityScore(candidate = {}) {
   const planBonus = current && buyPlan && current <= buyPlan * STRICT_BUY_TARGET_TOLERANCE ? 14 : 0;
   const currencyBonus = isUsDiscoveryCandidate(candidate) ? 2 : 0;
   const hardSignalBonus = pe >= PE_STRONG_MIN_SCORE ? 18 : 0;
-  return Math.round((pe * 1.35) + hardSignalBonus + timingBonus + buyLineBonus + planBonus + currencyBonus + Math.min(8, income));
+  const preSignalBonus = candidate.peSignal?.preSignalCandidate ? 22 : 0;
+  return Math.round((pe * 1.35) + hardSignalBonus + preSignalBonus + timingBonus + buyLineBonus + planBonus + currencyBonus + Math.min(8, income));
 }
 
 function isActionableDiscoveryCandidate(candidate = {}) {
@@ -4278,8 +4282,7 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
     || positiveKeys.has("restructuring")
     || (positiveKeys.has("take_private_motive") && (dealSourceHits.length || directBuyerHits.length || takePrivateMotiveHits.length >= 2))
     || ownerDealHits.length >= 2
-    || (ownerDealHits.length > 0 && brandTakePrivateHits.length >= 2)
-    || disappointmentHits.length >= 2;
+    || (ownerDealHits.length > 0 && brandTakePrivateHits.length >= 2);
   if (financialFail.has("market_cap")) score = Math.min(score, 34);
   const marketCapAccepted = financialPass.has("market_cap") || (financialWatch.has("market_cap") && hasHardSignal);
   const hasOperatingCashflowConcern = financialFail.has("operating_cf");
@@ -4292,6 +4295,28 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
     && (financialPass.has("net_cash") || financialWatch.has("net_cash"))
     && (financialPass.has("ev_ebitda") || financialPass.has("pbr") || positiveKeys.has("undervalued"))
     && !hasOperatingCashflowConcern;
+  const positiveKeyCount = [...positiveKeys].filter((key) => key !== "risk").length;
+  const hasStableCashflowBase = financialPass.has("operating_cf")
+    || financialWatch.has("operating_cf")
+    || positiveKeys.has("cashflow");
+  const hasBalanceSheetBase = financialPass.has("net_cash")
+    || financialWatch.has("net_cash")
+    || financialPass.has("pbr")
+    || financialPass.has("ev_ebitda")
+    || positiveKeys.has("debt_capacity")
+    || positiveKeys.has("undervalued");
+  const hasPeOperationalAngle = positiveKeys.has("governance")
+    || positiveKeys.has("sector_fit")
+    || positiveKeys.has("brand_staple")
+    || positiveKeys.has("shareholder")
+    || ownerDealHits.length > 0
+    || disappointmentHits.length > 0;
+  const preSignalBase = marketCapAccepted
+    && !hasOperatingCashflowConcern
+    && hasStableCashflowBase
+    && hasBalanceSheetBase
+    && hasPeOperationalAngle
+    && positiveKeyCount >= 3;
   const sourceBackedDealBase = marketCapAccepted
     && !hasOperatingCashflowConcern
     && (dealSourceHits.length || positiveKeys.has("take_private_motive"))
@@ -4303,9 +4328,10 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
   if (!financialCriteria.length || financialCriteria.every((item) => item.status === "unknown")) {
     score = Math.min(score, 44);
   }
-  if (!hasHardSignal && !hasLboBase) score = Math.min(score, 34);
-  else if (!hasHardSignal) score = Math.min(score, 54);
+  if (!hasHardSignal && !hasLboBase && !preSignalBase) score = Math.min(score, 34);
+  else if (!hasHardSignal && !preSignalBase) score = Math.min(score, 54);
   const matchScore = clamp(Math.round(score), 0, 100);
+  const preSignalCandidate = Boolean(!hasHardSignal && preSignalBase && matchScore >= PE_PRE_SIGNAL_MIN_SCORE);
   const evidence = relevantResults
     .filter((item) => /nihon-ma\.co\.jp/i.test(hostOf(item.url))
       || PE_DIRECT_BUYER_WORDS.some((word) => businessContextText(`${item.title} ${item.snippet}`).includes(word.toLowerCase())))
@@ -4354,7 +4380,10 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
     disappointmentHits,
     takePrivateMotiveHits,
     dealSourceHits: dealSourceHits.map((item) => ({ title: item.title, url: item.url, source: hostOf(item.url) })),
-    reportEligible: matchScore >= PE_PRIORITY_MIN_SCORE && (hasFinancialBase || kadoyaStyleBase || sourceBackedDealBase) && (hasHardSignal || matchScore >= PE_STRONG_MIN_SCORE),
+    preSignalCandidate,
+    reportEligible: matchScore >= PE_PRIORITY_MIN_SCORE
+      && (hasFinancialBase || kadoyaStyleBase || sourceBackedDealBase || preSignalBase)
+      && (hasHardSignal || matchScore >= PE_STRONG_MIN_SCORE || preSignalCandidate),
     evidence,
     summary: peSignalSummary(label, criteria, buyerHits, {
       directBuyerHits,
@@ -4365,7 +4394,8 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
       dealSourceHits,
       hasHardSignal,
       hasLboBase,
-      hasFinancialBase: hasFinancialBase || kadoyaStyleBase || sourceBackedDealBase,
+      preSignalCandidate,
+      hasFinancialBase: hasFinancialBase || kadoyaStyleBase || sourceBackedDealBase || preSignalBase,
       financialCriteria,
       matchScore,
     }),
@@ -4388,6 +4418,7 @@ function peSignalSummary(label, criteria = [], buyerHits = [], options = {}) {
   if (options.brandTakePrivateHits?.length) parts.push(`かどや型材料: ${options.brandTakePrivateHits.slice(0, 3).join("、")}`);
   if (options.takePrivateMotiveHits?.length) parts.push(`非公開化理由: ${options.takePrivateMotiveHits.slice(0, 3).join("、")}`);
   if (options.disappointmentHits?.length) parts.push(`失望売り/還元不足材料: ${options.disappointmentHits.slice(0, 3).join("、")}`);
+  if (options.preSignalCandidate) parts.push("発表前候補: 財務・株主構造・業態がPEの確認対象");
   else if (buyerHits.length) parts.push(`周辺語: ${buyerHits.slice(0, 3).join("、")}`);
   if (risk) parts.push(`注意: ${risk}`);
   if (Number(options.matchScore || 0) < PE_PRIORITY_MIN_SCORE) parts.push("PE候補としては優先しない");
@@ -4953,9 +4984,12 @@ function earlyEntrySignal(candidate = {}, price = {}) {
     score += 12;
     criteria.push("RSI30割れから反転");
   }
-  if (price.candlestickSignal?.label) {
-    score += 9;
+  if (price.candlestickSignal?.side === "buy") {
+    score += Math.min(12, Number(price.candlestickSignal.score || 9));
     criteria.push(price.candlestickSignal.label);
+  } else if (price.candlestickSignal?.side === "sell") {
+    score += Math.max(-12, Number(price.candlestickSignal.score || -9));
+    risks.push(price.candlestickSignal.summary || price.candlestickSignal.label);
   }
   if (price.maCrossSignal?.score > 0) {
     score += Math.min(10, price.maCrossSignal.score);
@@ -6327,7 +6361,7 @@ function candidateBuyPlan(price, options = {}) {
   }
   if (price.sma5CrossUp) checks.push("5日線上抜け");
   if (price.rsiCross30) checks.push("RSI30復帰");
-  if (price.candlestickSignal?.label) checks.push(price.candlestickSignal.label);
+  if (price.candlestickSignal?.side === "buy") checks.push(price.candlestickSignal.label);
   if (price.maCrossSignal?.score > 0) checks.push(price.maCrossSignal.label);
   if (price.closeStrength?.score > 0) checks.push(price.closeStrength.label);
   if (price.regime?.label) checks.push(`相場: ${price.regime.label}`);
@@ -7099,12 +7133,13 @@ function technicalIndicators(series = [], buyTiming = {}) {
     sma5CrossUp ? "終値が5日線を上抜け" : "",
     maCrossSignal?.score > 0 ? maCrossSignal.label : "",
     rsiCross30 ? "RSIが30割れから再浮上" : "",
-    candlestickSignal ? candlestickSignal.label : "",
+    candlestickSignal?.side === "buy" ? candlestickSignal.label : "",
     closeStrength?.score > 0 ? closeStrength.label : "",
   ].filter(Boolean);
   const risks = [
     buyLine && !nearBuyLine ? "買い場ラインまではまだ距離あり" : "",
     maCrossSignal?.score < 0 ? maCrossSignal.summary : "",
+    candlestickSignal?.side === "sell" ? candlestickSignal.summary || candlestickSignal.label : "",
     closeStrength?.score < 0 ? closeStrength.summary : "",
     Number.isFinite(atrPct) && atrPct >= 6 ? "ATRが大きく、指値を深めに置きたい" : "",
     !confirmationSignals.length ? "反転サインはまだ未確認" : "",
@@ -7116,9 +7151,10 @@ function technicalIndicators(series = [], buyTiming = {}) {
     + (sma5CrossUp ? 15 : 0)
     + Math.max(0, Number(maCrossSignal?.score || 0))
     + (rsiCross30 ? 15 : 0)
-    + (candlestickSignal ? 10 : 0)
+    + (candlestickSignal?.side === "buy" ? Math.min(14, Number(candlestickSignal.score || 10)) : 0)
     + Math.max(0, Number(closeStrength?.score || 0))
     + Math.min(0, Number(maCrossSignal?.score || 0))
+    + (candlestickSignal?.side === "sell" ? Math.max(-14, Number(candlestickSignal.score || -10)) : 0)
     + Math.min(0, Number(closeStrength?.score || 0))
     - (Number.isFinite(atrPct) && atrPct >= 6 ? 8 : 0),
   ), 0, 100);
@@ -7328,24 +7364,105 @@ function trueRangeValues(series = []) {
 }
 
 function latestCandlestickSignal(series = []) {
-  const latest = series.at(-1);
-  const previous = series.at(-2);
+  const clean = series.map(candleShape).filter(Boolean);
+  const latest = clean.at(-1);
+  const previous = clean.at(-2);
+  const third = clean.at(-3);
   if (!latest || !previous) return null;
-  const open = nullablePositiveNumber(latest.open) || latest.close;
-  const close = nullablePositiveNumber(latest.close);
-  const high = nullablePositiveNumber(latest.high) || close;
-  const low = nullablePositiveNumber(latest.low) || close;
-  const prevOpen = nullablePositiveNumber(previous.open) || previous.close;
-  const prevClose = nullablePositiveNumber(previous.close);
-  if (!open || !close || !high || !low || !prevOpen || !prevClose) return null;
+  const candidates = [];
+  const recentReturn = returnFrom(clean, Math.min(12, clean.length - 1));
+  const inPullback = Number.isFinite(recentReturn) ? recentReturn <= 2 : true;
+  const inUptrend = Number.isFinite(recentReturn) ? recentReturn >= -2 : true;
+
+  if (latest.bullish && latest.lowerShadow >= Math.max(latest.body * 1.8, latest.range * 0.35) && latest.upperShadow <= latest.range * 0.45) {
+    candidates.push(candlestickCandidate("bullish_pin_bar", "ピンバー（買い）", "buy", 14, 5, "下ヒゲが長く、安値圏で買いが戻った形です。"));
+  }
+  if (latest.bearish && latest.upperShadow >= Math.max(latest.body * 1.8, latest.range * 0.35) && latest.lowerShadow <= latest.range * 0.45) {
+    candidates.push(candlestickCandidate("bearish_pin_bar", "ピンバー（売り）", "sell", -14, 5, "上ヒゲが長く、高値圏で売りに押された形です。"));
+  }
+  if (previous.bearish && latest.bullish && latest.open <= previous.close && latest.close >= previous.open) {
+    candidates.push(candlestickCandidate("bullish_engulfing", "陽のつつみ線（買い）", "buy", 12, 4, "前日の陰線を包む陽線です。下落後の反転確認として見ます。"));
+  }
+  if (previous.bullish && latest.bearish && latest.open >= previous.close && latest.close <= previous.open) {
+    candidates.push(candlestickCandidate("bearish_engulfing", "陰のつつみ線（売り）", "sell", -12, 4, "前日の陽線を包む陰線です。上昇後の反落確認として見ます。"));
+  }
+  if (third && third.bearish && previous.smallBody && latest.bullish && latest.close >= midpoint(third.open, third.close) && inPullback) {
+    candidates.push(candlestickCandidate("morning_star", "明けの明星（買い）", "buy", 16, 5, "下落、迷い、小さな反発から陽線で戻す形です。買いの反転候補です。"));
+  }
+  if (third && third.bullish && previous.smallBody && latest.bearish && latest.close <= midpoint(third.open, third.close) && inUptrend) {
+    candidates.push(candlestickCandidate("evening_star", "宵の明星（売り）", "sell", -16, 5, "上昇、迷い、陰線で押し返される形です。売りの確認材料です。"));
+  }
+  if (clean.length >= 3 && clean.slice(-3).every((item) => item.bullish && item.bodyPct >= 0.45) && clean.at(-1).close > clean.at(-2).close && clean.at(-2).close > clean.at(-3).close) {
+    candidates.push(candlestickCandidate("three_white_soldiers", "赤三兵（買い）", "buy", 13, 4, "陽線が3本続き、買いが継続している形です。"));
+  }
+  if (clean.length >= 3 && clean.slice(-3).every((item) => item.bearish && item.bodyPct >= 0.45) && clean.at(-1).close < clean.at(-2).close && clean.at(-2).close < clean.at(-3).close) {
+    candidates.push(candlestickCandidate("three_black_crows", "黒三兵（売り）", "sell", -13, 4, "陰線が3本続き、売りが継続している形です。"));
+  }
+  const doubleBottom = bottomBreakoutSignal(clean);
+  if (doubleBottom) candidates.push(doubleBottom);
+  const topBreak = topBreakdownSignal(clean);
+  if (topBreak) candidates.push(topBreak);
+  return candidates.sort((a, b) => Math.abs(b.score) - Math.abs(a.score))[0] || null;
+}
+
+function candleShape(point = {}) {
+  const open = nullablePositiveNumber(point.open) || nullablePositiveNumber(point.close);
+  const close = nullablePositiveNumber(point.close);
+  const high = nullablePositiveNumber(point.high) || close;
+  const low = nullablePositiveNumber(point.low) || close;
+  if (!open || !close || !high || !low || high <= low) return null;
   const body = Math.abs(close - open);
   const range = Math.max(0.000001, high - low);
-  const lowerShadow = Math.min(open, close) - low;
-  const upperShadow = high - Math.max(open, close);
-  const lowerShadowBullish = close > open && lowerShadow >= Math.max(body * 1.8, range * 0.35) && upperShadow <= range * 0.45;
-  if (lowerShadowBullish) return { key: "lower_shadow_bullish", label: "下ヒゲ陽線" };
-  const bullishEngulfing = prevClose < prevOpen && close > open && open <= prevClose && close >= prevOpen;
-  if (bullishEngulfing) return { key: "bullish_engulfing", label: "包み足" };
+  return {
+    ...point,
+    open,
+    close,
+    high,
+    low,
+    body,
+    range,
+    bodyPct: body / range,
+    bullish: close > open,
+    bearish: close < open,
+    smallBody: body <= range * 0.32,
+    lowerShadow: Math.min(open, close) - low,
+    upperShadow: high - Math.max(open, close),
+  };
+}
+
+function candlestickCandidate(key, label, side, score, confidence, summary) {
+  return { key, label, side, score, confidence, summary };
+}
+
+function midpoint(a, b) {
+  return (a + b) / 2;
+}
+
+function bottomBreakoutSignal(candles = []) {
+  if (candles.length < 12) return null;
+  const recent = candles.slice(-24);
+  const lows = recent.slice(0, -1).map((item) => item.low);
+  const minLow = Math.min(...lows);
+  const nearBottoms = recent.slice(0, -1).filter((item) => item.low <= minLow * 1.04);
+  const latest = recent.at(-1);
+  const previousHigh = Math.max(...recent.slice(0, -1).map((item) => item.high));
+  if (nearBottoms.length >= 2 && latest.bullish && latest.close >= previousHigh * 0.99) {
+    return candlestickCandidate("double_bottom_breakout", "ダブルボトム（買い）", "buy", 11, 4, "同じ安値圏を複数回確認した後に上へ抜ける形です。");
+  }
+  return null;
+}
+
+function topBreakdownSignal(candles = []) {
+  if (candles.length < 12) return null;
+  const recent = candles.slice(-24);
+  const highs = recent.slice(0, -1).map((item) => item.high);
+  const maxHigh = Math.max(...highs);
+  const nearTops = recent.slice(0, -1).filter((item) => item.high >= maxHigh * 0.96);
+  const latest = recent.at(-1);
+  const previousLow = Math.min(...recent.slice(0, -1).map((item) => item.low));
+  if (nearTops.length >= 2 && latest.bearish && latest.close <= previousLow * 1.01) {
+    return candlestickCandidate("triple_top_breakdown", "三尊/天井崩れ（売り）", "sell", -11, 4, "高値圏を複数回試した後に下へ崩れる形です。");
+  }
   return null;
 }
 
@@ -8838,6 +8955,7 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
   const aiSellForecast = normalizeSellForecast(analysis.sellForecast || analysis.ai?.sellForecast)
     || ruleSellForecast(analysis, currency);
   const onkabu = onkabuPlan(position, current, settings, currency);
+  const discipline = positionDisciplinePlan(position, current, currency);
   const alerts = [];
   if (canNotifySellAlert && settings.growthExitEnabled !== false && growthExit.level === "exit_alert") {
     alerts.push({
@@ -8878,10 +8996,26 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
       ],
     });
   }
+  if (canNotifySellAlert && discipline.triggered && discipline.kind === "sell") {
+    alerts.push({
+      type: "DISCIPLINE_RULE",
+      label: "10のルール",
+      action: discipline.action,
+      confidence: discipline.confidence || 72,
+      summary: discipline.summary,
+      points: [
+        discipline.basisText,
+        discipline.suggestedSellQuantity ? `売却候補: ${formatShareQuantity(discipline.suggestedSellQuantity)}株` : "",
+        discipline.remainingAfterAction !== null ? `実行後の残り目安: ${formatShareQuantity(discipline.remainingAfterAction)}株` : "",
+      ].filter(Boolean),
+    });
+  }
   const alertLevel = alerts.some((item) => item.type === "FUNDAMENTAL_EXIT" || item.type === "TRAILING_STOP")
     ? "exit_alert"
-    : alerts.some((item) => item.type === "ONKABU")
+    : alerts.some((item) => item.type === "ONKABU" || item.type === "DISCIPLINE_RULE")
     ? "partial_profit"
+    : discipline.kind === "buy_more"
+    ? "watch"
     : Number.isFinite(drawdownFromHighPct) && drawdownFromHighPct <= -(trailingStopPct * 0.75)
     ? "watch"
     : growthExit.level === "watch"
@@ -8903,6 +9037,7 @@ function buildExitPlan(analysis = {}, settings = defaultSettings, previous = nul
     growthExit,
     aiSellForecast,
     onkabu,
+    discipline,
     alertLevel,
     alerts,
     summary: exitPlanSummary(alertLevel, growthExit, onkabu, trailingStopPct, drawdownFromHighPct, trailing.suppressedReason),
@@ -9069,6 +9204,110 @@ function onkabuPlan(position = {}, current = null, settings = defaultSettings, c
       ? "売却済み分で元本回収済みです。残りは恩株として保有できます。"
       : `+${profitPct}%到達までは、成長ストーリーを見ながら保有確認します。`,
   };
+}
+
+function positionDisciplinePlan(position = {}, current = null, currency = "JPY") {
+  const quantity = nullablePositiveNumber(position.quantity) || 0;
+  const sellableQuantity = Number.isFinite(position.sellableQuantity) ? Math.max(0, position.sellableQuantity) : quantity;
+  const purchasePrice = nullablePositiveNumber(position.purchasePrice);
+  const returnPct = Number.isFinite(position.unrealizedPnlPct)
+    ? position.unrealizedPnlPct
+    : current && purchasePrice
+    ? ((current - purchasePrice) / purchasePrice) * 100
+    : null;
+  if (!quantity || !Number.isFinite(returnPct)) {
+    return {
+      triggered: false,
+      kind: "unknown",
+      action: "判定待ち",
+      label: "10のルール",
+      returnPct: null,
+      summary: "取得単価・現在値・保有株数が揃うと、買い増し/一部売却の目安を出します。",
+      basisText: "取得単価または現在値が不足しています。",
+      suggestedBuyQuantity: null,
+      suggestedSellQuantity: null,
+      remainingAfterAction: null,
+    };
+  }
+
+  const rule = disciplineRuleForReturn(returnPct);
+  const suggestedBuyQuantity = rule.buyPct
+    ? roundBuyQuantity(quantity * (rule.buyPct / 100), currency)
+    : null;
+  const suggestedSellQuantity = rule.sellPct
+    ? Math.min(sellableQuantity, roundSellQuantity(quantity * (rule.sellPct / 100), currency))
+    : null;
+  const remainingAfterAction = Number.isFinite(suggestedSellQuantity)
+    ? Math.max(0, quantity - suggestedSellQuantity)
+    : null;
+  const actionDetail = rule.buyPct
+    ? `${rule.buyPct}%買い増し候補`
+    : rule.sellPct
+    ? rule.sellPct >= 100
+      ? "全額売却候補"
+      : `${rule.sellPct}%売却候補`
+    : rule.action;
+  const basisText = `平均取得から${formatSignedPercent(returnPct)}。基準は株価損益で見ます。`;
+  const quantityText = suggestedBuyQuantity
+    ? `目安は${formatShareQuantity(suggestedBuyQuantity)}株の買い増しです。`
+    : suggestedSellQuantity
+    ? `目安は${formatShareQuantity(suggestedSellQuantity)}株の売却です。`
+    : "";
+  return {
+    triggered: Boolean(rule.kind === "sell" && suggestedSellQuantity > 0),
+    kind: rule.kind,
+    action: actionDetail,
+    label: rule.label,
+    thresholdPct: rule.thresholdPct,
+    returnPct: Math.round(returnPct * 10) / 10,
+    buyPct: rule.buyPct || null,
+    sellPct: rule.sellPct || null,
+    confidence: rule.confidence,
+    summary: `${basisText}${quantityText ? ` ${quantityText}` : ""} ${rule.summary}`,
+    basisText,
+    suggestedBuyQuantity,
+    suggestedSellQuantity,
+    remainingAfterAction,
+  };
+}
+
+function disciplineRuleForReturn(returnPct) {
+  if (returnPct >= 100) {
+    return { kind: "sell", label: "+100% 全額売却", thresholdPct: 100, sellPct: 100, confidence: 82, action: "全額売却", summary: "元本回収後も上がり切った局面として、利益を確定する目安です。" };
+  }
+  if (returnPct >= 60) {
+    return { kind: "sell", label: "+60% 40%売却", thresholdPct: 60, sellPct: 40, confidence: 78, action: "40%売却", summary: "大きく利益が乗った局面です。残りを持ちながら利益を厚めに確定します。" };
+  }
+  if (returnPct >= 45) {
+    return { kind: "sell", label: "+45% 30%売却", thresholdPct: 45, sellPct: 30, confidence: 75, action: "30%売却", summary: "上昇が進んだ局面です。欲張りすぎず一部利益確定を検討します。" };
+  }
+  if (returnPct >= 35) {
+    return { kind: "sell", label: "+35% 20%売却", thresholdPct: 35, sellPct: 20, confidence: 72, action: "20%売却", summary: "利益を守るため、保有を残しながら一部売却を検討します。" };
+  }
+  if (returnPct >= 25) {
+    return { kind: "sell", label: "+25% 10%売却", thresholdPct: 25, sellPct: 10, confidence: 68, action: "10%売却", summary: "最初の部分利益確定ラインです。急騰後の反落に備えます。" };
+  }
+  if (returnPct >= 15) {
+    return { kind: "hold", label: "+15% 保有継続", thresholdPct: 15, confidence: 62, action: "保有継続", summary: "利益は出ていますが、売却より保有理由の継続確認を優先します。" };
+  }
+  if (returnPct >= 5) {
+    return { kind: "hold", label: "+5% 保有継続", thresholdPct: 5, confidence: 58, action: "保有継続", summary: "小幅な含み益です。まだ売買を急がず保有継続を基本にします。" };
+  }
+  if (returnPct <= -25) {
+    return { kind: "buy_more", label: "-25% 25%買い増し候補", thresholdPct: -25, buyPct: 25, confidence: 64, action: "25%買い増し", summary: "大きく下げています。業績・財務・悪材料が崩れていない場合だけ、分割買い増し候補にします。" };
+  }
+  if (returnPct <= -15) {
+    return { kind: "buy_more", label: "-15% 10%買い増し候補", thresholdPct: -15, buyPct: 10, confidence: 58, action: "10%買い増し", summary: "押し目候補です。ナンピンではなく、保有理由が残る場合だけ小さく増やす目安です。" };
+  }
+  if (returnPct <= -5) {
+    return { kind: "wait", label: "-5% 何もしない", thresholdPct: -5, confidence: 54, action: "何もしない", summary: "この程度の下落では売買せず、次の基準まで様子を見ます。" };
+  }
+  return { kind: "wait", label: "様子見", thresholdPct: 0, confidence: 50, action: "何もしない", summary: "ルール上は新しい売買を急がない範囲です。" };
+}
+
+function roundBuyQuantity(value, currency = "JPY") {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return currency === "JPY" ? Math.max(1, Math.ceil(value)) : Math.ceil(value * 10000) / 10000;
 }
 
 function exitPlanSummary(level, growthExit, onkabu, trailingStopPct, drawdownFromHighPct, trailingSuppressedReason = "") {
