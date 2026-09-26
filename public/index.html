@@ -132,6 +132,7 @@
             <strong id="watchCount">0</strong>
           </article>
         </section>
+        <p id="decisionScopeHint" class="decision-scope-hint" aria-live="polite"></p>
 
         <section class="content-grid">
           <div class="table-panel watchlist-panel">
@@ -139,6 +140,7 @@
               <h3>Watchlist</h3>
               <span id="lastRun">未分析</span>
             </div>
+            <p class="watchlist-legend">要確認は材料不足または判断が中立、見直し候補は損失拡大・長期トレンド悪化・出口アラートなどから保有理由を再点検する段階です。見直し候補でも即売りではなく、どちらも自動売買・自動売却ではありません。新しい銘柄探しは「候補を探す」から行います。</p>
             <div class="table-wrap">
               <table class="watchlist-table">
                 <thead>
@@ -197,16 +199,17 @@
               <h3>新規追加</h3>
             </div>
             <label>
-              <span>銘柄名</span>
-              <input id="stockName" name="name" autocomplete="off" placeholder="例: KDDI" required>
+              <span>コード</span>
+              <input id="stockSymbol" name="symbol" autocomplete="off" placeholder="例: 9433" required>
+              <small id="stockLookupStatus" class="field-hint">コードを入力すると会社名と業種を自動取得します。</small>
             </label>
             <label>
-              <span>コード</span>
-              <input id="stockSymbol" name="symbol" autocomplete="off" placeholder="例: 9433.T" required>
+              <span>銘柄名</span>
+              <input id="stockName" name="name" autocomplete="off" placeholder="コード入力後に自動表示" readonly>
             </label>
             <label>
               <span>業種</span>
-              <input id="stockSector" name="sector" autocomplete="off" placeholder="例: 通信、航空、銀行">
+              <input id="stockSector" name="sector" autocomplete="off" placeholder="コード入力後に自動表示" readonly>
             </label>
             <label>
               <span>購入日</span>
@@ -665,6 +668,7 @@
           </div>
           <div class="actions">
             <button id="discoverButton" type="button">候補を検索</button>
+            <button id="discoverNisaButton" class="secondary" type="button">NISA向きの銘柄を探す</button>
           </div>
         </section>
 

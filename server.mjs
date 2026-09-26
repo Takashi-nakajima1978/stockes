@@ -42,7 +42,8 @@ const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
-const DISCOVERY_SCORING_VERSION = 13;
+const NISA_FIT_MIN_SCORE = 45;
+const DISCOVERY_SCORING_VERSION = 14;
 const SEASONAL_BUY_TARGET_ALLOWANCE = 0.02;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
@@ -820,6 +821,14 @@ async function handleApi(req, res, url) {
     });
   }
 
+  if (url.pathname === "/api/stocks/lookup" && req.method === "GET") {
+    const symbol = normalizeSymbol(url.searchParams.get("symbol") || "");
+    if (!/^\d{4}\.T$/.test(symbol)) return json(res, 400, { error: "日本株の4桁コードを入力してください。" });
+    const identity = await resolveJpStockIdentity(symbol);
+    if (!identity) return json(res, 404, { error: "このコードの会社情報を取得できませんでした。" });
+    return json(res, 200, identity);
+  }
+
   if (url.pathname === "/api/daytrade/simulate" && req.method === "POST") {
     const [body, settings] = await Promise.all([readJson(req), readSettings()]);
     return json(res, 200, { plan: buildDayTradePlan(await enrichDayTradeInput(body, settings), settings) });
@@ -1042,14 +1051,16 @@ async function handleApi(req, res, url) {
     const stocks = await readWatchlist();
     if (stocks.length >= MAX_MANAGED_STOCKS) return json(res, 400, { error: `管理できる銘柄は${MAX_MANAGED_STOCKS}件までです。` });
     const symbol = normalizeSymbol(body.symbol);
-    const name = String(body.name || "").trim();
-    if (!symbol || !name) return json(res, 400, { error: "銘柄名とコードを入力してください。" });
+    if (!/^\d{4}\.T$/.test(symbol)) return json(res, 400, { error: "日本株の4桁コードを入力してください。" });
+    const identity = String(body.name || "").trim() ? null : await resolveJpStockIdentity(symbol);
+    const name = String(body.name || identity?.name || "").trim();
+    if (!name) return json(res, 400, { error: "コードから会社名を確認できませんでした。" });
     if (stocks.some((stock) => stock.symbol === symbol)) return json(res, 400, { error: "同じ銘柄がすでにあります。" });
     const stock = normalizeStock({
       symbol,
       name,
-      market: body.market || "東証",
-      sector: body.sector,
+      market: body.market || identity?.market || "東証",
+      sector: body.sector || identity?.sector,
       notes: body.notes,
       holding: Boolean(body.holding || body.purchaseDate || body.purchasePrice || body.quantity || body.positions?.length || body.sales?.length),
       purchaseDate: body.purchaseDate,
@@ -1242,12 +1253,16 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const job = startDiscoveryJob(body, "manual");
     const excludedCandidates = await readExcludedCandidates();
+    const requestedMode = body.mode === "nisa" ? "nisa" : "general";
+    const jobConflict = Boolean(job.running && job.mode !== requestedMode);
     return json(res, 202, {
       ...filterDiscoveryResultByExclusions(await discoveryCacheForCurrentSettings(), excludedCandidates),
       excludedCandidates,
       candidatePerformance: candidatePerformanceSummary(await readCandidateHistory()),
       job,
-      message: "候補検索を裏で開始しました。途中結果は自動保存されます。",
+      message: jobConflict
+        ? `${job.mode === "nisa" ? "NISA候補" : "通常候補"}の検索が進行中です。完了後に再度実行してください。`
+        : "候補検索を裏で開始しました。途中結果は自動保存されます。",
     });
   }
 
@@ -2142,20 +2157,55 @@ function isWeakUsEvidenceSummary(value = "") {
 async function researchUsStock(stock, options = {}) {
   const limit = clamp(Number(options.websiteLimit || 5), 1, 20);
   const searchLimit = Math.max(limit * 2, 8);
-  const [yahooNews, searchedNews] = await Promise.all([
+  const [yahooNews, searchedNews, profileResults] = await Promise.all([
     fetchYahooFinanceSearchNews(stock, searchLimit).catch(() => []),
     searchUsFinanceNews(stock, searchLimit).catch(() => []),
+    searchUsBusinessProfileEvidence(stock, Math.min(6, limit)).catch(() => []),
   ]);
-  const evidence = uniqueBy([...yahooNews, ...searchedNews]
+  const profileEvidence = uniqueBy(profileResults
+    .filter((item) => usEvidenceMentionsStock(item, stock))
+    .sort((a, b) => businessProfileEvidenceScore(b) - businessProfileEvidenceScore(a)), (item) => canonicalNewsUrl(item.url))
+    .slice(0, 3)
+    .map((item) => ({ ...toUsEvidence(item, stock), kind: "business_profile", topic: "business_profile" }));
+  const newsEvidence = uniqueBy([...yahooNews, ...searchedNews]
     .filter((item) => isUsFinanceNewsEvidence(item, stock))
     .sort((a, b) => usFinanceNewsScore(b, stock) - usFinanceNewsScore(a, stock)), (item) => canonicalNewsUrl(item.url))
     .slice(0, limit)
     .map((item) => toUsEvidence(item, stock));
+  const evidence = uniqueBy([...profileEvidence, ...newsEvidence], (item) => canonicalNewsUrl(item.url)).slice(0, limit + 3);
   return {
     searched: evidence.length,
     evidence,
     warning: evidence.length ? "" : "米国金融ニュースを取得できませんでした",
   };
+}
+
+async function searchUsBusinessProfileEvidence(stock = {}, limit = 6) {
+  const symbol = normalizeUsSymbol(stock.symbol);
+  const name = cleanText(stock.name || symbol);
+  if (!symbol) return [];
+  const queries = [
+    `"${name}" ${symbol} 10-K annual report business segments investor relations`,
+    `"${name}" ${symbol} company overview products services business model official`,
+  ];
+  const pages = await mapLimit(queries, 2, async (query) => (
+    searchGoogle(query, { limit: Math.max(2, Math.ceil(limit / queries.length)), language: "en-US" }).catch(() => [])
+  ));
+  return uniqueBy(pages.flat()
+    .filter((item) => usEvidenceMentionsStock(item, stock))
+    .filter((item) => !isBlockedUsNewsUrl(item.url))
+    .map((item) => ({ ...item, topic: "business_profile", kind: "business_profile" })), (item) => canonicalNewsUrl(item.url))
+    .sort((a, b) => businessProfileEvidenceScore(b) - businessProfileEvidenceScore(a))
+    .slice(0, limit);
+}
+
+function businessProfileEvidenceScore(item = {}) {
+  const text = cleanText(`${item.title || ""} ${item.snippet || ""} ${item.url || ""}`).toLowerCase();
+  let score = 0;
+  if (/10-k|annual report|integrated report|統合報告書|有価証券報告書/.test(text)) score += 12;
+  if (/investor|ir\.|sec\.gov|edinet|tdnet/.test(text)) score += 8;
+  if (/business segment|business overview|事業内容|事業概要|products|services|segment/.test(text)) score += 6;
+  return score;
 }
 
 async function fetchYahooFinanceSearchNews(stock, limit = 8) {
@@ -2214,6 +2264,8 @@ async function searchUsCandidateEvidence(candidate = {}, limit = 8) {
     snippet: item.originalSnippet || item.snippet || item.summaryJa || "",
     publishedDate: item.publishedDate,
     rank: index + 1,
+    topic: item.topic || "",
+    kind: item.kind || "web",
   }));
 }
 
@@ -2312,7 +2364,8 @@ function toUsEvidence(item = {}, stock = {}) {
     originalSnippet: original,
     summaryJa: "",
     publishedDate: normalizeDate(item.publishedDate) || searchResultPublishedDate(item),
-    kind: "web",
+    kind: item.kind || "web",
+    topic: item.topic || "",
   };
 }
 
@@ -2451,10 +2504,13 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       totalReturnPct: row.position.totalReturnPct,
       holdingDays: row.position.holdingDays,
     },
-    evidence: row.evidence.slice(0, 3).map((item) => ({
+    evidence: [...row.evidence]
+      .sort((a, b) => Number(b.kind === "business_profile") - Number(a.kind === "business_profile"))
+      .slice(0, 6).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
       source: item.source,
       url: item.url,
+      kind: item.kind,
       publishedDate: item.publishedDate || "",
       snippet: cleanText(item.summaryJa || item.originalSnippet || item.snippet || "").slice(0, 180),
     })),
@@ -2463,6 +2519,8 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     "/no_think",
     "Role: US equity holding-review analyst. Do not search for new candidates; review only the provided holdings.",
     "Analyze English news snippets and financial summaries in English. Then write all user-facing text in natural Japanese.",
+    "Add businessOverviewJa with 2-3 short Japanese sentences describing the company's products/services, customers, and revenue sources. Base it on evidence tagged business_profile, preferably its 10-K or official investor relations. Translate English sources into Japanese; return an empty string if the actual business cannot be verified.",
+    "Include businessOverviewJa as a field in every review object in the JSON response.",
     "Separate position facts: remaining shares, sold shares, realized P/L, unrealized P/L, received dividends, estimated annual dividend, and total return including dividends.",
     "Check PER, EPS, revenue growth, margin, ROE, debt level, next earnings timing, news evidence, 3-year price history, purchase price, and trailing-stop context.",
     "Do not promise profit. Separate reasons to continue holding from risks or missing data. If financial data is missing, say that as a risk.",
@@ -2498,6 +2556,7 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       stance: String(review.stance || "DATA_NEEDED").toUpperCase(),
       confidence: clamp(Number(review.confidence || 50), 0, 100),
       summaryJa: String(review.summaryJa || review.summary || "").slice(0, 180),
+      businessOverviewJa: cleanText(review.businessOverviewJa || "").slice(0, 420),
       good: asStringArray(review.good || review.reasons).slice(0, 3),
       risks: asStringArray(review.risks).slice(0, 3),
       evidenceJa: Array.isArray(review.evidenceJa) ? review.evidenceJa.map((item) => ({
@@ -3204,6 +3263,7 @@ function startDiscoveryJob(options = {}, reason = "manual") {
     id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     running: true,
     reason,
+    mode: options.mode === "nisa" ? "nisa" : "general",
     phase: reason === "daily" ? "日次候補検索を準備中" : "候補検索を準備中",
     checked: 0,
     total: 0,
@@ -3573,8 +3633,9 @@ function isOlderThan(left = "", right = "") {
 }
 
 async function discoverStocks(options = {}, job = null) {
+  const discoveryMode = options.mode === "nisa" ? "nisa" : "general";
   const stocks = await readWatchlist();
-  const usStocks = await readUsWatchlist();
+  const usStocks = discoveryMode === "nisa" ? [] : await readUsWatchlist();
   const settings = await readSettings();
   const excludedCandidates = await readExcludedCandidates();
   const existing = new Set([...stocks, ...usStocks].map((stock) => stock.symbol));
@@ -3591,12 +3652,14 @@ async function discoverStocks(options = {}, job = null) {
   const unitBudgetAllowance = unitBudget ? unitBudget * 1.1 : Infinity;
   const fullScan = options.fullScan !== false;
   updateDiscoveryJob(job, { phase: "市場全体の材料を検索中" });
-  const search = await discoverySearchResults(websiteLimit);
+  const search = await discoverySearchResults(websiteLimit, { japanOnly: discoveryMode === "nisa" });
   const haystack = `${search.map((item) => `${item.title} ${item.snippet}`).join("\n")}`.toLowerCase();
   const sectorCounts = sectorCount([...stocks, ...usStocks]);
   const searchCandidates = extractDiscoveryCandidates(search, existing, excluded);
   const primeUniverse = await readPrimeUniverse();
-  const officialUniverse = [...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse];
+  const officialUniverse = discoveryMode === "nisa"
+    ? [...primeUniverse, ...discoveryUniverse]
+    : [...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse];
   const resolvedSearchCandidates = reconcileSearchCandidateNames(searchCandidates, officialUniverse);
   updateDiscoveryJob(job, { phase: "LM Studioで市場トレンドを要約中" });
   const aiWarnings = [];
@@ -3610,12 +3673,18 @@ async function discoverStocks(options = {}, job = null) {
   const financialCache = await readFinancialCache();
   let financialBySymbol = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
   const fxContext = await readUsdJpyContext().catch(() => normalizeUsdJpyContext({}));
-  const baseCandidateUniverse = uniqueBy([...resolvedSearchCandidates, ...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse]
+  const baseCandidateUniverse = uniqueBy([
+    ...resolvedSearchCandidates,
+    ...primeUniverse,
+    ...discoveryUniverse,
+    ...(discoveryMode === "nisa" ? [] : usDiscoveryUniverse),
+  ]
     .map(normalizeDiscoveryCandidateName), (candidate) => candidate.symbol);
   const candidateUniverse = baseCandidateUniverse
     .filter((candidate) => !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
     .filter(hasCleanDiscoveryCandidateName)
-    .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate));
+    .filter((candidate) => discoveryMode === "nisa" || !isDiscoveryAvoidedBusiness(candidate))
+    .filter((candidate) => discoveryMode !== "nisa" || !isUsDiscoveryCandidate(candidate));
   const universeStats = discoveryUniverseStats(baseCandidateUniverse, candidateUniverse, existing, excluded);
   const candidateLimit = fullScan
     ? candidateUniverse.length
@@ -3699,7 +3768,9 @@ async function discoverStocks(options = {}, job = null) {
       await savePartialDiscovery({
         stocks,
         search,
-        suggestions: topDiscoverySuggestions(enhancedSoFar),
+      suggestions: discoveryMode === "nisa"
+        ? topNisaSuggestions(enhancedSoFar)
+        : topDiscoverySuggestions(enhancedSoFar),
         searchCount: search.length + individualSearchCount,
         candidateLimit,
         unitSize,
@@ -3713,6 +3784,7 @@ async function discoverStocks(options = {}, job = null) {
         discoveryAiWarning: aiWarnings.join(" / "),
         universeStats,
         financialStats,
+        discoveryMode,
       });
     }
     return enhancedCandidate;
@@ -3726,22 +3798,27 @@ async function discoverStocks(options = {}, job = null) {
   const viable = supported.filter((candidate) => candidate.businessValueScore >= 55);
   const fallbackPool = supported.length ? supported : eligibleEnhanced;
   const suggestionPool = viable.length ? viable : fallbackPool.filter((candidate) => candidate.businessValueScore >= 45);
-  let suggestions = topDiscoverySuggestions(suggestionPool);
+  let suggestions = discoveryMode === "nisa"
+    ? topNisaSuggestions(eligibleEnhanced)
+    : topDiscoverySuggestions(suggestionPool);
   let usedDiscoveryAi = false;
   try {
     updateDiscoveryJob(job, { phase: "LM Studioで上位候補を再点検中" });
-    const aiReviewBySymbol = await aiDiscoveryReview(suggestions.slice(0, AI_DISCOVERY_REVIEW_LIMIT));
+    const aiReviewBySymbol = await aiDiscoveryReview(suggestions.slice(0, discoveryMode === "nisa" ? MAX_DISCOVERY_SUGGESTIONS : AI_DISCOVERY_REVIEW_LIMIT));
+    if (aiReviewBySymbol.warning) aiWarnings.push(aiReviewBySymbol.warning);
     if (aiReviewBySymbol.size) {
       usedDiscoveryAi = true;
       suggestions = suggestions
         .map((candidate) => applyDiscoveryAiReview(candidate, aiReviewBySymbol.get(candidate.symbol)))
-        .filter(isActionableDiscoveryCandidate)
-        .sort(sortDiscoveryCandidates)
+        .filter((candidate) => discoveryMode === "nisa"
+          ? Number(candidate.nisaFit?.score || 0) >= NISA_FIT_MIN_SCORE
+          : isActionableDiscoveryCandidate(candidate))
+        .sort(discoveryMode === "nisa" ? sortNisaCandidates : sortDiscoveryCandidates)
         .map((candidate) => ({
           ...candidate,
           priorityScore: discoveryPriorityScore(candidate),
           pePriorityScore: pePriorityScore(candidate),
-          reportBucket: isPeReportCandidate(candidate) ? "pe" : "stock",
+          reportBucket: discoveryMode === "nisa" ? "nisa" : isPeReportCandidate(candidate) ? "pe" : "stock",
         }))
         .slice(0, MAX_DISCOVERY_SUGGESTIONS);
     }
@@ -3765,7 +3842,7 @@ async function discoverStocks(options = {}, job = null) {
   const addedUs = [];
   let next = stocks;
   let nextUs = usStocks;
-  if (options.autoAdd) {
+  if (options.autoAdd && discoveryMode !== "nisa") {
     const jpSlots = Math.max(0, MAX_MANAGED_STOCKS - stocks.length);
     const usSlots = Math.max(0, MAX_US_STOCKS - usStocks.length);
     for (const candidate of suggestions) {
@@ -3795,6 +3872,7 @@ async function discoverStocks(options = {}, job = null) {
       jpCandidatePool: candidateUniverse.filter((candidate) => !isUsDiscoveryCandidate(candidate)).length,
       usCandidatePool: candidateUniverse.filter(isUsDiscoveryCandidate).length,
       usedDiscoveryAi,
+      discoveryMode,
       fullScan,
       searchPositionUsed: true,
       marketBrief,
@@ -3807,9 +3885,13 @@ async function discoverStocks(options = {}, job = null) {
       ...universeStats,
     }),
     message: suggestions.length === 0
-      ? "買い場ライン以下で条件に合う候補が見つかりませんでした。"
+      ? discoveryMode === "nisa"
+        ? "長期保有向けのNISA適性条件に合う日本株は見つかりませんでした。価格データや財務根拠が不足している銘柄も候補外です。"
+        : "買い場ライン以下で条件に合う候補が見つかりませんでした。"
       : totalSlots > 0
-      ? "候補を表示しました。必要な銘柄だけ追加してください。"
+      ? discoveryMode === "nisa"
+        ? "日本株だけを対象に、長期保有向けの事業・財務・値動きからNISA適性を表示しました。適性評価であり、購入推奨や利益保証ではありません。"
+        : "候補を表示しました。必要な銘柄だけ追加してください。"
       : "管理枠が埋まっているため、入れ替え候補として表示します。",
   };
   await saveDiscoveryCache(result);
@@ -3887,6 +3969,151 @@ function topDiscoverySuggestions(candidates = []) {
     .filter((candidate) => candidate.reportBucket === "pe" || isActionableDiscoveryCandidate(candidate))
     .sort(sortDiscoveryCandidates)
     .slice(0, MAX_DISCOVERY_SUGGESTIONS);
+}
+
+function scoreNisaFit(candidate = {}) {
+  const price = candidate.price || {};
+  const financials = candidate.financials || {};
+  let score = 45;
+  const reasons = [];
+  const risks = [];
+  let priceSignals = 0;
+  let financialSignals = 0;
+
+  if (Number.isFinite(price.return3y)) {
+    priceSignals += 1;
+    if (price.return3y >= 30) {
+      score += 12;
+      reasons.push("3年間の株価は上昇しており、長期保有候補としての値動きを確認できます");
+    } else if (price.return3y >= 0) {
+      score += 5;
+      reasons.push("3年間の株価は大きく崩れていません");
+    } else if (price.return3y <= -25) {
+      score -= 10;
+      risks.push("3年間の株価が大きく下がっており、事業の立て直しを確認する必要があります");
+    }
+  } else {
+    risks.push("3年間の株価データが不足しています");
+  }
+
+  if (Number.isFinite(price.return1y)) {
+    priceSignals += 1;
+    if (price.return1y > 5) score += 5;
+    else if (price.return1y < -20) {
+      score -= 7;
+      risks.push("直近1年の下落が大きく、業績や下落理由の確認が必要です");
+    }
+  }
+  if (Number.isFinite(price.volatility)) {
+    priceSignals += 1;
+    if (price.volatility < 28) {
+      score += 8;
+      reasons.push("過去の値動きは比較的穏やかです");
+    } else if (price.volatility > 48) {
+      score -= 8;
+      risks.push("値動きが大きく、長期保有でも価格変動を受けやすい銘柄です");
+    }
+  }
+  if (Number.isFinite(price.maxDrawdown3y)) {
+    priceSignals += 1;
+    if (price.maxDrawdown3y > -35) score += 5;
+    else if (price.maxDrawdown3y < -55) {
+      score -= 8;
+      risks.push("過去3年の最大下落が大きく、下落耐性に注意が必要です");
+    }
+  }
+
+  const criteria = normalizeFinancialCriteria(financials.criteria || []);
+  const criteriaByKey = new Map(criteria.map((item) => [item.key, item]));
+  const operatingCf = criteriaByKey.get("operating_cf");
+  if (operatingCf) {
+    financialSignals += 1;
+    if (operatingCf.status === "pass") {
+      score += 10;
+      reasons.push("営業キャッシュフローの継続性を財務資料で確認できています");
+    } else if (operatingCf.status === "fail") {
+      score -= 10;
+      risks.push(operatingCf.summary || "営業キャッシュフローに注意が必要です");
+    }
+  }
+  if (Number.isFinite(financials.netIncome)) {
+    financialSignals += 1;
+    if (financials.netIncome > 0) {
+      score += 6;
+      reasons.push("直近の純利益は黒字です");
+    } else {
+      score -= 12;
+      risks.push("直近の純利益が赤字です");
+    }
+  }
+  if (Number.isFinite(financials.netCash)) {
+    financialSignals += 1;
+    if (financials.netCash > 0) {
+      score += 3;
+      reasons.push("手元資金が有利子負債を上回っています");
+    } else {
+      risks.push("手元資金と負債のバランスを確認する必要があります");
+    }
+  }
+
+  const yieldPct = Number(price.dividendYield);
+  if (Number.isFinite(yieldPct) && yieldPct >= 1 && yieldPct <= 4.5) {
+    score += 3;
+    reasons.push("配当も長期保有時の収益源になり得ます。減配リスクは別途確認が必要です");
+  } else if (Number.isFinite(yieldPct) && yieldPct > 6) {
+    score -= 4;
+    risks.push("配当利回りが高く、株価下落や減配による見かけの高利回りでないか確認が必要です");
+  }
+  if (Number.isFinite(price.dividendChangePct) && price.dividendChangePct < -10) {
+    score -= 6;
+    risks.push("直近の年間配当が減っているため、配当の継続性に注意が必要です");
+  }
+  if (Number.isFinite(price.distanceFromTrend3y) && price.distanceFromTrend3y > 25) {
+    score -= 6;
+    risks.push("3年の株価目安より高い位置にあり、買う時期は分けて考える必要があります");
+  } else if (Number.isFinite(price.distanceFromTrend3y) && price.distanceFromTrend3y <= 5) {
+    score += 3;
+    reasons.push("株価は3年の目安から大きく離れていません");
+  }
+
+  const bounded = clamp(Math.round(score), 0, 100);
+  const confidence = clamp(Math.round(35 + priceSignals * 6 + financialSignals * 7), 35, 90);
+  const missingData = [
+    ...(priceSignals < 3 ? ["長期の価格履歴が一部不足しています"] : []),
+    ...(financialSignals < 2 ? ["営業CF・利益・負債など事業財務の根拠が不足しています"] : []),
+  ];
+  return {
+    ...candidate,
+    nisaFit: {
+      score: bounded,
+      label: bounded >= 70 ? "適性高め" : bounded >= 55 ? "要確認" : "慎重",
+      confidence,
+      reasons: uniqueText(reasons).slice(0, 4),
+      risks: uniqueText(risks).slice(0, 4),
+      missingData,
+      basis: ["長期の事業・財務", "値動きと下落幅", "配当の持続性", "購入価格の水準"],
+    },
+    reportBucket: "nisa",
+  };
+}
+
+function topNisaSuggestions(candidates = []) {
+  return candidates
+    .filter((candidate) => candidate && !isUsDiscoveryCandidate(candidate))
+    .filter(hasCleanDiscoveryCandidateName)
+    .filter((candidate) => candidate.evidenceQuality !== "悪材料あり")
+    .filter((candidate) => !isDiscoverySourceOnlyCandidate(candidate))
+    .map((candidate) => scoreNisaFit(candidate))
+    .filter((candidate) => candidate.nisaFit.score >= NISA_FIT_MIN_SCORE)
+    .sort(sortNisaCandidates)
+    .slice(0, MAX_DISCOVERY_SUGGESTIONS);
+}
+
+function sortNisaCandidates(a = {}, b = {}) {
+  return Number(b.nisaFit?.score || 0) - Number(a.nisaFit?.score || 0)
+    || Number(b.nisaFit?.confidence || 0) - Number(a.nisaFit?.confidence || 0)
+    || Number(b.businessValueScore || 0) - Number(a.businessValueScore || 0)
+    || String(a.symbol || "").localeCompare(String(b.symbol || ""));
 }
 
 function sortDiscoveryCandidates(a, b) {
@@ -4474,6 +4701,7 @@ async function savePartialDiscovery({
   discoveryAiWarning = "",
   universeStats = {},
   financialStats = {},
+  discoveryMode = "general",
 }) {
   const result = {
     generatedAt: new Date().toISOString(),
@@ -4490,6 +4718,7 @@ async function savePartialDiscovery({
       jpCandidatePool: candidateUniverse.filter((candidate) => !isUsDiscoveryCandidate(candidate)).length,
       usCandidatePool: candidateUniverse.filter(isUsDiscoveryCandidate).length,
       usedDiscoveryAi,
+      discoveryMode,
       fullScan,
       searchPositionUsed: true,
       incomeSeasonalityUsed: true,
@@ -4562,7 +4791,7 @@ function reconcileSearchCandidateNames(searchCandidates = [], officialUniverse =
   });
 }
 
-async function discoverySearchResults(limit) {
+async function discoverySearchResults(limit, { japanOnly = false } = {}) {
   const year = new Date().getFullYear();
   const queries = [
     `株探 上方修正 増配 最高益 ${year} 日本株`,
@@ -4570,19 +4799,26 @@ async function discoverySearchResults(limit) {
     "日本株 決算短信 増収増益 上方修正 割安",
     "低PBR 増益 上方修正 日本株",
     "高配当 低PBR 上方修正 日本株",
-    "PEファンド 日本企業 買収 TOB MBO 傾向 株主",
-    "大量保有報告書 物言う株主 TOB 候補 日本株",
-    "site:nihon-ma.co.jp/news/keyword/takeoverbit TOB MBO 非公開化 投資ファンド 日本企業",
-    "site:nihon-ma.co.jp/news/ インテグラル ベイン MBK EQT TOB 非公開化",
-    `US stocks earnings beat raised guidance free cash flow buyback ${year}`,
-    "NYSE NASDAQ undervalued growth stocks pullback earnings beat",
-    "AI infrastructure semiconductor data center power stocks earnings guidance",
-    "activist investor stake private equity buyout candidate NYSE NASDAQ",
+    "大量保有報告書 物言う株主 長期保有 日本企業",
+    "site:irbank.net 日本企業 営業キャッシュフロー 増配 自社株買い",
+    "site:tdnet-pdf.kabutan.jp 日本企業 統合報告書 長期成長",
+    ...(japanOnly ? [] : [
+      "PEファンド 日本企業 買収 TOB MBO 傾向 株主",
+      "大量保有報告書 物言う株主 TOB 候補 日本株",
+      "site:nihon-ma.co.jp/news/keyword/takeoverbit TOB MBO 非公開化 投資ファンド 日本企業",
+      "site:nihon-ma.co.jp/news/ インテグラル ベイン MBK EQT TOB 非公開化",
+      `US stocks earnings beat raised guidance free cash flow buyback ${year}`,
+      "NYSE NASDAQ undervalued growth stocks pullback earnings beat",
+      "AI infrastructure semiconductor data center power stocks earnings guidance",
+      "activist investor stake private equity buyout candidate NYSE NASDAQ",
+    ]),
   ];
   const perQueryLimit = Math.max(4, Math.ceil(limit / queries.length));
   const results = [];
-  const directPeNews = await fetchNihonMaPeNews(Math.max(8, Math.ceil(limit / 3))).catch(() => []);
-  results.push(...directPeNews);
+  if (!japanOnly) {
+    const directPeNews = await fetchNihonMaPeNews(Math.max(8, Math.ceil(limit / 3))).catch(() => []);
+    results.push(...directPeNews);
+  }
   for (const query of queries) {
     const page = await searchGoogle(query, { limit: perQueryLimit }).catch(() => []);
     results.push(...page);
@@ -5481,6 +5717,7 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
     return {
       ...candidate,
       businessEvidence: [],
+      businessOverviewEvidence: [],
       searchPosition: positionSignal,
       peSignal: peSignal || candidate.peSignal || null,
       incomeSeasonality: candidate.incomeSeasonality || incomeSeasonalitySignal(candidate, candidate.price || {}) || null,
@@ -5503,7 +5740,18 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
       : "業績根拠あり"
     : results.length
     ? "関連検索のみ"
-    : "根拠待ち";
+      : "根拠待ち";
+  const businessOverviewEvidence = uniqueBy(results
+    .filter((item) => item.topic === "business_profile" || item.kind === "business_profile" || isBusinessProfileEvidence(item))
+    .sort((a, b) => businessProfileEvidenceScore(b) - businessProfileEvidenceScore(a)), (item) => item.url)
+    .slice(0, 3)
+    .map((item) => ({
+      title: cleanText(item.title || "").slice(0, 180),
+      url: normalizeUrl(item.url),
+      source: hostOf(item.url),
+      snippet: cleanText(item.snippet || "").slice(0, 360),
+      topic: "business_profile",
+    }));
   let score = candidate.score;
   let businessValueScore = candidate.businessValueScore;
   const reasons = [];
@@ -5599,7 +5847,13 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
       source: hostOf(item.url),
       snippet: item.snippet,
     })),
+    businessOverviewEvidence,
   };
+}
+
+function isBusinessProfileEvidence(item = {}) {
+  return /有価証券報告書|統合報告書|事業の内容|事業概要|annual report|10-k|business segment|company overview|business overview/i
+    .test(`${item.title || ""} ${item.snippet || ""} ${item.url || ""}`);
 }
 
 async function aiDiscoveryReview(candidates) {
@@ -5646,6 +5900,7 @@ async function aiDiscoveryReview(candidates) {
     })),
     reasons: (candidate.reasons || []).slice(0, 3),
     risks: (candidate.risks || []).slice(0, 3),
+    businessOverviewEvidence: candidate.businessOverviewEvidence || [],
     evidence: discoveryEvidenceForAi(candidate),
   }));
 
@@ -5659,9 +5914,11 @@ async function aiDiscoveryReview(candidates) {
       }
     } catch (error) {
       errors.push(error);
+      break;
     }
   }
   if (!map.size && errors.length) throw errors[0];
+  if (errors.length) map.warning = `AI確認は${map.size}銘柄まで完了しました。残りはルール判定です (${errors[0].message || "接続エラー"})`;
   return map;
 }
 
@@ -5674,9 +5931,10 @@ async function aiDiscoveryReviewChunk(model, items) {
     "For Japanese stocks, factor in demand before dividend or shareholder-benefit record dates. Do not raise the score just because of an imminent ex-rights drop or post-rights rebound risk.",
     "Add positive adjustment when price is below the 1-year buy line and business evidence is solid. Apply negative adjustment for extended high-price charts.",
     "Evaluate PE/take-private potential separately: apparent undervaluation, stable cash flow, shareholder changes, restructuring optionality, and reasons a buyout would be difficult. Use Nihon M&A Center TOB/MBO examples as learning evidence: clear take-private motive, no tender-offer maximum, board support, delisting plan, long-term investment need, and difficulty of reform while listed. Do not justify buying at an expensive chart level only because PE-related keywords exist.",
-    "Use natural Japanese for summary, positives, and risks. Avoid vague jargon; state the concrete reason and how it affects the buy decision.",
+    "Use natural Japanese for summary, positives, risks, and businessOverview. Avoid vague jargon; state the concrete reason and how it affects the buy decision.",
+    "businessOverview must explain what the company sells or provides, who its customers are, and its main revenue sources in 2-3 short Japanese sentences. Base it only on the provided annual report, integrated report, 10-K, or official IR evidence. For US companies, translate and summarize the English evidence in Japanese. If the sources do not establish the business clearly, return an empty string; never guess.",
     "adjustment must be an integer from -8 to 8. Use 0 or lower when evidence is thin. Use a negative value when bad news or high-price risk is material.",
-    "Return strict JSON only in this schema: {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"]}]}. For US stocks, return plain tickers such as IBM.",
+    "Return strict JSON only in this schema: {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"],\"businessOverview\":\"...\"}]}. For US stocks, return plain tickers such as IBM.",
     "",
     JSON.stringify({ candidates: items }),
   ].join("\n");
@@ -5704,6 +5962,7 @@ async function aiDiscoveryReviewChunk(model, items) {
       summary: String(review.summary || review.thesis || "").slice(0, 220),
       positives: asStringArray(review.positives || review.reasons).slice(0, 3),
       risks: asStringArray(review.risks).slice(0, 3),
+      businessOverview: cleanText(review.businessOverview || "").slice(0, 420),
     });
   }
   return map;
@@ -5749,6 +6008,7 @@ async function aiMarketTrendBrief(searchResults = [], universeCount = 0) {
 
 function discoveryEvidenceForAi(candidate) {
   const evidence = [
+    ...(candidate.businessOverviewEvidence || []),
     ...(candidate.businessEvidence || []),
     ...(candidate.sourceEvidence || []).map((item) => ({
       title: item.title,
@@ -5757,10 +6017,14 @@ function discoveryEvidenceForAi(candidate) {
     })),
   ];
   return uniqueBy(evidence, (item) => `${item.source || ""}:${item.title || ""}`)
+    .sort((a, b) => Number(b.topic === "business_profile" || b.kind === "business_profile")
+      - Number(a.topic === "business_profile" || a.kind === "business_profile"))
     .slice(0, 5)
     .map((item) => ({
       title: item.title,
       source: item.source,
+      url: item.url,
+      topic: item.topic || item.kind || "",
       snippet: cleanText(item.snippet || "").slice(0, 140),
     }));
 }
@@ -5781,6 +6045,8 @@ function applyDiscoveryAiReview(candidate, review) {
     summary: review.summary || "LM Studioで候補の根拠を再点検しました。",
     positives: review.positives || [],
     risks: review.risks || [],
+    businessOverview: review.businessOverview || "",
+    businessOverviewSource: candidate.businessOverviewEvidence?.[0]?.url || "",
   };
   return {
     ...candidate,
@@ -5789,6 +6055,7 @@ function applyDiscoveryAiReview(candidate, review) {
     rankLabel: discoveryRankLabel(businessValueScore),
     evidenceQuality: `${candidate.evidenceQuality || "価格中心"}・AI確認`,
     aiReview,
+    businessOverview: review.businessOverview || candidate.businessOverview || "",
     buyPlan,
     sellPlan: candidateExitPlan(candidate.price || {}, buyPlan, { currency: candidate.currency || candidate.price?.currency || discoveryCurrency(candidate) }),
     reasons: uniqueText([...(candidate.reasons || []), ...aiReview.positives]).slice(0, 5),
@@ -5868,6 +6135,9 @@ function jpStockEvidenceQueries(stock = {}) {
   const normalizedBase = base.filter(Boolean);
   if (!code) return normalizedBase.map((text) => ({ text: text.trim(), topic: "company" }));
   return [
+    { text: `${code} ${officialName} 有価証券報告書 事業の内容 主要な事業 セグメント`, topic: "business_profile" },
+    { text: `${code} ${officialName} 統合報告書 事業概要 製品 サービス 収益源 公式 IR`, topic: "business_profile" },
+    { text: `site:disclosure2dl.edinet-fsa.go.jp ${code} ${officialName} 有価証券報告書 事業の内容`, topic: "business_profile" },
     { text: `site:kabutan.jp/stock/news?code=${code} ${officialName} 決算 業績 配当 自社株買い`, topic: "company" },
     { text: `site:finance.yahoo.co.jp/quote/${code}.T ${officialName} ニュース 決算 業績 配当 株主優待`, topic: "company" },
     { text: `site:irbank.net/${code} ${officialName} PBR PER 時価総額 キャッシュフロー`, topic: "company" },
@@ -5880,11 +6150,14 @@ async function searchJpStockEvidence(stock = {}, websiteLimit = 20) {
   const queries = jpStockEvidenceQueries(stock);
   const perQueryLimit = Math.max(3, Math.ceil(websiteLimit / Math.max(1, queries.length)));
   const pages = await mapLimit(queries, 2, async (query) => (
-    searchGoogle(query.text, { limit: perQueryLimit, language: "ja-JP" }).catch(() => [])
+    searchGoogle(query.text, { limit: perQueryLimit, language: "ja-JP" })
+      .then((items) => items.map((item) => ({ ...item, topic: query.topic, query: query.text })))
+      .catch(() => [])
   ));
   const filtered = uniqueBy(pages.flat(), (item) => item.url)
     .filter((item) => isJpStockSpecificEvidence(item, stock))
-    .sort((a, b) => jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock))
+    .sort((a, b) => Number(b.topic === "business_profile") - Number(a.topic === "business_profile")
+      || jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock))
     .slice(0, websiteLimit);
   return uniqueBy([...filtered, ...jpStockFallbackEvidence(stock)], (item) => item.url)
     .slice(0, websiteLimit)
@@ -6555,8 +6828,13 @@ async function researchStock(stock, options) {
   const companyResults = uniqueBy(searchResults
     .filter((item) => item.topic !== "sector")
     .filter((item) => isJpStockSpecificEvidence(item, stock))
-    .sort((a, b) => jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock)), (item) => item.url);
-  const companyEvidence = uniqueBy([...companyResults, ...jpStockFallbackEvidence(stock)], (item) => item.url);
+    .sort((a, b) => Number(b.topic === "business_profile") - Number(a.topic === "business_profile")
+      || jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock)), (item) => item.url);
+  const companyEvidence = uniqueBy([
+    ...companyResults.filter((item) => item.topic === "business_profile"),
+    ...companyResults.filter((item) => item.topic !== "business_profile"),
+    ...jpStockFallbackEvidence(stock),
+  ], (item) => item.url);
   const sectorResults = uniqueBy(searchResults
     .filter((item) => item.topic === "sector")
     .filter((item) => isRelevantSectorEvidence(item, sector, stock)), (item) => item.url);
@@ -6584,7 +6862,8 @@ async function researchStock(stock, options) {
         source: hostOf(item.url),
         snippet: cleanText(item.snippet).slice(0, 260),
         publishedDate: item.publishedDate || "",
-        kind: item.topic === "sector" ? "sector" : "search",
+        kind: item.topic === "sector" ? "sector" : item.topic === "business_profile" ? "business_profile" : "search",
+        topic: item.topic || "company",
         sector,
       })),
       ...crawled.map((item) => ({
@@ -8368,13 +8647,16 @@ async function aiBatchDecisions(rows, onProgress = null) {
     financials: compactFinancialForAi(financials),
     industryProfile: normalizeIndustryProfile(industryProfile || buildIndustryProfile(stock, research, financials)),
     ruleDecision: fallback,
-    evidence: research.evidence.slice(0, 6).map((item) => ({
+    evidence: [...research.evidence]
+      .sort((a, b) => Number(b.kind === "business_profile") - Number(a.kind === "business_profile"))
+      .slice(0, 10).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
       source: item.source,
       url: item.url,
       publishedDate: item.publishedDate || "",
       snippet: cleanText(item.snippet || "").slice(0, 220),
       kind: item.kind,
+      topic: item.topic || "",
     })),
     sectorEvidence: research.evidence.filter((item) => item.kind === "sector").slice(0, 4).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
@@ -8407,6 +8689,7 @@ async function aiDecisionChunk(model, items) {
   const prompt = [
     "Role: Japanese equity research assistant. Do not promise future profit. Strictly separate decision reasons from risks.",
     "Analyze the data in English for clarity: financials, valuation, price action, industry context, news age, evidence quality, and position P/L. Write all user-facing text in natural Japanese.",
+    "Add a businessOverview field with 2-3 short Japanese sentences explaining the company's products or services, customers, and revenue sources. Prioritize evidence tagged business_profile, especially annual securities reports and integrated reports. If sources do not establish the business, return an empty string instead of guessing.",
     "Return strict JSON only in this schema: {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":2000,\"reviewPrice\":1600,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}.",
     "action must be one of BUY, HOLD, SELL, WATCH. SELL means review the holding thesis over the next several weeks to months, not automatic immediate sale. confidence is 0-100.",
     "For long-term compounder examples such as NVIDIA, a 20-30% drawdown alone is not thesis collapse. Set growthExit.level to exit_alert only when the original thesis is impaired: clear revenue-growth slowdown, guidance below market expectations, structural weakness in demand/gross margin/orders, dividend cut, downward revision, or similar evidence.",
@@ -8448,6 +8731,7 @@ async function aiDecisionChunk(model, items) {
       action: decision.action,
       confidence: decision.confidence,
       thesis: decision.thesis,
+      businessOverview: decision.businessOverview,
       reasons: decision.reasons,
       risks: decision.risks,
       riskChecks: decision.riskChecks,
@@ -8722,6 +9006,11 @@ function normalizeDecision(stock, price, research, decision, options = {}) {
     action,
     confidence,
     thesis: String(safety.thesis || decision.thesis || `${stock.name}は${actionLabels[action]}判定。`).slice(0, 360),
+    businessOverview: cleanText(decision.businessOverview || "").slice(0, 420),
+    businessOverviewSources: uniqueBy(research.evidence
+      .filter((item) => item.kind === "business_profile" && item.url)
+      .slice(0, 3)
+      .map((item) => ({ title: item.title, url: item.url, source: item.source })), (item) => item.url),
     reasons,
     risks,
     riskChecks,
@@ -10113,6 +10402,37 @@ async function checkLmStudio(settings = null) {
   };
 }
 
+async function resolveJpStockIdentity(symbol = "") {
+  const normalized = normalizeSymbol(symbol);
+  if (!/^\d{4}\.T$/.test(normalized)) return null;
+  const primeUniverse = await readPrimeUniverse().catch(() => []);
+  const known = [...primeUniverse, ...discoveryUniverse]
+    .find((candidate) => normalizeSymbol(candidate.symbol) === normalized);
+  if (known?.name) {
+    return {
+      symbol: normalized,
+      name: known.name,
+      market: known.market || "東証",
+      sector: stockSector(known),
+      currentPrice: null,
+    };
+  }
+  const price = await fetchPriceHistory(normalized, { timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS }).catch(() => emptyPrice());
+  const rawName = cleanText(price.shortName || price.longName || "")
+    .replace(/\s+(?:Common Stock|Ordinary Shares|Inc\.?|Corporation|Corp\.?)$/i, "")
+    .replace(/\s*\(\d{4}\.T\)$/i, "")
+    .trim();
+  if (!rawName || rawName === normalized) return null;
+  const stock = { symbol: normalized, name: rawName };
+  return {
+    symbol: normalized,
+    name: rawName,
+    market: "東証",
+    sector: stockSector(stock),
+    currentPrice: nullablePositiveNumber(price.current),
+  };
+}
+
 function normalizeStock(stock) {
   const positions = normalizePositions(stock);
   const sales = normalizeSales(stock);
@@ -11130,20 +11450,26 @@ async function saveDiscoveryCache(result) {
 }
 
 function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = []) {
+  const nisaMode = result.sourceSummary?.discoveryMode === "nisa";
   const excluded = new Set(excludedCandidates.map((candidate) => candidate.symbol));
   const suggestions = (result.suggestions || [])
     .map(normalizeDiscoveryCandidateName)
+    .map((candidate) => nisaMode && !candidate.nisaFit ? scoreNisaFit(candidate) : candidate)
     .filter((candidate) => !excluded.has(candidate.symbol))
     .filter(hasCleanDiscoveryCandidateName)
-    .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate))
+    .filter((candidate) => nisaMode || !isDiscoveryAvoidedBusiness(candidate))
     .filter((candidate) => !isDiscoverySourceOnlyCandidate(candidate))
-    .filter(isActionableDiscoveryCandidate)
+    .filter((candidate) => nisaMode
+      ? !isUsDiscoveryCandidate(candidate) && Number(candidate.nisaFit?.score || 0) >= NISA_FIT_MIN_SCORE
+      : isActionableDiscoveryCandidate(candidate))
     .map((candidate) => ({
       ...candidate,
       priorityScore: discoveryPriorityScore(candidate),
       pePriorityScore: pePriorityScore(candidate),
-      reportBucket: isPeReportCandidate(candidate) ? "pe" : "stock",
-    }));
+      reportBucket: nisaMode ? "nisa" : isPeReportCandidate(candidate) ? "pe" : "stock",
+    }))
+    .sort(nisaMode ? sortNisaCandidates : sortDiscoveryCandidates)
+    .slice(0, MAX_DISCOVERY_SUGGESTIONS);
   const sourceStageStats = result.sourceSummary?.stageStats || null;
   const stageStats = sourceStageStats
     ? {
@@ -14665,6 +14991,7 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
       ? Boolean(settings.searxngUrl)
       : Boolean(settings.googleApiKey && settings.googleCseId),
     searchCount,
+    discoveryMode: budget.discoveryMode === "nisa" ? "nisa" : "general",
     candidateLimit,
     discoveredCount: budget.discoveredCount || 0,
     jpDiscoveredCount: budget.jpDiscoveredCount || 0,
@@ -14706,7 +15033,9 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     jpAvoidedBusinessCount: budget.jpAvoidedBusinessCount || 0,
     usAvoidedBusinessCount: budget.usAvoidedBusinessCount || 0,
     priceSource: "Yahoo Finance 5年日足",
-    universe: budget.fullScan ? "東証プライム全銘柄 + 米国大型・中型候補" : "事業好調・割安候補リスト",
+    universe: budget.discoveryMode === "nisa"
+      ? "日本株のみ・NISA長期保有適性の独立評価"
+      : budget.fullScan ? "東証プライム全銘柄 + 米国大型・中型候補" : "事業好調・割安候補リスト",
   };
 }
 

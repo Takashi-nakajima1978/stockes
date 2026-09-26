@@ -337,6 +337,22 @@ progress {
   white-space: nowrap;
 }
 
+.watchlist-legend {
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.decision-scope-hint {
+  margin: -8px 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .settings-form {
   display: grid;
   gap: 14px;
@@ -2094,6 +2110,48 @@ tr:hover .drag-handle,
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.business-overview,
+.nisa-fit {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8faf9;
+  padding: 10px 12px;
+}
+
+.business-overview > strong,
+.nisa-fit > strong {
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.business-overview p,
+.nisa-fit span,
+.nisa-fit small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.business-overview > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.business-overview a {
+  color: var(--link, #1768a5);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.nisa-fit {
+  background: #f1f8f5;
+  border-color: #cfe8dd;
 }
 
 .suggestion-metrics {

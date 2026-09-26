@@ -62,6 +62,7 @@ const state = {
     monitors: [],
   },
   sourceSummary: null,
+  discoveryMode: "general",
   candidatePerformance: null,
   analysisJob: null,
   usAnalysisJob: null,
@@ -109,6 +110,7 @@ const reorderState = {
 
 const DETAIL_FORM_EDIT_HOLD_MS = 8000;
 let detailFormEditHoldUntil = 0;
+let stockLookupSequence = 0;
 
 const els = {
   viewButtons: [...document.querySelectorAll("[data-view-target]")],
@@ -124,6 +126,7 @@ const els = {
   stockForm: document.getElementById("stockForm"),
   stockName: document.getElementById("stockName"),
   stockSymbol: document.getElementById("stockSymbol"),
+  stockLookupStatus: document.getElementById("stockLookupStatus"),
   stockSector: document.getElementById("stockSector"),
   stockPurchaseDate: document.getElementById("stockPurchaseDate"),
   stockPurchasePrice: document.getElementById("stockPurchasePrice"),
@@ -132,6 +135,7 @@ const els = {
   stockMinimumHoldQuantity: document.getElementById("stockMinimumHoldQuantity"),
   stockTargetBuyPrice: document.getElementById("stockTargetBuyPrice"),
   stockCount: document.getElementById("stockCount"),
+  decisionScopeHint: document.getElementById("decisionScopeHint"),
   stockProgress: document.getElementById("stockProgress"),
   analyzeButton: document.getElementById("analyzeButton"),
   usAnalyzeButton: document.getElementById("usAnalyzeButton"),
@@ -222,6 +226,7 @@ const els = {
   dayTradeApiPreviewButton: document.getElementById("dayTradeApiPreviewButton"),
   dayTradeFindCandidatesButton: document.getElementById("dayTradeFindCandidatesButton"),
   discoverButton: document.getElementById("discoverButton"),
+  discoverNisaButton: document.getElementById("discoverNisaButton"),
   websiteLimit: document.getElementById("websiteLimit"),
   depthLimit: document.getElementById("depthLimit"),
   pagesPerSite: document.getElementById("pagesPerSite"),
@@ -756,6 +761,9 @@ async function loadDiscoveryCache() {
   state.sourceSummary = payload.sourceSummary || null;
   state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || null;
   state.discoveryJob = payload.job || null;
+  state.discoveryMode = payload.job?.running
+    ? payload.job.mode || payload.sourceSummary?.discoveryMode || "general"
+    : payload.sourceSummary?.discoveryMode || "general";
   state.discoveryGeneratedAt = payload.generatedAt || "";
   renderDiscoveryJob();
   if (state.discoveryJob?.running) void pollDiscoveryJob();
@@ -1145,6 +1153,20 @@ function renderSummary() {
   els.holdCount.textContent = counts.HOLD;
   els.sellCount.textContent = counts.SELL;
   els.watchCount.textContent = counts.WATCH;
+  if (els.decisionScopeHint) {
+    const total = Object.keys(state.analyses).length;
+    if (!total) {
+      els.decisionScopeHint.textContent = "分析が完了すると、登録済み日本株の判定件数を表示します。ここは市場全体の候補数ではありません。";
+    } else {
+      const resultText = counts.BUY === 0 && counts.SELL === 0
+        ? `現在の登録銘柄では買い条件にも見直し基準にも達していません。相場全体を「買い時でない」と判定したわけではなく、登録銘柄内の結果だけでは相場環境か条件の厳しさかを区別できません。`
+        : `現在の登録銘柄では買い候補${counts.BUY}件、見直し候補${counts.SELL}件です。`;
+      const dataText = counts.WATCH > 0
+        ? `要確認${counts.WATCH}件は、材料・価格条件が中立または不足している銘柄です。詳細の理由と更新日時も確認してください。`
+        : "";
+      els.decisionScopeHint.textContent = `${resultText}${dataText}買いは買値水準・反転確認まで満たす場合、見直しは損失拡大・長期トレンド悪化などがある場合に限ります。この集計は登録済み${total}銘柄だけのものです。市場全体を探すには「候補を探す」をご利用ください。${state.jpRefreshing ? "現在更新中のため、表示は前回分析の結果です。" : ""}`;
+    }
+  }
 }
 
 function renderProfitSummary() {
@@ -1297,6 +1319,9 @@ function renderUsDetail() {
       <span>${escapeHtml(usEvidenceTranslationLabel(item))}</span>
     </article>
   `).join("");
+  const businessProfileSources = (analysis?.evidence || [])
+    .filter((item) => item.kind === "business_profile" && item.url)
+    .slice(0, 3);
   els.usDetail.innerHTML = `
     ${usPositionEditor(stock, position, analysis?.price)}
     ${usFinancialCard(fundamentals)}
@@ -1316,6 +1341,7 @@ function renderUsDetail() {
         <h4>AI確認</h4>
         ${usStanceBadge(ai)}
       </div>
+      <section class="business-overview"><strong>事業概要</strong><p>${escapeHtml(ai?.businessOverviewJa || "年次報告書・公式IRから事業内容を確認できる資料が不足しています。")}</p><div>${businessProfileSources.map((item) => `<a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.source || item.title || "会社資料")}</a>`).join("")}</div></section>
       <p>${escapeHtml(ai?.summaryJa || "米国株を更新すると、英語記事を日本語要約して保有確認を表示します。")}</p>
       <div class="metrics-row">
         <span><strong>現在値</strong>${usd(analysis?.price?.current)}</span>
@@ -4981,12 +5007,17 @@ function evidenceSummaryHtml(stock, analysis, position) {
   const reasons = (analysis.reasons || []).slice(0, 2);
   const risks = (analysis.risks || []).slice(0, 2);
   const sources = [...new Set(evidence.map((item) => item.source).filter(Boolean))].slice(0, 5);
+  const businessSources = (analysis.businessOverviewSources || [])
+    .filter((item) => item.url)
+    .map((item) => `<a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.source || item.title || "会社資料")}</a>`)
+    .join("");
   return `
     <article class="evidence-summary">
       <div>
         <strong>${escapeHtml(stock.name)}の要約</strong>
         <p>${escapeHtml(analysis.thesis || "保存済み分析をもとに整理しています。")}</p>
       </div>
+      <section class="business-overview"><strong>事業概要</strong><p>${escapeHtml(analysis.businessOverview || "年次報告書・IR資料からの事業概要は未取得です。銘柄を更新すると、会社資料を優先して確認します。")}</p><div>${businessSources || ""}</div></section>
       <div class="evidence-summary-grid">
         <span><strong>配当込み損益</strong>${positionPnl(position, true)}</span>
         <span><strong>配当利回り</strong>${Number.isFinite(analysis.price?.dividendYield) ? `${analysis.price.dividendYield.toFixed(1)}%` : "-"}</span>
@@ -5010,6 +5041,7 @@ async function analyze(options = {}) {
   renderProfitSummary();
   els.analyzeButton.disabled = true;
   els.discoverButton.disabled = true;
+  if (els.discoverNisaButton) els.discoverNisaButton.disabled = true;
   const originalText = els.analyzeButton.textContent;
   els.analyzeButton.textContent = "更新中";
   els.researchProgress.textContent = options.source === "reload" ? "ブラウザ更新で価格を確認中" : "価格を更新中";
@@ -5054,6 +5086,7 @@ async function analyze(options = {}) {
     state.jpRefreshing = false;
     els.analyzeButton.disabled = false;
     els.discoverButton.disabled = false;
+    if (els.discoverNisaButton) els.discoverNisaButton.disabled = false;
     els.analyzeButton.textContent = originalText;
     renderProfitSummary();
   }
@@ -5237,15 +5270,26 @@ function renderUsAnalysisJob() {
   els.usLastRun.textContent = `${job.phase || "進行中"} ${details.join(" / ")}`.trim();
 }
 
-async function discover() {
+async function discover(mode = "general") {
   if (state.running) return;
   setView("ideas");
-  els.discoverButton.disabled = true;
-  els.candidateProgress.textContent = "裏で開始中";
+  state.discoveryMode = mode;
+  if (state.sourceSummary?.discoveryMode !== mode) {
+    state.suggestions = [];
+    state.sourceSummary = {
+      discoveryMode: mode,
+      searchCount: 0,
+      message: mode === "nisa" ? "日本株のNISA適性を検索しています。" : "候補を検索しています。",
+    };
+    renderCandidateList();
+  }
+  for (const button of [els.discoverButton, els.discoverNisaButton].filter(Boolean)) button.disabled = true;
+  els.candidateProgress.textContent = mode === "nisa" ? "日本株のNISA候補を検索中" : "裏で開始中";
   try {
     const payload = await request("/api/discover", {
       method: "POST",
       body: JSON.stringify({
+        mode,
         websiteLimit: clampInput(els.websiteLimit),
         unitSize: valueOrNull(els.settingsUnitSize?.value) || 100,
         unitBudget: valueOrNull(els.settingsUnitBudget?.value) || 300000,
@@ -5253,9 +5297,12 @@ async function discover() {
       }),
     });
     const added = payload.added || [];
-    state.suggestions = sanitizeDiscoverySuggestions(payload.suggestions || []);
+    const resultMode = payload.sourceSummary?.discoveryMode || "general";
+    state.suggestions = resultMode === mode ? sanitizeDiscoverySuggestions(payload.suggestions || []) : [];
     state.excludedCandidates = payload.excludedCandidates || state.excludedCandidates;
-    state.sourceSummary = payload.sourceSummary || null;
+    state.sourceSummary = resultMode === mode
+      ? payload.sourceSummary
+      : { ...(payload.sourceSummary || {}), discoveryMode: mode, searchCount: 0 };
     state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || state.candidatePerformance;
     state.discoveryJob = payload.job || null;
     state.discoveryGeneratedAt = payload.generatedAt || "";
@@ -5265,12 +5312,16 @@ async function discover() {
     else toast(payload.message || "候補検索を裏で開始しました。");
     renderDiscoveryJob();
     render();
-    void pollDiscoveryJob();
+    if (payload.job?.running && payload.job.mode && payload.job.mode !== mode) {
+      els.candidateProgress.textContent = `${payload.job.mode === "nisa" ? "NISA候補" : "通常候補"}の検索が進行中です。完了後にもう一度検索してください。`;
+    } else if (payload.job?.running) {
+      void pollDiscoveryJob();
+    }
   } catch (error) {
     toast(error.message);
     els.candidateProgress.textContent = "失敗";
   } finally {
-    els.discoverButton.disabled = false;
+    for (const button of [els.discoverButton, els.discoverNisaButton].filter(Boolean)) button.disabled = false;
   }
 }
 
@@ -5278,12 +5329,23 @@ async function pollDiscoveryJob() {
   for (let i = 0; i < 720; i += 1) {
     const payload = await request("/api/discovery").catch(() => null);
     if (!payload) return;
-    state.suggestions = sanitizeDiscoverySuggestions(payload.suggestions || state.suggestions);
+    const requestedMode = state.discoveryMode || "general";
+    const jobMode = payload.job?.mode || "general";
+    const resultMode = payload.sourceSummary?.discoveryMode || "general";
+    if (jobMode !== requestedMode) {
+      state.discoveryJob = payload.job || state.discoveryJob;
+      els.candidateProgress.textContent = `${jobMode === "nisa" ? "NISA候補" : "通常候補"}の検索が進行中です。完了後にもう一度検索してください。`;
+      renderCandidateList();
+      return;
+    }
+    if (resultMode === requestedMode) {
+      state.suggestions = sanitizeDiscoverySuggestions(payload.suggestions || state.suggestions);
+      state.sourceSummary = payload.sourceSummary || state.sourceSummary;
+      state.discoveryGeneratedAt = payload.generatedAt || state.discoveryGeneratedAt;
+    }
     state.excludedCandidates = payload.excludedCandidates || state.excludedCandidates;
-    state.sourceSummary = payload.sourceSummary || state.sourceSummary;
     state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || state.candidatePerformance;
     state.discoveryJob = payload.job || state.discoveryJob;
-    state.discoveryGeneratedAt = payload.generatedAt || state.discoveryGeneratedAt;
     renderDiscoveryJob();
     renderCandidateList();
     if (!state.discoveryJob?.running) return;
@@ -6188,21 +6250,24 @@ function renderCandidateList() {
   }
   if (state.sourceSummary) {
     const source = state.sourceSummary;
+    const nisaMode = source.discoveryMode === "nisa";
     const budgetText = source.unitBudgetUnlimited
       ? `${source.unitSize || 100}株・予算上限なし`
       : `${source.unitSize || 100}株で${yen(source.unitBudget || 300000)}くらい`;
-    const usBudgetText = `${source.usUnitSize || 1}株で${usd(source.usUnitBudget || 2000)}くらい`;
+    const usBudgetText = nisaMode ? "対象外（日本株のみ）" : `${source.usUnitSize || 1}株で${usd(source.usUnitBudget || 2000)}くらい`;
     const totalPool = source.candidatePool || source.candidateLimit || 0;
     const jpPool = Number.isFinite(source.jpCandidatePool) ? source.jpCandidatePool : totalPool;
-    const usPool = Number.isFinite(source.usCandidatePool) ? source.usCandidatePool : 0;
+    const usPool = nisaMode ? 0 : Number.isFinite(source.usCandidatePool) ? source.usCandidatePool : 0;
     const poolText = `採点対象は日本${jpPool}件・米国${usPool}件、合計${totalPool}件です。`;
     const discoveredText = Number.isFinite(source.jpDiscoveredCount) || Number.isFinite(source.usDiscoveredCount)
       ? `検索結果から拾えた銘柄は日本${source.jpDiscoveredCount || 0}件・米国${source.usDiscoveredCount || 0}件です。`
       : `検索結果から銘柄コードとして拾えたのは${source.discoveredCount || 0}件です。`;
-    const usUniverseText = source.usUniverseTotal
+    const usUniverseText = !nisaMode && source.usUniverseTotal
       ? `米国候補元は${source.usUniverseTotal}件で、保有中${source.usExistingCount || 0}件・非表示${source.usExcludedCount || 0}件・除外業種${source.usAvoidedBusinessCount || 0}件を外しています。`
       : "";
-    const discoveryText = `${discoveredText}${usUniverseText}検索抽出が少なくても、銘柄一覧は別で全件採点しています。`;
+    const discoveryText = nisaMode
+      ? `NISA検索は日本株だけを対象にしています。検索抽出だけでなく日本株一覧も採点します。`
+      : `${discoveredText}${usUniverseText}検索抽出が少なくても、銘柄一覧は別で全件採点しています。`;
     const aiText = source.usedDiscoveryAi ? "最後にLM Studioで上位候補を再点検しています。" : "LM Studio再点検は未実行です。";
     const aiWarningText = source.discoveryAiWarning ? `AI再点検メモ: ${source.discoveryAiWarning}。` : "";
     const edinetWarningText = source.edinetDiscoveryWarnings?.length
@@ -6213,13 +6278,15 @@ function renderCandidateList() {
       : `候補探しのEDINET財務選別は未実行です。${edinetWarningText}`;
     const jpStage = source.stageStats?.jp || null;
     const stageText = jpStage
-      ? `日本株は価格確認${jpStage.priceChecked || 0}件、買い場条件${jpStage.buyArea || 0}件、EDINET後${jpStage.financialPass || 0}件、最終表示${jpStage.shown || 0}件です。`
+      ? nisaMode
+        ? `日本株は価格確認${jpStage.priceChecked || 0}件、会社・財務確認${jpStage.financialPass || 0}件、NISA適性候補${jpStage.shown || 0}件です。`
+        : `日本株は価格確認${jpStage.priceChecked || 0}件、買い場条件${jpStage.buyArea || 0}件、EDINET後${jpStage.financialPass || 0}件、最終表示${jpStage.shown || 0}件です。`
       : "";
     const seasonalText = source.incomeSeasonalityUsed
       ? `配当・株主優待の権利前需給も加味します。権利前だけ買い目安の許容幅を最大${source.seasonalBuyPremiumPct || 2}%まで広げます。`
       : "";
     const positionText = source.searchPositionUsed ? "検索順位に出る業績・割安材料も採点しています。" : "";
-    const strictText = source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
+    const strictText = !nisaMode && source.strictBuyTarget ? "買い目安以下のものだけ表示します。" : "";
     const avoidText = source.avoidedBusiness ? `${source.avoidedBusiness}。` : "";
     const peSourceText = source.peLearningSources?.length ? "日本M&AセンターのTOB/MBO実例も参照します。" : "";
     const peText = source.peCriteria?.length
@@ -6238,8 +6305,12 @@ function renderCandidateList() {
     els.suggestionSource.textContent = source.settingsChanged
       ? `${source.message || "調査条件または採点ルールが変わりました。候補を探すで現在の条件に合わせて作り直してください。"}現在の日本株条件は${budgetText}、米国株条件は${usBudgetText}です。${earlyText}候補は自動追加されません。`
       : source.searchCount > 0
-      ? `${source.provider}で${source.searchCount}件確認しました。${engineText}${discoveryText}${poolText}${stageText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${edinetText}${seasonalText}${peText}${learnText}${aiText}${aiWarningText}候補は自動追加されません。${briefText}`
-      : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${engineText}${poolText}${stageText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${edinetText}${seasonalText}${countText}${excludedText}`;
+      ? nisaMode
+        ? `${source.provider}で${source.searchCount}件を確認しました。${engineText}${discoveryText}${poolText}${stageText}${countText}${excludedText}長期の事業・財務・値動き・配当から適性を採点します。年内の成長投資枠は最大240万円ですが、残り枠は口座情報と連携していないため別途確認してください。損失は課税口座の利益と損益通算できない点にも注意が必要です。${edinetText}${aiText}${aiWarningText}適性評価であり購入指示ではありません。${briefText}`
+        : `${source.provider}で${source.searchCount}件確認しました。${engineText}${discoveryText}${poolText}${stageText}${countText}${excludedText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${avoidText}${positionText}${edinetText}${seasonalText}${peText}${learnText}${aiText}${aiWarningText}候補は自動追加されません。${briefText}`
+      : nisaMode
+        ? `${source.message || "NISA向け候補を検索しています。"}${discoveryText}${stageText}${edinetText}年内の成長投資枠は最大240万円です。残り枠は証券口座で確認してください。`
+        : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${engineText}${poolText}${stageText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${edinetText}${seasonalText}${countText}${excludedText}`;
   }
   if (!state.suggestions.length) {
     els.candidateList.classList.add("empty-state");
@@ -6253,6 +6324,15 @@ function renderCandidateList() {
 
 function candidateReportsHtml(items = []) {
   const cleanItems = sanitizeDiscoverySuggestions(items);
+  if (state.sourceSummary?.discoveryMode === "nisa") {
+    return reportSectionHtml({
+      title: "NISA向きの日本株候補",
+      count: cleanItems.length,
+      description: "短期の買いシグナルとは分け、事業・財務の継続性、株価の振れ幅、配当の持続性、現在の価格水準から長期保有との相性を評価します。NISA適性は利益を保証するものではありません。",
+      empty: "適性条件を満たす候補はまだありません。候補検索の件数と財務データの取得状況を上の説明で確認してください。",
+      items: cleanItems.sort(sortNisaSuggestionItems),
+    });
+  }
   const peItems = cleanItems.filter((item) => candidateTarget(item) === "jp" && isPeReportItem(item)).sort(sortPeReportItems);
   const stockItems = cleanItems.filter((item) => candidateTarget(item) !== "jp" || !isPeReportItem(item)).sort(sortStockReportItems);
   return [
@@ -6448,6 +6528,9 @@ function suggestionItem(item, index) {
   const disabled = exists || full ? "disabled" : "";
   const buttonText = exists ? "追加済み" : full ? "管理枠満了" : target === "us" ? "米国株に追加" : "日本株に追加";
   const marketLabel = target === "us" ? "米国株" : "日本株";
+  const businessOverview = item.businessOverview || item.aiReview?.businessOverview || "";
+  const profileSources = (item.businessOverviewEvidence || []).filter((source) => source.url).slice(0, 2);
+  const nisaFit = item.nisaFit;
   return `
     <article class="suggestion-item">
       <div class="suggestion-head">
@@ -6474,6 +6557,8 @@ function suggestionItem(item, index) {
         <span><strong>需給経験則</strong>${technicalExperienceBadge(price)}</span>
         <span><strong>検索順位</strong>${item.searchPosition?.rank ? `${item.searchPosition.rank}位` : "-"}</span>
       </div>
+      ${nisaFit ? `<section class="nisa-fit"><strong>NISA適性 ${escapeHtml(nisaFit.label)} ${Math.round(nisaFit.score)}点</strong><span>データ充足度 ${Math.round(nisaFit.confidence || 0)}%${(nisaFit.reasons || []).length ? ` / ${(nisaFit.reasons || []).slice(0, 2).map(escapeHtml).join("・")}` : ""}</span>${(nisaFit.risks || []).length ? `<small>${(nisaFit.risks || []).slice(0, 2).map(escapeHtml).join("・")}</small>` : ""}${(nisaFit.missingData || []).map((text) => `<small>${escapeHtml(text)}</small>`).join("")}</section>` : ""}
+      <section class="business-overview"><strong>事業概要</strong><p>${escapeHtml(businessOverview || (target === "us" ? "米国企業の年次報告書・公式IRを根拠にした日本語要約は未取得です。" : "年次報告書・IR資料を根拠にした事業概要は未取得です。"))}</p><div>${profileSources.map((source) => `<a href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.source || source.title || "会社資料")}</a>`).join("")}</div></section>
       ${buyPlanHtml(item.buyPlan, item)}
       ${earlySignalHtml(item.earlySignal)}
       ${incomeSeasonalityHtml(item.incomeSeasonality)}
@@ -6486,6 +6571,11 @@ function suggestionItem(item, index) {
       <div class="suggestion-evidence ${evidence ? "" : "muted"}"><strong>確認元</strong>${evidence || "<span>業績材料は未確認</span>"}</div>
     </article>
   `;
+}
+
+function sortNisaSuggestionItems(a = {}, b = {}) {
+  return Number(b.nisaFit?.score || 0) - Number(a.nisaFit?.score || 0)
+    || Number(b.nisaFit?.confidence || 0) - Number(a.nisaFit?.confidence || 0);
 }
 
 function suggestionScoreHtml(item = {}) {
@@ -7360,6 +7450,52 @@ function daysSince(dateString) {
   return Math.max(0, Math.floor((now - date) / 86400000));
 }
 
+let stockLookupTimer = 0;
+
+async function lookupManagedJapaneseStock() {
+  const sequence = ++stockLookupSequence;
+  const raw = String(els.stockSymbol?.value || "").trim().toUpperCase();
+  const code = raw.match(/^\d{4}(?:\.T)?$/)?.[0];
+  if (!code) {
+    if (els.stockLookupStatus) els.stockLookupStatus.textContent = "日本株の4桁コードを入力してください。";
+    return;
+  }
+  const symbol = code.endsWith(".T") ? code : `${code}.T`;
+  if (els.stockLookupStatus) els.stockLookupStatus.textContent = "会社名と業種を確認しています…";
+  try {
+    const identity = await request(`/api/stocks/lookup?symbol=${encodeURIComponent(symbol)}`);
+    if (sequence !== stockLookupSequence || symbol !== `${String(els.stockSymbol.value).trim().toUpperCase().replace(/\.T$/, "")}.T`) return;
+    els.stockName.value = identity.name || "";
+    els.stockSector.value = identity.sector || "";
+    if (els.stockLookupStatus) {
+      els.stockLookupStatus.textContent = `${identity.name || symbol}${identity.sector ? ` / ${identity.sector}` : ""}を取得しました。`;
+    }
+  } catch (error) {
+    if (sequence !== stockLookupSequence) return;
+    els.stockName.value = "";
+    els.stockSector.value = "";
+    if (els.stockLookupStatus) els.stockLookupStatus.textContent = `${error.message} コードだけで保存時にも再確認します。`;
+  }
+}
+
+els.stockSymbol?.addEventListener("input", () => {
+  window.clearTimeout(stockLookupTimer);
+  els.stockName.value = "";
+  els.stockSector.value = "";
+  const raw = String(els.stockSymbol.value || "").trim();
+  if (!/^\d{4}(?:\.T)?$/i.test(raw)) {
+    stockLookupSequence += 1;
+    if (els.stockLookupStatus) els.stockLookupStatus.textContent = "コードを入力すると会社名と業種を自動取得します。";
+    return;
+  }
+  stockLookupTimer = window.setTimeout(() => void lookupManagedJapaneseStock(), 350);
+});
+
+els.stockSymbol?.addEventListener("change", () => {
+  window.clearTimeout(stockLookupTimer);
+  void lookupManagedJapaneseStock();
+});
+
 els.stockForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -7741,7 +7877,8 @@ els.settingsTabButtons.forEach((button) => {
 els.analyzeButton.addEventListener("click", analyze);
 els.usAnalyzeButton?.addEventListener("click", analyzeUs);
 els.cryptoAnalyzeButton?.addEventListener("click", analyzeCrypto);
-els.discoverButton.addEventListener("click", discover);
+els.discoverButton.addEventListener("click", () => discover("general"));
+els.discoverNisaButton?.addEventListener("click", () => discover("nisa"));
 els.diagnosticsButton?.addEventListener("click", runDiagnostics);
 els.disclosureCheckButton?.addEventListener("click", checkDisclosures);
 els.shareholderCheckButton?.addEventListener("click", checkShareholders);
