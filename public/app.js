@@ -770,7 +770,6 @@ function render() {
   safeRender("設定タブ", renderSettingsTabs);
   safeRender("銘柄一覧", renderTable);
   safeRender("損益サマリー", renderProfitSummary);
-  safeRender("判定カウント", renderSummary);
   safeRender("Decision", renderSelection);
   safeRender("候補一覧", renderCandidateList);
   safeRender("業種Evidence", renderSectorEvidence);

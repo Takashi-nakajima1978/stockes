@@ -125,6 +125,7 @@ test("watchlist omits redundant decision count cards", () => {
   assert.doesNotMatch(indexSource, /class="summary-grid decision-counts"/);
   assert.doesNotMatch(indexSource, /id="(?:buy|hold|sell|watch)Count"/);
   assert.doesNotMatch(appSource, /function renderSummary\(/);
+  assert.doesNotMatch(appSource, /renderSummary/);
   assert.doesNotMatch(appSource, /decisionScopeHint/);
 });
 
