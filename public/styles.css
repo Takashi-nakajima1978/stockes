@@ -145,8 +145,7 @@ h3 {
 .insight-panel,
 .research-panel,
 .source-panel,
-.settings-card,
-.summary-grid article {
+.settings-card {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
@@ -463,12 +462,6 @@ progress {
   font-size: 13px;
 }
 
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
-  gap: 12px;
-}
-
 .profit-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -525,23 +518,6 @@ progress {
 .profit-card strong {
   font-size: 21px;
   line-height: 1.15;
-}
-
-.summary-grid article {
-  padding: 16px;
-}
-
-.summary-grid span {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.summary-grid strong {
-  display: block;
-  margin-top: 8px;
-  font-size: 30px;
 }
 
 .content-grid {
@@ -3560,8 +3536,7 @@ tr:hover .drag-handle,
   .autopilot-allocation-cards,
   .autopilot-policy,
   .candidate-metrics,
-  .crypto-profit-summary,
-  .summary-grid {
+  .crypto-profit-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

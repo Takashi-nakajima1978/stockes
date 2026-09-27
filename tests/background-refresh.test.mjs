@@ -121,10 +121,10 @@ test("technical entry uses golden cross and closing strength experience rules", 
   assert.match(appSource, /technicalExperienceBadge/);
 });
 
-test("watchlist summary shows counts without redundant explanatory paragraph", () => {
-  assert.match(indexSource, /id="buyCount"/);
-  assert.match(indexSource, /id="watchCount"/);
-  assert.doesNotMatch(indexSource, /decisionScopeHint/);
+test("watchlist omits redundant decision count cards", () => {
+  assert.doesNotMatch(indexSource, /class="summary-grid decision-counts"/);
+  assert.doesNotMatch(indexSource, /id="(?:buy|hold|sell|watch)Count"/);
+  assert.doesNotMatch(appSource, /function renderSummary\(/);
   assert.doesNotMatch(appSource, /decisionScopeHint/);
 });
 

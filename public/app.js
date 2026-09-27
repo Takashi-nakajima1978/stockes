@@ -229,10 +229,6 @@ const els = {
   websiteLimit: document.getElementById("websiteLimit"),
   depthLimit: document.getElementById("depthLimit"),
   pagesPerSite: document.getElementById("pagesPerSite"),
-  buyCount: document.getElementById("buyCount"),
-  holdCount: document.getElementById("holdCount"),
-  sellCount: document.getElementById("sellCount"),
-  watchCount: document.getElementById("watchCount"),
   profitAmount: document.getElementById("profitAmount"),
   profitPct: document.getElementById("profitPct"),
   totalReturnAmount: document.getElementById("totalReturnAmount"),
@@ -625,7 +621,6 @@ async function loadAnalysisCache(background = false) {
   if (background) {
     renderTable();
     renderProfitSummary();
-    renderSummary();
     if (!isDetailFormEditing() && !document.activeElement?.closest("form")) renderSelection();
   } else render();
 }
@@ -1141,17 +1136,6 @@ function clearDragClasses() {
   document.querySelectorAll(".dragging, .drag-over").forEach((node) => {
     node.classList.remove("dragging", "drag-over");
   });
-}
-
-function renderSummary() {
-  const counts = { BUY: 0, HOLD: 0, SELL: 0, WATCH: 0 };
-  Object.values(state.analyses).forEach((analysis) => {
-    counts[analysis.action] = (counts[analysis.action] || 0) + 1;
-  });
-  els.buyCount.textContent = counts.BUY;
-  els.holdCount.textContent = counts.HOLD;
-  els.sellCount.textContent = counts.SELL;
-  els.watchCount.textContent = counts.WATCH;
 }
 
 function renderProfitSummary() {
