@@ -135,7 +135,6 @@ const els = {
   stockMinimumHoldQuantity: document.getElementById("stockMinimumHoldQuantity"),
   stockTargetBuyPrice: document.getElementById("stockTargetBuyPrice"),
   stockCount: document.getElementById("stockCount"),
-  decisionScopeHint: document.getElementById("decisionScopeHint"),
   stockProgress: document.getElementById("stockProgress"),
   analyzeButton: document.getElementById("analyzeButton"),
   usAnalyzeButton: document.getElementById("usAnalyzeButton"),
@@ -1153,20 +1152,6 @@ function renderSummary() {
   els.holdCount.textContent = counts.HOLD;
   els.sellCount.textContent = counts.SELL;
   els.watchCount.textContent = counts.WATCH;
-  if (els.decisionScopeHint) {
-    const total = Object.keys(state.analyses).length;
-    if (!total) {
-      els.decisionScopeHint.textContent = "分析が完了すると、登録済み日本株の判定件数を表示します。ここは市場全体の候補数ではありません。";
-    } else {
-      const resultText = counts.BUY === 0 && counts.SELL === 0
-        ? `現在の登録銘柄では買い条件にも見直し基準にも達していません。相場全体を「買い時でない」と判定したわけではなく、登録銘柄内の結果だけでは相場環境か条件の厳しさかを区別できません。`
-        : `現在の登録銘柄では買い候補${counts.BUY}件、見直し候補${counts.SELL}件です。`;
-      const dataText = counts.WATCH > 0
-        ? `要確認${counts.WATCH}件は、材料・価格条件が中立または不足している銘柄です。詳細の理由と更新日時も確認してください。`
-        : "";
-      els.decisionScopeHint.textContent = `${resultText}${dataText}買いは買値水準・反転確認まで満たす場合、見直しは損失拡大・長期トレンド悪化などがある場合に限ります。この集計は登録済み${total}銘柄だけのものです。市場全体を探すには「候補を探す」をご利用ください。${state.jpRefreshing ? "現在更新中のため、表示は前回分析の結果です。" : ""}`;
-    }
-  }
 }
 
 function renderProfitSummary() {

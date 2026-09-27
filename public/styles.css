@@ -346,13 +346,6 @@ progress {
   line-height: 1.6;
 }
 
-.decision-scope-hint {
-  margin: -8px 0 14px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
 .settings-form {
   display: grid;
   gap: 14px;

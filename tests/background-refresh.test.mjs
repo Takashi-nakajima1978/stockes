@@ -121,6 +121,13 @@ test("technical entry uses golden cross and closing strength experience rules", 
   assert.match(appSource, /technicalExperienceBadge/);
 });
 
+test("watchlist summary shows counts without redundant explanatory paragraph", () => {
+  assert.match(indexSource, /id="buyCount"/);
+  assert.match(indexSource, /id="watchCount"/);
+  assert.doesNotMatch(indexSource, /decisionScopeHint/);
+  assert.doesNotMatch(appSource, /decisionScopeHint/);
+});
+
 test("market perspective keeps only recent, ticker-matched evidence and labels opinions", () => {
   assert.match(serverSource, /async function enrichMarketPerspectiveEvidence/);
   assert.match(serverSource, /contentStatus=snippet_only means only a search excerpt was available/);
