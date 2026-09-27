@@ -1316,6 +1316,7 @@ function renderUsDetail() {
         <p>${escapeHtml(evidenceMetaText(item))}</p>
       </div>
       <p>${escapeHtml(usEvidenceSummaryText(item))}</p>
+      ${item.articleText ? `<details class="evidence-fulltext"><summary>取得本文（最大1,800字）</summary><p>${escapeHtml(item.articleText)}</p></details>` : ""}
       <span>${escapeHtml(usEvidenceTranslationLabel(item))}</span>
     </article>
   `).join("");
@@ -1343,6 +1344,7 @@ function renderUsDetail() {
       </div>
       <section class="business-overview"><strong>事業概要</strong><p>${escapeHtml(ai?.businessOverviewJa || "年次報告書・公式IRから事業内容を確認できる資料が不足しています。")}</p><div>${businessProfileSources.map((item) => `<a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.source || item.title || "会社資料")}</a>`).join("")}</div></section>
       <p>${escapeHtml(ai?.summaryJa || "米国株を更新すると、英語記事を日本語要約して保有確認を表示します。")}</p>
+      ${marketJudgmentHtml(ai?.marketViewJa, ai?.marketImpact, ai?.marketConfidence, analysis?.researchStats?.marketPerspectives || 0)}
       <div class="metrics-row">
         <span><strong>現在値</strong>${usd(analysis?.price?.current)}</span>
         <span><strong>損益</strong>${positionPnlUsd(position)}</span>
@@ -1351,6 +1353,7 @@ function renderUsDetail() {
         <span><strong>1株配当</strong>${dividendPerShareText(analysis?.price || {}, position, usd)}</span>
         <span><strong>年間配当目安</strong>${annualDividendText(position, usd)}</span>
         <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(analysis?.price || {}, usd))}</span>
+        <span><strong>直近45日のニュース・見解</strong>${Number(analysis?.researchStats?.marketPerspectives || 0)}件</span>
         <span><strong>1か月</strong>${pct(analysis?.price?.return1m)}</span>
         <span><strong>1年</strong>${pct(analysis?.price?.return1y)}</span>
       </div>
@@ -3517,6 +3520,7 @@ function renderSelection() {
         <p>${escapeHtml(evidenceMetaText(item))}</p>
       </div>
       <p>${escapeHtml(item.summaryJa || item.snippet || "")}</p>
+      ${item.articleText ? `<details class="evidence-fulltext"><summary>取得本文（最大1,800字）</summary><p>${escapeHtml(item.articleText)}</p></details>` : ""}
       <span>${escapeHtml(item.translationMethod === "lm_studio" ? "日本語要約" : item.kind || "web")}</span>
     </article>
   `).join("") || "<article class=\"evidence-item\"><p>根拠リンクはまだありません。</p></article>";
@@ -3558,6 +3562,7 @@ function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
         <span><strong>銘柄コード</strong>${symbolLinkHtml(stock.symbol, "jp")}</span>
       </div>
       ${industryProfileHtml(industryProfile)}
+      ${marketJudgmentHtml(analysis.marketView, analysis.marketImpact, analysis.marketConfidence, analysis.researchStats?.marketPerspectives || 0)}
       ${riskChecksHtml(analysis.riskChecks)}
       ${exitPlanHtml(analysis.exitPlan)}
       ${technicalEntryHtml(price, yen)}
@@ -4931,10 +4936,43 @@ function monthLabel(month) {
 }
 
 function evidenceMetaText(item = {}) {
+  const kind = item.evidenceClass === "investor_opinion" || item.topic === "investor_commentary"
+    ? "投資家コメント・未確認"
+    : item.evidenceClass === "analyst_opinion" || item.topic === "analyst_view"
+    ? "アナリスト見解"
+    : item.evidenceClass === "reported_news" || item.topic === "recent_news"
+    ? "報道・ニュース"
+    : item.kind === "business_profile" || item.topic === "business_profile"
+    ? "会社資料"
+    : item.kind === "sector" || item.topic === "sector"
+    ? "業界情報"
+    : "";
   return [
     item.source || "",
     item.publishedDate ? formatDate(item.publishedDate) : "",
+    kind,
+    item.contentStatus === "article_excerpt" ? "記事本文の冒頭を取得" : item.contentStatus === "snippet_only" ? "検索抜粋のみ" : "",
   ].filter(Boolean).join(" / ");
+}
+
+function marketJudgmentHtml(view, impact, confidence, count = 0) {
+  const impactLabel = {
+    positive: "追い風",
+    negative: "懸念材料",
+    mixed: "強弱あり",
+    neutral: "影響は限定的",
+    unknown: "影響未評価",
+  }[impact || "unknown"];
+  const summary = view || (count
+    ? "直近情報は取得しましたが、AIによる市場見解の整理は未完了です。下の出典を確認してください。"
+    : "直近45日以内に日付を確認できる情報はありません。日付不明の投稿は判断材料に使っていません。");
+  return `
+    <section class="market-judgment">
+      <div><strong>直近ニュース・市場見解の判断</strong><span>${escapeHtml(impactLabel)}${Number(confidence) > 0 ? ` / 信頼度 ${Math.round(Number(confidence))}%` : ""}</span></div>
+      <p>${escapeHtml(summary)}</p>
+      <small>${Number(count)}件の直近情報を確認。掲示板コメントだけで売買判断を変更しない設計です。</small>
+    </section>
+  `;
 }
 
 function usEvidenceTitleText(item = {}) {
@@ -5023,6 +5061,7 @@ function evidenceSummaryHtml(stock, analysis, position) {
         <span><strong>配当利回り</strong>${Number.isFinite(analysis.price?.dividendYield) ? `${analysis.price.dividendYield.toFixed(1)}%` : "-"}</span>
         <span><strong>1株配当</strong>${dividendPerShareText(analysis.price || {}, position, yen)}</span>
         <span><strong>年間配当目安</strong>${annualDividendText(position, yen)}</span>
+        <span><strong>直近45日のニュース・見解</strong>${Number(analysis.researchStats?.marketPerspectives || 0)}件</span>
         <span><strong>検索件数</strong>${analysis.researchStats?.searched ?? evidence.length}</span>
       </div>
       <div class="summary-points">
@@ -6559,6 +6598,7 @@ function suggestionItem(item, index) {
       </div>
       ${nisaFit ? `<section class="nisa-fit"><strong>NISA適性 ${escapeHtml(nisaFit.label)} ${Math.round(nisaFit.score)}点</strong><span>データ充足度 ${Math.round(nisaFit.confidence || 0)}%${(nisaFit.reasons || []).length ? ` / ${(nisaFit.reasons || []).slice(0, 2).map(escapeHtml).join("・")}` : ""}</span>${(nisaFit.risks || []).length ? `<small>${(nisaFit.risks || []).slice(0, 2).map(escapeHtml).join("・")}</small>` : ""}${(nisaFit.missingData || []).map((text) => `<small>${escapeHtml(text)}</small>`).join("")}</section>` : ""}
       <section class="business-overview"><strong>事業概要</strong><p>${escapeHtml(businessOverview || (target === "us" ? "米国企業の年次報告書・公式IRを根拠にした日本語要約は未取得です。" : "年次報告書・IR資料を根拠にした事業概要は未取得です。"))}</p><div>${profileSources.map((source) => `<a href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.source || source.title || "会社資料")}</a>`).join("")}</div></section>
+      ${marketPerspectiveHtml(item)}
       ${buyPlanHtml(item.buyPlan, item)}
       ${earlySignalHtml(item.earlySignal)}
       ${incomeSeasonalityHtml(item.incomeSeasonality)}
@@ -6760,6 +6800,42 @@ function aiReviewHtml(review) {
       <p>${escapeHtml(review.summary)}</p>
       <div>${positives}${risks}</div>
     </div>
+  `;
+}
+
+function marketPerspectiveHtml(item = {}) {
+  const evidence = (item.marketEvidence || []).slice(0, 4);
+  const review = item.aiReview || {};
+  const impactLabel = {
+    positive: "追い風の見方",
+    negative: "懸念の見方",
+    mixed: "見方が分かれる",
+    neutral: "判断への影響は限定的",
+    unknown: "AI整理なし",
+  }[review.marketImpact || "unknown"];
+  const summary = review.marketView
+    || (evidence.length ? "直近情報を取得しました。AI確認が未完了のため、出典を開いて内容を確認してください。"
+      : "45日以内の日付を確認できるニュース・見解はありません。日付不明の投稿は判断材料に使っていません。");
+  const sources = evidence.map((source) => `
+    <div class="market-perspective-source">
+      <a href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer">
+        <strong>${escapeHtml(source.title || source.source || "記事を確認")}</strong>
+        <small>${escapeHtml(evidenceMetaText(source) || "公開日不明")}</small>
+        <span>${escapeHtml(source.snippet || "記事本文の要約は検索結果にありません。リンク先で確認してください。")}</span>
+      </a>
+      ${source.articleText ? `<details><summary>取得本文（最大1,800字）を確認</summary><p>${escapeHtml(source.articleText)}</p></details>` : ""}
+    </div>
+  `).join("");
+  return `
+    <section class="market-perspective">
+      <div class="market-perspective-head">
+        <strong>直近の報道・市場の見方</strong>
+        <span>${escapeHtml(impactLabel)}${review.marketConfidence ? ` / 信頼度 ${Number(review.marketConfidence)}%` : ""}</span>
+      </div>
+      <p>${escapeHtml(summary)}</p>
+      ${sources ? `<div class="market-perspective-list">${sources}</div>` : ""}
+      <small>会社発表・報道と、アナリスト見解・掲示板コメントは分けて扱います。コメントだけで買い判定は変えません。</small>
+    </section>
   `;
 }
 

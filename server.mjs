@@ -49,6 +49,7 @@ const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
 const STRICT_BUY_TARGET_TOLERANCE = 1;
 const FUNDAMENTAL_EXIT_MAX_AGE_DAYS = 30;
+const MARKET_PERSPECTIVE_MAX_AGE_DAYS = 45;
 const TRAILING_STOP_LOSS_PCT = 20;
 const US_EVIDENCE_TRANSLATION_CHUNK_SIZE = 3;
 const PRICE_HISTORY_TIMEOUT_MS = 12000;
@@ -1759,6 +1760,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}, onProgre
       position,
       researchStats: {
         searched: research.searched,
+        marketPerspectives: research.marketPerspectiveCount || 0,
       },
       evidence: research.evidence,
       ai: null,
@@ -1772,7 +1774,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}, onProgre
       total: stocks.length,
       aiDone: 0,
       aiCurrent: 1,
-      aiTotal: Math.ceil(rows.reduce((sum, row) => sum + (row.evidence || []).filter((item) => isMostlyEnglish(`${item.title || ""} ${item.originalSnippet || item.snippet || ""}`)).length, 0) / US_EVIDENCE_TRANSLATION_CHUNK_SIZE),
+      aiTotal: Math.ceil(rows.reduce((sum, row) => sum + (row.evidence || []).filter((item) => isMostlyEnglish(`${item.title || ""} ${item.articleText || item.originalSnippet || item.snippet || ""}`)).length, 0) / US_EVIDENCE_TRANSLATION_CHUNK_SIZE),
     });
     await translateUsEvidenceRows(rows, onProgress).catch((error) => {
       warnings.push(`LM Studio: ${error.message || "米国ニュース翻訳が返りませんでした"}`);
@@ -1900,6 +1902,7 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
     position: positionMetrics(stock, price),
     researchStats: {
       searched: research.searched,
+      marketPerspectives: research.marketPerspectiveCount || 0,
     },
     evidence: research.evidence,
     ai: null,
@@ -1993,7 +1996,8 @@ async function translateUsEvidenceRows(rows = [], onProgress = null) {
   const items = [];
   for (const row of rows) {
     for (const evidence of row.evidence || []) {
-      const text = `${evidence.title || ""}\n${evidence.originalSnippet || evidence.snippet || ""}`;
+      const sourceText = evidence.articleText || evidence.originalSnippet || evidence.snippet || "";
+      const text = `${evidence.title || ""}\n${sourceText}`;
       if (!isMostlyEnglish(text)) {
         evidence.titleJa ||= evidence.title || "";
         evidence.summaryJa ||= evidence.snippet || evidence.originalSnippet || "";
@@ -2003,7 +2007,7 @@ async function translateUsEvidenceRows(rows = [], onProgress = null) {
       items.push({
         evidence,
         title: evidence.title || "",
-        snippet: evidence.originalSnippet || evidence.snippet || "",
+        snippet: sourceText,
         source: evidence.source || "",
       });
     }
@@ -2066,7 +2070,7 @@ async function translateUsEvidenceChunk(model, items = []) {
       items: items.map((item) => ({
         source: item.source,
         title: cleanText(item.title).slice(0, 140),
-        snippet: cleanText(item.snippet).slice(0, 220),
+        snippet: cleanText(item.snippet).slice(0, 900),
       })),
     }),
   ].join("\n");
@@ -2104,7 +2108,7 @@ function normalizeUsEvidenceTranslationState(item = {}) {
   const summaryJa = cleanText(item.summaryJa || "");
   const titleWeak = isWeakUsEvidenceTitle(titleJa);
   const summaryWeak = isWeakUsEvidenceSummary(summaryJa);
-  const originalText = `${item.title || ""} ${item.originalSnippet || item.snippet || ""}`;
+  const originalText = `${item.title || ""} ${item.articleText || item.originalSnippet || item.snippet || ""}`;
   const inferredLmTranslation = item.translationMethod !== "source_ja"
     && !summaryWeak
     && containsJapanese(summaryJa)
@@ -2167,15 +2171,23 @@ async function researchUsStock(stock, options = {}) {
     .sort((a, b) => businessProfileEvidenceScore(b) - businessProfileEvidenceScore(a)), (item) => canonicalNewsUrl(item.url))
     .slice(0, 3)
     .map((item) => ({ ...toUsEvidence(item, stock), kind: "business_profile", topic: "business_profile" }));
-  const newsEvidence = uniqueBy([...yahooNews, ...searchedNews]
+  const filteredNews = uniqueBy([...yahooNews, ...searchedNews]
     .filter((item) => isUsFinanceNewsEvidence(item, stock))
-    .sort((a, b) => usFinanceNewsScore(b, stock) - usFinanceNewsScore(a, stock)), (item) => canonicalNewsUrl(item.url))
+    .sort((a, b) => marketPerspectiveSort(a, b) || usFinanceNewsScore(b, stock) - usFinanceNewsScore(a, stock)), (item) => canonicalNewsUrl(item.url));
+  const marketEvidence = await enrichMarketPerspectiveEvidence(
+    marketPerspectiveEvidence(filteredNews, stock, limit), stock, 3,
+  );
+  const newsEvidence = uniqueBy([
+    ...marketEvidence,
+    ...filteredNews.filter((item) => !marketEvidence.some((marketItem) => canonicalNewsUrl(marketItem.url) === canonicalNewsUrl(item.url))),
+  ], (item) => canonicalNewsUrl(item.url))
     .slice(0, limit)
     .map((item) => toUsEvidence(item, stock));
   const evidence = uniqueBy([...profileEvidence, ...newsEvidence], (item) => canonicalNewsUrl(item.url)).slice(0, limit + 3);
   return {
     searched: evidence.length,
     evidence,
+    marketPerspectiveCount: marketEvidence.length,
     warning: evidence.length ? "" : "米国金融ニュースを取得できませんでした",
   };
 }
@@ -2208,25 +2220,36 @@ function businessProfileEvidenceScore(item = {}) {
   return score;
 }
 
+function selectEvidenceForAi(items = [], stock = {}, limit = 8) {
+  const profileEvidence = items
+    .filter((item) => item.kind === "business_profile" || item.topic === "business_profile")
+    .slice(0, 2);
+  const marketEvidence = marketPerspectiveEvidence(items, stock, 6);
+  const selectedUrls = new Set([...profileEvidence, ...marketEvidence].map((item) => canonicalNewsUrl(item.url)).filter(Boolean));
+  const otherEvidence = items.filter((item) => !selectedUrls.has(canonicalNewsUrl(item.url)));
+  return uniqueBy([...profileEvidence, ...marketEvidence, ...otherEvidence], (item) => canonicalNewsUrl(item.url) || `${item.source || ""}:${item.title || ""}`)
+    .slice(0, Math.max(0, limit));
+}
+
 async function fetchYahooFinanceSearchNews(stock, limit = 8) {
-  const symbol = normalizeUsSymbol(stock.symbol);
+  const isJapanese = isJapaneseListedSymbol(stock.symbol);
+  const symbol = isJapanese ? normalizeSymbol(stock.symbol) : normalizeUsSymbol(stock.symbol);
   if (!symbol) return [];
   const url = new URL("https://query2.finance.yahoo.com/v1/finance/search");
   url.searchParams.set("q", symbol);
   url.searchParams.set("quotesCount", "0");
   url.searchParams.set("newsCount", String(Math.min(Math.max(limit, 4), 20)));
-  url.searchParams.set("region", "US");
-  url.searchParams.set("lang", "en-US");
+  url.searchParams.set("region", isJapanese ? "JP" : "US");
+  url.searchParams.set("lang", isJapanese ? "ja-JP" : "en-US");
   const response = await fetchWithTimeout(url, {
     timeout: 8000,
     headers: {
       accept: "application/json",
       "user-agent": "Mozilla/5.0 Stock Signal",
     },
-  });
-  if (!response.ok) return [];
-  const data = await response.json().catch(() => null);
-  return (data?.news || []).map((item) => ({
+  }).catch(() => null);
+  const data = response?.ok ? await response.json().catch(() => null) : null;
+  const apiItems = (data?.news || []).map((item) => ({
     title: cleanText(item.title || ""),
     url: normalizeUrl(item.link || item.url || ""),
     snippet: cleanText(item.summary || item.publisher || ""),
@@ -2235,15 +2258,78 @@ async function fetchYahooFinanceSearchNews(stock, limit = 8) {
       : searchResultPublishedDate(item),
     source: hostOf(item.link || item.url || ""),
     relatedTickers: asStringArray(item.relatedTickers),
+    topic: "recent_news",
+    kind: "recent_news",
   })).filter((item) => item.title && item.url);
+  if (!isJapanese) return apiItems.slice(0, limit);
+  const pageItems = await fetchYahooFinanceJpNews(stock, limit).catch(() => []);
+  return uniqueBy([...apiItems, ...pageItems], (item) => canonicalNewsUrl(item.url)).slice(0, limit);
+}
+
+async function fetchYahooFinanceJpNews(stock, limit = 8) {
+  const symbol = normalizeSymbol(stock.symbol);
+  if (!symbol) return [];
+  const pageUrl = `https://finance.yahoo.co.jp/quote/${encodeURIComponent(symbol)}/news`;
+  const page = await fetchPageText(pageUrl, 8000).catch(() => null);
+  return page?.html ? parseYahooFinanceJpNewsPage(page.html, stock, pageUrl, limit) : [];
+}
+
+function parseYahooFinanceJpNewsPage(html = "", stock = {}, pageUrl = "", limit = 8) {
+  const code = jpStockCode(stock.symbol);
+  if (!code) return [];
+  const matches = [];
+  const anchorPattern = /<a\b[^>]*href=["']([^"']*\/news\/detail\/[^"'#?]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+  while ((match = anchorPattern.exec(String(html)))) {
+    const url = normalizeUrl(new URL(match[1], pageUrl).href);
+    const fullText = htmlToText(match[2]);
+    const date = yahooFinanceJpNewsDate(fullText);
+    const title = cleanText(fullText.replace(/\s+\d{1,2}\/\d{1,2}(?:\s+.*)?$/, ""));
+    if (!url || !title || !date || !isRecentSearchDate(date, MARKET_PERSPECTIVE_MAX_AGE_DAYS)) continue;
+    const item = { title, snippet: fullText, url };
+    if (!jpEvidenceHasCode(item, code) && !hasStrongCompanyName(item, stock)) continue;
+    const topic = /アナリスト|レーティング|目標株価|投資判断|証券会社|格付け/.test(title)
+      ? "analyst_view"
+      : "recent_news";
+    matches.push({
+      ...item,
+      relatedTickers: [normalizeSymbol(stock.symbol)],
+      publishedDate: date,
+      source: hostOf(url),
+      topic,
+      kind: topic,
+    });
+  }
+  return uniqueBy(matches, (item) => canonicalNewsUrl(item.url)).slice(0, Math.max(0, limit));
+}
+
+function yahooFinanceJpNewsDate(text = "", now = new Date()) {
+  const match = String(text).match(/(?:^|\s)(\d{1,2})\/(\d{1,2})(?=\s|$)/);
+  if (!match) return "";
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  let year = now.getUTCFullYear();
+  let date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return "";
+  if (date.getTime() > now.getTime() + 86400000) {
+    year -= 1;
+    date = new Date(Date.UTC(year, month - 1, day));
+  }
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 async function searchUsFinanceNews(stock, limit = 8) {
   const queries = usFinanceNewsQueries(stock);
-  const rssPages = await mapLimit(queries, 2, async (query) => (
-    fetchGoogleNewsUsRss(stock, limit, query).catch(() => [])
-  ));
-  return uniqueBy(rssPages.flat(), (item) => canonicalNewsUrl(item.url))
+  const [rssPages, commentaryPages] = await Promise.all([mapLimit(queries, 2, async (query) => (
+    fetchGoogleNewsUsRss(stock, limit, query.text)
+      .then((items) => items.map((item) => ({ ...item, topic: query.topic, kind: query.topic })))
+      .catch(() => [])
+  )), mapLimit(queries.filter((query) => query.topic === "investor_commentary"), 2, async (query) => (
+    searchGoogle(query.text, { limit: Math.max(3, Math.ceil(limit / 2)), language: "en-US" })
+      .then((items) => items.map((item) => ({ ...item, topic: query.topic, kind: query.topic })))
+      .catch(() => [])
+  ))]);
+  return uniqueBy([...rssPages.flat(), ...commentaryPages.flat()], (item) => canonicalNewsUrl(item.url))
     .map((item) => ({
       ...item,
       source: item.source || hostOf(item.sourceUrl || item.url),
@@ -2266,6 +2352,10 @@ async function searchUsCandidateEvidence(candidate = {}, limit = 8) {
     rank: index + 1,
     topic: item.topic || "",
     kind: item.kind || "web",
+    evidenceClass: item.evidenceClass || "",
+    relatedTickers: Array.isArray(item.relatedTickers) ? item.relatedTickers : [],
+    articleText: cleanText(item.articleText || "").slice(0, 1800),
+    contentStatus: item.contentStatus || "snippet_only",
   }));
 }
 
@@ -2276,12 +2366,15 @@ function usFinanceNewsQueries(stock = {}) {
     ? `"${name}" ${symbol}`
     : symbol;
   return [
-    `${nameQuery} stock earnings guidance analyst site:finance.yahoo.com`,
-    `${nameQuery} stock earnings guidance outlook site:seekingalpha.com`,
-    `${nameQuery} shares revenue margin dividend site:marketwatch.com`,
-    `${nameQuery} price target results analyst site:barrons.com`,
-    `${nameQuery} stock news revenue outlook site:cnbc.com`,
-  ].filter(Boolean);
+    { text: `${nameQuery} stock earnings guidance analyst site:finance.yahoo.com`, topic: "recent_news" },
+    { text: `${nameQuery} stock earnings guidance outlook site:seekingalpha.com`, topic: "recent_news" },
+    { text: `${nameQuery} shares revenue margin dividend site:marketwatch.com`, topic: "recent_news" },
+    { text: `${nameQuery} price target results analyst site:barrons.com`, topic: "analyst_view" },
+    { text: `${nameQuery} analyst rating price target forecast consensus`, topic: "analyst_view" },
+    { text: `site:finance.yahoo.com/quote/${symbol}/community ${nameQuery} investor comments discussion`, topic: "investor_commentary" },
+    { text: `site:stocktwits.com/symbol/${symbol} ${nameQuery} investor discussion`, topic: "investor_commentary" },
+    { text: `${nameQuery} stock news revenue outlook site:cnbc.com`, topic: "recent_news" },
+  ].filter((query) => query.text);
 }
 
 async function fetchGoogleNewsUsRss(stock, limit = 8, queryOverride = "") {
@@ -2362,10 +2455,20 @@ function toUsEvidence(item = {}, stock = {}) {
     source: hostOf(sourceUrl || item.url),
     snippet: original,
     originalSnippet: original,
+    articleText: cleanText(item.articleText || "").slice(0, 1800),
+    contentStatus: item.contentStatus || "snippet_only",
     summaryJa: "",
     publishedDate: normalizeDate(item.publishedDate) || searchResultPublishedDate(item),
     kind: item.kind || "web",
     topic: item.topic || "",
+    relatedTickers: Array.isArray(item.relatedTickers) ? item.relatedTickers : [],
+    evidenceClass: item.evidenceClass || (item.topic === "investor_commentary"
+      ? "investor_opinion"
+      : item.topic === "analyst_view"
+      ? "analyst_opinion"
+      : item.topic === "recent_news"
+      ? "reported_news"
+      : ""),
   };
 }
 
@@ -2373,7 +2476,9 @@ function isUsFinanceNewsEvidence(item = {}, stock = {}) {
   const url = normalizeUrl(item.url);
   const sourceUrl = normalizeUrl(item.sourceUrl);
   if (!url || isBlockedUsNewsUrl(url) || (sourceUrl && isBlockedUsNewsUrl(sourceUrl))) return false;
-  if (!usFinanceNewsSourceRank(url, sourceUrl)) return false;
+  const opinionSource = item.topic === "investor_commentary"
+    && [url, sourceUrl].some((value) => /finance\.yahoo\.com|stocktwits\.com/i.test(value));
+  if (!usFinanceNewsSourceRank(url, sourceUrl) && !opinionSource) return false;
   if (!usEvidenceMentionsStock(item, stock)) return false;
   if (isStaleUsNews(item, US_NEWS_MAX_AGE_DAYS)) return false;
   const text = cleanText(`${item.title || ""} ${item.snippet || ""} ${url}`).toLowerCase();
@@ -2397,7 +2502,8 @@ function isBlockedUsNewsUrl(value = "") {
 
 function usEvidenceMentionsStock(item = {}, stock = {}) {
   const symbol = normalizeUsSymbol(stock.symbol);
-  const text = cleanText(`${item.title || ""} ${item.snippet || ""} ${item.url || ""}`).toLowerCase();
+  const relatedTickers = Array.isArray(item.relatedTickers) ? item.relatedTickers.join(" ") : "";
+  const text = cleanText(`${item.title || ""} ${item.snippet || ""} ${item.url || ""} ${relatedTickers}`).toLowerCase();
   if (symbol) {
     const escaped = escapeRegExp(symbol.toLowerCase());
     const dashVariant = escapeRegExp(symbol.toLowerCase().replace(".", "-"));
@@ -2433,6 +2539,60 @@ function usFinanceNewsScore(item = {}, stock = {}) {
   score += Math.min(24, keywordHits * 4);
   if (usEvidenceMentionsStock(item, stock)) score += 10;
   return score;
+}
+
+function marketPerspectiveSort(a = {}, b = {}) {
+  const dateA = normalizeDate(a.publishedDate || searchResultPublishedDate(a)) || "";
+  const dateB = normalizeDate(b.publishedDate || searchResultPublishedDate(b)) || "";
+  if (dateA !== dateB) return dateB.localeCompare(dateA);
+  const topicRank = { recent_news: 3, analyst_view: 2, investor_commentary: 1 };
+  return (topicRank[b.topic] || 0) - (topicRank[a.topic] || 0);
+}
+
+function marketPerspectiveEvidence(items = [], stock = {}, limit = 6) {
+  const allowedTopics = new Set(["recent_news", "analyst_view", "investor_commentary"]);
+  const isJapanese = isJapaneseListedSymbol(stock.symbol);
+  return uniqueBy(items
+    .filter((item) => allowedTopics.has(item.topic))
+    .map((item) => ({ ...item, publishedDate: normalizeDate(item.publishedDate || searchResultPublishedDate(item)) || "" }))
+    .filter((item) => item.publishedDate && isRecentSearchDate(item.publishedDate, MARKET_PERSPECTIVE_MAX_AGE_DAYS))
+    .filter((item) => isJapanese ? isJpStockSpecificEvidence(item, stock) : usEvidenceMentionsStock(item, stock))
+    .sort(marketPerspectiveSort)
+    .slice(0, Math.max(0, limit)), (item) => canonicalNewsUrl(item.url || item.link))
+    .map((item) => ({
+      ...item,
+      source: item.source || hostOf(item.sourceUrl || item.url),
+      evidenceClass: item.topic === "investor_commentary"
+        ? "investor_opinion"
+        : item.topic === "analyst_view"
+        ? "analyst_opinion"
+        : "reported_news",
+    }));
+}
+
+async function enrichMarketPerspectiveEvidence(items = [], stock = {}, maxPages = 3) {
+  const targets = items.slice(0, Math.max(0, maxPages));
+  const fetched = await mapLimit(targets, 2, async (item) => {
+    const page = await fetchPageText(item.url, 6500).catch(() => null);
+    const articleText = cleanText(page?.text || "").slice(0, 1800);
+    const pageEvidence = {
+      ...item,
+      title: page?.title || item.title,
+      url: "",
+      sourceUrl: "",
+      relatedTickers: [],
+      snippet: articleText,
+    };
+    const matchesStock = isJapaneseListedSymbol(stock.symbol)
+      ? isJpStockSpecificEvidence(pageEvidence, stock)
+      : usEvidenceMentionsStock(pageEvidence, stock);
+    if (!page || articleText.length < 160 || !matchesStock) {
+      return { ...item, contentStatus: "snippet_only" };
+    }
+    return { ...item, articleText, contentStatus: "article_excerpt" };
+  });
+  const byUrl = new Map(fetched.map((item) => [canonicalNewsUrl(item.url), item]));
+  return items.map((item) => byUrl.get(canonicalNewsUrl(item.url)) || item);
 }
 
 function usFinanceNewsSourceRank(value = "", sourceUrl = "") {
@@ -2504,15 +2664,16 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       totalReturnPct: row.position.totalReturnPct,
       holdingDays: row.position.holdingDays,
     },
-    evidence: [...row.evidence]
-      .sort((a, b) => Number(b.kind === "business_profile") - Number(a.kind === "business_profile"))
-      .slice(0, 6).map((item) => ({
+    evidence: selectEvidenceForAi(row.evidence, row, 8).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
       source: item.source,
       url: item.url,
       kind: item.kind,
+      topic: item.topic || "",
+      evidenceClass: item.evidenceClass || "",
       publishedDate: item.publishedDate || "",
-      snippet: cleanText(item.summaryJa || item.originalSnippet || item.snippet || "").slice(0, 180),
+      snippet: cleanText(item.articleText || item.summaryJa || item.originalSnippet || item.snippet || "").slice(0, 900),
+      contentStatus: item.contentStatus || "snippet_only",
     })),
   }));
   const prompt = [
@@ -2522,6 +2683,9 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     "Add businessOverviewJa with 2-3 short Japanese sentences describing the company's products/services, customers, and revenue sources. Base it on evidence tagged business_profile, preferably its 10-K or official investor relations. Translate English sources into Japanese; return an empty string if the actual business cannot be verified.",
     "Include businessOverviewJa as a field in every review object in the JSON response.",
     "Separate position facts: remaining shares, sold shares, realized P/L, unrealized P/L, received dividends, estimated annual dividend, and total return including dividends.",
+    "Also include marketViewJa (one or two short Japanese sentences), marketImpact (positive|negative|mixed|neutral|unknown), and marketConfidence (0-100). Explain how dated evidence affects the current stance; if verified recent evidence is missing, say so and use neutral or unknown.",
+    "The JSON review objects must include those three market fields even though the example schema below is abbreviated.",
+    "Use only dated evidence published within 45 days for a current market view. Separate company announcements and reputable reporting (facts), analyst ratings/targets (opinions), and Yahoo Finance/message-board or social posts (unverified investor opinions). Do not treat comments as facts or let anonymous sentiment alone change stance. Weigh corroboration and source disagreement; explicitly say when recent evidence is missing. contentStatus=snippet_only means only a search excerpt was available, so lower confidence and do not infer article details; article_excerpt is only the first 1,800 extracted characters, not necessarily the whole page.",
     "Check PER, EPS, revenue growth, margin, ROE, debt level, next earnings timing, news evidence, 3-year price history, purchase price, and trailing-stop context.",
     "Do not promise profit. Separate reasons to continue holding from risks or missing data. If financial data is missing, say that as a risk.",
     "Return strict JSON only in this schema: {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"titleJa\":\"...\",\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":123.45,\"reviewPrice\":111.11,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}.",
@@ -2556,6 +2720,9 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       stance: String(review.stance || "DATA_NEEDED").toUpperCase(),
       confidence: clamp(Number(review.confidence || 50), 0, 100),
       summaryJa: String(review.summaryJa || review.summary || "").slice(0, 180),
+      marketViewJa: cleanText(review.marketViewJa || "").slice(0, 260),
+      marketImpact: ["positive", "negative", "mixed", "neutral", "unknown"].includes(review.marketImpact) ? review.marketImpact : "unknown",
+      marketConfidence: clamp(Number(review.marketConfidence || 0), 0, 100),
       businessOverviewJa: cleanText(review.businessOverviewJa || "").slice(0, 420),
       good: asStringArray(review.good || review.reasons).slice(0, 3),
       risks: asStringArray(review.risks).slice(0, 3),
@@ -2692,6 +2859,11 @@ function fallbackUsReview(row = {}) {
     summaryJa: Number.isFinite(position.pnlPct)
       ? `現在の損益は${formatSignedPercent(position.pnlPct)}です。ニュース材料は追加確認が必要です。`
       : "購入明細を入れるとドルベースの損益を確認できます。",
+    marketViewJa: marketPerspectiveEvidence(row.evidence || [], row, 6).length
+      ? "直近の記事は取得していますが、AIによる市場見解の整理は未完了です。出典を確認してください。"
+      : "直近45日以内に日付を確認できるニュース・見解はありません。",
+    marketImpact: "unknown",
+    marketConfidence: 0,
     good: uniqueText(good).slice(0, 3),
     risks: uniqueText(risks).slice(0, 3),
     evidenceJa: (row.evidence || []).slice(0, 5).map((item) => ({
@@ -5718,17 +5890,20 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
       ...candidate,
       businessEvidence: [],
       businessOverviewEvidence: [],
+      marketEvidence: [],
       searchPosition: positionSignal,
       peSignal: peSignal || candidate.peSignal || null,
       incomeSeasonality: candidate.incomeSeasonality || incomeSeasonalitySignal(candidate, candidate.price || {}) || null,
     };
   }
-  const context = businessContextText(results.map((item) => `${item.title} ${item.snippet}`).join("\n"));
+  const marketEvidence = marketPerspectiveEvidence(results, candidate, 6);
+  const decisionEvidence = results.filter((item) => !["analyst_view", "investor_commentary"].includes(item.topic));
+  const context = businessContextText(decisionEvidence.map((item) => `${item.title} ${item.snippet}`).join("\n"));
   const incomeSignal = incomeSeasonalitySignal(candidate, candidate.price || {}, results) || candidate.incomeSeasonality || null;
   const businessHits = businessGoodWords.filter((word) => context.includes(word.toLowerCase()));
   const valueHits = valueGoodWords.filter((word) => context.includes(word.toLowerCase()));
   const badHits = businessBadWords.filter((word) => context.includes(word.toLowerCase()));
-  const materialResults = results.filter((item) => {
+  const materialResults = decisionEvidence.filter((item) => {
     const text = businessContextText(`${item.title} ${item.snippet}`);
     return [...businessGoodWords, ...valueGoodWords, ...businessBadWords].some((word) => text.includes(word.toLowerCase()));
   });
@@ -5837,6 +6012,7 @@ function enhanceBusinessCandidate(candidate, results, positionSignal = null, peS
     sellPlan: candidateExitPlan(candidate.price || {}, buyPlan, { currency: candidate.currency || candidate.price?.currency || discoveryCurrency(candidate) }),
     evidenceQuality,
     searchPosition: positionSignal,
+    marketEvidence,
     peSignal: peSignal || candidate.peSignal || null,
     incomeSeasonality: incomeSignal,
     reasons: uniqueText([...candidate.reasons, ...reasons]).slice(0, 5),
@@ -5901,6 +6077,16 @@ async function aiDiscoveryReview(candidates) {
     reasons: (candidate.reasons || []).slice(0, 3),
     risks: (candidate.risks || []).slice(0, 3),
     businessOverviewEvidence: candidate.businessOverviewEvidence || [],
+    marketEvidence: (candidate.marketEvidence || []).slice(0, 6).map((item) => ({
+      title: item.title,
+      source: item.source,
+      url: item.url,
+      topic: item.topic,
+      evidenceClass: item.evidenceClass,
+      publishedDate: item.publishedDate,
+      snippet: cleanText(item.articleText || item.snippet || "").slice(0, 900),
+      contentStatus: item.contentStatus || "snippet_only",
+    })),
     evidence: discoveryEvidenceForAi(candidate),
   }));
 
@@ -5931,10 +6117,11 @@ async function aiDiscoveryReviewChunk(model, items) {
     "For Japanese stocks, factor in demand before dividend or shareholder-benefit record dates. Do not raise the score just because of an imminent ex-rights drop or post-rights rebound risk.",
     "Add positive adjustment when price is below the 1-year buy line and business evidence is solid. Apply negative adjustment for extended high-price charts.",
     "Evaluate PE/take-private potential separately: apparent undervaluation, stable cash flow, shareholder changes, restructuring optionality, and reasons a buyout would be difficult. Use Nihon M&A Center TOB/MBO examples as learning evidence: clear take-private motive, no tender-offer maximum, board support, delisting plan, long-term investment need, and difficulty of reform while listed. Do not justify buying at an expensive chart level only because PE-related keywords exist.",
+    "Use only dated marketEvidence from the last 45 days for the market-perspective summary. Separate company announcements and reputable reporting (facts), analyst ratings/targets (opinions), and message-board/social posts (unverified investor opinions). Never present discussion-board claims as facts; do not change the decision based only on anonymous comments or a consensus target price. Weigh corroboration, source quality, publication date, and disagreements; connect only supported information to the buy/hold/wait decision. If there is no recent dated evidence, state that clearly and keep the impact neutral. contentStatus=snippet_only means only a search excerpt was available, so lower confidence and do not infer article details; article_excerpt is only the first 1,800 extracted characters, not necessarily the whole page.",
     "Use natural Japanese for summary, positives, risks, and businessOverview. Avoid vague jargon; state the concrete reason and how it affects the buy decision.",
     "businessOverview must explain what the company sells or provides, who its customers are, and its main revenue sources in 2-3 short Japanese sentences. Base it only on the provided annual report, integrated report, 10-K, or official IR evidence. For US companies, translate and summarize the English evidence in Japanese. If the sources do not establish the business clearly, return an empty string; never guess.",
     "adjustment must be an integer from -8 to 8. Use 0 or lower when evidence is thin. Use a negative value when bad news or high-price risk is material.",
-    "Return strict JSON only in this schema: {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"],\"businessOverview\":\"...\"}]}. For US stocks, return plain tickers such as IBM.",
+    "Return strict JSON only in this schema: {\"reviews\":[{\"symbol\":\"9433.T\",\"adjustment\":2,\"summary\":\"...\",\"positives\":[\"...\"],\"risks\":[\"...\"],\"businessOverview\":\"...\",\"marketView\":\"...\",\"marketImpact\":\"positive|negative|mixed|neutral|unknown\",\"marketConfidence\":45}]}. For US stocks, return plain tickers such as IBM.",
     "",
     JSON.stringify({ candidates: items }),
   ].join("\n");
@@ -5963,6 +6150,9 @@ async function aiDiscoveryReviewChunk(model, items) {
       positives: asStringArray(review.positives || review.reasons).slice(0, 3),
       risks: asStringArray(review.risks).slice(0, 3),
       businessOverview: cleanText(review.businessOverview || "").slice(0, 420),
+      marketView: cleanText(review.marketView || "").slice(0, 300),
+      marketImpact: ["positive", "negative", "mixed", "neutral", "unknown"].includes(review.marketImpact) ? review.marketImpact : "unknown",
+      marketConfidence: clamp(Number(review.marketConfidence || 0), 0, 100),
     });
   }
   return map;
@@ -6007,8 +6197,9 @@ async function aiMarketTrendBrief(searchResults = [], universeCount = 0) {
 }
 
 function discoveryEvidenceForAi(candidate) {
-  const evidence = [
-    ...(candidate.businessOverviewEvidence || []),
+  const profileEvidence = candidate.businessOverviewEvidence || [];
+  const marketEvidence = candidate.marketEvidence || [];
+  const otherEvidence = [
     ...(candidate.businessEvidence || []),
     ...(candidate.sourceEvidence || []).map((item) => ({
       title: item.title,
@@ -6016,16 +6207,21 @@ function discoveryEvidenceForAi(candidate) {
       snippet: item.snippet,
     })),
   ];
-  return uniqueBy(evidence, (item) => `${item.source || ""}:${item.title || ""}`)
-    .sort((a, b) => Number(b.topic === "business_profile" || b.kind === "business_profile")
-      - Number(a.topic === "business_profile" || a.kind === "business_profile"))
-    .slice(0, 5)
+  return uniqueBy([
+    ...profileEvidence.slice(0, 2),
+    ...marketEvidence,
+    ...otherEvidence,
+  ], (item) => canonicalNewsUrl(item.url) || `${item.source || ""}:${item.title || ""}`)
+    .slice(0, 8)
     .map((item) => ({
       title: item.title,
       source: item.source,
       url: item.url,
       topic: item.topic || item.kind || "",
-      snippet: cleanText(item.snippet || "").slice(0, 140),
+      evidenceClass: item.evidenceClass || "",
+      publishedDate: item.publishedDate || "",
+      snippet: cleanText(item.articleText || item.snippet || "").slice(0, 900),
+      contentStatus: item.contentStatus || "snippet_only",
     }));
 }
 
@@ -6047,6 +6243,11 @@ function applyDiscoveryAiReview(candidate, review) {
     risks: review.risks || [],
     businessOverview: review.businessOverview || "",
     businessOverviewSource: candidate.businessOverviewEvidence?.[0]?.url || "",
+    marketView: candidate.marketEvidence?.length ? cleanText(review.marketView || "").slice(0, 300) : "",
+    marketImpact: candidate.marketEvidence?.length && ["positive", "negative", "mixed", "neutral"].includes(review.marketImpact)
+      ? review.marketImpact
+      : "unknown",
+    marketConfidence: candidate.marketEvidence?.length ? clamp(Number(review.marketConfidence || 0), 0, 100) : 0,
   };
   return {
     ...candidate,
@@ -6138,6 +6339,10 @@ function jpStockEvidenceQueries(stock = {}) {
     { text: `${code} ${officialName} 有価証券報告書 事業の内容 主要な事業 セグメント`, topic: "business_profile" },
     { text: `${code} ${officialName} 統合報告書 事業概要 製品 サービス 収益源 公式 IR`, topic: "business_profile" },
     { text: `site:disclosure2dl.edinet-fsa.go.jp ${code} ${officialName} 有価証券報告書 事業の内容`, topic: "business_profile" },
+    { text: `site:finance.yahoo.co.jp/quote/${code}.T/news ${officialName} ${code} ニュース 決算 業績`, topic: "recent_news" },
+    { text: `site:finance.yahoo.co.jp/quote/${code}.T/bbs ${officialName} ${code} 掲示板 投稿 株価見通し`, topic: "investor_commentary" },
+    { text: `site:minkabu.jp/stock/${code}/bbs ${officialName} 掲示板 投資家 意見`, topic: "investor_commentary" },
+    { text: `${code} ${officialName} アナリスト レーティング 目標株価 業績予想`, topic: "analyst_view" },
     { text: `site:kabutan.jp/stock/news?code=${code} ${officialName} 決算 業績 配当 自社株買い`, topic: "company" },
     { text: `site:finance.yahoo.co.jp/quote/${code}.T ${officialName} ニュース 決算 業績 配当 株主優待`, topic: "company" },
     { text: `site:irbank.net/${code} ${officialName} PBR PER 時価総額 キャッシュフロー`, topic: "company" },
@@ -6149,17 +6354,23 @@ function jpStockEvidenceQueries(stock = {}) {
 async function searchJpStockEvidence(stock = {}, websiteLimit = 20) {
   const queries = jpStockEvidenceQueries(stock);
   const perQueryLimit = Math.max(3, Math.ceil(websiteLimit / Math.max(1, queries.length)));
-  const pages = await mapLimit(queries, 2, async (query) => (
+  const [pages, yahooNews] = await Promise.all([mapLimit(queries, 2, async (query) => (
     searchGoogle(query.text, { limit: perQueryLimit, language: "ja-JP" })
       .then((items) => items.map((item) => ({ ...item, topic: query.topic, query: query.text })))
       .catch(() => [])
-  ));
-  const filtered = uniqueBy(pages.flat(), (item) => item.url)
+  )), fetchYahooFinanceSearchNews(stock, Math.max(4, Math.ceil(websiteLimit / 2))).catch(() => [])]);
+  const filtered = uniqueBy([...pages.flat(), ...yahooNews], (item) => item.url)
     .filter((item) => isJpStockSpecificEvidence(item, stock))
     .sort((a, b) => Number(b.topic === "business_profile") - Number(a.topic === "business_profile")
+      || marketPerspectiveSort(a, b)
       || jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock))
     .slice(0, websiteLimit);
-  return uniqueBy([...filtered, ...jpStockFallbackEvidence(stock)], (item) => item.url)
+  const marketEvidence = await enrichMarketPerspectiveEvidence(
+    marketPerspectiveEvidence(filtered, stock, 3), stock, 3,
+  );
+  const enrichedByUrl = new Map(marketEvidence.map((item) => [canonicalNewsUrl(item.url), item]));
+  const enriched = filtered.map((item) => enrichedByUrl.get(canonicalNewsUrl(item.url)) || item);
+  return uniqueBy([...enriched, ...jpStockFallbackEvidence(stock)], (item) => item.url)
     .slice(0, websiteLimit)
     .map((item, index) => ({ ...item, rank: index + 1 }));
 }
@@ -6225,7 +6436,8 @@ function jpStockEvidenceScore(item = {}, stock = {}) {
 
 function jpEvidenceHasCode(item = {}, code = "") {
   if (!code) return false;
-  const raw = `${item.title || ""} ${item.snippet || ""} ${item.url || ""}`;
+  const relatedTickers = Array.isArray(item.relatedTickers) ? item.relatedTickers.join(" ") : "";
+  const raw = `${item.title || ""} ${item.snippet || ""} ${item.url || ""} ${relatedTickers}`;
   const normalized = raw.toLowerCase();
   const escaped = escapeRegExp(code);
   return new RegExp(`(^|[^0-9a-z])${escaped}(\\.t|[^0-9a-z]|$)`, "i").test(raw)
@@ -6819,20 +7031,26 @@ async function researchStock(stock, options) {
   }
   const searchResults = [];
   const perQueryLimit = Math.max(5, Math.ceil(options.websiteLimit / queries.length));
-
-  for (const query of queries) {
-    const results = await searchGoogle(query.text, { limit: perQueryLimit, language: "ja-JP" }).catch(() => []);
-    searchResults.push(...results.map((item) => ({ ...item, topic: query.topic, query: query.text })));
-  }
+  const [searchPages, yahooNews] = await Promise.all([
+    mapLimit(queries, 2, async (query) => searchGoogle(query.text, { limit: perQueryLimit, language: "ja-JP" })
+      .then((items) => items.map((item) => ({ ...item, topic: query.topic, query: query.text })))
+      .catch(() => [])),
+    fetchYahooFinanceSearchNews(stock, Math.max(4, Math.ceil(options.websiteLimit / 2))).catch(() => []),
+  ]);
+  searchResults.push(...searchPages.flat(), ...yahooNews);
 
   const companyResults = uniqueBy(searchResults
     .filter((item) => item.topic !== "sector")
     .filter((item) => isJpStockSpecificEvidence(item, stock))
     .sort((a, b) => Number(b.topic === "business_profile") - Number(a.topic === "business_profile")
       || jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock)), (item) => item.url);
+  const marketEvidence = await enrichMarketPerspectiveEvidence(
+    marketPerspectiveEvidence(companyResults, stock, 6), stock, 3,
+  );
   const companyEvidence = uniqueBy([
     ...companyResults.filter((item) => item.topic === "business_profile"),
-    ...companyResults.filter((item) => item.topic !== "business_profile"),
+    ...marketEvidence,
+    ...companyResults.filter((item) => item.topic !== "business_profile" && !marketEvidence.some((marketItem) => marketItem.url === item.url)),
     ...jpStockFallbackEvidence(stock),
   ], (item) => item.url);
   const sectorResults = uniqueBy(searchResults
@@ -6861,9 +7079,16 @@ async function researchStock(stock, options) {
         url: item.url,
         source: hostOf(item.url),
         snippet: cleanText(item.snippet).slice(0, 260),
+        articleText: cleanText(item.articleText || "").slice(0, 1800),
+        contentStatus: item.contentStatus || "snippet_only",
         publishedDate: item.publishedDate || "",
-        kind: item.topic === "sector" ? "sector" : item.topic === "business_profile" ? "business_profile" : "search",
+        kind: item.topic === "sector" ? "sector"
+          : item.topic === "business_profile" ? "business_profile"
+          : ["recent_news", "analyst_view", "investor_commentary"].includes(item.topic) ? item.topic
+          : "search",
         topic: item.topic || "company",
+        evidenceClass: item.evidenceClass || "",
+        relatedTickers: Array.isArray(item.relatedTickers) ? item.relatedTickers : [],
         sector,
       })),
       ...crawled.map((item) => ({
@@ -6880,6 +7105,7 @@ async function researchStock(stock, options) {
       ...deduped.map((item) => `${item.title}\n${item.snippet}\n${item.url}`),
       ...crawled.map((item) => `${item.title}\n${item.text}\n${item.url}`),
     ].join("\n\n").slice(0, 28000),
+    marketPerspectiveCount: marketEvidence.length,
   };
 }
 
@@ -7045,9 +7271,9 @@ async function crawlSite(startUrl, depthLimit, pagesPerSite) {
   return pages;
 }
 
-async function fetchPageText(url) {
+async function fetchPageText(url, timeout = 9000) {
   const response = await fetchWithTimeout(url, {
-    timeout: 9000,
+    timeout,
     headers: {
       "user-agent": "Mozilla/5.0 local-stock-analysis",
       accept: "text/html,application/xhtml+xml",
@@ -8647,16 +8873,16 @@ async function aiBatchDecisions(rows, onProgress = null) {
     financials: compactFinancialForAi(financials),
     industryProfile: normalizeIndustryProfile(industryProfile || buildIndustryProfile(stock, research, financials)),
     ruleDecision: fallback,
-    evidence: [...research.evidence]
-      .sort((a, b) => Number(b.kind === "business_profile") - Number(a.kind === "business_profile"))
-      .slice(0, 10).map((item) => ({
+    evidence: selectEvidenceForAi(research.evidence, stock, 10).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
       source: item.source,
       url: item.url,
       publishedDate: item.publishedDate || "",
-      snippet: cleanText(item.snippet || "").slice(0, 220),
+      snippet: cleanText(item.articleText || item.snippet || "").slice(0, 900),
+      contentStatus: item.contentStatus || "snippet_only",
       kind: item.kind,
       topic: item.topic || "",
+      evidenceClass: item.evidenceClass || "",
     })),
     sectorEvidence: research.evidence.filter((item) => item.kind === "sector").slice(0, 4).map((item) => ({
       title: cleanText(item.title || "").slice(0, 140),
@@ -8689,6 +8915,8 @@ async function aiDecisionChunk(model, items) {
   const prompt = [
     "Role: Japanese equity research assistant. Do not promise future profit. Strictly separate decision reasons from risks.",
     "Analyze the data in English for clarity: financials, valuation, price action, industry context, news age, evidence quality, and position P/L. Write all user-facing text in natural Japanese.",
+    "Use only dated evidence from the last 45 days for current news/commentary. Distinguish company announcements/reputable reporting as facts, analyst targets or ratings as opinions, and Yahoo Finance/message-board/social posts as unverified investor opinions. Do not treat comments as facts or change a buy/hold/sell view based only on anonymous sentiment. Consider whether commentary is corroborated by filings or reputable reporting, mention conflicting views, and state when recent dated evidence is unavailable. contentStatus=snippet_only means only a search excerpt was available, so lower confidence and do not infer article details; article_excerpt is only the first 1,800 extracted characters, not necessarily the whole page.",
+    "In every decision include marketView (one or two short Japanese sentences) stating how recent evidence affects the stance, marketImpact (positive|negative|mixed|neutral|unknown), and marketConfidence (0-100). Use neutral or unknown and say no dated evidence was found when applicable.",
     "Add a businessOverview field with 2-3 short Japanese sentences explaining the company's products or services, customers, and revenue sources. Prioritize evidence tagged business_profile, especially annual securities reports and integrated reports. If sources do not establish the business, return an empty string instead of guessing.",
     "Return strict JSON only in this schema: {\"decisions\":[{\"symbol\":\"9005.T\",\"action\":\"HOLD\",\"confidence\":55,\"thesis\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"],\"riskChecks\":[{\"label\":\"業績・決算\",\"level\":\"medium\",\"status\":\"確認\",\"summary\":\"...\"}],\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":2000,\"reviewPrice\":1600,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}.",
     "action must be one of BUY, HOLD, SELL, WATCH. SELL means review the holding thesis over the next several weeks to months, not automatic immediate sale. confidence is 0-100.",
@@ -8732,6 +8960,9 @@ async function aiDecisionChunk(model, items) {
       confidence: decision.confidence,
       thesis: decision.thesis,
       businessOverview: decision.businessOverview,
+      marketView: decision.marketView,
+      marketImpact: decision.marketImpact,
+      marketConfidence: decision.marketConfidence,
       reasons: decision.reasons,
       risks: decision.risks,
       riskChecks: decision.riskChecks,
@@ -9007,6 +9238,13 @@ function normalizeDecision(stock, price, research, decision, options = {}) {
     confidence,
     thesis: String(safety.thesis || decision.thesis || `${stock.name}は${actionLabels[action]}判定。`).slice(0, 360),
     businessOverview: cleanText(decision.businessOverview || "").slice(0, 420),
+    marketView: research.marketPerspectiveCount
+      ? cleanText(decision.marketView || "").slice(0, 300)
+      : "直近45日以内に日付を確認できるニュース・見解はありません。",
+    marketImpact: research.marketPerspectiveCount && ["positive", "negative", "mixed", "neutral"].includes(decision.marketImpact)
+      ? decision.marketImpact
+      : "unknown",
+    marketConfidence: research.marketPerspectiveCount ? clamp(Number(decision.marketConfidence || 0), 0, 100) : 0,
     businessOverviewSources: uniqueBy(research.evidence
       .filter((item) => item.kind === "business_profile" && item.url)
       .slice(0, 3)
@@ -9024,6 +9262,7 @@ function normalizeDecision(stock, price, research, decision, options = {}) {
     researchStats: {
       searched: research.searched,
       crawled: research.crawled,
+      marketPerspectives: research.marketPerspectiveCount || 0,
     },
   };
 }

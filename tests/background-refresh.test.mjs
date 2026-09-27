@@ -121,6 +121,139 @@ test("technical entry uses golden cross and closing strength experience rules", 
   assert.match(appSource, /technicalExperienceBadge/);
 });
 
+test("market perspective keeps only recent, ticker-matched evidence and labels opinions", () => {
+  assert.match(serverSource, /async function enrichMarketPerspectiveEvidence/);
+  assert.match(serverSource, /contentStatus=snippet_only means only a search excerpt was available/);
+  assert.match(serverSource, /stocktwits\.com\/symbol/);
+  assert.match(serverSource, /finance\.yahoo\.co\.jp\/quote\/\$\{code\}\.T\/bbs/);
+  assert.match(appSource, /記事本文の冒頭を取得/);
+  assert.match(appSource, /取得本文（最大1,800字）/);
+  assert.match(serverSource, /marketViewJa/);
+  assert.match(serverSource, /marketImpact/);
+  assert.match(appSource, /marketJudgmentHtml/);
+  const start = serverSource.indexOf("function marketPerspectiveSort(");
+  const end = serverSource.indexOf("function usFinanceNewsSourceRank(", start);
+  assert.ok(start >= 0 && end > start);
+  const today = new Date();
+  const dateDaysAgo = (days) => {
+    const date = new Date(today);
+    date.setDate(date.getDate() - days);
+    return date.toISOString().slice(0, 10);
+  };
+  const marketPerspectiveEvidence = vm.runInNewContext(
+    `${serverSource.slice(start, end)}; marketPerspectiveEvidence`,
+    {
+      MARKET_PERSPECTIVE_MAX_AGE_DAYS: 45,
+      normalizeDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : "",
+      searchResultPublishedDate: (item) => item.publishedDate || "",
+      isRecentSearchDate: (value, maxDays) => {
+        const age = (today.getTime() - new Date(`${value}T00:00:00`).getTime()) / 86400000;
+        return age >= 0 && age <= maxDays;
+      },
+      isJapaneseListedSymbol: (symbol) => /^\d{4}(?:\.T)?$/i.test(String(symbol || "")),
+      isJpStockSpecificEvidence: () => true,
+      usEvidenceMentionsStock: (item, stock) => (item.relatedTickers || []).includes(stock.symbol)
+        || new RegExp(`(^|[^A-Z])${stock.symbol}([^A-Z]|$)`, "i").test(`${item.title || ""} ${item.snippet || ""}`),
+      uniqueBy: (items, keyOf) => {
+        const seen = new Set();
+        return items.filter((item) => {
+          const key = keyOf(item);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      },
+      canonicalNewsUrl: (value) => value || "",
+      hostOf: () => "example.com",
+    },
+  );
+  const result = marketPerspectiveEvidence([
+    { title: "AAPL analyst view", url: "https://example.com/analyst", topic: "analyst_view", publishedDate: dateDaysAgo(2), relatedTickers: ["AAPL"] },
+    { title: "AAPL news", url: "https://example.com/news", topic: "recent_news", publishedDate: dateDaysAgo(5), relatedTickers: ["AAPL"] },
+    { title: "AAPL discussion", url: "https://example.com/discussion", topic: "investor_commentary", publishedDate: dateDaysAgo(4), relatedTickers: ["AAPL"] },
+    { title: "AAPL old news", url: "https://example.com/old", topic: "recent_news", publishedDate: dateDaysAgo(60), relatedTickers: ["AAPL"] },
+    { title: "MSFT news", url: "https://example.com/other", topic: "recent_news", publishedDate: dateDaysAgo(1), relatedTickers: ["MSFT"] },
+    { title: "Undated AAPL discussion", url: "https://example.com/undated", topic: "investor_commentary", relatedTickers: ["AAPL"] },
+  ], { symbol: "AAPL" }, 8);
+  assert.deepEqual(Array.from(result, (item) => item.evidenceClass), [
+    "analyst_opinion", "investor_opinion", "reported_news",
+  ]);
+});
+
+test("market source enrichment keeps article text only when the page itself matches the ticker", async () => {
+  const start = serverSource.indexOf("async function enrichMarketPerspectiveEvidence(");
+  const end = serverSource.indexOf("\nfunction usFinanceNewsSourceRank(", start);
+  assert.ok(start >= 0 && end > start);
+  const enrichMarketPerspectiveEvidence = vm.runInNewContext(
+    `${serverSource.slice(start, end)}; enrichMarketPerspectiveEvidence`,
+    {
+      mapLimit: (items, _limit, fn) => Promise.all(items.map(fn)),
+      fetchPageText: async (url) => {
+        if (url.endsWith("/blocked")) return null;
+        const matches = url.endsWith("/matching");
+        return {
+          title: matches ? "AAPL company update" : "Unrelated company update",
+          text: `${matches ? "AAPL " : "OTHER "}${"article body ".repeat(24)}`,
+        };
+      },
+      cleanText: (value) => String(value || "").replace(/\s+/g, " ").trim(),
+      isJapaneseListedSymbol: () => false,
+      isJpStockSpecificEvidence: () => false,
+      usEvidenceMentionsStock: (item, stock) => `${item.title || ""} ${item.snippet || ""}`.includes(stock.symbol),
+      canonicalNewsUrl: (value) => value || "",
+    },
+  );
+  const enriched = await enrichMarketPerspectiveEvidence([
+    { symbol: "AAPL", title: "AAPL search result", url: "https://example.com/matching", snippet: "search excerpt" },
+    { symbol: "AAPL", title: "AAPL search result", url: "https://example.com/unrelated", snippet: "search excerpt" },
+    { symbol: "AAPL", title: "AAPL search result", url: "https://example.com/blocked", snippet: "search excerpt" },
+  ], { symbol: "AAPL" }, 3);
+  assert.equal(enriched[0].contentStatus, "article_excerpt");
+  assert.match(enriched[0].articleText, /AAPL/);
+  assert.equal(enriched[1].contentStatus, "snippet_only");
+  assert.equal(enriched[2].contentStatus, "snippet_only");
+});
+
+test("Japanese Yahoo Finance quote news fallback keeps only recent company-specific headlines", () => {
+  const yahooFinanceJpNewsDate = loadFunction(serverSource, "yahooFinanceJpNewsDate", {});
+  const parseYahooFinanceJpNewsPage = loadFunction(serverSource, "parseYahooFinanceJpNewsPage", {
+    MARKET_PERSPECTIVE_MAX_AGE_DAYS: 45,
+    URL,
+    yahooFinanceJpNewsDate,
+    normalizeUrl: (value) => new URL(value).href,
+    htmlToText: (value) => String(value).replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim(),
+    cleanText: (value) => String(value || "").replace(/\s+/g, " ").trim(),
+    jpStockCode: (symbol) => String(symbol).match(/\d{4}/)?.[0] || "",
+    jpEvidenceHasCode: (item, code) => new RegExp(`(^|\\D)${code}(\\D|$)`).test(`${item.title} ${item.snippet}`),
+    hasStrongCompanyName: (item, stock) => `${item.title} ${item.snippet}`.includes(stock.name),
+    normalizeSymbol: (value) => String(value).endsWith(".T") ? String(value) : `${value}.T`,
+    isRecentSearchDate: (value) => value >= "2026-08-13" && value <= "2026-09-27",
+    hostOf: (value) => new URL(value).hostname,
+    uniqueBy: (items, keyOf) => {
+      const seen = new Set();
+      return items.filter((item) => {
+        const key = keyOf(item);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    },
+    canonicalNewsUrl: (value) => value,
+  });
+  const page = `
+    <a href="/news/detail/toyota-latest">トヨタ自動車 7203 業績見通しを発表 9/26 株探ニュース</a>
+    <a href="/news/detail/unrelated">任天堂 7974 新作ゲームを発表 9/26 共同通信</a>
+    <a href="/news/detail/old">トヨタ自動車 7203 決算を発表 7/1 株探ニュース</a>
+  `;
+  const items = parseYahooFinanceJpNewsPage(page, { symbol: "7203.T", name: "トヨタ自動車" }, "https://finance.yahoo.co.jp/quote/7203.T/news", 5);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].publishedDate, "2026-09-26");
+  assert.equal(items[0].topic, "recent_news");
+  assert.deepEqual(Array.from(items[0].relatedTickers), ["7203.T"]);
+  assert.equal(yahooFinanceJpNewsDate("トヨタ 9/26", new Date("2026-09-27T12:00:00Z")), "2026-09-26");
+  assert.equal(yahooFinanceJpNewsDate("年次報告のみ", new Date("2026-09-27T12:00:00Z")), "");
+});
+
 test("candlestick rules classify buy and sell patterns separately", () => {
   const latestCandlestickSignal = loadFunctionBlock(serverSource, "latestCandlestickSignal", "regimeAssessment", {
     nullablePositiveNumber: (value) => {
