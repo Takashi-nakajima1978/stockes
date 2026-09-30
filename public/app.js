@@ -98,6 +98,7 @@ const actionClasses = {
 const chartState = {
   series: [],
   tradeMarkers: [],
+  price: {},
   points: [],
   plot: null,
   hoverIndex: null,
@@ -1344,7 +1345,7 @@ function renderUsDetail() {
     </section>
   `;
   attachUsPositionForm(stock.symbol);
-  renderEmbeddedPriceChart(els.usDetail, analysis?.price?.series || [], usd, chartTradeMarkers(stock));
+  renderEmbeddedPriceChart(els.usDetail, analysis?.price?.series || [], usd, chartTradeMarkers(stock), analysis?.price || {});
 }
 
 function renderCrypto() {
@@ -3449,8 +3450,9 @@ function renderSelection() {
   const analysis = stock ? state.analyses[stock.symbol] : null;
   els.selectedSymbol.innerHTML = stock ? symbolLinkHtml(stock.symbol, "jp") : "未選択";
 
-  drawChart(analysis?.price?.series || [], stock ? chartTradeMarkers(stock) : []);
-  renderChartTiming(analysis?.price || null);
+  const price = analysis?.price || {};
+  drawChart(price.series || [], stock ? chartTradeMarkers(stock) : [], price);
+  renderChartTiming(price);
 
   if (!stock) {
     els.decisionDetail.innerHTML = "<p>銘柄を追加してください。</p>";
@@ -3469,7 +3471,6 @@ function renderSelection() {
   }
 
   const action = analysis.action || "WATCH";
-  const price = analysis.price || {};
   const position = positionMetrics(stock, price);
   els.decisionDetail.innerHTML = `
     ${positionEditor(stock, position, analysis)}
@@ -4214,7 +4215,7 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-function drawChart(series, tradeMarkers = chartState.tradeMarkers || []) {
+function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price = chartState.price || {}) {
   const canvas = els.chart;
   if (!canvas) return;
   const context = canvas.getContext("2d");
@@ -4232,6 +4233,7 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || []) {
 
   const pad = { top: 22, right: 18, bottom: 28, left: 56 };
   const cleanSeries = cleanChartSeries(series);
+  chartState.price = price || {};
   const markers = resolveChartTradeMarkers(cleanSeries, tradeMarkers);
   const values = [...cleanSeries.map((point) => point.close), ...markers.map((marker) => marker.price)];
   chartState.series = cleanSeries;
@@ -4268,7 +4270,14 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || []) {
     context.stroke();
   }
 
-  const timing = buyTimingFromSeries(cleanSeries);
+  const timing = buyTimingFromSeries(
+    cleanSeries,
+    yen,
+    chartState.price.dividendEvents || [],
+    chartState.price.dividendNextAmount,
+    chartState.price.dividendNextDate,
+    chartState.price.dividendNextDateSource,
+  );
   if (timing?.buyLine) {
     const buyY = y(timing.buyLine);
     context.fillStyle = "rgba(11, 107, 88, 0.08)";
@@ -4282,7 +4291,7 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || []) {
     context.setLineDash([]);
     context.fillStyle = "#0b6b58";
     context.font = "11px system-ui";
-    context.fillText("1年の買い場", Math.max(pad.left + 4, width - 112), Math.max(pad.top + 12, buyY - 6));
+    context.fillText(timing.dividendAdjustment1y > 0 ? "配当落ち調整後" : "1年の買い場", Math.max(pad.left + 4, width - 112), Math.max(pad.top + 12, buyY - 6));
   }
   if (timing?.sellLine) {
     const sellY = y(timing.sellLine);
@@ -4404,7 +4413,7 @@ function hideChartTooltip() {
   if (els.chartTooltip) els.chartTooltip.hidden = true;
 }
 
-function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarkers = []) {
+function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarkers = [], price = {}) {
   const canvas = root?.querySelector("[data-us-price-chart]");
   const tooltip = root?.querySelector("[data-us-chart-tooltip]");
   const timingNode = root?.querySelector("[data-us-chart-timing]");
@@ -4458,7 +4467,14 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
       context.stroke();
     }
 
-    const timing = buyTimingFromSeries(cleanSeries, formatter);
+    const timing = buyTimingFromSeries(
+      cleanSeries,
+      formatter,
+      price.dividendEvents || [],
+      price.dividendNextAmount,
+      price.dividendNextDate,
+      price.dividendNextDateSource,
+    );
     if (timing?.buyLine) {
       const buyY = y(timing.buyLine);
       context.fillStyle = "rgba(11, 107, 88, 0.08)";
@@ -4472,7 +4488,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
       context.setLineDash([]);
       context.fillStyle = "#0b6b58";
       context.font = "11px system-ui";
-      context.fillText("1年の買い場", Math.max(pad.left + 4, width - 112), Math.max(pad.top + 12, buyY - 6));
+      context.fillText(timing.dividendAdjustment1y > 0 ? "配当落ち調整後" : "1年の買い場", Math.max(pad.left + 4, width - 112), Math.max(pad.top + 12, buyY - 6));
     }
     if (timing?.sellLine) {
       const sellY = y(timing.sellLine);
@@ -4603,6 +4619,8 @@ function renderEmbeddedChartTiming(node, timing, formatter) {
     <p>${escapeHtml(timing.summary)}</p>
     <div class="timing-grid">
       <span><strong>買い場ライン</strong>${formatter(timing.buyLine)}</span>
+      ${timing.buyLineAfterNextDividend ? `<span><strong>次回配当落ち後の参考ライン</strong>${formatter(timing.buyLineAfterNextDividend)}</span>` : ""}
+      ${timing.dividendAdjustment1y > 0 ? `<span><strong>過去1年の配当落ち調整</strong>-${formatter(timing.dividendAdjustment1y)}</span>` : ""}
       <span><strong>売り場ライン</strong>${formatter(timing.sellLine)}</span>
       <span><strong>最安日</strong>${escapeHtml(formatDate(timing.low.date))} ${formatter(timing.low.close)}</span>
       <span><strong>今との差</strong>${signedPct(timing.currentGapFromBuyLine)}</span>
@@ -4613,7 +4631,14 @@ function renderEmbeddedChartTiming(node, timing, formatter) {
 
 function renderChartTiming(price) {
   if (!els.chartTiming) return;
-  const timing = buyTimingFromSeries(price?.series || [], yen);
+  const timing = buyTimingFromSeries(
+    price?.series || [],
+    yen,
+    price?.dividendEvents || [],
+    price?.dividendNextAmount,
+    price?.dividendNextDate,
+    price?.dividendNextDateSource,
+  );
   if (!timing) {
     els.chartTiming.hidden = true;
     els.chartTiming.innerHTML = "";
@@ -4631,7 +4656,9 @@ function renderChartTiming(price) {
     </div>
     <p>${escapeHtml(timing.summary)}</p>
     <div class="timing-grid">
-      <span><strong>買い場ライン</strong>${yen(timing.buyLine)}</span>
+      <span><strong>買い場ライン（配当落ち調整後）</strong>${yen(timing.buyLine)}</span>
+      ${timing.buyLineAfterNextDividend ? `<span><strong>次回配当落ち後の参考ライン</strong>${yen(timing.buyLineAfterNextDividend)}</span>` : ""}
+      ${timing.dividendAdjustment1y > 0 ? `<span><strong>過去1年の配当落ち調整</strong>-${yen(timing.dividendAdjustment1y)}</span>` : ""}
       <span><strong>売り場ライン</strong>${yen(timing.sellLine)}</span>
       <span><strong>最安日</strong>${escapeHtml(formatDate(timing.low.date))} ${yen(timing.low.close)}</span>
       <span><strong>今との差</strong>${signedPct(timing.currentGapFromBuyLine)}</span>
@@ -4640,30 +4667,42 @@ function renderChartTiming(price) {
   `;
 }
 
-function buyTimingFromSeries(series = [], formatter = yen) {
+function buyTimingFromSeries(series = [], formatter = yen, dividendEvents = [], nextDividendAmount = null, nextDividendDate = "", nextDividendDateSource = "") {
   const clean = cleanChartSeries(series)
     .sort((a, b) => a.date.localeCompare(b.date));
   if (clean.length < 40) return null;
   const latest = clean[clean.length - 1];
   const latestTime = dateToTime(latest.date);
   if (!Number.isFinite(latestTime)) return null;
-  const oneYear = clean.filter((point) => {
+  const oneYearRaw = clean.filter((point) => {
     const time = dateToTime(point.date);
     return Number.isFinite(time) && latestTime - time <= 366 * 86400000;
   });
-  if (oneYear.length < 40) return null;
+  if (oneYearRaw.length < 40) return null;
+
+  const events = (dividendEvents || [])
+    .map((event) => ({ date: String(event?.date || "").slice(0, 10), amount: Number(event?.amount) }))
+    .filter((event) => /^\d{4}-\d{2}-\d{2}$/.test(event.date) && Number.isFinite(event.amount) && event.amount > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const oneYear = oneYearRaw.map((point) => {
+    const adjustment = events
+      .filter((event) => event.date > point.date && event.date <= latest.date)
+      .reduce((sum, event) => sum + event.amount, 0);
+    return { ...point, close: Math.max(0.01, point.close - adjustment), dividendAdjustment: adjustment };
+  });
 
   const closes = oneYear.map((point) => point.close).sort((a, b) => a - b);
   const buyLine = quantile(closes, 0.25);
   const deepLine = quantile(closes, 0.15);
   const sellLine = quantile(closes, 0.75);
   const median = quantile(closes, 0.5);
-  const low = oneYear.reduce((best, point) => (point.close < best.close ? point : best), oneYear[0]);
+  const lowAdjusted = oneYear.reduce((best, point) => (point.close < best.close ? point : best), oneYear[0]);
+  const low = oneYearRaw.find((point) => point.date === lowAdjusted.date) || lowAdjusted;
   const cheapPoints = oneYear.filter((point) => point.close <= buyLine);
   const periods = cheapPeriods(cheapPoints);
   const months = cheapMonths(oneYear, buyLine);
   const currentGapFromBuyLine = buyLine ? ((latest.close - buyLine) / buyLine) * 100 : null;
-  const return1m = oneYear.length > 21 ? ((latest.close - oneYear[oneYear.length - 22].close) / oneYear[oneYear.length - 22].close) * 100 : null;
+  const return1m = oneYear.length > 21 ? ((oneYear.at(-1).close - oneYear[oneYear.length - 22].close) / oneYear[oneYear.length - 22].close) * 100 : null;
 
   let status = "押し目待ち";
   let statusClass = "wait";
@@ -4690,9 +4729,21 @@ function buyTimingFromSeries(series = [], formatter = yen) {
   const periodText = periods.length
     ? periods.map((period) => period.label).join("、")
     : months.join("、");
-  const summary = `過去1年では ${periodText || "安値圏"} が買いやすい時期でした。${phrase} 目安は ${formatter(buyLine)} 以下、直近は ${formatter(latest.close)} です。`;
+  const dividendAdjustment1y = events
+    .filter((event) => event.date > oneYearRaw[0].date && event.date <= latest.date)
+    .reduce((sum, event) => sum + event.amount, 0);
+  const buyLineAfterNextDividend = Number(nextDividendAmount) > 0
+    ? Math.max(0.01, buyLine - Number(nextDividendAmount))
+    : null;
+  const nextDateText = nextDividendDate
+    ? `次回${nextDividendDateSource === "データ取得済み予定" ? "取得予定" : "推定"}配当落ち${formatDate(nextDividendDate)}`
+    : "次回配当落ち日未確認";
+  const summary = `過去1年では ${periodText || "安値圏"} が買いやすい時期でした。${phrase} 目安は ${formatter(buyLine)} 以下、直近は ${formatter(latest.close)} です。${dividendAdjustment1y > 0 ? ` 過去配当${formatter(dividendAdjustment1y)}を調整済み。` : ""}${buyLineAfterNextDividend ? ` ${nextDateText}後の参考ラインは${formatter(buyLineAfterNextDividend)}です。` : ""}`;
   return {
     buyLine,
+    buyLineRaw: quantile(oneYearRaw.map((point) => point.close).sort((a, b) => a - b), 0.25),
+    buyLineAfterNextDividend,
+    dividendAdjustment1y,
     deepLine,
     sellLine,
     low,
@@ -4891,12 +4942,18 @@ function dividendTimingSummary(price = {}) {
 
 function dividendTimingDetail(price = {}, formatter = yen) {
   const timing = dividendTiming(price);
-  if (!timing) return "-";
+  const frequency = price.dividendFrequencyText || "";
+  const caution = price.dividendBuyCaution ? "配当落ち間近・新規買い待ち" : "";
+  const nextAmount = Number.isFinite(Number(price.dividendNextAmount)) && Number(price.dividendNextAmount) > 0
+    ? `次回予想 ${formatter(Number(price.dividendNextAmount))}/株`
+    : "次回配当額未確認";
+  if (!timing) return [frequency, caution].filter(Boolean).join(" / ") || "-";
   const amount = Number.isFinite(timing.latest?.amount) ? formatter(timing.latest.amount) : "";
   const latest = timing.latest ? `直近 ${formatDate(timing.latest.date)}${amount ? ` ${amount}` : ""}` : "";
-  const next = timing.nextLabel ? `次回目安 ${timing.nextLabel}` : "";
+  const source = price.dividendNextDateSource === "データ取得済み予定" ? "取得予定" : "推定";
+  const next = timing.nextLabel ? `次回${source} ${timing.nextLabel}` : "";
   const months = timing.months.length ? ` / 実績月 ${timing.months.map(monthLabel).join("・")}` : "";
-  return [latest, next].filter(Boolean).join(" / ") + months || "-";
+  return [frequency, latest, next, timing.nextLabel ? nextAmount : "", caution].filter(Boolean).join(" / ") + months || "-";
 }
 
 function monthLabel(month) {
@@ -6681,13 +6738,15 @@ function incomeSeasonalityHtml(signal = null) {
   const criteria = (signal.criteria || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
   const risks = (signal.risks || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
   const score = Number(signal.score || 0);
-  const cls = score >= 10 ? "good" : score > 0 ? "watch" : "weak";
+  const cls = signal.buyCaution ? "weak" : score >= 10 ? "good" : score > 0 ? "watch" : "weak";
   const next = signal.nextDate ? ` / 次回目安 ${formatDate(signal.nextDate)}` : "";
+  const amount = Number.isFinite(signal.nextAmount) ? ` / 予想配当 ${yen(signal.nextAmount)}/株` : "";
+  const frequency = signal.frequencyLabel ? ` / ${signal.frequencyLabel}` : "";
   return `
     <div class="early-signal income-seasonality ${cls}">
       <div>
         <strong>配当・優待タイミング</strong>
-        <span>${escapeHtml(signal.label || "確認")}${escapeHtml(next)}</span>
+        <span>${escapeHtml(signal.label || "確認")}${escapeHtml(next)}${escapeHtml(amount)}${escapeHtml(frequency)}</span>
       </div>
       <p>${escapeHtml(signal.summary || "権利確定前後の買い需要と反落リスクを確認します。")}</p>
       <div>${criteria}${risks}</div>

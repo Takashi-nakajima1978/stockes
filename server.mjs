@@ -2901,7 +2901,10 @@ function compactUsPrice(price = {}) {
     distanceFromTrend3y: price.distanceFromTrend3y,
     trend3y: price.trend3y,
     buyLine1y: price.buyLine1y,
+    buyLine1yRaw: price.buyLine1yRaw,
+    buyLine1yAfterNextDividend: price.buyLine1yAfterNextDividend,
     deepBuyLine1y: price.deepBuyLine1y,
+    dividendAdjustment1y: price.dividendAdjustment1y,
     distanceFromBuyLine1y: price.distanceFromBuyLine1y,
     buyTiming1y: price.buyTiming1y,
     low1y: price.low1y,
@@ -2915,6 +2918,12 @@ function compactUsPrice(price = {}) {
     dividendLastDate: price.dividendLastDate,
     dividendLastAmount: price.dividendLastAmount,
     dividendNextDate: price.dividendNextDate,
+    dividendNextAmount: price.dividendNextAmount,
+    dividendNextDateSource: price.dividendNextDateSource,
+    dividendFrequencyPerYear: price.dividendFrequencyPerYear,
+    dividendFrequencyText: price.dividendFrequencyText,
+    dividendDaysToNext: price.dividendDaysToNext,
+    dividendBuyCaution: Boolean(price.dividendBuyCaution),
     dividendPaymentDate: price.dividendPaymentDate,
     dividendAnnualSource: price.dividendAnnualSource,
     dividendEvents: price.dividendEvents,
@@ -4385,6 +4394,7 @@ function isActionableDiscoveryCandidate(candidate = {}) {
   const current = nullablePositiveNumber(price.current);
   const maxBuyPrice = nullablePositiveNumber(plan.maxBuyPrice);
   if (!current || !maxBuyPrice) return false;
+  if (!isUsDiscoveryCandidate(candidate) && (price.dividendBuyCaution || dividendEventSeasonality(price).buyCaution)) return false;
   if (isExtendedRunChart(price)) return false;
   const seasonalAllowance = candidateIncomeBuyAllowance(candidate);
   if (current > maxBuyPrice * (STRICT_BUY_TARGET_TOLERANCE + seasonalAllowance)) return false;
@@ -5531,6 +5541,12 @@ function incomeSeasonalitySignal(candidate = {}, price = {}, evidence = []) {
     label,
     nextDate: dividend?.nextDate || "",
     daysToNext: Number.isFinite(dividend?.daysToNext) ? dividend.daysToNext : null,
+    nextAmount: nullablePositiveNumber(dividend?.nextAmount),
+    nextDateSource: dividend?.nextDateSource || "未確認",
+    frequencyPerYear: Number.isFinite(dividend?.frequencyPerYear) ? dividend.frequencyPerYear : null,
+    frequencyLabel: dividend?.frequencyLabel || "配当回数未確認",
+    buyCaution: Boolean(dividend?.buyCaution),
+    buyLineAfterNextDividend: nullablePositiveNumber(price.buyLine1yAfterNextDividend),
     months: dividend?.months || [],
     summary: summaryParts.join(" "),
     criteria: uniqueText(criteria).slice(0, 5),
@@ -5561,6 +5577,7 @@ function shareholderBenefitSignal(candidate = {}, evidence = []) {
 function candidateIncomeBuyAllowance(candidate = {}) {
   if (isUsDiscoveryCandidate(candidate)) return 0;
   const signal = candidate.incomeSeasonality || {};
+  if (signal.buyCaution || candidate.price?.dividendBuyCaution || dividendEventSeasonality(candidate.price || {}).buyCaution) return 0;
   const score = Number(signal.score || 0);
   const days = Number(signal.daysToNext);
   if (score >= 10 && Number.isFinite(days) && days >= 8 && days <= 45) return SEASONAL_BUY_TARGET_ALLOWANCE;
@@ -6756,6 +6773,7 @@ function discoveryRankLabel(score) {
 function candidateBuyPlan(price, options = {}) {
   const current = nullablePositiveNumber(price.current);
   const currency = options.currency || price.currency || "JPY";
+  const unitSize = options.unitSize || 100;
   if (!current) {
     return {
       stance: "価格待ち",
@@ -6766,7 +6784,30 @@ function candidateBuyPlan(price, options = {}) {
     };
   }
 
-  const unitSize = options.unitSize || 100;
+  const dividendTiming = dividendEventSeasonality(price);
+  if (currency !== "USD" && (price.dividendBuyCaution || dividendTiming.buyCaution)) {
+    const buyLine = nullablePositiveNumber(price.buyLine1yAfterNextDividend)
+      || nullablePositiveNumber(price.buyLine1y);
+    const dateText = dividendTiming.nextDate
+      ? `${dividendTiming.nextDateSource === "データ取得済み予定" ? "取得予定" : "推定"} ${dividendTiming.nextDate}`
+      : "配当落ち日が近い";
+    const amountText = Number.isFinite(dividendTiming.nextAmount) && buyLine
+      ? `、予想配当${formatMoney(dividendTiming.nextAmount, currency)}/株を反映した参考買い場は${formatMoney(buyLine, currency)}`
+      : buyLine ? `、参考買い場は${formatMoney(buyLine, currency)}` : "";
+    return {
+      stance: "配当落ち後まで待つ",
+      maxBuyPrice: buyLine ? Math.round(buyLine * 10) / 10 : null,
+      unitAmountAtMax: buyLine ? Math.round(buyLine * unitSize) : null,
+      summary: `${dateText}のため新規買いは待ちます${amountText}。配当落ち後の実価格を確認して再計算します。`,
+      checks: uniqueText([
+        dividendTiming.frequencyLabel,
+        Number.isFinite(dividendTiming.daysToNext) ? `${dateText}まで${dividendTiming.daysToNext}日` : dateText,
+        Number.isFinite(dividendTiming.nextAmount) ? `配当落ち調整${formatMoney(dividendTiming.nextAmount, currency)}/株` : "配当額未確認のため配当落ち後に再計算",
+        "権利落ち前は新規買いを見送る",
+      ]).slice(0, 5),
+    };
+  }
+
   const trendPrice = nullablePositiveNumber(price.trendPrice3y);
   const unitBudget = nullablePositiveNumber(options.unitBudget);
   const currentUnitAmount = current * unitSize;
@@ -6919,7 +6960,10 @@ function compactDiscoveryPrice(price, unitSize = 100, currency = "JPY") {
     distanceFromTrend3y: price.distanceFromTrend3y,
     distanceFromHigh3y: price.distanceFromHigh3y,
     buyLine1y: price.buyLine1y,
+    buyLine1yRaw: price.buyLine1yRaw,
+    buyLine1yAfterNextDividend: price.buyLine1yAfterNextDividend,
     deepBuyLine1y: price.deepBuyLine1y,
+    dividendAdjustment1y: price.dividendAdjustment1y,
     distanceFromBuyLine1y: price.distanceFromBuyLine1y,
     buyTiming1y: price.buyTiming1y,
     low1y: price.low1y,
@@ -6953,14 +6997,20 @@ function compactDiscoveryPrice(price, unitSize = 100, currency = "JPY") {
     dividendPerShareForward: price.dividendPerShareForward,
     dividendPerShareTtm: price.dividendPerShareTtm,
     dividendYield: price.dividendYield,
+    dividendNextDate: price.dividendNextDate,
+    dividendNextAmount: price.dividendNextAmount,
+    dividendNextDateSource: price.dividendNextDateSource,
+    dividendFrequencyPerYear: price.dividendFrequencyPerYear,
+    dividendFrequencyText: price.dividendFrequencyText,
+    dividendDaysToNext: price.dividendDaysToNext,
+    dividendBuyCaution: Boolean(price.dividendBuyCaution),
+    dividendEvents: price.dividendEvents || [],
     dividendYieldTtm: price.dividendYieldTtm,
     dividendChangePct: price.dividendChangePct,
     dividendLastDate: price.dividendLastDate,
     dividendLastAmount: price.dividendLastAmount,
-    dividendNextDate: price.dividendNextDate,
     dividendPaymentDate: price.dividendPaymentDate,
     dividendAnnualSource: price.dividendAnnualSource,
-    dividendEvents: Array.isArray(price.dividendEvents) ? price.dividendEvents.slice(-12) : [],
   };
 }
 
@@ -7404,7 +7454,8 @@ function priceMetrics(series, meta = {}) {
   const trendSlope3y = trend.slope;
   const trendPrice3y = trend.currentPrice;
   const dividend = dividendMetrics(meta.dividends || [], current);
-  const buyTiming = priceBuyTiming(series);
+  const buyTiming = priceBuyTiming(series, dividend.dividendEvents);
+  const dividendTiming = dividendEventSeasonality(dividend);
   const technical = technicalIndicators(series, buyTiming);
   const regime = regimeAssessment(series);
   return {
@@ -7460,6 +7511,16 @@ function priceMetrics(series, meta = {}) {
     yahooSymbol: cleanText(meta.symbol || ""),
     ...buyTiming,
     ...dividend,
+    buyLine1yAfterNextDividend: Number.isFinite(buyTiming.buyLine1y) && Number.isFinite(dividendTiming.nextAmount)
+      ? Math.max(0.01, buyTiming.buyLine1y - dividendTiming.nextAmount)
+      : null,
+    dividendFrequencyPerYear: dividendTiming.frequencyPerYear,
+    dividendFrequencyText: dividendTiming.frequencyLabel,
+    dividendNextDate: dividendTiming.nextDate,
+    dividendNextAmount: dividendTiming.nextAmount,
+    dividendNextDateSource: dividendTiming.nextDateSource,
+    dividendDaysToNext: dividendTiming.daysToNext,
+    dividendBuyCaution: dividendTiming.buyCaution,
     series: series3y,
   };
 }
@@ -7512,7 +7573,7 @@ function isSuspiciousPricePoint(point, index, points = []) {
   return false;
 }
 
-function priceBuyTiming(series = []) {
+function priceBuyTiming(series = [], dividendEvents = []) {
   const clean = cleanPriceSeries(series)
     .map((point) => ({ date: normalizeDate(point.date), close: Number(point.close) }))
     .filter((point) => point.date && Number.isFinite(point.close))
@@ -7527,11 +7588,25 @@ function priceBuyTiming(series = []) {
   });
   if (oneYear.length < 40) return emptyBuyTiming();
 
-  const closes = oneYear.map((point) => point.close).sort((a, b) => a - b);
+  const events = (dividendEvents || [])
+    .map((event) => ({ date: normalizeDate(event.date), amount: nullablePositiveNumber(event.amount) }))
+    .filter((event) => event.date && event.amount)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const adjusted = oneYear.map((point) => {
+    const dividendAdjustment = events
+      .filter((event) => event.date > point.date && event.date <= latest.date)
+      .reduce((sum, event) => sum + event.amount, 0);
+    return { ...point, dividendAdjustment, adjustedClose: Math.max(0.01, point.close - dividendAdjustment) };
+  });
+  const closes = adjusted.map((point) => point.adjustedClose).sort((a, b) => a - b);
+  const rawCloses = oneYear.map((point) => point.close).sort((a, b) => a - b);
   const buyLine1y = quantile(closes, 0.25);
   const deepBuyLine1y = quantile(closes, 0.15);
   const median1y = quantile(closes, 0.5);
-  const low = oneYear.reduce((best, point) => (point.close < best.close ? point : best), oneYear[0]);
+  const low = adjusted.reduce((best, point) => (point.adjustedClose < best.adjustedClose ? point : best), adjusted[0]);
+  const dividendAdjustment1y = events
+    .filter((event) => event.date > oneYear[0].date && event.date <= latest.date)
+    .reduce((sum, event) => sum + event.amount, 0);
   const distanceFromBuyLine1y = buyLine1y ? ((latest.close - buyLine1y) / buyLine1y) * 100 : null;
   let status = "ABOVE";
   if (deepBuyLine1y && latest.close <= deepBuyLine1y * 1.02) status = "DEEP";
@@ -7541,10 +7616,12 @@ function priceBuyTiming(series = []) {
 
   return {
     buyLine1y,
+    buyLine1yRaw: quantile(rawCloses, 0.25),
     deepBuyLine1y,
     median1y,
-    low1y: low.close,
+    low1y: low.adjustedClose,
     low1yDate: low.date,
+    dividendAdjustment1y,
     distanceFromBuyLine1y,
     buyTiming1y: status,
   };
@@ -7553,10 +7630,12 @@ function priceBuyTiming(series = []) {
 function emptyBuyTiming() {
   return {
     buyLine1y: null,
+    buyLine1yRaw: null,
     deepBuyLine1y: null,
     median1y: null,
     low1y: null,
     low1yDate: "",
+    dividendAdjustment1y: 0,
     distanceFromBuyLine1y: null,
     buyTiming1y: "UNKNOWN",
   };
@@ -8172,6 +8251,19 @@ function enrichPriceDividendForecast(price = {}, snapshot = null) {
     ? (annual / current) * 100
     : snapshotYield || price.dividendYield || null;
   const dividendYieldTtm = current && ttm ? (ttm / current) * 100 : price.dividendYieldTtm || null;
+  const snapshotNextDate = normalizeDate(snapshot?.exDividendDate);
+  const dividendNextDate = snapshotNextDate || price.dividendNextDate || "";
+  const dividendNextDateSource = snapshotNextDate ? "データ取得済み予定" : price.dividendNextDateSource || "";
+  const dividendTiming = dividendEventSeasonality({
+    ...price,
+    dividendPerShareAnnual: annual,
+    dividendPerShareForward: forward,
+    dividendNextDate,
+    dividendNextDateSource,
+  });
+  const buyLine1yAfterNextDividend = Number.isFinite(price.buyLine1y) && Number.isFinite(dividendTiming.nextAmount)
+    ? Math.max(0.01, price.buyLine1y - dividendTiming.nextAmount)
+    : null;
   return {
     ...price,
     dividendPerShareAnnual: annual || null,
@@ -8180,7 +8272,14 @@ function enrichPriceDividendForecast(price = {}, snapshot = null) {
     dividendYield,
     dividendYieldTtm,
     dividendAnnualSource: source || price.dividendAnnualSource || "",
-    dividendNextDate: normalizeDate(snapshot?.exDividendDate) || price.dividendNextDate || "",
+    dividendNextDate: dividendTiming.nextDate || dividendNextDate,
+    dividendNextDateSource: dividendTiming.nextDateSource,
+    dividendNextAmount: dividendTiming.nextAmount,
+    dividendFrequencyPerYear: dividendTiming.frequencyPerYear,
+    dividendFrequencyText: dividendTiming.frequencyLabel,
+    dividendDaysToNext: dividendTiming.daysToNext,
+    dividendBuyCaution: dividendTiming.buyCaution,
+    buyLine1yAfterNextDividend,
     dividendPaymentDate: normalizeDate(snapshot?.dividendDate) || price.dividendPaymentDate || "",
   };
 }
@@ -9112,7 +9211,10 @@ function compactPrice(price) {
     distanceFromTrend3y: price.distanceFromTrend3y,
     trend3y: price.trend3y,
     buyLine1y: price.buyLine1y,
+    buyLine1yRaw: price.buyLine1yRaw,
+    buyLine1yAfterNextDividend: price.buyLine1yAfterNextDividend,
     deepBuyLine1y: price.deepBuyLine1y,
+    dividendAdjustment1y: price.dividendAdjustment1y,
     distanceFromBuyLine1y: price.distanceFromBuyLine1y,
     buyTiming1y: price.buyTiming1y,
     low1y: price.low1y,
@@ -9151,6 +9253,13 @@ function compactPrice(price) {
     dividendLastDate: price.dividendLastDate,
     dividendLastAmount: price.dividendLastAmount,
     dividendNextDate: price.dividendNextDate,
+    dividendNextAmount: price.dividendNextAmount,
+    dividendNextDateSource: price.dividendNextDateSource,
+    dividendFrequencyPerYear: price.dividendFrequencyPerYear,
+    dividendFrequencyText: price.dividendFrequencyText,
+    dividendDaysToNext: price.dividendDaysToNext,
+    dividendBuyCaution: Boolean(price.dividendBuyCaution),
+    dividendEvents: price.dividendEvents || [],
     dividendPaymentDate: price.dividendPaymentDate,
     dividendAnnualSource: price.dividendAnnualSource,
   };
@@ -9920,6 +10029,22 @@ function decisionSafetyOverride(stock, price = {}, action, position = positionMe
   const buyLine = nullablePositiveNumber(price.buyLine1y);
   const targetBuyPrice = nullablePositiveNumber(stock.targetBuyPrice);
   const growthExitLevel = String(options.growthExit?.level || "").toLowerCase();
+  if (action === "BUY" && price.dividendBuyCaution) {
+    const dateText = price.dividendNextDate
+      ? `${price.dividendNextDateSource === "データ取得済み予定" ? "取得予定" : "推定"} ${price.dividendNextDate}`
+      : "配当落ち日が近い";
+    const afterDividendLine = nullablePositiveNumber(price.buyLine1yAfterNextDividend);
+    return {
+      action: stock.holding ? "HOLD" : "WATCH",
+      confidence: 78,
+      thesis: `${stock.name}は${dateText}のため、新規買い・買い増しは配当落ち後まで待つ判定です。配当落ち後の実価格で買い場ラインを再確認します。`,
+      reasons: [price.dividendFrequencyText || "配当時期を確認", "権利落ち前の価格上昇を追わない"],
+      risks: [
+        Number.isFinite(price.dividendNextAmount) ? `1株あたり予想配当${formatYen(price.dividendNextAmount)}` : "次回配当額は未確認",
+        afterDividendLine ? `配当落ち分を引いた参考買い場ライン${formatYen(afterDividendLine)}。実際の価格は再確認が必要` : "配当落ち後に買い場ラインを再計算",
+      ],
+    };
+  }
   if (action === "BUY" && current && targetBuyPrice && current > targetBuyPrice * 1.01) {
     const gap = ((current - targetBuyPrice) / targetBuyPrice) * 100;
     return {
@@ -12008,7 +12133,36 @@ async function notifyStrongDiscoverySignals(suggestions = []) {
 function analysisSignals(analysis, settings) {
   const exitSignals = exitPlanSignals(analysis);
   const regular = analysisSignal(analysis, settings);
-  return [...exitSignals, regular].filter(Boolean);
+  const dividendWait = dividendWaitSignal(analysis);
+  return [...exitSignals, dividendWait, regular].filter(Boolean);
+}
+
+function dividendWaitSignal(analysis = {}) {
+  if (!/^\d{4}(?:\.T)?$/i.test(String(analysis.symbol || ""))) return null;
+  const price = analysis.price || {};
+  const timing = dividendEventSeasonality(price);
+  if (!price.dividendBuyCaution && !timing.buyCaution) return null;
+  const nextDate = price.dividendNextDate || timing.nextDate;
+  const nextAmount = nullablePositiveNumber(price.dividendNextAmount ?? timing.nextAmount);
+  const afterDividendLine = nullablePositiveNumber(price.buyLine1yAfterNextDividend);
+  return {
+    key: `${analysis.symbol}:DIVIDEND_WAIT:${nextDate || "upcoming"}`,
+    absoluteKey: true,
+    action: "配当落ち後まで購入待ち",
+    symbol: analysis.symbol,
+    name: analysis.name,
+    confidence: 80,
+    currency: "JPY",
+    currentPrice: nullablePositiveNumber(price.current),
+    hideEdge: true,
+    reason: `${price.dividendNextDateSource === "データ取得済み予定" ? "取得済みの予定日" : "過去実績から推定した日"}が近づいています。直前の新規買い・買い増しは避け、配当落ち後の実価格で判断してください。`,
+    points: [
+      nextDate ? `配当落ち日: ${nextDate}（あと${timing.daysToNext ?? price.dividendDaysToNext ?? "?"}日）` : "配当落ち日が近いため要確認",
+      price.dividendFrequencyText || timing.frequencyLabel,
+      nextAmount ? `次回予想配当: ${formatYen(nextAmount)}/株` : "次回配当額は未確認",
+      afterDividendLine ? `配当落ち後の参考買い場ライン: ${formatYen(afterDividendLine)}（実価格で再計算）` : "配当落ち後に買い場ラインを再計算",
+    ].filter(Boolean),
+  };
 }
 
 function analysisSignal(analysis, settings) {
@@ -12017,6 +12171,7 @@ function analysisSignal(analysis, settings) {
   const position = analysis.position || {};
   const currency = analysis.currency || price.currency || "JPY";
   if (analysis.action === "BUY") {
+    if (/^\d{4}(?:\.T)?$/i.test(String(analysis.symbol || "")) && price.dividendBuyCaution) return null;
     if (isHighChaseChart(price) || isNoUpsideChart(price)) return null;
     const opportunity = estimateBuyOpportunity(price, settings.unitSize, settings, {
       currency,

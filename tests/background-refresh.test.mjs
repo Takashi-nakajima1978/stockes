@@ -107,6 +107,153 @@ test("dividend seasonality flags upcoming rights demand", () => {
   assert.ok(signal.score >= 10);
 });
 
+test("semiannual dividend date warns before ex-dividend and estimates the per-share amount", () => {
+  const signal = dividendEventSeasonality({
+    dividendYield: 3.9,
+    dividendNextDate: "2026-09-20",
+    dividendNextDateSource: "データ取得済み予定",
+    dividendEvents: [
+      { date: "2025-03-31", amount: 60 },
+      { date: "2025-09-30", amount: 50 },
+      { date: "2026-03-31", amount: 73 },
+    ],
+  }, { today: "2026-09-12" });
+  assert.equal(signal.frequencyPerYear, 2);
+  assert.match(signal.frequencyLabel, /中間配当あり/);
+  assert.equal(signal.nextAmount, 50);
+  assert.equal(signal.buyCaution, true);
+  assert.equal(signal.daysToNext, 8);
+  assert.match(signal.summary, /新規買いは待ち/);
+});
+
+test("inferred ex-dividend date follows the stock's historical event day", () => {
+  const signal = dividendEventSeasonality({
+    dividendEvents: [
+      { date: "2025-03-27", amount: 25 },
+      { date: "2025-09-26", amount: 25 },
+      { date: "2026-03-27", amount: 30 },
+    ],
+  }, { today: "2026-09-12" });
+  assert.equal(signal.nextDate, "2026-09-26");
+  assert.equal(signal.daysToNext, 14);
+  assert.equal(signal.nextDateSource, "過去実績から推定");
+  assert.equal(signal.buyCaution, true);
+});
+
+test("historical buy line subtracts dividends paid since each past price", () => {
+  const priceBuyTiming = loadFunction(serverSource, "priceBuyTiming", {
+    cleanPriceSeries: (series) => series,
+    normalizeDate: (value) => String(value || "").slice(0, 10),
+    nullablePositiveNumber: (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    },
+    last: (values) => values.at(-1),
+    quantile: (values, fraction) => values[Math.floor((values.length - 1) * fraction)],
+    emptyBuyTiming: () => ({ buyLine1y: null }),
+  });
+  const latest = new Date("2026-09-30T00:00:00Z");
+  const series = Array.from({ length: 100 }, (_, index) => {
+    const day = new Date(latest.getTime() - ((99 - index) * 86400000));
+    return { date: day.toISOString().slice(0, 10), close: 100 };
+  });
+  const timing = priceBuyTiming(series, [{ date: series[80].date, amount: 5 }]);
+  assert.equal(timing.buyLine1yRaw, 100);
+  assert.equal(timing.buyLine1y, 95);
+  assert.equal(timing.dividendAdjustment1y, 5);
+});
+
+test("browser chart uses the same ex-dividend adjustment as server buy lines", () => {
+  const buyTiming = loadFunction(appSource, "buyTimingFromSeries", {
+    cleanChartSeries: (series) => series,
+    dateToTime: (value) => new Date(`${value}T00:00:00Z`).getTime(),
+    quantile: (values, fraction) => values[Math.floor((values.length - 1) * fraction)],
+    cheapPeriods: () => [],
+    cheapMonths: () => [],
+    formatDate: (value) => value,
+  });
+  const latest = new Date("2026-09-30T00:00:00Z");
+  const series = Array.from({ length: 100 }, (_, index) => {
+    const day = new Date(latest.getTime() - ((99 - index) * 86400000));
+    return { date: day.toISOString().slice(0, 10), close: 100 };
+  });
+  const timing = buyTiming(series, (value) => `¥${value}`, [{ date: series[80].date, amount: 5 }], 10);
+  assert.equal(timing.buyLineRaw, 100);
+  assert.equal(timing.buyLine, 95);
+  assert.equal(timing.buyLineAfterNextDividend, 85);
+  assert.equal(timing.dividendAdjustment1y, 5);
+});
+
+test("dividend ex-date caution overrides a new-buy action", () => {
+  const safety = loadFunction(serverSource, "decisionSafetyOverride", {
+    positionMetrics: () => ({}),
+    nullablePositiveNumber: (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    },
+    formatYen: (value) => `¥${Number(value).toLocaleString("ja-JP")}`,
+    formatSignedPercent: (value) => `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`,
+    isBuyReversalPending: () => false,
+    isHighChaseChart: () => false,
+    isNoUpsideChart: () => false,
+  });
+  const result = safety({ name: "テスト銘柄", holding: false }, {
+    current: 1000,
+    dividendBuyCaution: true,
+    dividendNextDate: "2026-10-05",
+    dividendNextDateSource: "データ取得済み予定",
+    dividendNextAmount: 20,
+    buyLine1yAfterNextDividend: 930,
+  }, "BUY", {});
+  assert.equal(result.action, "WATCH");
+  assert.match(result.thesis, /配当落ち後まで待つ/);
+  assert.match(result.risks.join(" "), /¥930/);
+});
+
+test("near ex-dividend date emits a once-per-event wait notification", () => {
+  const notify = loadFunction(serverSource, "dividendWaitSignal", {
+    dividendEventSeasonality: () => ({ buyCaution: false, daysToNext: 9, frequencyLabel: "中間配当あり" }),
+    nullablePositiveNumber: (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null,
+    formatYen: (value) => `¥${value}`,
+  });
+  const signal = notify({
+    symbol: "7203.T",
+    name: "トヨタ自動車",
+    price: {
+      dividendBuyCaution: true,
+      dividendNextDate: "2026-10-10",
+      dividendNextDateSource: "データ取得済み予定",
+      dividendNextAmount: 45,
+      buyLine1yAfterNextDividend: 2500,
+    },
+  });
+  assert.equal(signal.action, "配当落ち後まで購入待ち");
+  assert.equal(signal.absoluteKey, true);
+  assert.match(signal.points.join(" "), /中間配当あり/);
+  assert.match(signal.points.join(" "), /¥45/);
+  assert.match(signal.points.join(" "), /¥2500/);
+});
+
+test("discovery buy plan reports a dividend-drop wait and adjusted reference line", () => {
+  const plan = loadFunction(serverSource, "candidateBuyPlan", {
+    nullablePositiveNumber: (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null,
+    dividendEventSeasonality: () => ({
+      buyCaution: true,
+      nextDate: "2026-10-10",
+      nextDateSource: "データ取得済み予定",
+      nextAmount: 45,
+      daysToNext: 9,
+      frequencyLabel: "中間配当あり",
+    }),
+    formatMoney: (value) => `¥${value}`,
+    uniqueText: (values) => [...new Set(values)],
+  });
+  const result = plan({ current: 2600, currency: "JPY", dividendBuyCaution: true, buyLine1yAfterNextDividend: 2500 }, { unitSize: 100 });
+  assert.equal(result.stance, "配当落ち後まで待つ");
+  assert.equal(result.maxBuyPrice, 2500);
+  assert.match(result.summary, /配当落ち後の実価格を確認して再計算/);
+});
+
 test("technical entry uses golden cross and closing strength experience rules", () => {
   assert.match(serverSource, /function movingAverageCrossSignal/);
   assert.match(serverSource, /function closingStrengthSignal/);
@@ -622,8 +769,8 @@ test("detail pages show absolute dividend amounts without changing watchlist div
 test("price charts show visible purchase and sale markers", () => {
   assert.match(appSource, /function chartTradeMarkers/);
   assert.match(appSource, /function drawChartTradeMarkers/);
-  assert.match(appSource, /drawChart\(analysis\?\.price\?\.series \|\| \[\], stock \? chartTradeMarkers\(stock\) : \[\]\)/);
-  assert.match(appSource, /renderEmbeddedPriceChart\(els\.usDetail, analysis\?\.price\?\.series \|\| \[\], usd, chartTradeMarkers\(stock\)\)/);
+  assert.match(appSource, /drawChart\(price\.series \|\| \[\], stock \? chartTradeMarkers\(stock\) : \[\], price\)/);
+  assert.match(appSource, /renderEmbeddedPriceChart\(els\.usDetail, analysis\?\.price\?\.series \|\| \[\], usd, chartTradeMarkers\(stock\), analysis\?\.price \|\| \{\}\)/);
   assert.match(appSource, /const label = marker\.type === "sell" \? "売" : "買"/);
 });
 
@@ -670,16 +817,18 @@ test("dividend estimates prefer forecast annual dividend over stale trailing eve
       return numeric <= 1 ? numeric * 100 : numeric;
     },
     normalizeDate: (value) => String(value || "").slice(0, 10),
+    dividendEventSeasonality,
   });
+  const nextDate = new Date(Date.now() + (30 * 86400000)).toISOString().slice(0, 10);
   const price = enrich(
     { current: 100, dividendPerShareTtm: 3, dividendYield: 3, dividendEvents: [{ date: "2024-08-07", amount: 0.5 }] },
-    { forwardAnnualDividendRate: 5, dividendYield: 0.05, exDividendDate: "2026-09-30" },
+    { forwardAnnualDividendRate: 5, dividendYield: 0.05, exDividendDate: nextDate },
   );
   assert.equal(price.dividendPerShareAnnual, 5);
   assert.equal(price.dividendPerShareForward, 5);
   assert.equal(price.dividendYield, 5);
   assert.equal(price.dividendAnnualSource, "会社予想");
-  assert.equal(price.dividendNextDate, "2026-09-30");
+  assert.equal(price.dividendNextDate, nextDate);
   assert.match(serverSource, /const anchorTime = Date\.now\(\)/);
   assert.match(serverSource, /includeDividendForecast: true/);
   assert.match(appSource, /function annualDividendPerShare/);
