@@ -1,5 +1,5 @@
 const MANAGED_STOCK_LIMIT = 50;
-const VIEW_KEYS = new Set(["analysis", "stocks", "us", "crypto", "daytrade", "ideas", "settings"]);
+const VIEW_KEYS = new Set(["analysis", "stocks", "us", "crypto", "ideas", "settings"]);
 const VIEW_STORAGE_KEY = "stockSignalActiveView";
 const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2400000;
 const NISA_GROWTH_LIFETIME_LIMIT_YEN = 12000000;

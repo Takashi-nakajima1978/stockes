@@ -336,15 +336,6 @@ progress {
   white-space: nowrap;
 }
 
-.watchlist-legend {
-  margin: 0;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
 .settings-form {
   display: grid;
   gap: 14px;

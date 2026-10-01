@@ -481,8 +481,9 @@ test("browser logo is wired to favicon and app brand", () => {
   assert.match(serverSource, /stock-signal-logo\.svg/);
 });
 
-test("day trade feature has simulation, candidates, and guarded Rakuten RSS bridge", () => {
-  assert.match(indexSource, /data-view-target="daytrade"/);
+test("day trade is removed from navigation while its existing backend remains intact", () => {
+  assert.doesNotMatch(indexSource, /data-view-target="daytrade"/);
+  assert.match(appSource, /const VIEW_KEYS = new Set\(\["analysis", "stocks", "us", "crypto", "ideas", "settings"\]\)/);
   assert.match(indexSource, /data-view="daytrade"/);
   assert.match(indexSource, /dayTradeWatchlist/);
   assert.match(indexSource, /dayTradeStopMode/);
