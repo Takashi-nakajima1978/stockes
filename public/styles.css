@@ -1323,6 +1323,16 @@ tr:hover .drag-handle,
   text-transform: uppercase;
 }
 
+.unmatched-sale-warning {
+  margin: 0;
+  border-left: 3px solid var(--sell);
+  background: #fff6f5;
+  padding: 10px 12px;
+  color: var(--sell);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .entry-value {
   display: grid;
   grid-template-columns: repeat(2, minmax(150px, 1fr));

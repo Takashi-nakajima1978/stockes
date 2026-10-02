@@ -150,6 +150,7 @@ const els = {
   usStockQuantity: document.getElementById("usStockQuantity"),
   usProfitAmount: document.getElementById("usProfitAmount"),
   usProfitPct: document.getElementById("usProfitPct"),
+  usRealizedPnlTotal: document.getElementById("usRealizedPnlTotal"),
   usDividendReceivedTotal: document.getElementById("usDividendReceivedTotal"),
   usInvestedTotal: document.getElementById("usInvestedTotal"),
   usMarketTotal: document.getElementById("usMarketTotal"),
@@ -234,6 +235,7 @@ const els = {
   profitPct: document.getElementById("profitPct"),
   totalReturnAmount: document.getElementById("totalReturnAmount"),
   totalReturnPct: document.getElementById("totalReturnPct"),
+  realizedPnlTotal: document.getElementById("realizedPnlTotal"),
   dividendReceivedTotal: document.getElementById("dividendReceivedTotal"),
   investedTotal: document.getElementById("investedTotal"),
   marketTotal: document.getElementById("marketTotal"),
@@ -1148,6 +1150,7 @@ function renderProfitSummary() {
       : "購入情報と分析が必要";
   }
   setMoneySummary(els.totalReturnAmount, summary.totalReturnAmount, "profit-big");
+  if (els.realizedPnlTotal) setMoneySummary(els.realizedPnlTotal, summary.realizedPnlAmount, "profit-big");
   if (els.totalReturnPct) {
     els.totalReturnPct.innerHTML = Number.isFinite(summary.totalReturnPct)
       ? `${pct(summary.totalReturnPct)} / 配当込み`
@@ -1175,10 +1178,7 @@ function renderUs() {
 }
 
 function renderUsSummary() {
-  const computed = usSummaryFromState();
-  const summary = Number.isFinite(state.usSummary?.totalReturnAmount) || Number.isFinite(state.usSummary?.dividendReceived)
-    ? state.usSummary
-    : computed;
+  const summary = usSummaryFromState();
   setRefreshingSummary(els.usProfitSummary, state.usRefreshing, "更新中。表示中の数字は前回保存値");
   const totalAmount = Number.isFinite(summary.totalReturnAmount) ? summary.totalReturnAmount : summary.pnlAmount;
   const totalPct = Number.isFinite(summary.totalReturnPct) ? summary.totalReturnPct : summary.pnlPct;
@@ -1188,6 +1188,7 @@ function renderUsSummary() {
       ? `<span class="${totalPct >= 0 ? "metric-pos" : "metric-neg"}">${signedPct(totalPct)}</span> / 配当込み`
       : "更新待ち";
   }
+  if (els.usRealizedPnlTotal) setMoneySummary(els.usRealizedPnlTotal, summary.realizedPnlAmount, "profit-big", usd);
   if (els.usDividendReceivedTotal) els.usDividendReceivedTotal.textContent = usd(summary.dividendReceived);
   setMoneySummary(els.usInvestedTotal, summary.invested, "profit-big", usd);
   setMoneySummary(els.usMarketTotal, summary.marketValue, "profit-big", usd);
@@ -1203,7 +1204,7 @@ function renderUsTable() {
   }
   els.usStockTable.innerHTML = state.usStocks.map((stock) => {
     const analysis = state.usAnalyses[stock.symbol];
-    const position = analysis?.position || positionMetrics(stock, analysis?.price);
+    const position = positionMetrics(stock, analysis?.price);
     const fundamentals = analysis?.fundamentals || {};
     const selected = state.usSelected === stock.symbol ? "selected" : "";
     const openHolding = hasOpenPosition(stock, position);
@@ -1272,7 +1273,7 @@ function renderUsDetail() {
     return;
   }
   const analysis = state.usAnalyses[stock.symbol];
-  const position = analysis?.position || positionMetrics(stock, analysis?.price);
+  const position = positionMetrics(stock, analysis?.price);
   const fundamentals = analysis?.fundamentals || {};
   const ai = analysis?.ai || null;
   if (els.usSelectedSymbol) els.usSelectedSymbol.innerHTML = symbolLinkHtml(stock.symbol, "us");
@@ -3089,7 +3090,9 @@ function portfolioSummary() {
     const hasPositionResult = Number.isFinite(position.grossInvested)
       || Number.isFinite(position.invested)
       || Number.isFinite(position.pnlAmount);
-    if (!stock.holding || !hasPositionResult) return summary;
+    const hasRecordedSales = Number.isFinite(position.soldQuantity) && position.soldQuantity > 0;
+    const hasTrackedOpenPosition = stock.holding && Number.isFinite(position.quantity) && position.quantity > 0;
+    if ((!hasTrackedOpenPosition && !hasRecordedSales) || !hasPositionResult) return summary;
     summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
     summary.grossInvested += Number.isFinite(position.grossInvested)
       ? position.grossInvested
@@ -3098,6 +3101,8 @@ function portfolioSummary() {
       : 0;
     summary.marketValue += Number.isFinite(position.marketValue) ? position.marketValue : 0;
     summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
+    summary.realizedPnlAmount += Number.isFinite(position.realizedPnlAmount) ? position.realizedPnlAmount : 0;
+    summary.unrealizedPnlAmount += Number.isFinite(position.unrealizedPnlAmount) ? position.unrealizedPnlAmount : 0;
     summary.dividendReceived += Number.isFinite(position.dividendReceived) ? position.dividendReceived : 0;
     summary.annualDividendEstimate += Number.isFinite(position.annualDividendEstimate) ? position.annualDividendEstimate : 0;
     summary.totalReturnAmount += Number.isFinite(position.totalReturnAmount)
@@ -3117,6 +3122,8 @@ function portfolioSummary() {
     grossInvested: 0,
     marketValue: 0,
     pnlAmount: 0,
+    realizedPnlAmount: 0,
+    unrealizedPnlAmount: 0,
     pnlPct: null,
     dividendReceived: 0,
     annualDividendEstimate: 0,
@@ -3210,11 +3217,13 @@ function normalizedNisaAnnualLimitYen(value) {
 function usSummaryFromState() {
   return state.usStocks.reduce((summary, stock) => {
     const analysis = state.usAnalyses[stock.symbol];
-    const position = analysis?.position || positionMetrics(stock, analysis?.price);
+    const position = positionMetrics(stock, analysis?.price);
     const hasPositionResult = Number.isFinite(position.grossInvested)
       || Number.isFinite(position.invested)
       || Number.isFinite(position.pnlAmount);
-    if (!hasOpenPosition(stock, position) || !hasPositionResult) return summary;
+    const hasRecordedSales = Number.isFinite(position.soldQuantity) && position.soldQuantity > 0;
+    const hasTrackedOpenPosition = stock.holding && Number.isFinite(position.quantity) && position.quantity > 0;
+    if ((!hasTrackedOpenPosition && !hasRecordedSales) || !hasPositionResult) return summary;
     summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
     summary.grossInvested += Number.isFinite(position.grossInvested)
       ? position.grossInvested
@@ -3223,6 +3232,8 @@ function usSummaryFromState() {
       : 0;
     summary.marketValue += Number.isFinite(position.marketValue) ? position.marketValue : 0;
     summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
+    summary.realizedPnlAmount += Number.isFinite(position.realizedPnlAmount) ? position.realizedPnlAmount : 0;
+    summary.unrealizedPnlAmount += Number.isFinite(position.unrealizedPnlAmount) ? position.unrealizedPnlAmount : 0;
     summary.dividendReceived += Number.isFinite(position.dividendReceived) ? position.dividendReceived : 0;
     summary.annualDividendEstimate += Number.isFinite(position.annualDividendEstimate) ? position.annualDividendEstimate : 0;
     summary.totalReturnAmount += Number.isFinite(position.totalReturnAmount)
@@ -3241,6 +3252,8 @@ function usSummaryFromState() {
     grossInvested: 0,
     marketValue: 0,
     pnlAmount: 0,
+    realizedPnlAmount: 0,
+    unrealizedPnlAmount: 0,
     pnlPct: null,
     dividendReceived: 0,
     annualDividendEstimate: 0,
@@ -3355,6 +3368,7 @@ function usPositionEditor(stock, position, price = {}) {
         <span><strong>残り元本</strong>${usd(metrics.invested)}</span>
         <span><strong>評価額</strong>${usd(metrics.marketValue)}</span>
       </div>
+      ${metrics.unmatchedSaleQuantity > 0 ? `<p class="unmatched-sale-warning">売却明細のうち${shareCount(metrics.unmatchedSaleQuantity)}は購入明細に割り当てられていません。購入明細の日付・株数を確認してください。</p>` : ""}
       ${priceReservationEditor(stock, usd, "予約価格 USD")}
       <button type="submit">保存</button>
     </form>
@@ -5791,28 +5805,23 @@ function isNoUpsideChart(price = {}) {
 function positionMetrics(stock, price = {}) {
   const lots = positionLots(stock);
   const sales = saleLots(stock);
-  const activeLots = currentCyclePositions(lots, sales);
-  const activeSales = currentCycleSales(lots, sales);
-  const grossQuantity = activeLots.reduce((sum, lot) => sum + lot.quantity, 0);
-  const grossInvested = activeLots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
-  const purchasePrice = grossQuantity > 0 ? grossInvested / grossQuantity : null;
-  const soldInputQuantity = activeSales.reduce((sum, lot) => sum + lot.quantity, 0);
-  const soldQuantity = Math.min(soldInputQuantity, grossQuantity);
-  const remainingQuantity = Math.max(0, grossQuantity - soldQuantity);
-  const remainingInvested = purchasePrice && remainingQuantity ? purchasePrice * remainingQuantity : null;
-  const saleProceeds = activeSales.reduce((sum, lot) => sum + (lot.sellPrice * lot.quantity), 0);
-  const activeSoldQuantity = activeSales.reduce((sum, lot) => sum + lot.quantity, 0);
-  const activeSaleProceeds = activeSales.reduce((sum, lot) => sum + (lot.sellPrice * lot.quantity), 0);
-  const averageSellPrice = activeSoldQuantity > 0 ? activeSaleProceeds / activeSoldQuantity : null;
-  const realizedProceeds = soldInputQuantity > 0 && soldQuantity < soldInputQuantity
-    ? saleProceeds * (soldQuantity / soldInputQuantity)
-    : saleProceeds;
-  const realizedCost = purchasePrice && soldQuantity ? purchasePrice * soldQuantity : 0;
+  const lotState = positionLotState(lots, sales);
+  const grossQuantity = lots.reduce((sum, lot) => sum + lot.quantity, 0);
+  const grossInvested = lots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
+  const soldQuantity = lotState.soldQuantity;
+  const remainingQuantity = lotState.remainingQuantity;
+  const remainingInvested = remainingQuantity > 0 ? lotState.remainingInvested : null;
+  const purchasePrice = remainingQuantity && remainingInvested
+    ? remainingInvested / remainingQuantity
+    : grossQuantity > 0 ? grossInvested / grossQuantity : null;
+  const realizedProceeds = lotState.realizedProceeds || null;
+  const realizedCost = lotState.realizedCost || 0;
+  const averageSellPrice = soldQuantity > 0 ? lotState.realizedProceeds / soldQuantity : null;
   const realizedPnlAmount = Number.isFinite(realizedProceeds) && realizedProceeds
     ? realizedProceeds - realizedCost
     : soldQuantity && purchasePrice ? -realizedCost : null;
   const current = finiteOrNull(price?.current);
-  const firstPurchaseDate = activeLots.map((lot) => lot.purchaseDate).filter(Boolean).sort()[0] || "";
+  const firstPurchaseDate = lotState.remainingLots[0]?.purchaseDate || lots[0]?.purchaseDate || "";
   const holdingDays = firstPurchaseDate ? daysSince(firstPurchaseDate) : null;
   const unrealizedPnlAmount = purchasePrice && current && remainingQuantity ? (current - purchasePrice) * remainingQuantity : null;
   const unrealizedPnlPct = purchasePrice && current && remainingQuantity ? ((current - purchasePrice) / purchasePrice) * 100 : null;
@@ -5820,7 +5829,7 @@ function positionMetrics(stock, price = {}) {
   const pnlAmount = pnlParts.length ? pnlParts.reduce((sum, value) => sum + value, 0) : null;
   const pnlPct = grossInvested && Number.isFinite(pnlAmount) ? (pnlAmount / grossInvested) * 100 : null;
   const marketValue = current && remainingQuantity ? current * remainingQuantity : null;
-  const dividendReceived = dividendsForPositionHistory(activeLots, activeSales, price?.dividendEvents || [], {
+  const dividendReceived = dividendsForPositionHistory(lots, sales, price?.dividendEvents || [], {
     symbol: stock.symbol,
     market: stock.market,
   });
@@ -5837,6 +5846,8 @@ function positionMetrics(stock, price = {}) {
   return {
     lots,
     sales,
+    remainingLots: lotState.remainingLots,
+    unmatchedSaleQuantity: lotState.unmatchedSaleQuantity,
     purchasePrice,
     quantity: remainingQuantity || null,
     grossQuantity: grossQuantity || null,
@@ -5863,53 +5874,43 @@ function positionMetrics(stock, price = {}) {
   };
 }
 
-function currentCyclePositions(positions = [], sales = []) {
-  const resetDate = lastZeroPositionDate(positions, sales);
-  if (!resetDate) return positions;
-  const hasBuyAfterReset = positions.some((lot) => lot.purchaseDate && lot.purchaseDate > resetDate);
-  if (!hasBuyAfterReset) return positions;
-  return positions.filter((lot) => lot.purchaseDate && lot.purchaseDate > resetDate);
-}
+function positionLotState(positions = [], sales = []) {
+  const remainingLots = positions.map((lot) => ({ ...lot }));
+  let soldQuantity = 0;
+  let realizedCost = 0;
+  let realizedProceeds = 0;
+  let unmatchedSaleQuantity = 0;
 
-function currentCycleSales(positions = [], sales = [], remainingQuantity = 0) {
-  if (!sales.length) return [];
-  const resetDate = lastZeroPositionDate(positions, sales);
-  if (!resetDate) return sales;
-  const hasBuyAfterReset = positions.some((lot) => lot.purchaseDate && lot.purchaseDate > resetDate);
-  if (!hasBuyAfterReset) return sales;
-  return sales.filter((sale) => sale.sellDate && sale.sellDate > resetDate);
-}
-
-function lastZeroPositionDate(positions = [], sales = []) {
-  const transactions = [
-    ...positions.map((lot) => ({
-      date: lot.purchaseDate || "",
-      type: "buy",
-      quantity: lot.quantity,
-    })),
-    ...sales.map((lot) => ({
-      date: lot.sellDate || "",
-      type: "sell",
-      quantity: lot.quantity,
-    })),
-  ]
-    .filter((item) => item.quantity > 0)
-    .sort((a, b) => {
-      const dateCompare = (a.date || "9999-99-99").localeCompare(b.date || "9999-99-99");
-      if (dateCompare) return dateCompare;
-      return a.type === "sell" ? -1 : 1;
-    });
-
-  let quantity = 0;
-  let resetDate = "";
-  for (const item of transactions) {
-    quantity += item.type === "buy" ? item.quantity : -item.quantity;
-    if (quantity <= 0.000001) {
-      quantity = 0;
-      resetDate = item.date || "";
+  for (const sale of sales) {
+    let saleLeft = sale.quantity;
+    for (const lot of remainingLots) {
+      if (saleLeft <= 0) break;
+      if (sale.sellDate && lot.purchaseDate && lot.purchaseDate > sale.sellDate) continue;
+      if (!lot.quantity) continue;
+      const take = Math.min(lot.quantity, saleLeft);
+      lot.quantity = Math.max(0, lot.quantity - take);
+      soldQuantity += take;
+      saleLeft -= take;
+      realizedCost += take * lot.purchasePrice;
+      realizedProceeds += take * sale.sellPrice;
     }
+    unmatchedSaleQuantity += saleLeft;
   }
-  return resetDate;
+
+  const openLots = remainingLots
+    .filter((lot) => lot.quantity > 0.000001)
+    .map((lot) => ({ ...lot, quantity: Math.round(lot.quantity * 1000000) / 1000000 }));
+  const remainingQuantity = openLots.reduce((sum, lot) => sum + lot.quantity, 0);
+  const remainingInvested = openLots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
+  return {
+    remainingLots: openLots,
+    soldQuantity: Math.round(soldQuantity * 1000000) / 1000000,
+    remainingQuantity: Math.round(remainingQuantity * 1000000) / 1000000,
+    remainingInvested,
+    realizedCost,
+    realizedProceeds,
+    unmatchedSaleQuantity: Math.round(unmatchedSaleQuantity * 1000000) / 1000000,
+  };
 }
 
 function dividendsForPositionHistory(lots, sales, dividendEvents = [], context = {}) {
@@ -6096,6 +6097,7 @@ function positionEditor(stock, position, analysis) {
         <span><strong>残す株数</strong>${metrics.minimumHoldQuantity ? `${metrics.minimumHoldQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
         <span><strong>判定対象</strong>${metrics.sellableQuantity ? `${metrics.sellableQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
       </div>
+      ${metrics.unmatchedSaleQuantity > 0 ? `<p class="unmatched-sale-warning">売却明細のうち${shareCount(metrics.unmatchedSaleQuantity)}は購入明細に割り当てられていません。購入明細の日付・株数を確認してください。</p>` : ""}
       ${priceReservationEditor(stock, yen, "予約価格")}
       ${jpAccountRecommendationHtml(stock, analysis, metrics)}
       <button type="submit">保存</button>

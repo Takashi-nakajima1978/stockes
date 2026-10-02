@@ -696,7 +696,7 @@ test("Japan holding is not marked as a sell review without loss or exit evidence
   assert.match(result.thesis, /見直し候補ではなく保有継続/);
 });
 
-test("US portfolio summary counts only open holdings and uses dividend-included result", () => {
+test("US portfolio summary includes realized results from fully sold holdings", () => {
   const hasOpenPosition = loadFunction(serverSource, "hasOpenPosition", {});
   const summaryForUs = loadFunction(serverSource, "usPortfolioSummary", { hasOpenPosition });
   const summary = summaryForUs([
@@ -708,6 +708,8 @@ test("US portfolio summary counts only open holdings and uses dividend-included 
         invested: 100,
         marketValue: 90,
         pnlAmount: -10,
+        realizedPnlAmount: 0,
+        unrealizedPnlAmount: -10,
         totalReturnAmount: -5,
         grossQuantity: 10,
         soldQuantity: 0,
@@ -721,8 +723,10 @@ test("US portfolio summary counts only open holdings and uses dividend-included 
         grossInvested: 100,
         invested: null,
         marketValue: null,
-        pnlAmount: 20,
-        totalReturnAmount: 20,
+        pnlAmount: -20,
+        realizedPnlAmount: -20,
+        unrealizedPnlAmount: null,
+        totalReturnAmount: -20,
         grossQuantity: 10,
         soldQuantity: 10,
         quantity: null,
@@ -736,6 +740,8 @@ test("US portfolio summary counts only open holdings and uses dividend-included 
         invested: 100,
         marketValue: 95,
         pnlAmount: -5,
+        realizedPnlAmount: 0,
+        unrealizedPnlAmount: -5,
         dividendReceived: 8,
         totalReturnAmount: 3,
         grossQuantity: 10,
@@ -745,10 +751,107 @@ test("US portfolio summary counts only open holdings and uses dividend-included 
     },
   ]);
   assert.equal(summary.winCount, 1);
-  assert.equal(summary.lossCount, 1);
-  assert.equal(summary.grossInvested, 200);
+  assert.equal(summary.lossCount, 2);
+  assert.equal(summary.grossInvested, 300);
+  assert.equal(summary.realizedPnlAmount, -20);
+  assert.equal(summary.unrealizedPnlAmount, -15);
+  assert.equal(summary.pnlAmount, -35);
   assert.match(appSource, /symbolLinkHtml\(stock\.symbol, "us"\).*保有/s);
   assert.match(appSource, /売却済み/);
+});
+
+test("Japan portfolio summary retains a sold holding's realized loss after holding is unchecked", () => {
+  const summaryFromJapan = loadFunction(appSource, "portfolioSummary", {
+    state: {
+      stocks: [{ symbol: "CLOSED", holding: false, metrics: {
+        grossInvested: 1000,
+        invested: null,
+        marketValue: null,
+        pnlAmount: -250,
+        realizedPnlAmount: -250,
+        unrealizedPnlAmount: null,
+        dividendReceived: 0,
+        annualDividendEstimate: null,
+        totalReturnAmount: -250,
+        quantity: null,
+        soldQuantity: 10,
+      } }],
+      analyses: {},
+    },
+    positionMetrics: (stock) => stock.metrics,
+    nisaAllowanceSummary: () => ({}),
+  });
+  const summary = summaryFromJapan();
+  assert.equal(summary.count, 1);
+  assert.equal(summary.realizedPnlAmount, -250);
+  assert.equal(summary.pnlAmount, -250);
+  assert.equal(summary.lossCount, 1);
+});
+
+test("FIFO realized and unrealized P/L retain completed loss cycles after rebuy", () => {
+  const positions = [
+    { purchaseDate: "2026-01-05", purchasePrice: 100, quantity: 10 },
+    { purchaseDate: "2026-02-02", purchasePrice: 200, quantity: 10 },
+    { purchaseDate: "2026-06-01", purchasePrice: 120, quantity: 5 },
+  ];
+  const sales = [
+    { sellDate: "2026-03-03", sellPrice: 80, quantity: 4 },
+    { sellDate: "2026-04-01", sellPrice: 150, quantity: 16 },
+    { sellDate: "2026-07-01", sellPrice: 110, quantity: 2 },
+  ];
+  const browserLotState = loadFunction(appSource, "positionLotState", {});
+  const browserMetrics = loadFunction(appSource, "positionMetrics", {
+    positionLots: (stock) => stock.positions,
+    saleLots: (stock) => stock.sales,
+    positionLotState: browserLotState,
+    finiteOrNull: (value) => Number.isFinite(Number(value)) ? Number(value) : null,
+    finiteOrZero: (value) => Number.isFinite(Number(value)) ? Number(value) : 0,
+    daysSince: () => 1,
+    dividendsForPositionHistory: () => 0,
+    annualDividendPerShare: () => null,
+  });
+  const serverLotState = loadFunction(serverSource, "positionLotState", {});
+  const aggregatePositions = loadFunction(serverSource, "aggregatePositions", {});
+  const serverMetrics = loadFunction(serverSource, "positionMetrics", {
+    normalizePositions: (stock) => stock.positions,
+    normalizeSales: (stock) => stock.sales,
+    aggregatePositions,
+    positionLotState: serverLotState,
+    nullablePositiveNumber: (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null,
+    daysSince: () => 1,
+    dividendsForPositionHistory: () => 0,
+    annualDividendPerShare: () => null,
+    resolveMinimumHoldQuantity: () => 0,
+    dominantAccountType: () => "taxable",
+  });
+  const stock = { symbol: "TEST.T", market: "JP", positions, sales };
+  const browser = browserMetrics(stock, { current: 130, dividendEvents: [] });
+  const server = serverMetrics(stock, { current: 130, dividendEvents: [] });
+
+  for (const metrics of [browser, server]) {
+    assert.equal(metrics.grossInvested, 3600);
+    assert.equal(metrics.quantity, 3);
+    assert.equal(metrics.soldQuantity, 22);
+    assert.equal(metrics.invested, 360);
+    assert.equal(metrics.realizedPnlAmount, -300);
+    assert.equal(metrics.unrealizedPnlAmount, 30);
+    assert.equal(metrics.pnlAmount, -270);
+    assert.equal(metrics.unmatchedSaleQuantity, 0);
+  }
+  assert.equal(browser.realizedPnlAmount, server.realizedPnlAmount);
+  assert.equal(browser.quantity, server.quantity);
+
+  const unmatchedBrowser = browserLotState(
+    [{ purchaseDate: "2026-07-01", purchasePrice: 100, quantity: 2 }],
+    [{ sellDate: "2026-06-01", sellPrice: 90, quantity: 2 }],
+  );
+  const unmatchedServer = serverLotState(
+    [{ purchaseDate: "2026-07-01", purchasePrice: 100, quantity: 2 }],
+    [{ sellDate: "2026-06-01", sellPrice: 90, quantity: 2 }],
+  );
+  assert.equal(unmatchedBrowser.unmatchedSaleQuantity, 2);
+  assert.equal(unmatchedServer.unmatchedSaleQuantity, 2);
+  assert.match(appSource, /class="unmatched-sale-warning"/);
 });
 
 test("detail pages show absolute dividend amounts without changing watchlist dividend cell", () => {
@@ -757,6 +860,10 @@ test("detail pages show absolute dividend amounts without changing watchlist div
   assert.match(appSource, /function dividendCell[\s\S]*<strong>\$\{yieldText\}<\/strong>/);
   assert.match(indexSource, /id="dividendReceivedTotal"/);
   assert.match(indexSource, /id="usDividendReceivedTotal"/);
+  assert.match(indexSource, /id="realizedPnlTotal"/);
+  assert.match(indexSource, /id="usRealizedPnlTotal"/);
+  assert.match(appSource, /els\.realizedPnlTotal[\s\S]*summary\.realizedPnlAmount/);
+  assert.match(appSource, /els\.usRealizedPnlTotal[\s\S]*summary\.realizedPnlAmount/);
   assert.match(appSource, /dividendReceivedTotal: document\.getElementById\("dividendReceivedTotal"\)/);
   assert.match(appSource, /usDividendReceivedTotal: document\.getElementById\("usDividendReceivedTotal"\)/);
   assert.match(appSource, /els\.dividendReceivedTotal[\s\S]*summary\.dividendReceived/);

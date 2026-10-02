@@ -3347,7 +3347,8 @@ function usPortfolioSummary(rows = []) {
     const hasPositionResult = Number.isFinite(position.grossInvested)
       || Number.isFinite(position.invested)
       || Number.isFinite(position.pnlAmount);
-    if (!hasOpenPosition(row, position) || !hasPositionResult) return summary;
+    const hasRecordedSales = Number.isFinite(position.soldQuantity) && position.soldQuantity > 0;
+    if ((!hasOpenPosition(row, position) && !hasRecordedSales) || !hasPositionResult) return summary;
     summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
     summary.grossInvested += Number.isFinite(position.grossInvested)
       ? position.grossInvested
@@ -3356,6 +3357,8 @@ function usPortfolioSummary(rows = []) {
       : 0;
     summary.marketValue += Number.isFinite(position.marketValue) ? position.marketValue : 0;
     summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
+    summary.realizedPnlAmount += Number.isFinite(position.realizedPnlAmount) ? position.realizedPnlAmount : 0;
+    summary.unrealizedPnlAmount += Number.isFinite(position.unrealizedPnlAmount) ? position.unrealizedPnlAmount : 0;
     summary.dividendReceived += Number.isFinite(position.dividendReceived) ? position.dividendReceived : 0;
     summary.annualDividendEstimate += Number.isFinite(position.annualDividendEstimate) ? position.annualDividendEstimate : 0;
     summary.totalReturnAmount += Number.isFinite(position.totalReturnAmount)
@@ -3376,6 +3379,8 @@ function usPortfolioSummary(rows = []) {
     grossInvested: 0,
     marketValue: 0,
     pnlAmount: 0,
+    realizedPnlAmount: 0,
+    unrealizedPnlAmount: 0,
     pnlPct: null,
     dividendReceived: 0,
     annualDividendEstimate: 0,
@@ -10890,22 +10895,19 @@ function resolveMinimumHoldQuantity(stock, quantity) {
 function positionMetrics(stock, price = {}) {
   const positions = normalizePositions(stock);
   const sales = normalizeSales(stock);
-  const activePositions = currentCyclePositions(positions, sales);
-  const activeSales = currentCycleSales(positions, sales);
-  const aggregate = aggregatePositions(activePositions);
-  const lotState = positionLotState(activePositions, activeSales);
+  const aggregate = aggregatePositions(positions);
+  const lotState = positionLotState(positions, sales);
   const grossQuantity = aggregate.quantity || 0;
   const grossInvested = aggregate.invested || 0;
   const soldQuantity = lotState.soldQuantity || 0;
-  const remainingQuantity = lotState.remainingQuantity || Math.max(0, grossQuantity - soldQuantity);
-  const remainingInvested = lotState.remainingInvested || null;
+  const remainingQuantity = lotState.remainingQuantity;
+  const remainingInvested = remainingQuantity > 0 ? lotState.remainingInvested : null;
   const purchasePrice = remainingQuantity && remainingInvested
     ? remainingInvested / remainingQuantity
     : aggregate.purchasePrice;
   const realizedProceeds = lotState.realizedProceeds || null;
   const realizedCost = lotState.realizedCost || 0;
-  const salesAggregate = aggregateSales(activeSales);
-  const averageSellPrice = salesAggregate.sellPrice;
+  const averageSellPrice = soldQuantity > 0 ? lotState.realizedProceeds / soldQuantity : null;
   const realizedPnlAmount = Number.isFinite(realizedProceeds) && Number.isFinite(realizedCost) && soldQuantity
     ? realizedProceeds - realizedCost
     : soldQuantity && realizedCost ? -realizedCost : null;
@@ -10918,7 +10920,7 @@ function positionMetrics(stock, price = {}) {
   const pnlAmount = pnlParts.length ? pnlParts.reduce((sum, value) => sum + value, 0) : null;
   const pnlPct = grossInvested && Number.isFinite(pnlAmount) ? (pnlAmount / grossInvested) * 100 : null;
   const marketValue = current && remainingQuantity ? current * remainingQuantity : null;
-  const dividendReceived = dividendsForPositionHistory(activePositions, activeSales, price.dividendEvents || [], {
+  const dividendReceived = dividendsForPositionHistory(positions, sales, price.dividendEvents || [], {
     symbol: stock.symbol,
     market: stock.market,
   });
@@ -10938,6 +10940,7 @@ function positionMetrics(stock, price = {}) {
     positions,
     sales,
     remainingLots: lotState.remainingLots,
+    unmatchedSaleQuantity: lotState.unmatchedSaleQuantity,
     purchaseDate: firstPurchaseDate,
     purchasePrice,
     grossPurchasePrice: aggregate.purchasePrice,
@@ -11373,66 +11376,18 @@ function aggregateSales(sales) {
   };
 }
 
-function currentCyclePositions(positions = [], sales = []) {
-  const resetDate = lastZeroPositionDate(positions, sales);
-  if (!resetDate) return positions;
-  const hasBuyAfterReset = positions.some((lot) => lot.purchaseDate && lot.purchaseDate > resetDate);
-  if (!hasBuyAfterReset) return positions;
-  return positions.filter((lot) => lot.purchaseDate && lot.purchaseDate > resetDate);
-}
-
-function currentCycleSales(positions = [], sales = [], remainingQuantity = 0) {
-  if (!sales.length) return [];
-  const resetDate = lastZeroPositionDate(positions, sales);
-  if (!resetDate) return sales;
-  const hasBuyAfterReset = positions.some((lot) => lot.purchaseDate && lot.purchaseDate > resetDate);
-  if (!hasBuyAfterReset) return sales;
-  return sales.filter((sale) => sale.sellDate && sale.sellDate > resetDate);
-}
-
-function lastZeroPositionDate(positions = [], sales = []) {
-  const transactions = [
-    ...positions.map((lot) => ({
-      date: lot.purchaseDate || "",
-      type: "buy",
-      quantity: lot.quantity,
-    })),
-    ...sales.map((lot) => ({
-      date: lot.sellDate || "",
-      type: "sell",
-      quantity: lot.quantity,
-    })),
-  ]
-    .filter((item) => item.quantity > 0)
-    .sort((a, b) => {
-      const dateCompare = (a.date || "9999-99-99").localeCompare(b.date || "9999-99-99");
-      if (dateCompare) return dateCompare;
-      return a.type === "sell" ? -1 : 1;
-    });
-
-  let quantity = 0;
-  let resetDate = "";
-  for (const item of transactions) {
-    quantity += item.type === "buy" ? item.quantity : -item.quantity;
-    if (quantity <= 0.000001) {
-      quantity = 0;
-      resetDate = item.date || "";
-    }
-  }
-  return resetDate;
-}
-
 function positionLotState(positions = [], sales = []) {
   const remainingLots = positions.map((lot) => ({ ...lot }));
   let soldQuantity = 0;
   let realizedCost = 0;
   let realizedProceeds = 0;
-  const grossQuantity = positions.reduce((sum, lot) => sum + lot.quantity, 0);
+  let unmatchedSaleQuantity = 0;
 
   for (const sale of sales) {
-    let saleLeft = Math.min(sale.quantity, Math.max(0, grossQuantity - soldQuantity));
+    let saleLeft = sale.quantity;
     for (const lot of remainingLots) {
       if (saleLeft <= 0) break;
+      if (sale.sellDate && lot.purchaseDate && lot.purchaseDate > sale.sellDate) continue;
       if (!lot.quantity) continue;
       const take = Math.min(lot.quantity, saleLeft);
       lot.quantity = Math.max(0, lot.quantity - take);
@@ -11441,6 +11396,7 @@ function positionLotState(positions = [], sales = []) {
       realizedCost += take * lot.purchasePrice;
       realizedProceeds += take * sale.sellPrice;
     }
+    unmatchedSaleQuantity += saleLeft;
   }
 
   const openLots = remainingLots
@@ -11461,6 +11417,7 @@ function positionLotState(positions = [], sales = []) {
     remainingInvested,
     realizedCost,
     realizedProceeds,
+    unmatchedSaleQuantity: Math.round(unmatchedSaleQuantity * 1000000) / 1000000,
   };
 }
 
