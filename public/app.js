@@ -114,6 +114,7 @@ const els = {
   usProfitPct: document.getElementById("usProfitPct"),
   usRealizedPnlTotal: document.getElementById("usRealizedPnlTotal"),
   usDividendReceivedTotal: document.getElementById("usDividendReceivedTotal"),
+  usDividendReceivedTiming: document.getElementById("usDividendReceivedTiming"),
   usInvestedTotal: document.getElementById("usInvestedTotal"),
   usMarketTotal: document.getElementById("usMarketTotal"),
   usWinCount: document.getElementById("usWinCount"),
@@ -145,6 +146,7 @@ const els = {
   totalReturnPct: document.getElementById("totalReturnPct"),
   realizedPnlTotal: document.getElementById("realizedPnlTotal"),
   dividendReceivedTotal: document.getElementById("dividendReceivedTotal"),
+  dividendReceivedTiming: document.getElementById("dividendReceivedTiming"),
   investedTotal: document.getElementById("investedTotal"),
   marketTotal: document.getElementById("marketTotal"),
   dividendIncomeTotal: document.getElementById("dividendIncomeTotal"),
@@ -999,6 +1001,9 @@ function renderProfitSummary() {
       : "購入日・株数・配当データが必要";
   }
   if (els.dividendReceivedTotal) els.dividendReceivedTotal.textContent = yen(summary.dividendReceived);
+  if (els.dividendReceivedTiming) {
+    els.dividendReceivedTiming.textContent = nextDividendPaymentLabel(state.stocks, state.analyses);
+  }
   if (els.investedTotal) els.investedTotal.textContent = yen(summary.invested);
   if (els.marketTotal) els.marketTotal.textContent = yen(summary.marketValue);
   if (els.dividendIncomeTotal) els.dividendIncomeTotal.textContent = yen(summary.annualDividendEstimate);
@@ -1032,6 +1037,9 @@ function renderUsSummary() {
   }
   if (els.usRealizedPnlTotal) setMoneySummary(els.usRealizedPnlTotal, summary.realizedPnlAmount, "profit-big", usd);
   if (els.usDividendReceivedTotal) els.usDividendReceivedTotal.textContent = usd(summary.dividendReceived);
+  if (els.usDividendReceivedTiming) {
+    els.usDividendReceivedTiming.textContent = nextDividendPaymentLabel(state.usStocks, state.usAnalyses);
+  }
   setMoneySummary(els.usInvestedTotal, summary.invested, "profit-big", usd);
   setMoneySummary(els.usMarketTotal, summary.marketValue, "profit-big", usd);
   if (els.usWinCount) els.usWinCount.textContent = String(summary.winCount || 0);
@@ -1576,6 +1584,30 @@ function usFinancialCard(fundamentals = {}) {
         : "<p>米国株を更新すると、取得できた財務情報をここに表示します。</p>"}
     </section>
   `;
+}
+
+function nextDividendPaymentLabel(stocks = [], analyses = {}, today = new Date()) {
+  const todayKey = [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, "0"),
+    String(today.getDate()).padStart(2, "0"),
+  ].join("-");
+  const nextDate = (stocks || []).reduce((earliest, stock) => {
+    const price = analyses?.[stock.symbol]?.price;
+    const position = positionMetrics(stock, price);
+    if (!hasOpenPosition(stock, position)) return earliest;
+    const paymentDate = dividendDate(price?.dividendPaymentDate);
+    if (!paymentDate || paymentDate < todayKey) return earliest;
+    return !earliest || paymentDate < earliest ? paymentDate : earliest;
+  }, "");
+  if (!nextDate) return "次回受領予定：日付データ未取得";
+  const year = Number(nextDate.slice(0, 4));
+  const month = Number(nextDate.slice(5, 7));
+  const day = Number(nextDate.slice(8, 10));
+  const dateLabel = year === today.getFullYear()
+    ? `${month}月${day}日`
+    : `${year}年${month}月${day}日`;
+  return `次回受領予定：${dateLabel}`;
 }
 
 function portfolioSummary() {

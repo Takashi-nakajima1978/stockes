@@ -763,7 +763,7 @@ test("FIFO realized and unrealized P/L retain completed loss cycles after rebuy"
     finiteOrNull: (value) => Number.isFinite(Number(value)) ? Number(value) : null,
     finiteOrZero: (value) => Number.isFinite(Number(value)) ? Number(value) : 0,
     daysSince: () => 1,
-    dividendsForPositionHistory: () => 0,
+    dividendsForPositionHistory: () => 25,
     annualDividendPerShare: () => null,
   });
   const serverLotState = loadFunction(serverSource, "positionLotState", {});
@@ -775,7 +775,7 @@ test("FIFO realized and unrealized P/L retain completed loss cycles after rebuy"
     positionLotState: serverLotState,
     nullablePositiveNumber: (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null,
     daysSince: () => 1,
-    dividendsForPositionHistory: () => 0,
+    dividendsForPositionHistory: () => 25,
     annualDividendPerShare: () => null,
     resolveMinimumHoldQuantity: () => 0,
     dominantAccountType: () => "taxable",
@@ -792,6 +792,7 @@ test("FIFO realized and unrealized P/L retain completed loss cycles after rebuy"
     assert.equal(metrics.realizedPnlAmount, -300);
     assert.equal(metrics.unrealizedPnlAmount, 30);
     assert.equal(metrics.pnlAmount, -270);
+    assert.equal(metrics.totalReturnAmount, -245);
     assert.equal(metrics.unmatchedSaleQuantity, 0);
   }
   assert.equal(browser.realizedPnlAmount, server.realizedPnlAmount);
@@ -816,6 +817,8 @@ test("detail pages show absolute dividend amounts without changing watchlist div
   assert.match(appSource, /function dividendCell[\s\S]*<strong>\$\{yieldText\}<\/strong>/);
   assert.match(indexSource, /id="dividendReceivedTotal"/);
   assert.match(indexSource, /id="usDividendReceivedTotal"/);
+  assert.match(indexSource, /id="dividendReceivedTiming"/);
+  assert.match(indexSource, /id="usDividendReceivedTiming"/);
   assert.match(indexSource, /id="realizedPnlTotal"/);
   assert.match(indexSource, /id="usRealizedPnlTotal"/);
   assert.match(appSource, /els\.realizedPnlTotal[\s\S]*summary\.realizedPnlAmount/);
@@ -824,10 +827,50 @@ test("detail pages show absolute dividend amounts without changing watchlist div
   assert.match(appSource, /usDividendReceivedTotal: document\.getElementById\("usDividendReceivedTotal"\)/);
   assert.match(appSource, /els\.dividendReceivedTotal[\s\S]*summary\.dividendReceived/);
   assert.match(appSource, /els\.usDividendReceivedTotal[\s\S]*summary\.dividendReceived/);
+  assert.match(appSource, /els\.dividendReceivedTiming[\s\S]*nextDividendPaymentLabel\(state\.stocks, state\.analyses\)/);
+  assert.match(appSource, /els\.usDividendReceivedTiming[\s\S]*nextDividendPaymentLabel\(state\.usStocks, state\.usAnalyses\)/);
   assert.match(appSource, /function jpAiConfirmationHtml[\s\S]*<strong>配当利回り<\/strong>[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
   assert.match(appSource, /function renderUsDetail[\s\S]*<strong>配当利回り<\/strong>[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
   assert.match(appSource, /function positionEditor[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
   assert.match(appSource, /function usPositionEditor[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
+});
+
+test("portfolio summary puts annual dividend first and evaluation before invested amount", () => {
+  const start = indexSource.indexOf('<section class="profit-summary"');
+  const end = indexSource.indexOf("</section>", start);
+  const summary = indexSource.slice(start, end);
+  const cardOrder = [
+    "id=\"dividendIncomeTotal\"",
+    "id=\"dividendReceivedTotal\"",
+    "id=\"marketTotal\"",
+    "id=\"investedTotal\"",
+  ].map((id) => summary.indexOf(id));
+  assert.ok(cardOrder.every((index) => index >= 0));
+  assert.deepEqual(cardOrder, [...cardOrder].sort((a, b) => a - b));
+});
+
+test("dividend receipt tile shows the nearest actual payment date for open holdings", () => {
+  const label = loadFunction(appSource, "nextDividendPaymentLabel", {
+    positionMetrics: (stock) => ({ quantity: stock.quantity }),
+    hasOpenPosition: (_stock, position) => position.quantity > 0,
+    dividendDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? value : "",
+  });
+  const today = new Date(2026, 9, 3);
+  const stocks = [
+    { symbol: "AAA.T", quantity: 100 },
+    { symbol: "BBB.T", quantity: 0 },
+    { symbol: "CCC.T", quantity: 50 },
+  ];
+  const analyses = {
+    "AAA.T": { price: { dividendPaymentDate: "2026-10-15" } },
+    "BBB.T": { price: { dividendPaymentDate: "2026-10-05" } },
+    "CCC.T": { price: { dividendPaymentDate: "2026-10-08" } },
+  };
+  assert.equal(label(stocks, analyses, today), "次回受領予定：10月8日");
+  assert.equal(label([{ symbol: "AAA.T", quantity: 100 }], {
+    "AAA.T": { price: { dividendPaymentDate: "2027-01-08" } },
+  }, today), "次回受領予定：2027年1月8日");
+  assert.equal(label(stocks, {}, today), "次回受領予定：日付データ未取得");
 });
 
 test("price charts show visible purchase and sale markers", () => {
