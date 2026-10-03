@@ -9,6 +9,7 @@ import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, pre
 const serverSource = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 const indexSource = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+const stylesSource = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 const logoSource = await readFile(new URL("../public/stock-signal-logo.svg", import.meta.url), "utf8");
 
 function loadFunction(source, name, globals) {
@@ -481,77 +482,16 @@ test("browser logo is wired to favicon and app brand", () => {
   assert.match(serverSource, /stock-signal-logo\.svg/);
 });
 
-test("day trade is removed from navigation while its existing backend remains intact", () => {
-  assert.doesNotMatch(indexSource, /data-view-target="daytrade"/);
+test("day trade monitoring and broker controls are fully removed", () => {
+  assert.doesNotMatch(indexSource, /data-view="daytrade"|data-view-target="daytrade"|dayTrade|デイトレ|data-settings-tab="broker"|settingsRakutenApi/);
+  assert.doesNotMatch(appSource, /dayTrade|DayTrade|daytrade|デイトレ|rakutenOrderEnabled|rakutenRssBridgeUrl/);
+  assert.doesNotMatch(serverSource, /dayTrade|DayTrade|daytrade|デイトレ|rakutenOrderEnabled|rakutenRssBridgeUrl|RssStockOrder/);
+  assert.doesNotMatch(stylesSource, /daytrade|autopilot|simulation-monitor|simulation-status-grid/);
   assert.match(appSource, /const VIEW_KEYS = new Set\(\["analysis", "stocks", "us", "crypto", "ideas", "settings"\]\)/);
-  assert.match(indexSource, /data-view="daytrade"/);
-  assert.match(indexSource, /dayTradeWatchlist/);
-  assert.match(indexSource, /dayTradeStopMode/);
-  assert.match(indexSource, /dayTradeChaseReference/);
-  assert.match(indexSource, /dayTradeStartButton/);
-  assert.match(indexSource, /dayTradeStopButton/);
-  assert.match(indexSource, /dayTradeSimulation/);
-  assert.match(indexSource, /dayTradeAutoEntryEnabled/);
-  assert.match(indexSource, /dayTradeFollowPrice/);
-  assert.match(indexSource, /dayTradeSelectAllButton/);
-  assert.match(indexSource, /dayTradeClearSelectionButton/);
-  assert.match(indexSource, /dayTradeAutopilotButton/);
-  assert.match(indexSource, /dayTradeAutopilotStartButton/);
-  assert.match(indexSource, /dayTradeTargetStocksPct/);
-  assert.match(indexSource, /data-settings-tab="broker"/);
-  assert.match(indexSource, /settingsRakutenRssBridgeUrl/);
-  assert.match(indexSource, /settingsDayTradeStopYen/);
-  assert.match(indexSource, /settingsDayTradeProfitYen/);
-  assert.match(indexSource, /settingsDayTradeChaseYen/);
-  assert.match(appSource, /\/api\/daytrade\/simulate/);
-  assert.match(appSource, /\/api\/daytrade\/entry/);
-  assert.match(appSource, /\/api\/daytrade\/simulation/);
-  assert.match(appSource, /\/api\/daytrade\/autopilot/);
-  assert.match(appSource, /\/api\/daytrade\/learning/);
-  assert.match(appSource, /\/api\/daytrade\/runtime/);
-  assert.match(appSource, /runDayTradeAutopilot/);
-  assert.match(appSource, /loadDayTradeRuntimeState/);
-  assert.match(appSource, /persistDayTradeRuntime/);
-  assert.match(appSource, /resumeDayTradeSimulation/);
-  assert.match(appSource, /recordDayTradeLearningFromMonitor/);
-  assert.match(appSource, /dayTradeAdaptivePayload/);
-  assert.match(appSource, /settingsDayTradeStopMode/);
-  assert.match(appSource, /aiStateBadge/);
-  assert.match(appSource, /autopilotPolicyHtml/);
-  assert.match(appSource, /applyDayTradeAutoEntry/);
-  assert.match(appSource, /pollDayTradeSimulationPrice/);
-  assert.match(appSource, /dayTradeMultiSelected/);
-  assert.match(appSource, /startDayTradeMultiMonitor/);
-  assert.match(appSource, /pollDayTradeMultiSimulationPrices/);
-  assert.match(appSource, /startDayTradeSimulation/);
-  assert.match(appSource, /stopDayTradeSimulation/);
-  assert.match(appSource, /\/api\/daytrade\/candidates/);
-  assert.match(appSource, /\/api\/daytrade\/order/);
-  assert.match(appSource, /\/api\/daytrade-watchlist/);
-  assert.match(serverSource, /function buildDayTradePlan/);
-  assert.match(serverSource, /function buildDayTradeEntryRecommendation/);
-  assert.match(serverSource, /function buildDayTradeSimulation/);
-  assert.match(serverSource, /function buildDayTradeAutopilot/);
-  assert.match(serverSource, /DAY_TRADE_RUNTIME_PATH/);
-  assert.match(serverSource, /function readDayTradeRuntime/);
-  assert.match(serverSource, /function saveDayTradeRuntime/);
-  assert.match(serverSource, /function normalizeDayTradeRuntime/);
-  assert.match(serverSource, /function dayTradeAutopilotPolicy/);
-  assert.match(serverSource, /function candidatePassesAutopilotPolicy/);
-  assert.match(serverSource, /function dayTradeLearningOverview/);
-  assert.match(serverSource, /function dayTradeAdaptiveRules/);
-  assert.match(serverSource, /function dayTradeAiState/);
-  assert.match(serverSource, /function dayTradeLearningScore/);
-  assert.match(serverSource, /function recordDayTradeLearning/);
-  assert.match(serverSource, /Stock 59% \/ Bonds 39% \/ Cash 2%/);
-  assert.match(serverSource, /monitorMode: true/);
-  assert.match(serverSource, /function dayTradeCandidates/);
-  assert.match(serverSource, /function readDayTradeWatchlist/);
-  assert.match(serverSource, /normalizeDayTradeOffsetMode/);
-  assert.match(serverSource, /東証プライム値動き検索/);
-  assert.match(serverSource, /RssStockOrder/);
-  assert.match(serverSource, /confirm=true/);
-  assert.match(serverSource, /rakutenOrderEnabled/);
+  assert.match(indexSource, /settings-tab-panel" data-settings-panel="monitoring"/);
+  assert.match(appSource, /setInterval\(syncBackgroundPrices, 15000\)/);
+  assert.match(serverSource, /if \(url\.pathname === "\/api\/stocks" && req\.method === "GET"\)/);
+  assert.match(serverSource, /rakutenAccountMemo:/);
 });
 
 test("Japan watchlist resolves sectors and shows FX/overseas sales context", () => {
