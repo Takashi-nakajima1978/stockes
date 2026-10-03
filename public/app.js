@@ -3112,8 +3112,8 @@ function portfolioSummary() {
       : 0;
     summary.count += 1;
     const resultAmount = Number.isFinite(position.totalReturnAmount) ? position.totalReturnAmount : position.pnlAmount;
-    if (Number.isFinite(resultAmount) && resultAmount > 0) summary.winCount += 1;
-    if (Number.isFinite(resultAmount) && resultAmount < 0) summary.lossCount += 1;
+    if (hasTrackedOpenPosition && Number.isFinite(resultAmount) && resultAmount > 0) summary.winCount += 1;
+    if (hasTrackedOpenPosition && Number.isFinite(resultAmount) && resultAmount < 0) summary.lossCount += 1;
     summary.pnlPct = summary.grossInvested > 0 ? (summary.pnlAmount / summary.grossInvested) * 100 : null;
     summary.totalReturnPct = summary.grossInvested > 0 ? (summary.totalReturnAmount / summary.grossInvested) * 100 : null;
     return summary;
@@ -3242,8 +3242,9 @@ function usSummaryFromState() {
       ? position.pnlAmount
       : 0;
     const resultAmount = Number.isFinite(position.totalReturnAmount) ? position.totalReturnAmount : position.pnlAmount;
-    summary.winCount += Number.isFinite(resultAmount) && resultAmount > 0 ? 1 : 0;
-    summary.lossCount += Number.isFinite(resultAmount) && resultAmount < 0 ? 1 : 0;
+    const currentlyHeld = hasOpenPosition(stock, position);
+    summary.winCount += currentlyHeld && Number.isFinite(resultAmount) && resultAmount > 0 ? 1 : 0;
+    summary.lossCount += currentlyHeld && Number.isFinite(resultAmount) && resultAmount < 0 ? 1 : 0;
     summary.pnlPct = summary.grossInvested > 0 ? (summary.pnlAmount / summary.grossInvested) * 100 : null;
     summary.totalReturnPct = summary.grossInvested > 0 ? (summary.totalReturnAmount / summary.grossInvested) * 100 : null;
     return summary;

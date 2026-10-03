@@ -3344,11 +3344,12 @@ function hasOpenPosition(stock = {}, position = {}) {
 function usPortfolioSummary(rows = []) {
   return rows.reduce((summary, row) => {
     const position = row.position || {};
+    const currentlyHeld = hasOpenPosition(row, position);
     const hasPositionResult = Number.isFinite(position.grossInvested)
       || Number.isFinite(position.invested)
       || Number.isFinite(position.pnlAmount);
     const hasRecordedSales = Number.isFinite(position.soldQuantity) && position.soldQuantity > 0;
-    if ((!hasOpenPosition(row, position) && !hasRecordedSales) || !hasPositionResult) return summary;
+    if ((!currentlyHeld && !hasRecordedSales) || !hasPositionResult) return summary;
     summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
     summary.grossInvested += Number.isFinite(position.grossInvested)
       ? position.grossInvested
@@ -3367,7 +3368,7 @@ function usPortfolioSummary(rows = []) {
       ? position.pnlAmount
       : 0;
     const resultAmount = Number.isFinite(position.totalReturnAmount) ? position.totalReturnAmount : position.pnlAmount;
-    if (Number.isFinite(resultAmount)) {
+    if (currentlyHeld && Number.isFinite(resultAmount)) {
       if (resultAmount > 0) summary.winCount += 1;
       else if (resultAmount < 0) summary.lossCount += 1;
     }

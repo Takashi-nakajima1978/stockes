@@ -751,7 +751,7 @@ test("US portfolio summary includes realized results from fully sold holdings", 
     },
   ]);
   assert.equal(summary.winCount, 1);
-  assert.equal(summary.lossCount, 2);
+  assert.equal(summary.lossCount, 1);
   assert.equal(summary.grossInvested, 300);
   assert.equal(summary.realizedPnlAmount, -20);
   assert.equal(summary.unrealizedPnlAmount, -15);
@@ -760,32 +760,48 @@ test("US portfolio summary includes realized results from fully sold holdings", 
   assert.match(appSource, /売却済み/);
 });
 
-test("Japan portfolio summary retains a sold holding's realized loss after holding is unchecked", () => {
+test("Japan win/loss counts use current holdings while sold loss remains in realized total", () => {
   const summaryFromJapan = loadFunction(appSource, "portfolioSummary", {
     state: {
-      stocks: [{ symbol: "CLOSED", holding: false, metrics: {
-        grossInvested: 1000,
-        invested: null,
-        marketValue: null,
-        pnlAmount: -250,
-        realizedPnlAmount: -250,
-        unrealizedPnlAmount: null,
-        dividendReceived: 0,
-        annualDividendEstimate: null,
-        totalReturnAmount: -250,
-        quantity: null,
-        soldQuantity: 10,
-      } }],
+      stocks: [
+        { symbol: "CLOSED", holding: false, metrics: {
+          grossInvested: 1000,
+          invested: null,
+          marketValue: null,
+          pnlAmount: -250,
+          realizedPnlAmount: -250,
+          unrealizedPnlAmount: null,
+          dividendReceived: 0,
+          annualDividendEstimate: null,
+          totalReturnAmount: -250,
+          quantity: null,
+          soldQuantity: 10,
+        } },
+        { symbol: "OPEN", holding: true, metrics: {
+          grossInvested: 500,
+          invested: 500,
+          marketValue: 550,
+          pnlAmount: 50,
+          realizedPnlAmount: 0,
+          unrealizedPnlAmount: 50,
+          dividendReceived: 0,
+          annualDividendEstimate: null,
+          totalReturnAmount: 50,
+          quantity: 5,
+          soldQuantity: null,
+        } },
+      ],
       analyses: {},
     },
     positionMetrics: (stock) => stock.metrics,
     nisaAllowanceSummary: () => ({}),
   });
   const summary = summaryFromJapan();
-  assert.equal(summary.count, 1);
+  assert.equal(summary.count, 2);
   assert.equal(summary.realizedPnlAmount, -250);
-  assert.equal(summary.pnlAmount, -250);
-  assert.equal(summary.lossCount, 1);
+  assert.equal(summary.pnlAmount, -200);
+  assert.equal(summary.winCount, 1);
+  assert.equal(summary.lossCount, 0);
 });
 
 test("FIFO realized and unrealized P/L retain completed loss cycles after rebuy", () => {
