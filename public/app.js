@@ -113,6 +113,7 @@ const els = {
   usProfitAmount: document.getElementById("usProfitAmount"),
   usProfitPct: document.getElementById("usProfitPct"),
   usRealizedPnlTotal: document.getElementById("usRealizedPnlTotal"),
+  usDividendIncomeTotal: document.getElementById("usDividendIncomeTotal"),
   usDividendReceivedTotal: document.getElementById("usDividendReceivedTotal"),
   usDividendReceivedTiming: document.getElementById("usDividendReceivedTiming"),
   usInvestedTotal: document.getElementById("usInvestedTotal"),
@@ -1036,6 +1037,7 @@ function renderUsSummary() {
       : "更新待ち";
   }
   if (els.usRealizedPnlTotal) setMoneySummary(els.usRealizedPnlTotal, summary.realizedPnlAmount, "profit-big", usd);
+  if (els.usDividendIncomeTotal) els.usDividendIncomeTotal.textContent = usd(summary.annualDividendEstimate);
   if (els.usDividendReceivedTotal) els.usDividendReceivedTotal.textContent = usd(summary.dividendReceived);
   if (els.usDividendReceivedTiming) {
     els.usDividendReceivedTiming.textContent = nextDividendPaymentLabel(state.usStocks, state.usAnalyses);

@@ -816,6 +816,7 @@ test("detail pages show absolute dividend amounts without changing watchlist div
   assert.match(appSource, /function annualDividendText/);
   assert.match(appSource, /function dividendCell[\s\S]*<strong>\$\{yieldText\}<\/strong>/);
   assert.match(indexSource, /id="dividendReceivedTotal"/);
+  assert.match(indexSource, /id="usDividendIncomeTotal"/);
   assert.match(indexSource, /id="usDividendReceivedTotal"/);
   assert.match(indexSource, /id="dividendReceivedTiming"/);
   assert.match(indexSource, /id="usDividendReceivedTiming"/);
@@ -826,6 +827,7 @@ test("detail pages show absolute dividend amounts without changing watchlist div
   assert.match(appSource, /dividendReceivedTotal: document\.getElementById\("dividendReceivedTotal"\)/);
   assert.match(appSource, /usDividendReceivedTotal: document\.getElementById\("usDividendReceivedTotal"\)/);
   assert.match(appSource, /els\.dividendReceivedTotal[\s\S]*summary\.dividendReceived/);
+  assert.match(appSource, /els\.usDividendIncomeTotal[\s\S]*summary\.annualDividendEstimate/);
   assert.match(appSource, /els\.usDividendReceivedTotal[\s\S]*summary\.dividendReceived/);
   assert.match(appSource, /els\.dividendReceivedTiming[\s\S]*nextDividendPaymentLabel\(state\.stocks, state\.analyses\)/);
   assert.match(appSource, /els\.usDividendReceivedTiming[\s\S]*nextDividendPaymentLabel\(state\.usStocks, state\.usAnalyses\)/);
@@ -844,6 +846,20 @@ test("portfolio summary puts annual dividend first and evaluation before investe
     "id=\"dividendReceivedTotal\"",
     "id=\"marketTotal\"",
     "id=\"investedTotal\"",
+  ].map((id) => summary.indexOf(id));
+  assert.ok(cardOrder.every((index) => index >= 0));
+  assert.deepEqual(cardOrder, [...cardOrder].sort((a, b) => a - b));
+});
+
+test("US portfolio summary uses the same annual dividend and value card order", () => {
+  const start = indexSource.indexOf('<section class="profit-summary us-profit-summary"');
+  const end = indexSource.indexOf("</section>", start);
+  const summary = indexSource.slice(start, end);
+  const cardOrder = [
+    'id="usDividendIncomeTotal"',
+    'id="usDividendReceivedTotal"',
+    'id="usMarketTotal"',
+    'id="usInvestedTotal"',
   ].map((id) => summary.indexOf(id));
   assert.ok(cardOrder.every((index) => index >= 0));
   assert.deepEqual(cardOrder, [...cardOrder].sort((a, b) => a - b));
