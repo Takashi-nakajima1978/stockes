@@ -36,6 +36,8 @@ const state = {
   usSelected: null,
   view: preferredView(),
   ideaView: "candidates",
+  cryptoView: "btc",
+  jpUnheldExpanded: false,
   settingsTab: "search",
   running: false,
   jpRefreshing: false,
@@ -126,16 +128,20 @@ const els = {
   usDetail: document.getElementById("usDetail"),
   cryptoAnalyzeButton: document.getElementById("cryptoAnalyzeButton"),
   cryptoProfitSummary: document.querySelector('[data-view="crypto"] .crypto-profit-summary'),
+  fxProfitSummary: document.querySelector('[data-crypto-panel="fx"] .fx-rate-summary'),
+  cryptoTabButtons: [...document.querySelectorAll("[data-crypto-tab]")],
+  cryptoPanels: [...document.querySelectorAll("[data-crypto-panel]")],
   cryptoLastRun: document.getElementById("cryptoLastRun"),
-  btcUsdPrice: document.getElementById("btcUsdPrice"),
   btcJpyPrice: document.getElementById("btcJpyPrice"),
   usdJpyRate: document.getElementById("usdJpyRate"),
+  usdJpyChange: document.getElementById("usdJpyChange"),
+  eurJpyRate: document.getElementById("eurJpyRate"),
+  eurJpyChange: document.getElementById("eurJpyChange"),
   cryptoQuantity: document.getElementById("cryptoQuantity"),
   cryptoPnlJpy: document.getElementById("cryptoPnlJpy"),
   cryptoPnlJpyPct: document.getElementById("cryptoPnlJpyPct"),
-  cryptoPnlUsd: document.getElementById("cryptoPnlUsd"),
-  cryptoPnlUsdPct: document.getElementById("cryptoPnlUsdPct"),
   cryptoDetail: document.getElementById("cryptoDetail"),
+  fxDetail: document.getElementById("fxDetail"),
   discoverButton: document.getElementById("discoverButton"),
   discoverNisaButton: document.getElementById("discoverNisaButton"),
   websiteLimit: document.getElementById("websiteLimit"),
@@ -157,6 +163,10 @@ const els = {
   nisaAllowanceUsage: document.getElementById("nisaAllowanceUsage"),
   lastRun: document.getElementById("lastRun"),
   stockTable: document.getElementById("stockTable"),
+  watchlistHoldingCount: document.getElementById("watchlistHoldingCount"),
+  unheldWatchlist: document.getElementById("unheldWatchlist"),
+  unheldStockCount: document.getElementById("unheldStockCount"),
+  unheldStockTable: document.getElementById("unheldStockTable"),
   manageStockTable: document.getElementById("manageStockTable"),
   selectedSymbol: document.getElementById("selectedSymbol"),
   decisionDetail: document.getElementById("decisionDetail"),
@@ -164,6 +174,7 @@ const els = {
   researchProgress: document.getElementById("researchProgress"),
   candidateProgress: document.getElementById("candidateProgress"),
   candidateList: document.getElementById("candidateList"),
+  peCandidateList: document.getElementById("peCandidateList"),
   suggestionSource: document.getElementById("suggestionSource"),
   candidateSavedAt: document.getElementById("candidateSavedAt"),
   candidatePerformance: document.getElementById("candidatePerformance"),
@@ -692,7 +703,10 @@ function rememberView(view) {
 
 function renderIdeaTabs() {
   els.ideaTabButtons.forEach((button) => {
-    button.classList.toggle("active", button.dataset.ideaTab === state.ideaView);
+    const active = button.dataset.ideaTab === state.ideaView;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
   });
   els.ideaPanels.forEach((panel) => {
     panel.hidden = panel.dataset.ideaPanel !== state.ideaView;
@@ -720,12 +734,35 @@ function renderNavigation() {
 function renderTable() {
   els.stockCount.textContent = String(state.stocks.length);
   els.stockProgress.value = state.stocks.length;
+  const holdings = state.stocks.filter((stock) => stock.holding);
+  const unheld = state.stocks.filter((stock) => !stock.holding);
+
+  if (els.watchlistHoldingCount) els.watchlistHoldingCount.textContent = `${holdings.length}銘柄`;
+  if (els.unheldStockCount) els.unheldStockCount.textContent = `${unheld.length}銘柄`;
 
   if (els.stockTable) {
-    els.stockTable.innerHTML = state.stocks.length
-      ? state.stocks.map((stock) => stockRow(stock, true)).join("")
-      : emptyStockRow(8);
+    els.stockTable.innerHTML = holdings.length
+      ? holdings.map((stock) => stockRow(stock, true)).join("")
+      : state.stocksLoaded
+        ? '<tr><td colspan="8" class="watchlist-empty">保有中の銘柄はありません。</td></tr>'
+        : emptyStockRow(8);
     attachTableEvents(els.stockTable);
+  }
+
+  if (els.unheldStockTable) {
+    els.unheldStockTable.innerHTML = unheld.length
+      ? unheld.map((stock) => stockRow(stock, true)).join("")
+      : state.stocksLoaded
+        ? '<tr><td colspan="8" class="watchlist-empty">未保有の銘柄はありません。</td></tr>'
+        : emptyStockRow(8);
+    attachTableEvents(els.unheldStockTable);
+  }
+
+  if (els.unheldWatchlist) {
+    els.unheldWatchlist.ontoggle = () => {
+      state.jpUnheldExpanded = els.unheldWatchlist.open;
+    };
+    els.unheldWatchlist.open = state.jpUnheldExpanded;
   }
 
   if (els.manageStockTable) {
@@ -1203,6 +1240,7 @@ function renderUsDetail() {
 
 function renderCrypto() {
   renderCryptoSummary();
+  renderCryptoTabs();
   renderCryptoDetail();
 }
 
@@ -1210,25 +1248,38 @@ function renderCryptoSummary() {
   const analysis = state.cryptoAnalysis || {};
   const position = analysis.position || cryptoPositionFallback(state.cryptoHolding || {});
   setRefreshingSummary(els.cryptoProfitSummary, state.cryptoRefreshing, "更新中。表示中の数字は前回保存値");
-  if (els.btcUsdPrice) els.btcUsdPrice.textContent = usd(analysis.btcUsd?.current);
+  setRefreshingSummary(els.fxProfitSummary, state.cryptoRefreshing, "更新中。表示中の数字は前回保存値");
   if (els.btcJpyPrice) els.btcJpyPrice.textContent = yen(analysis.btcJpy?.current);
   if (els.usdJpyRate) els.usdJpyRate.textContent = fxRate(analysis.usdJpy?.current);
+  if (els.usdJpyChange) els.usdJpyChange.textContent = `1カ月 ${signedPct(analysis.usdJpy?.return1m)}`;
+  if (els.eurJpyRate) els.eurJpyRate.textContent = fxRate(analysis.eurJpy?.current);
+  if (els.eurJpyChange) els.eurJpyChange.textContent = `1カ月 ${signedPct(analysis.eurJpy?.return1m)}`;
   if (els.cryptoQuantity) els.cryptoQuantity.textContent = btcAmount(position.quantity);
   setMoneySummary(els.cryptoPnlJpy, position.pnlAmountJpy, "profit-big", yen);
-  setMoneySummary(els.cryptoPnlUsd, position.pnlAmountUsd, "profit-big", usd);
   if (els.cryptoPnlJpyPct) {
     els.cryptoPnlJpyPct.innerHTML = Number.isFinite(position.pnlPctJpy)
       ? `${pct(position.pnlPctJpy)}${position.jpyEstimated ? " / 円換算概算" : ""}`
       : "購入・売却入力後に計算";
   }
-  if (els.cryptoPnlUsdPct) {
-    els.cryptoPnlUsdPct.innerHTML = Number.isFinite(position.pnlPctUsd)
-      ? `${pct(position.pnlPctUsd)}${position.usdEstimated ? " / ドル換算概算" : ""}`
-      : "購入・売却入力後に計算";
-  }
+}
+
+function renderCryptoTabs() {
+  els.cryptoTabButtons.forEach((button) => {
+    const selected = button.dataset.cryptoTab === state.cryptoView;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  els.cryptoPanels.forEach((panel) => {
+    panel.hidden = panel.dataset.cryptoPanel !== state.cryptoView;
+  });
 }
 
 function renderCryptoDetail() {
+  if (state.cryptoView === "fx") {
+    renderFxDetail();
+    return;
+  }
   if (!els.cryptoDetail) return;
   const holding = state.cryptoHolding || { holding: false, positions: [], sales: [] };
   const analysis = state.cryptoAnalysis || null;
@@ -1238,46 +1289,66 @@ function renderCryptoDetail() {
     : "未更新";
   if (els.cryptoLastRun) els.cryptoLastRun.textContent = generated;
   els.cryptoDetail.innerHTML = `
-    <section class="crypto-chart-grid">
-      <article class="decision-card crypto-chart-usd">
-        <div>
-          <h4>3年チャート USD</h4>
-          <span>BTC-USD</span>
-        </div>
-        <div class="chart-frame embedded-chart">
-          <canvas data-us-price-chart aria-label="Bitcoinドル価格の3年チャート"></canvas>
-          <div class="chart-tooltip" data-us-chart-tooltip hidden></div>
-        </div>
-        <div class="chart-timing" data-us-chart-timing hidden></div>
-      </article>
-      <article class="decision-card crypto-chart-jpy">
+    <section class="decision-card crypto-chart-jpy">
         <div>
           <h4>3年チャート JPY</h4>
-          <span>BTC/JPY</span>
+          <span>BTC/JPY（BTC/USDを円換算）</span>
         </div>
         <div class="chart-frame embedded-chart">
           <canvas data-us-price-chart aria-label="Bitcoin円換算価格の3年チャート"></canvas>
           <div class="chart-tooltip" data-us-chart-tooltip hidden></div>
         </div>
-        <div class="chart-timing" data-us-chart-timing hidden></div>
-      </article>
     </section>
     ${cryptoTimingHtml(analysis)}
-    ${fxTimingHtml(analysis)}
-    <section class="crypto-timing-cards">
-      ${technicalEntryHtml(analysis?.btcUsd || {}, usd)}
+    <details class="crypto-technicals-disclosure">
+      <summary>テクニカル詳細を表示</summary>
       ${technicalEntryHtml(analysis?.btcJpy || {}, yen)}
-    </section>
-    ${technicalEntryHtml(analysis?.usdJpy || {}, fxRate)}
-    ${cryptoPositionEditor(holding, position, analysis)}
+    </details>
+    <details class="crypto-position-disclosure">
+      <summary>BTCの保有・売却履歴を編集</summary>
+      ${cryptoPositionEditor(holding, position, analysis)}
+    </details>
   `;
   attachCryptoPositionForm();
-  renderEmbeddedPriceChart(els.cryptoDetail.querySelector(".crypto-chart-usd"), analysis?.btcUsd?.series || [], usd);
   renderEmbeddedPriceChart(els.cryptoDetail.querySelector(".crypto-chart-jpy"), analysis?.btcJpy?.series || [], yen);
 }
 
+function renderFxDetail() {
+  if (!els.fxDetail) return;
+  const analysis = state.cryptoAnalysis || null;
+  const usdTiming = analysis?.fxTiming?.usdJpy || analysis?.fxTiming || null;
+  const eurTiming = analysis?.fxTiming?.eurJpy || null;
+  els.fxDetail.innerHTML = `
+    <section class="fx-pairs-grid">
+      ${fxPairHtml("USD/JPY", "米ドル", analysis?.usdJpy, usdTiming, "usd-jpy")}
+      ${fxPairHtml("EUR/JPY", "ユーロ", analysis?.eurJpy, eurTiming, "eur-jpy")}
+    </section>
+  `;
+  renderEmbeddedPriceChart(els.fxDetail.querySelector(".fx-chart-usd-jpy"), analysis?.usdJpy?.series || [], yen);
+  renderEmbeddedPriceChart(els.fxDetail.querySelector(".fx-chart-eur-jpy"), analysis?.eurJpy?.series || [], yen);
+}
+
+function fxPairHtml(pair, currencyName, price, timing, chartClass) {
+  return `
+    <section class="fx-pair-section">
+      <article class="decision-card ${chartClass}">
+        <div class="fx-pair-heading">
+          <h4>${pair}</h4>
+          <strong>${fxRate(price?.current)}</strong>
+        </div>
+        <div class="chart-frame embedded-chart">
+          <canvas data-us-price-chart aria-label="${pair}の3年チャート"></canvas>
+          <div class="chart-tooltip" data-us-chart-tooltip hidden></div>
+        </div>
+      </article>
+      ${fxTimingHtml(currencyName, timing)}
+    </section>
+  `;
+}
+
 function cryptoTimingHtml(analysis) {
-  if (!analysis?.timing) {
+  const timing = analysis?.timing?.jpy;
+  if (!timing) {
     return `
       <section class="crypto-timing-cards">
         <article class="decision-card">
@@ -1293,56 +1364,56 @@ function cryptoTimingHtml(analysis) {
   }
   return `
     <section class="crypto-timing-cards">
-      ${cryptoTimingCard("買うタイミング", analysis.timing.usd?.buy, analysis.timing.jpy?.buy, "buy")}
-      ${cryptoTimingCard("売るタイミング", analysis.timing.usd?.sell, analysis.timing.jpy?.sell, "sell")}
+      ${cryptoTimingCard("買うタイミング", timing.buy, "buy")}
+      ${cryptoTimingCard("売るタイミング", timing.sell, "sell")}
     </section>
   `;
 }
 
-function cryptoTimingCard(title, usdPlan = {}, jpyPlan = {}, kind = "buy") {
-  const checks = [...new Set([...(usdPlan.checks || []), ...(jpyPlan.checks || [])])]
+function cryptoTimingCard(title, plan = {}, kind = "buy") {
+  const checks = [...new Set(plan.checks || [])]
     .filter(Boolean)
     .map((text) => `<span>${escapeHtml(text)}</span>`)
     .join("");
   const lineLabel = kind === "buy" ? "目安" : "売り場";
   const subLine = kind === "buy"
-    ? `<span><strong>深い押し目</strong>${usd(usdPlan.deepLine)} / ${yen(jpyPlan.deepLine)}</span>`
-    : `<span><strong>確認ライン</strong>${usd(usdPlan.stopLine)} / ${yen(jpyPlan.stopLine)}</span>`;
+    ? `<span><strong>深い押し目</strong>${yen(plan.deepLine)}</span>`
+    : `<span><strong>確認ライン</strong>${yen(plan.stopLine)}</span>`;
   return `
     <article class="decision-card crypto-timing-card ${kind}">
       <div>
         <h4>${escapeHtml(title)}</h4>
-        <span class="entry-grade ${kind === "buy" ? "good" : "watch"}">${escapeHtml(usdPlan.label || jpyPlan.label || "確認")}</span>
+        <span class="entry-grade ${kind === "buy" ? "good" : "watch"}">${escapeHtml(plan.label || "確認")}</span>
       </div>
-      <p>${escapeHtml(usdPlan.summary || jpyPlan.summary || "")}</p>
+      <p>${escapeHtml(plan.summary || "")}</p>
       <div class="timing-grid">
-        <span><strong>${lineLabel} USD</strong>${usd(usdPlan.line)}</span>
-        <span><strong>${lineLabel} JPY</strong>${yen(jpyPlan.line)}</span>
+        <span><strong>${lineLabel}（円）</strong>${yen(plan.line)}</span>
         ${subLine}
-        <span><strong>今との差</strong>${Number.isFinite(usdPlan.currentGapPct) ? signedPct(usdPlan.currentGapPct) : "-"}</span>
+        <span><strong>今との差</strong>${Number.isFinite(plan.currentGapPct) ? signedPct(plan.currentGapPct) : "-"}</span>
       </div>
       <div class="buy-plan-checks">${checks}</div>
     </article>
   `;
 }
 
-function fxTimingHtml(analysis) {
-  const timing = analysis?.fxTiming;
-  if (!timing) return "";
+function fxTimingHtml(currencyName, timing) {
+  if (!timing) {
+    return `<p class="fx-timing-empty">${currencyName}の為替データは取得できませんでした。</p>`;
+  }
   return `
     <section class="crypto-timing-cards fx-timing-cards">
-      ${fxTimingCard("ドルを買うタイミング", timing.buy, "buy")}
-      ${fxTimingCard("円に戻すタイミング", timing.sell, "sell")}
+      ${fxTimingCard(`${currencyName}を買う目安`, timing.buy, "buy", currencyName)}
+      ${fxTimingCard("円に戻す目安", timing.sell, "sell", currencyName)}
     </section>
   `;
 }
 
-function fxTimingCard(title, plan = {}, kind = "buy") {
+function fxTimingCard(title, plan = {}, kind = "buy", currencyName = "米ドル") {
   const checks = (plan.checks || [])
     .filter(Boolean)
     .map((text) => `<span>${escapeHtml(text)}</span>`)
     .join("");
-  const lineLabel = kind === "buy" ? "ドル買い目安" : "ドル売り目安";
+  const lineLabel = kind === "buy" ? `${currencyName}買い目安` : `${currencyName}売り目安`;
   const secondLabel = kind === "buy" ? "深い円高" : "確認ライン";
   const secondValue = kind === "buy" ? plan.deepLine : plan.stopLine;
   return `
@@ -4908,13 +4979,16 @@ function renderCandidateList() {
         ? `${source.message || "NISA向け候補を検索しています。"}${discoveryText}${stageText}${edinetText}年内の成長投資枠は最大240万円です。残り枠は証券口座で確認してください。`
         : `${source.provider}は接続済みですが、今回は検索結果が0件でした。${engineText}${poolText}${stageText}日本株条件は${budgetText}、米国株条件は${usBudgetText}、価格は${source.priceSource}です。${strictText}${earlyText}${edinetText}${seasonalText}${countText}${excludedText}`;
   }
-  if (!state.suggestions.length) {
-    els.candidateList.classList.add("empty-state");
-    els.candidateList.innerHTML = "<p>まだ候補はありません。候補を検索してください。</p>";
-    return;
+  const nisaMode = state.sourceSummary?.discoveryMode === "nisa";
+  const { peItems, stockItems } = splitDiscoveryCandidates(state.suggestions, nisaMode);
+  els.candidateList.classList.toggle("empty-state", !stockItems.length);
+  els.candidateList.innerHTML = candidateReportsHtml(stockItems);
+  if (els.peCandidateList) {
+    els.peCandidateList.classList.toggle("empty-state", nisaMode || !peItems.length);
+    els.peCandidateList.innerHTML = nisaMode
+      ? '<p class="report-empty">NISA向き候補の検索ではPE候補を扱いません。通常の「候補を検索」を実行してください。</p>'
+      : peCandidateReportsHtml(peItems);
   }
-  els.candidateList.classList.remove("empty-state");
-  els.candidateList.innerHTML = candidateReportsHtml(state.suggestions);
   attachSuggestionButtons();
 }
 
@@ -4929,24 +5003,33 @@ function candidateReportsHtml(items = []) {
       items: cleanItems.sort(sortNisaSuggestionItems),
     });
   }
-  const peItems = cleanItems.filter((item) => candidateTarget(item) === "jp" && isPeReportItem(item)).sort(sortPeReportItems);
-  const stockItems = cleanItems.filter((item) => candidateTarget(item) !== "jp" || !isPeReportItem(item)).sort(sortStockReportItems);
-  return [
-    reportSectionHtml({
-      title: "PEが買いそうな候補",
-      count: peItems.length,
-      description: "日本株だけを対象に、時価総額50億-3000億円を中心に、ネットキャッシュ比率、EV/EBITDA、PBR、営業CF、決算後の失望売り、株主還元余地を別軸で見ます。3000億円超は直接材料がある時だけ確認します。",
-      empty: "今の条件では、PE候補として根拠が強い銘柄はありません。",
-      items: peItems,
-    }),
-    reportSectionHtml({
-      title: "株として買う候補",
-      count: stockItems.length,
-      description: "買い場ライン、3年目安、業績材料、配当・株主優待の権利前、短期の過熱感で見ます。PE候補とは別の通常候補です。",
-      empty: "通常の株候補はありません。",
-      items: stockItems,
-    }),
-  ].join("");
+  return reportSectionHtml({
+    title: "株として買う候補",
+    count: cleanItems.length,
+    description: "買い場ライン、3年目安、業績材料、配当・株主優待の権利前、短期の過熱感で見ます。PE候補とは別の通常候補です。",
+    empty: "通常の株候補はありません。",
+    items: cleanItems.sort(sortStockReportItems),
+  });
+}
+
+function splitDiscoveryCandidates(items = [], nisaMode = false) {
+  const cleanItems = sanitizeDiscoverySuggestions(items);
+  if (nisaMode) return { peItems: [], stockItems: cleanItems.sort(sortNisaSuggestionItems) };
+  return {
+    peItems: cleanItems.filter((item) => candidateTarget(item) === "jp" && isPeReportItem(item)).sort(sortPeReportItems),
+    stockItems: cleanItems.filter((item) => candidateTarget(item) !== "jp" || !isPeReportItem(item)).sort(sortStockReportItems),
+  };
+}
+
+function peCandidateReportsHtml(items = []) {
+  const cleanItems = sanitizeDiscoverySuggestions(items);
+  return reportSectionHtml({
+    title: "PEが買いそうな候補",
+    count: cleanItems.length,
+    description: "日本株を対象に、時価総額、ネットキャッシュ、EV/EBITDA、PBR、営業CF、決算後の失望売り、株主還元余地などから買収適性を見ます。",
+    empty: "今の条件では、PE候補として根拠が強い銘柄はありません。",
+    items: cleanItems.sort(sortPeReportItems),
+  });
 }
 
 function sanitizeDiscoverySuggestions(items = []) {
@@ -5476,7 +5559,10 @@ function processStageClass(status = "") {
 }
 
 function attachSuggestionButtons() {
-  els.candidateList.querySelectorAll("[data-add-suggestion]").forEach((button) => {
+  const candidateButtons = (selector) => [els.candidateList, els.peCandidateList]
+    .filter(Boolean)
+    .flatMap((container) => [...container.querySelectorAll(selector)]);
+  candidateButtons("[data-add-suggestion]").forEach((button) => {
     button.addEventListener("click", async () => {
       const suggestion = state.suggestions.find((item) => item.symbol === button.dataset.addSuggestion);
       if (!suggestion) return;
@@ -5528,7 +5614,7 @@ function attachSuggestionButtons() {
       }
     });
   });
-  els.candidateList.querySelectorAll("[data-hide-suggestion]").forEach((button) => {
+  candidateButtons("[data-hide-suggestion]").forEach((button) => {
     button.addEventListener("click", async () => {
       const suggestion = state.suggestions.find((item) => item.symbol === button.dataset.hideSuggestion);
       if (!suggestion) return;
@@ -6292,6 +6378,17 @@ els.ideaTabButtons.forEach((button) => {
     state.ideaView = button.dataset.ideaTab || "candidates";
     renderIdeaTabs();
   });
+  button.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const currentIndex = els.ideaTabButtons.indexOf(button);
+    const nextIndex = (currentIndex + direction + els.ideaTabButtons.length) % els.ideaTabButtons.length;
+    const nextButton = els.ideaTabButtons[nextIndex];
+    state.ideaView = nextButton.dataset.ideaTab || "candidates";
+    renderIdeaTabs();
+    nextButton.focus();
+  });
 });
 
 els.settingsTabButtons.forEach((button) => {
@@ -6304,6 +6401,24 @@ els.settingsTabButtons.forEach((button) => {
 els.analyzeButton.addEventListener("click", analyze);
 els.usAnalyzeButton?.addEventListener("click", analyzeUs);
 els.cryptoAnalyzeButton?.addEventListener("click", analyzeCrypto);
+els.cryptoTabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    state.cryptoView = button.dataset.cryptoTab || "btc";
+    renderCryptoTabs();
+    renderCryptoDetail();
+  });
+  button.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const index = els.cryptoTabButtons.indexOf(button);
+    const next = els.cryptoTabButtons[(index + direction + els.cryptoTabButtons.length) % els.cryptoTabButtons.length];
+    state.cryptoView = next.dataset.cryptoTab || "btc";
+    renderCryptoTabs();
+    renderCryptoDetail();
+    next.focus();
+  });
+});
 els.discoverButton.addEventListener("click", () => discover("general"));
 els.discoverNisaButton?.addEventListener("click", () => discover("nisa"));
 els.diagnosticsButton?.addEventListener("click", runDiagnostics);

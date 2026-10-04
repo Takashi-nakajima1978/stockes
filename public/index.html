@@ -125,6 +125,10 @@
               <h3>Watchlist</h3>
               <span id="lastRun">未分析</span>
             </div>
+            <div class="watchlist-group-heading">
+              <h4>保有中</h4>
+              <span id="watchlistHoldingCount">0銘柄</span>
+            </div>
             <div class="table-wrap">
               <table class="watchlist-table">
                 <thead>
@@ -142,6 +146,29 @@
                 <tbody id="stockTable"></tbody>
               </table>
             </div>
+            <details id="unheldWatchlist" class="unheld-watchlist">
+              <summary>
+                <span class="watchlist-section-name">未保有候補</span>
+                <span id="unheldStockCount" class="watchlist-section-count">0銘柄</span>
+              </summary>
+              <div class="table-wrap">
+                <table class="watchlist-table">
+                  <thead>
+                    <tr>
+                      <th>銘柄</th>
+                      <th>業種</th>
+                      <th>現在</th>
+                      <th>取得/売却</th>
+                      <th>保有数</th>
+                      <th>損益</th>
+                      <th>配当</th>
+                      <th>判断</th>
+                    </tr>
+                  </thead>
+                  <tbody id="unheldStockTable"></tbody>
+                </table>
+              </div>
+            </details>
           </div>
 
           <div class="insight-panel">
@@ -384,52 +411,67 @@
             <h2>BTC・為替</h2>
           </div>
           <div class="actions">
-            <button id="cryptoAnalyzeButton" type="button">BTCを更新</button>
+            <button id="cryptoAnalyzeButton" type="button">BTC・為替を更新</button>
           </div>
         </section>
 
-        <section class="profit-summary crypto-profit-summary" aria-live="polite">
-          <article class="profit-card primary">
-            <span>BTC/USD</span>
-            <strong id="btcUsdPrice">-</strong>
-            <small>Bitcoinドル価格</small>
-          </article>
-          <article class="profit-card">
-            <span>BTC/JPY</span>
-            <strong id="btcJpyPrice">-</strong>
-            <small>USD/JPYで円換算</small>
-          </article>
-          <article class="profit-card">
-            <span>USD/JPY</span>
-            <strong id="usdJpyRate">-</strong>
-            <small>ドル円</small>
-          </article>
-          <article class="profit-card">
-            <span>保有BTC</span>
-            <strong id="cryptoQuantity">-</strong>
-            <small>残数量</small>
-          </article>
-          <article class="profit-card">
-            <span>円損益</span>
-            <strong id="cryptoPnlJpy">-</strong>
-            <small id="cryptoPnlJpyPct">入力後に計算</small>
-          </article>
-          <article class="profit-card">
-            <span>ドル損益</span>
-            <strong id="cryptoPnlUsd">-</strong>
-            <small id="cryptoPnlUsdPct">入力後に計算</small>
-          </article>
-        </section>
+        <div class="crypto-tabs" role="tablist" aria-label="BTCと為替の切り替え">
+          <button type="button" role="tab" id="cryptoTabBtc" class="active" aria-selected="true" aria-controls="cryptoPanelBtc" data-crypto-tab="btc">BTC</button>
+          <button type="button" role="tab" id="cryptoTabFx" aria-selected="false" aria-controls="cryptoPanelFx" data-crypto-tab="fx" tabindex="-1">為替</button>
+        </div>
+        <p class="crypto-updated" id="cryptoLastRun">未更新</p>
 
-        <section class="research-panel">
-          <div class="panel-title">
-            <h3>BTC Detail</h3>
-            <span id="cryptoLastRun">未更新</span>
-          </div>
-          <div id="cryptoDetail" class="decision-detail">
-            <p>BTCを更新すると、価格・為替・買うタイミング・売るタイミングを表示します。</p>
-          </div>
-        </section>
+        <div id="cryptoPanelBtc" role="tabpanel" aria-labelledby="cryptoTabBtc" data-crypto-panel="btc">
+          <section class="profit-summary crypto-profit-summary" aria-live="polite">
+            <article class="profit-card primary">
+              <span>BTC/JPY</span>
+              <strong id="btcJpyPrice">-</strong>
+            </article>
+            <article class="profit-card">
+              <span>保有BTC</span>
+              <strong id="cryptoQuantity">-</strong>
+              <small>残数量</small>
+            </article>
+            <article class="profit-card">
+              <span>損益（円）</span>
+              <strong id="cryptoPnlJpy">-</strong>
+              <small id="cryptoPnlJpyPct">購入・売却入力後に計算</small>
+            </article>
+          </section>
+
+          <section class="research-panel">
+            <div class="panel-title">
+              <h3>BTC</h3>
+            </div>
+            <div id="cryptoDetail" class="decision-detail">
+              <p>BTCを更新すると、価格と買い・売りの目安を表示します。</p>
+            </div>
+          </section>
+        </div>
+
+        <div id="cryptoPanelFx" role="tabpanel" aria-labelledby="cryptoTabFx" data-crypto-panel="fx" hidden>
+          <section class="profit-summary fx-rate-summary" aria-live="polite">
+            <article class="profit-card primary">
+              <span>USD/JPY・円/ドル</span>
+              <strong id="usdJpyRate">-</strong>
+              <small id="usdJpyChange">1カ月の動き -</small>
+            </article>
+            <article class="profit-card">
+              <span>EUR/JPY・円/ユーロ</span>
+              <strong id="eurJpyRate">-</strong>
+              <small id="eurJpyChange">1カ月の動き -</small>
+            </article>
+          </section>
+
+          <section class="research-panel">
+            <div class="panel-title">
+              <h3>為替</h3>
+            </div>
+            <div id="fxDetail" class="decision-detail">
+              <p>為替を更新すると、USD/JPYとEUR/JPYのチャートと目安を表示します。</p>
+            </div>
+          </section>
+        </div>
       </section>
 
       <section class="view-panel" data-view="ideas">
@@ -459,10 +501,11 @@
             <span>候補は最大100件</span>
           </div>
           <div class="idea-tabs" role="tablist" aria-label="候補画面の切り替え">
-            <button type="button" class="active" data-idea-tab="candidates">候補リスト</button>
-            <button type="button" data-idea-tab="sector">業種Evidence</button>
+            <button type="button" role="tab" id="ideaTabStocks" class="active" aria-selected="true" aria-controls="ideaPanelStocks" data-idea-tab="candidates">株の買い候補</button>
+            <button type="button" role="tab" id="ideaTabPe" aria-selected="false" aria-controls="ideaPanelPe" data-idea-tab="pe" tabindex="-1">PEが買いそう</button>
+            <button type="button" role="tab" id="ideaTabSector" aria-selected="false" aria-controls="ideaPanelSector" data-idea-tab="sector" tabindex="-1">業種Evidence</button>
           </div>
-          <div data-idea-panel="candidates">
+          <div id="ideaPanelStocks" role="tabpanel" aria-labelledby="ideaTabStocks" data-idea-panel="candidates">
             <div id="candidatePerformance" class="candidate-performance"></div>
             <details class="excluded-panel">
               <summary>
@@ -477,7 +520,12 @@
               <p>まだ候補はありません。</p>
             </div>
           </div>
-          <div data-idea-panel="sector" hidden>
+          <div id="ideaPanelPe" role="tabpanel" aria-labelledby="ideaTabPe" data-idea-panel="pe" hidden>
+            <div id="peCandidateList" class="suggestion-list empty-state">
+              <p>候補を検索すると、PEが買いそうな銘柄をここに表示します。</p>
+            </div>
+          </div>
+          <div id="ideaPanelSector" role="tabpanel" aria-labelledby="ideaTabSector" data-idea-panel="sector" hidden>
             <div id="sectorEvidenceList" class="sector-evidence-list empty-state">
               <p>一括分析を実行すると、業種Evidenceを保存してここに表示します。</p>
             </div>

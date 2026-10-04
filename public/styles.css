@@ -479,7 +479,108 @@ progress {
 }
 
 .crypto-profit-summary {
-  grid-template-columns: repeat(6, minmax(118px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.fx-rate-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.crypto-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 16px;
+  scrollbar-width: thin;
+}
+
+.crypto-tabs [role="tab"] {
+  flex: 0 0 auto;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  padding: 0 18px;
+  font-weight: 850;
+}
+
+.crypto-tabs [role="tab"].active {
+  border-color: var(--accent);
+  background: #eaf5f1;
+  color: var(--accent);
+}
+
+.crypto-updated {
+  margin: 8px 16px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.fx-pairs-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.fx-pair-section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.fx-pair-heading {
+  align-items: baseline;
+}
+
+.fx-pair-heading strong {
+  font-size: 20px;
+}
+
+.fx-timing-empty {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.crypto-position-disclosure {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.crypto-position-disclosure > summary {
+  cursor: pointer;
+  padding: 14px 16px;
+  color: var(--accent);
+  font-weight: 850;
+}
+
+.crypto-position-disclosure[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.crypto-technicals-disclosure {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.crypto-technicals-disclosure > summary {
+  cursor: pointer;
+  padding: 14px 16px;
+  color: var(--accent);
+  font-weight: 850;
+}
+
+.crypto-technicals-disclosure[open] > summary {
+  border-bottom: 1px solid var(--line);
 }
 
 .profit-card {
@@ -599,6 +700,84 @@ table {
 .watchlist-table th:nth-child(8),
 .watchlist-table td:nth-child(8) {
   width: 140px;
+}
+
+.watchlist-group-heading,
+.unheld-watchlist > summary {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.watchlist-group-heading {
+  border-bottom: 1px solid var(--line);
+  background: #f8faf9;
+}
+
+.watchlist-group-heading h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.watchlist-group-heading > span,
+.watchlist-section-count {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.unheld-watchlist {
+  border-top: 1px solid var(--line);
+  background: #fbfcfc;
+}
+
+.unheld-watchlist > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.unheld-watchlist > summary::-webkit-details-marker {
+  display: none;
+}
+
+.unheld-watchlist > summary::after {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  content: "";
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 140ms ease;
+}
+
+.unheld-watchlist[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.unheld-watchlist[open] > summary::after {
+  transform: rotate(225deg) translate(-2px, -1px);
+}
+
+.watchlist-section-name {
+  margin-right: auto;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.watchlist-empty {
+  padding: 18px 16px !important;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .unheld-watchlist > summary::after {
+    transition: none;
+  }
 }
 
 .manage-table {
@@ -2018,15 +2197,20 @@ tr:hover .drag-handle,
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
   background: #fbfcfc;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .idea-tabs button {
+  flex: 0 0 auto;
   min-height: 34px;
   border-color: var(--line);
   background: #fff;
   color: var(--muted);
   font-size: 13px;
   font-weight: 900;
+  white-space: nowrap;
 }
 
 .idea-tabs button.active {
@@ -2991,6 +3175,7 @@ tr:hover .drag-handle,
   .lot-head,
   .lot-row,
   .crypto-chart-grid,
+  .fx-pairs-grid,
   .crypto-timing-cards,
   .crypto-lot-head,
   .crypto-lot-row,
@@ -3018,6 +3203,10 @@ tr:hover .drag-handle,
 
   .lot-row .lot-remove {
     width: 100%;
+  }
+
+  .crypto-profit-summary .profit-card:last-child {
+    grid-column: 1 / -1;
   }
 
   .crypto-lot-row label span {

@@ -1747,9 +1747,10 @@ async function analyzeCryptoHolding() {
 
 async function performCryptoRefresh() {
   const holding = await readCryptoHolding();
-  const [btcUsdRaw, usdJpyRaw] = await Promise.all([
+  const [btcUsdRaw, usdJpyRaw, eurJpyResult] = await Promise.all([
     fetchPriceHistory("BTC-USD"),
     fetchPriceHistory("JPY=X"),
+    fetchPriceHistory("EURJPY=X").catch(() => emptyPrice()),
   ]);
   if (!usablePrice(btcUsdRaw) || !usablePrice(usdJpyRaw)) {
     throw new Error("BTC・為替の最新価格を取得できませんでした。前回の価格を保持しています。");
@@ -1760,12 +1761,16 @@ async function performCryptoRefresh() {
     symbol: "BTC-JPY",
   });
   const fxRate = nullablePositiveNumber(usdJpyRaw.current);
+  const eurJpyRaw = usablePrice(eurJpyResult) ? eurJpyResult : emptyPrice();
   const position = cryptoPositionMetrics(holding, btcUsdRaw, btcJpyRaw, fxRate);
   const timing = {
     usd: cryptoTradeTiming(btcUsdRaw, "USD"),
     jpy: cryptoTradeTiming(btcJpyRaw, "JPY"),
   };
-  const fxTiming = cryptoTradeTiming(usdJpyRaw, "JPY");
+  const fxTiming = {
+    usdJpy: cryptoTradeTiming(usdJpyRaw, "JPY"),
+    eurJpy: cryptoTradeTiming(eurJpyRaw, "JPY"),
+  };
   const result = {
     generatedAt: new Date().toISOString(),
     asset: "BTC",
@@ -1774,6 +1779,7 @@ async function performCryptoRefresh() {
     btcUsd: compactCryptoPrice(btcUsdRaw, "USD"),
     btcJpy: compactCryptoPrice(btcJpyRaw, "JPY"),
     usdJpy: compactFxPrice(usdJpyRaw),
+    eurJpy: compactFxPrice(eurJpyRaw, "EUR/JPY"),
     position,
     timing,
     fxTiming,
@@ -2866,7 +2872,7 @@ function compactCryptoPrice(price = {}, currency = "USD") {
   };
 }
 
-function compactFxPrice(price = {}) {
+function compactFxPrice(price = {}, pair = "USD/JPY") {
   return {
     current: price.current,
     return1m: price.return1m,
@@ -2906,7 +2912,7 @@ function compactFxPrice(price = {}) {
     shortName: price.shortName,
     longName: price.longName,
     yahooSymbol: price.yahooSymbol,
-    pair: "USD/JPY",
+    pair,
     currency: "JPY",
     series: price.series || [],
   };
@@ -14553,12 +14559,15 @@ async function readCryptoAnalysisCache() {
       btcUsd: cached.btcUsd || compactCryptoPrice(emptyPrice(), "USD"),
       btcJpy: cached.btcJpy || compactCryptoPrice(emptyPrice(), "JPY"),
       usdJpy: cached.usdJpy || compactFxPrice(emptyPrice()),
+      eurJpy: cached.eurJpy || compactFxPrice(emptyPrice(), "EUR/JPY"),
       position: cached.position || cryptoPositionMetrics(defaultCryptoHolding),
       timing: cached.timing || {
         usd: cryptoTradeTiming(emptyPrice(), "USD"),
         jpy: cryptoTradeTiming(emptyPrice(), "JPY"),
       },
-      fxTiming: cached.fxTiming || cryptoTradeTiming(emptyPrice(), "JPY"),
+      fxTiming: cached.fxTiming?.usdJpy
+        ? cached.fxTiming
+        : { usdJpy: cached.fxTiming || cryptoTradeTiming(emptyPrice(), "JPY"), eurJpy: cryptoTradeTiming(emptyPrice(), "JPY") },
       summary: cached.summary || cryptoPortfolioSummary(cached.position || {}),
     };
   } catch {
@@ -14570,12 +14579,16 @@ async function readCryptoAnalysisCache() {
       btcUsd: compactCryptoPrice(emptyPrice(), "USD"),
       btcJpy: compactCryptoPrice(emptyPrice(), "JPY"),
       usdJpy: compactFxPrice(emptyPrice()),
+      eurJpy: compactFxPrice(emptyPrice(), "EUR/JPY"),
       position: cryptoPositionMetrics(defaultCryptoHolding),
       timing: {
         usd: cryptoTradeTiming(emptyPrice(), "USD"),
         jpy: cryptoTradeTiming(emptyPrice(), "JPY"),
       },
-      fxTiming: cryptoTradeTiming(emptyPrice(), "JPY"),
+      fxTiming: {
+        usdJpy: cryptoTradeTiming(emptyPrice(), "JPY"),
+        eurJpy: cryptoTradeTiming(emptyPrice(), "JPY"),
+      },
       summary: cryptoPortfolioSummary({}),
     };
   }
@@ -14591,12 +14604,16 @@ async function saveCryptoAnalysisCache(result) {
     btcUsd: result.btcUsd || compactCryptoPrice(emptyPrice(), "USD"),
     btcJpy: result.btcJpy || compactCryptoPrice(emptyPrice(), "JPY"),
     usdJpy: result.usdJpy || compactFxPrice(emptyPrice()),
+    eurJpy: result.eurJpy || compactFxPrice(emptyPrice(), "EUR/JPY"),
     position: result.position || cryptoPositionMetrics(result.holding || defaultCryptoHolding),
     timing: result.timing || {
       usd: cryptoTradeTiming(emptyPrice(), "USD"),
       jpy: cryptoTradeTiming(emptyPrice(), "JPY"),
     },
-    fxTiming: result.fxTiming || cryptoTradeTiming(emptyPrice(), "JPY"),
+    fxTiming: result.fxTiming || {
+      usdJpy: cryptoTradeTiming(emptyPrice(), "JPY"),
+      eurJpy: cryptoTradeTiming(emptyPrice(), "JPY"),
+    },
     summary: result.summary || cryptoPortfolioSummary(result.position || {}),
   }, null, 2));
 }

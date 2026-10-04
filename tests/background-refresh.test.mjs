@@ -43,6 +43,17 @@ test("overlapping refreshes share work and can retry after a failure", async () 
   assert.equal(await run("JP", () => 43), 43);
 });
 
+test("Japanese watchlist keeps holdings visible and collapses unheld stocks by default", () => {
+  assert.match(indexSource, /<div class="watchlist-group-heading">[\s\S]*?保有中[\s\S]*?<tbody id="stockTable"><\/tbody>/);
+  assert.match(indexSource, /<details id="unheldWatchlist" class="unheld-watchlist">[\s\S]*?<tbody id="unheldStockTable"><\/tbody>[\s\S]*?<\/details>/);
+  assert.doesNotMatch(indexSource.match(/<details id="unheldWatchlist"[^>]*>/)?.[0] || "", /\bopen\b/);
+  assert.match(appSource, /const holdings = state\.stocks\.filter\(\(stock\) => stock\.holding\)/);
+  assert.match(appSource, /const unheld = state\.stocks\.filter\(\(stock\) => !stock\.holding\)/);
+  assert.match(appSource, /jpUnheldExpanded: false/);
+  assert.match(appSource, /state\.stocks\.map\(\(stock\) => stockRow\(stock, false\)\)/);
+  assert.match(stylesSource, /\.unheld-watchlist > summary\s*\{[^}]*cursor: pointer/s);
+});
+
 test("late analysis retains newer prices and new research", () => {
   const newer = { symbol: "X", price: { current: 120, fetchedAt: "2026-09-10T01:05:00Z" }, position: { pnl: 20 }, exitPlan: { price: 110 } };
   const analysis = { symbol: "X", price: { current: 100, fetchedAt: "2026-09-10T01:00:00Z" }, thesis: "new research" };
@@ -1324,6 +1335,34 @@ test("discovery UI restores known company names in stale results", () => {
   assert.match(appSource, /renderCandidateList\(\)[\s\S]*sanitizeDiscoverySuggestions\(state\.suggestions\)/);
 });
 
+test("discovery separates PE candidates, stock candidates, and sector evidence into mobile tabs", () => {
+  const splitDiscoveryCandidates = loadFunction(appSource, "splitDiscoveryCandidates", {
+    sanitizeDiscoverySuggestions: (items) => items,
+    candidateTarget: (item) => item.market === "US" ? "us" : "jp",
+    isPeReportItem: (item) => item.isPe === true,
+    sortPeReportItems: (a, b) => a.symbol.localeCompare(b.symbol),
+    sortStockReportItems: (a, b) => a.symbol.localeCompare(b.symbol),
+    sortNisaSuggestionItems: (a, b) => a.symbol.localeCompare(b.symbol),
+  });
+  const suggestions = [
+    { symbol: "1111.T", isPe: true },
+    { symbol: "2222.T", isPe: false },
+    { symbol: "ABC", market: "US", isPe: true },
+  ];
+  const split = splitDiscoveryCandidates(suggestions);
+  assert.deepEqual(Array.from(split.peItems, (item) => item.symbol), ["1111.T"]);
+  assert.deepEqual(Array.from(split.stockItems, (item) => item.symbol), ["2222.T", "ABC"]);
+  assert.deepEqual(Array.from(splitDiscoveryCandidates(suggestions, true).peItems), []);
+  assert.deepEqual(Array.from(splitDiscoveryCandidates(suggestions, true).stockItems, (item) => item.symbol), ["1111.T", "2222.T", "ABC"]);
+  assert.match(indexSource, /data-idea-tab="candidates"[^>]*>株の買い候補/);
+  assert.match(indexSource, /data-idea-tab="pe"[^>]*>PEが買いそう/);
+  assert.match(indexSource, /data-idea-tab="sector"[^>]*>業種Evidence/);
+  assert.match(indexSource, /id="peCandidateList"/);
+  assert.match(appSource, /function peCandidateReportsHtml/);
+  assert.match(appSource, /candidateButtons\("\[data-add-suggestion\]"\)/);
+  assert.match(stylesSource, /\.idea-tabs\s*\{[^}]*overflow-x:\s*auto/s);
+});
+
 test("slow Japan refresh does not delay US or crypto, or depend on AI job state", async () => {
   let finishJapan;
   const calls = [];
@@ -1428,4 +1467,46 @@ test("failed crypto price fetch leaves the saved cache untouched", async () => {
   });
   await assert.rejects(refresh(), /前回の価格を保持/);
   assert.equal(writes, 0);
+});
+
+test("crypto screen separates BTC from USD/JPY and EUR/JPY tabs", () => {
+  assert.match(indexSource, /data-crypto-tab="btc"/);
+  assert.match(indexSource, /data-crypto-tab="fx"/);
+  assert.match(indexSource, /data-crypto-panel="btc"/);
+  assert.match(indexSource, /data-crypto-panel="fx"/);
+  assert.match(indexSource, /USD\/JPY・円\/ドル/);
+  assert.match(indexSource, /EUR\/JPY・円\/ユーロ/);
+  assert.doesNotMatch(indexSource, /BTC\/USD|id="btcUsdPrice"|id="cryptoPnlUsd"/);
+  assert.match(appSource, /function renderFxDetail\(\)/);
+  assert.match(appSource, /analysis\?\.timing\?\.jpy/);
+  assert.match(appSource, /crypto-position-disclosure/);
+  assert.match(stylesSource, /\.fx-pairs-grid[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+});
+
+test("crypto refresh fetches EUR/JPY independently and keeps BTC position in yen", async () => {
+  const calls = [];
+  const price = (current) => ({ current, series: [{ date: "2026-10-01", close: current }] });
+  const refresh = loadFunction(serverSource, "performCryptoRefresh", {
+    readCryptoHolding: async () => ({ holding: false, positions: [], sales: [] }),
+    fetchPriceHistory: async (symbol) => {
+      calls.push(symbol);
+      return price(symbol === "BTC-USD" ? 65000 : symbol === "JPY=X" ? 150 : 175);
+    },
+    usablePrice: (value) => Number.isFinite(value.current) && value.current > 0,
+    priceMetrics: (series, metadata) => ({ current: series.at(-1)?.close, series, ...metadata }),
+    combineBtcJpySeries: () => [{ date: "2026-10-01", close: 9750000 }],
+    nullablePositiveNumber: (value) => Number.isFinite(value) && value > 0 ? value : null,
+    cryptoPositionMetrics: () => ({ quantity: 0, pnlAmountJpy: 0 }),
+    cryptoTradeTiming: (value, currency) => ({ buy: { currency }, sell: { currency } }),
+    compactCryptoPrice: (value, currency) => ({ ...value, currency }),
+    compactFxPrice: (value, pair) => ({ ...value, pair }),
+    cryptoPortfolioSummary: () => ({}),
+    saveCryptoAnalysisCache: async () => {},
+  });
+
+  const result = await refresh();
+  assert.deepEqual(calls, ["BTC-USD", "JPY=X", "EURJPY=X"]);
+  assert.equal(result.btcJpy.current, 9750000);
+  assert.equal(result.eurJpy.current, 175);
+  assert.equal(result.eurJpy.pair, "EUR/JPY");
 });
