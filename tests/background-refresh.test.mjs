@@ -1478,9 +1478,18 @@ test("crypto screen separates BTC from USD/JPY and EUR/JPY tabs", () => {
   assert.match(indexSource, /EUR\/JPY・円\/ユーロ/);
   assert.doesNotMatch(indexSource, /BTC\/USD|id="btcUsdPrice"|id="cryptoPnlUsd"/);
   assert.match(appSource, /function renderFxDetail\(\)/);
+  assert.match(appSource, /querySelector\("\.fx-chart-usd-jpy"\)/);
+  assert.match(appSource, /querySelector\("\.fx-chart-eur-jpy"\)/);
   assert.match(appSource, /analysis\?\.timing\?\.jpy/);
   assert.match(appSource, /crypto-position-disclosure/);
   assert.match(stylesSource, /\.fx-pairs-grid[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+
+  const renderPair = loadFunction(appSource, "fxPairHtml", {
+    fxRate: (value) => String(value ?? "-"),
+    fxTimingHtml: () => "",
+  });
+  assert.match(renderPair("USD/JPY", "米ドル", { current: 157 }, null, "usd-jpy"), /fx-chart-usd-jpy/);
+  assert.match(renderPair("EUR/JPY", "ユーロ", { current: 177 }, null, "eur-jpy"), /fx-chart-eur-jpy/);
 });
 
 test("crypto refresh fetches EUR/JPY independently and keeps BTC position in yen", async () => {

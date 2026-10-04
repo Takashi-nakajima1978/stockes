@@ -1331,7 +1331,7 @@ function renderFxDetail() {
 function fxPairHtml(pair, currencyName, price, timing, chartClass) {
   return `
     <section class="fx-pair-section">
-      <article class="decision-card ${chartClass}">
+      <article class="decision-card fx-chart-${chartClass}">
         <div class="fx-pair-heading">
           <h4>${pair}</h4>
           <strong>${fxRate(price?.current)}</strong>
