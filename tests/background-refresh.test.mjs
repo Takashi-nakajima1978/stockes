@@ -54,6 +54,22 @@ test("Japanese watchlist keeps holdings visible and collapses unheld stocks by d
   assert.match(stylesSource, /\.unheld-watchlist > summary\s*\{[^}]*cursor: pointer/s);
 });
 
+test("Japanese watchlist surfaces unheld stocks with a purchase or sale in the past year", () => {
+  const hasRecentHistory = loadFunction(appSource, "hasRecentHoldingHistory", {});
+  const now = new Date(2026, 9, 5);
+  assert.equal(hasRecentHistory({ positions: [{ purchaseDate: "2025-10-05" }] }, now), true);
+  assert.equal(hasRecentHistory({ positions: [{ purchaseDate: "2025-10-04" }] }, now), false);
+  assert.equal(hasRecentHistory({
+    positions: [{ purchaseDate: "2024-02-01" }],
+    sales: [{ sellDate: "2026-03-10" }],
+  }, now), true);
+  assert.equal(hasRecentHistory({ positions: [{ purchaseDate: "2026-10-06" }] }, now), false);
+  assert.match(indexSource, /id="recentHoldingWatchlist" hidden/);
+  assert.match(indexSource, /直近1年の保有履歴・再購入候補/);
+  assert.match(appSource, /const recentHolding = unheld\.filter\(\(stock\) => hasRecentHoldingHistory\(stock\)\)/);
+  assert.match(appSource, /unheldCandidates = unheld\.filter\(\(stock\) => !recentSymbols\.has\(stock\.symbol\)\)/);
+});
+
 test("late analysis retains newer prices and new research", () => {
   const newer = { symbol: "X", price: { current: 120, fetchedAt: "2026-09-10T01:05:00Z" }, position: { pnl: 20 }, exitPlan: { price: 110 } };
   const analysis = { symbol: "X", price: { current: 100, fetchedAt: "2026-09-10T01:00:00Z" }, thesis: "new research" };

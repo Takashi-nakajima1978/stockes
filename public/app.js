@@ -164,6 +164,9 @@ const els = {
   lastRun: document.getElementById("lastRun"),
   stockTable: document.getElementById("stockTable"),
   watchlistHoldingCount: document.getElementById("watchlistHoldingCount"),
+  recentHoldingWatchlist: document.getElementById("recentHoldingWatchlist"),
+  recentHoldingStockCount: document.getElementById("recentHoldingStockCount"),
+  recentHoldingStockTable: document.getElementById("recentHoldingStockTable"),
   unheldWatchlist: document.getElementById("unheldWatchlist"),
   unheldStockCount: document.getElementById("unheldStockCount"),
   unheldStockTable: document.getElementById("unheldStockTable"),
@@ -736,9 +739,13 @@ function renderTable() {
   els.stockProgress.value = state.stocks.length;
   const holdings = state.stocks.filter((stock) => stock.holding);
   const unheld = state.stocks.filter((stock) => !stock.holding);
+  const recentHolding = unheld.filter((stock) => hasRecentHoldingHistory(stock));
+  const recentSymbols = new Set(recentHolding.map((stock) => stock.symbol));
+  const unheldCandidates = unheld.filter((stock) => !recentSymbols.has(stock.symbol));
 
   if (els.watchlistHoldingCount) els.watchlistHoldingCount.textContent = `${holdings.length}銘柄`;
-  if (els.unheldStockCount) els.unheldStockCount.textContent = `${unheld.length}銘柄`;
+  if (els.recentHoldingStockCount) els.recentHoldingStockCount.textContent = `${recentHolding.length}銘柄`;
+  if (els.unheldStockCount) els.unheldStockCount.textContent = `${unheldCandidates.length}銘柄`;
 
   if (els.stockTable) {
     els.stockTable.innerHTML = holdings.length
@@ -749,9 +756,17 @@ function renderTable() {
     attachTableEvents(els.stockTable);
   }
 
+  if (els.recentHoldingWatchlist) els.recentHoldingWatchlist.hidden = !recentHolding.length;
+  if (els.recentHoldingStockTable) {
+    els.recentHoldingStockTable.innerHTML = recentHolding.length
+      ? recentHolding.map((stock) => stockRow(stock, true)).join("")
+      : "";
+    attachTableEvents(els.recentHoldingStockTable);
+  }
+
   if (els.unheldStockTable) {
-    els.unheldStockTable.innerHTML = unheld.length
-      ? unheld.map((stock) => stockRow(stock, true)).join("")
+    els.unheldStockTable.innerHTML = unheldCandidates.length
+      ? unheldCandidates.map((stock) => stockRow(stock, true)).join("")
       : state.stocksLoaded
         ? '<tr><td colspan="8" class="watchlist-empty">未保有の銘柄はありません。</td></tr>'
         : emptyStockRow(8);
@@ -771,6 +786,24 @@ function renderTable() {
       : emptyStockRow(10);
     attachTableEvents(els.manageStockTable);
   }
+}
+
+function hasRecentHoldingHistory(stock, now = new Date()) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const cutoff = new Date(today);
+  cutoff.setFullYear(cutoff.getFullYear() - 1);
+  const dateKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const earliest = dateKey(cutoff);
+  const latest = dateKey(today);
+  const dates = [
+    stock.purchaseDate,
+    ...(Array.isArray(stock.positions) ? stock.positions.map((lot) => lot.purchaseDate) : []),
+    ...(Array.isArray(stock.sales) ? stock.sales.map((lot) => lot.sellDate || lot.saleDate) : []),
+  ];
+  return dates.some((value) => {
+    const date = String(value || "");
+    return /^\d{4}-\d{2}-\d{2}$/.test(date) && date >= earliest && date <= latest;
+  });
 }
 
 function emptyStockRow(colspan) {
