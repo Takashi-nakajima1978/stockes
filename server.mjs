@@ -918,6 +918,8 @@ async function handleApi(req, res, url) {
       excludedCandidates,
       candidatePerformance: candidatePerformanceSummary(candidateHistory),
       successfulCandidates: successfulCandidateHistoryItems(candidateHistory),
+      underperformingCandidates: underperformingCandidateHistoryItems(candidateHistory),
+      underperformingCandidateCount: underperformingCandidateHistoryCount(candidateHistory),
       job: discoveryJobSnapshot(),
     });
   }
@@ -943,6 +945,8 @@ async function handleApi(req, res, url) {
     return json(res, 200, {
       performance: candidatePerformanceSummary(history),
       successfulItems: successfulCandidateHistoryItems(history),
+      underperformingItems: underperformingCandidateHistoryItems(history),
+      underperformingCount: underperformingCandidateHistoryCount(history),
       items: history.items.slice(-200).reverse(),
     });
   }
@@ -1189,6 +1193,8 @@ async function handleApi(req, res, url) {
       excludedCandidates,
       candidatePerformance: candidatePerformanceSummary(candidateHistory),
       successfulCandidates: successfulCandidateHistoryItems(candidateHistory),
+      underperformingCandidates: underperformingCandidateHistoryItems(candidateHistory),
+      underperformingCandidateCount: underperformingCandidateHistoryCount(candidateHistory),
       job,
       message: jobConflict
         ? `${job.mode === "nisa" ? "NISA候補" : "通常候補"}の検索が進行中です。完了後に再度実行してください。`
@@ -11858,7 +11864,7 @@ async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
 async function updateCandidateHistoryOutcomes({ maxUpdates = 50 } = {}) {
   const history = await readCandidateHistory();
   const pending = history.items
-    .filter((item) => item.entryPrice && (!Number.isFinite(item.maxReturnPct) || item.maxReturnPct < CANDIDATE_SUCCESS_THRESHOLD_PCT))
+    .filter((item) => item.entryPrice)
     .sort((a, b) => a.evaluatedAt.localeCompare(b.evaluatedAt))
     .slice(0, maxUpdates);
   if (!pending.length) return history;
@@ -11880,17 +11886,8 @@ function evaluateCandidateOutcome(item, series = []) {
   if (!after.length || !item.entryPrice) {
     return {
       ...item,
-      latestPrice: item.entryPrice,
-      latestDate: startDate,
-      latestReturnPct: 0,
-      maxReturnPct: 0,
-      maxPrice: item.entryPrice,
-      maxDate: startDate,
-      minReturnPct: 0,
-      elapsedTradingDays: 0,
       evaluatedAt: new Date().toISOString(),
-      outcome: "pending",
-      outcomeReason: "紹介日の翌営業日以降の価格待ち",
+      outcomeReason: "価格履歴を取得できず前回判定を維持",
     };
   }
   const latest = after.at(-1);
@@ -11974,6 +11971,19 @@ function successfulCandidateHistoryItems(history = {}) {
     .filter((item) => Number.isFinite(item.maxReturnPct) && item.maxReturnPct >= CANDIDATE_SUCCESS_THRESHOLD_PCT)
     .sort((a, b) => b.generatedAt.localeCompare(a.generatedAt) || b.maxReturnPct - a.maxReturnPct)
     .slice(0, 200);
+}
+
+function underperformingCandidateHistoryItems(history = {}) {
+  return (Array.isArray(history.items) ? history.items : [])
+    .filter((item) => Number.isFinite(item.latestReturnPct) && item.latestReturnPct < 0)
+    .sort((a, b) => a.latestReturnPct - b.latestReturnPct || b.generatedAt.localeCompare(a.generatedAt))
+    .slice(0, 200);
+}
+
+function underperformingCandidateHistoryCount(history = {}) {
+  return (Array.isArray(history.items) ? history.items : [])
+    .filter((item) => Number.isFinite(item.latestReturnPct) && item.latestReturnPct < 0)
+    .length;
 }
 
 async function readExcludedCandidates() {

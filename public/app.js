@@ -25,6 +25,8 @@ const state = {
   cryptoAnalysis: null,
   suggestions: [],
   successfulCandidates: [],
+  underperformingCandidates: [],
+  underperformingCandidateCount: 0,
   excludedCandidates: [],
   sectorEvidence: [],
   sourceSummary: null,
@@ -187,6 +189,8 @@ const els = {
   candidatePerformance: document.getElementById("candidatePerformance"),
   successfulCandidateList: document.getElementById("successfulCandidateList"),
   successfulCandidateCount: document.getElementById("successfulCandidateCount"),
+  underperformingCandidateList: document.getElementById("underperformingCandidateList"),
+  underperformingCandidateCount: document.getElementById("underperformingCandidateCount"),
   excludedCandidateCount: document.getElementById("excludedCandidateCount"),
   excludedCandidateList: document.getElementById("excludedCandidateList"),
   sectorEvidenceList: document.getElementById("sectorEvidenceList"),
@@ -678,6 +682,8 @@ async function loadDiscoveryCache() {
   const payload = await request("/api/discovery");
   state.suggestions = sanitizeDiscoverySuggestions(payload.suggestions || []);
   state.successfulCandidates = payload.successfulCandidates || [];
+  state.underperformingCandidates = payload.underperformingCandidates || [];
+  state.underperformingCandidateCount = payload.underperformingCandidateCount || 0;
   state.excludedCandidates = payload.excludedCandidates || [];
   state.sourceSummary = payload.sourceSummary || null;
   state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || null;
@@ -4091,6 +4097,8 @@ async function discover(mode = "general") {
     state.discoveryJob = payload.job || null;
     state.discoveryGeneratedAt = payload.generatedAt || "";
     state.successfulCandidates = payload.successfulCandidates || state.successfulCandidates;
+    state.underperformingCandidates = payload.underperformingCandidates || state.underperformingCandidates;
+    state.underperformingCandidateCount = payload.underperformingCandidateCount ?? state.underperformingCandidateCount;
     state.stocks = payload.stocks || state.stocks;
     if (!state.selected && state.stocks.length) state.selected = state.stocks[0].symbol;
     if (added.length) toast(`${added.map((item) => item.name).join("、")}を追加しました。`);
@@ -4131,6 +4139,8 @@ async function pollDiscoveryJob() {
       state.discoveryGeneratedAt = payload.generatedAt || state.discoveryGeneratedAt;
     }
     state.successfulCandidates = payload.successfulCandidates || state.successfulCandidates;
+    state.underperformingCandidates = payload.underperformingCandidates || state.underperformingCandidates;
+    state.underperformingCandidateCount = payload.underperformingCandidateCount ?? state.underperformingCandidateCount;
     state.excludedCandidates = payload.excludedCandidates || state.excludedCandidates;
     state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || state.candidatePerformance;
     state.discoveryJob = payload.job || state.discoveryJob;
@@ -5254,18 +5264,17 @@ function renderCandidatePerformance() {
 }
 
 function renderSuccessfulCandidateList() {
-  if (!els.successfulCandidateList) return;
+  if (!els.successfulCandidateList || !els.underperformingCandidateList) return;
   const items = Array.isArray(state.successfulCandidates) ? state.successfulCandidates : [];
+  const declines = Array.isArray(state.underperformingCandidates) ? state.underperformingCandidates : [];
   const total = (state.candidatePerformance || state.sourceSummary?.performance)?.hits;
   if (els.successfulCandidateCount) {
     els.successfulCandidateCount.textContent = `${Number.isFinite(total) ? total : items.length}件`;
   }
-  els.successfulCandidateList.classList.toggle("empty-state", !items.length);
-  if (!items.length) {
-    els.successfulCandidateList.innerHTML = '<p>紹介後に+10%へ到達した候補はまだありません。候補の価格を定期確認して記録します。</p>';
-    return;
+  if (els.underperformingCandidateCount) {
+    els.underperformingCandidateCount.textContent = `${state.underperformingCandidateCount || declines.length}件`;
   }
-  els.successfulCandidateList.innerHTML = items.map((item) => {
+  els.successfulCandidateList.innerHTML = items.length ? items.map((item) => {
     const currency = candidateTarget(item) === "us" ? usd : yen;
     const gainPct = Number(item.maxReturnPct);
     const entryPrice = Number(item.entryPrice);
@@ -5281,10 +5290,32 @@ function renderSuccessfulCandidateList() {
           <strong class="candidate-success-return">${signedPct(gainPct)}</strong>
         </div>
         <p>紹介価格 ${currency(entryPrice)} → 到達高値 ${currency(peakPrice)}</p>
-        <small>最高値 ${escapeHtml(peakDate)} ・ ${Number(item.elapsedTradingDays || 0)}営業日後 ・ 判定時 ${escapeHtml(item.latestDate || "")}終値 ${currentPct}</small>
+        <small>最高値 ${escapeHtml(peakDate)} ・ ${Number(item.elapsedTradingDays || 0)}営業日後 ・ ${escapeHtml(item.latestDate || "")}終値 ${currentPct}</small>
       </article>
     `;
-  }).join("");
+  }).join("") : '<p class="candidate-result-empty">紹介後に+10%へ到達した候補はまだありません。</p>';
+
+  els.underperformingCandidateList.innerHTML = declines.length ? declines.map((item) => {
+    const currency = candidateTarget(item) === "us" ? usd : yen;
+    const entryPrice = Number(item.entryPrice);
+    const latestPrice = Number(item.latestPrice) || (entryPrice * (1 + Number(item.latestReturnPct || 0) / 100));
+    const currentPct = signedPct(item.latestReturnPct);
+    const peakPct = Number.isFinite(item.maxReturnPct) ? signedPct(item.maxReturnPct) : "-";
+    const symbol = symbolLinkHtml(item.symbol, candidateTarget(item));
+    const introDate = item.generatedAt ? new Date(item.generatedAt).toLocaleDateString("ja-JP") : "日付不明";
+    return `
+      <article class="candidate-success-item candidate-underperforming-item">
+        <div class="candidate-success-heading">
+          <div><strong>${escapeHtml(item.name || item.symbol)}</strong><small>${symbol} ・ 紹介 ${escapeHtml(introDate)}</small></div>
+          <strong class="candidate-underperforming-return">${currentPct}</strong>
+        </div>
+        <p>紹介価格 ${currency(entryPrice)} → 判定終値 ${currency(latestPrice)}</p>
+        <small>判定日 ${escapeHtml(item.latestDate || "日付不明")} ・ 紹介後の最高到達 ${peakPct}</small>
+      </article>
+    `;
+  }).join("") : '<p class="candidate-result-empty">紹介価格を下回っている候補はありません。</p>';
+  els.successfulCandidateList.classList.toggle("empty-state", !items.length);
+  els.underperformingCandidateList.classList.toggle("empty-state", !declines.length);
 }
 
 function renderExcludedCandidates() {

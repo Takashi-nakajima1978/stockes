@@ -7,7 +7,7 @@
   <title>Stock Signal</title>
   <link rel="icon" href="/stock-signal-logo.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/stock-signal-logo.svg">
-  <link rel="stylesheet" href="/styles.css?v=20261009-candidate-success">
+  <link rel="stylesheet" href="/styles.css?v=20261009-candidate-results">
 </head>
 <body>
   <div class="app-shell">
@@ -526,7 +526,7 @@
           <div class="idea-tabs" role="tablist" aria-label="候補画面の切り替え">
             <button type="button" role="tab" id="ideaTabStocks" class="active" aria-selected="true" aria-controls="ideaPanelStocks" data-idea-tab="candidates">株の買い候補</button>
             <button type="button" role="tab" id="ideaTabPe" aria-selected="false" aria-controls="ideaPanelPe" data-idea-tab="pe" tabindex="-1">PEが買いそう</button>
-            <button type="button" role="tab" id="ideaTabSuccess" aria-selected="false" aria-controls="ideaPanelSuccess" data-idea-tab="success" tabindex="-1">紹介後+10% <span id="successfulCandidateCount">0件</span></button>
+            <button type="button" role="tab" id="ideaTabSuccess" aria-selected="false" aria-controls="ideaPanelSuccess" data-idea-tab="success" tabindex="-1">紹介後の結果</button>
             <button type="button" role="tab" id="ideaTabSector" aria-selected="false" aria-controls="ideaPanelSector" data-idea-tab="sector" tabindex="-1">業種Evidence</button>
           </div>
           <div id="ideaPanelStocks" role="tabpanel" aria-labelledby="ideaTabStocks" data-idea-panel="candidates">
@@ -550,10 +550,19 @@
             </div>
           </div>
           <div id="ideaPanelSuccess" role="tabpanel" aria-labelledby="ideaTabSuccess" data-idea-panel="success" hidden>
-            <p class="candidate-success-intro">紹介時価格から日足高値で+10%に到達した候補です。未到達の候補も追跡を続け、後から到達した場合は成功に更新します。</p>
-            <div id="successfulCandidateList" class="candidate-success-list empty-state">
-              <p>紹介後に+10%へ到達した候補はまだありません。</p>
-            </div>
+            <p class="candidate-success-intro">候補の紹介時価格を基準に追跡しています。+10%到達と、最新確認の終値が紹介価格を下回る候補を分けて表示します。未到達の候補も追跡を続けます。</p>
+            <section class="candidate-result-group">
+              <h4>紹介後に+10%到達 <span id="successfulCandidateCount">0件</span></h4>
+              <div id="successfulCandidateList" class="candidate-success-list empty-state">
+                <p>紹介後に+10%へ到達した候補はまだありません。</p>
+              </div>
+            </section>
+            <section class="candidate-result-group">
+              <h4>最新確認の終値が紹介価格を下回る <span id="underperformingCandidateCount">0件</span></h4>
+              <div id="underperformingCandidateList" class="candidate-success-list empty-state">
+                <p>紹介価格を下回っている候補はありません。</p>
+              </div>
+            </section>
           </div>
           <div id="ideaPanelSector" role="tabpanel" aria-labelledby="ideaTabSector" data-idea-panel="sector" hidden>
             <div id="sectorEvidenceList" class="sector-evidence-list empty-state">
@@ -909,6 +918,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20261009-candidate-success" type="module"></script>
+  <script src="/app.js?v=20261009-candidate-results" type="module"></script>
 </body>
 </html>

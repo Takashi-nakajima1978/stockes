@@ -637,6 +637,11 @@ test("candidate success is measured as a 10 percent rise from the introduction p
   ]);
   assert.equal(laterSuccess.outcome, "hit");
   assert.equal(laterSuccess.maxReturnPct, 11);
+
+  const preserved = evaluate({ ...succeeded, outcome: "hit" }, []);
+  assert.equal(preserved.outcome, "hit");
+  assert.equal(preserved.maxReturnPct, 11);
+  assert.equal(preserved.latestReturnPct, 3);
 });
 
 test("candidate outcomes keep tracking after 20 sessions until the 10 percent target is reached", async () => {
@@ -649,23 +654,40 @@ test("candidate outcomes keep tracking after 20 sessions until the 10 percent ta
     maxReturnPct: 9.9,
     evaluatedAt: "2026-10-21T00:00:00Z",
   };
+  const winnerNowDown = {
+    id: "2026-10-02:Y",
+    symbol: "Y.T",
+    generatedAt: "2026-10-02T12:00:00+09:00",
+    entryPrice: 100,
+    outcome: "hit",
+    maxReturnPct: 12,
+    latestReturnPct: 12,
+    evaluatedAt: "2026-10-21T00:00:00Z",
+  };
   let saved;
   let fetched = 0;
   const update = loadFunction(serverSource, "updateCandidateHistoryOutcomes", {
     CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
-    readCandidateHistory: async () => ({ items: [item] }),
-    fetchPriceHistory: async () => {
+    readCandidateHistory: async () => ({ items: [item, winnerNowDown] }),
+    fetchPriceHistory: async (symbol) => {
       fetched += 1;
-      return { series: [{ date: "2026-11-01", close: 108, high: 111, low: 103 }] };
+      return { series: symbol === "X.T"
+        ? [{ date: "2026-11-01", close: 108, high: 111, low: 103 }]
+        : [
+          { date: "2026-10-03", close: 111, high: 112, low: 100 },
+          { date: "2026-11-01", close: 94, high: 97, low: 90 },
+        ] };
     },
     emptyPrice: () => ({ series: [] }),
     evaluateCandidateOutcome: loadFunction(serverSource, "evaluateCandidateOutcome", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 }),
     saveCandidateHistory: async (history) => { saved = history; return history; },
   });
   await update();
-  assert.equal(fetched, 1);
+  assert.equal(fetched, 2);
   assert.equal(saved.items[0].outcome, "hit");
   assert.equal(saved.items[0].maxReturnPct, 11);
+  assert.equal(saved.items[1].outcome, "hit");
+  assert.equal(saved.items[1].latestReturnPct, -6);
 });
 
 test("candidate learning and success tab use the same 10 percent threshold", () => {
@@ -677,6 +699,8 @@ test("candidate learning and success tab use the same 10 percent threshold", () 
   ] };
   const summarize = loadFunction(serverSource, "candidatePerformanceSummary", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 });
   const successItems = loadFunction(serverSource, "successfulCandidateHistoryItems", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 });
+  const underperformingItems = loadFunction(serverSource, "underperformingCandidateHistoryItems", {});
+  const underperformingCount = loadFunction(serverSource, "underperformingCandidateHistoryCount", {});
   const performance = summarize(history);
   assert.equal(performance.successThresholdPct, 10);
   assert.equal(performance.evaluated, 4);
@@ -684,8 +708,18 @@ test("candidate learning and success tab use the same 10 percent threshold", () 
   assert.equal(performance.misses, 2);
   assert.equal(performance.hitRate, 0.5);
   assert.deepEqual(Array.from(successItems(history), (candidate) => candidate.symbol), ["D.T", "B.T"]);
-  assert.match(indexSource, /data-idea-tab="success"[^>]*>紹介後\+10% <span/);
+  assert.deepEqual(Array.from(underperformingItems(history), (candidate) => candidate.symbol), ["C.T", "B.T"]);
+  const fairHistory = { items: [
+    { id: "up", symbol: "UP.T", generatedAt: "2026-10-01", latestReturnPct: 3 },
+    { id: "down-a", symbol: "DOWNA.T", generatedAt: "2026-10-02", latestReturnPct: -2, maxReturnPct: 12 },
+    { id: "down-b", symbol: "DOWNB.T", generatedAt: "2026-10-03", latestReturnPct: -8, maxReturnPct: 4 },
+  ] };
+  assert.deepEqual(Array.from(underperformingItems(fairHistory), (candidate) => candidate.symbol), ["DOWNB.T", "DOWNA.T"]);
+  assert.equal(underperformingCount(fairHistory), 2);
+  assert.match(indexSource, /data-idea-tab="success"[^>]*>紹介後の結果/);
   assert.match(indexSource, /id="successfulCandidateList"/);
+  assert.match(indexSource, /id="underperformingCandidateList"/);
+  assert.match(appSource, /underperformingCandidates: \[\]/);
   assert.match(appSource, /function renderSuccessfulCandidateList/);
   assert.match(appSource, /<strong>\+10%到達率<\/strong>/);
 });
@@ -1541,7 +1575,8 @@ test("discovery separates PE candidates, stock candidates, and sector evidence i
   assert.deepEqual(Array.from(splitDiscoveryCandidates(suggestions, true).stockItems, (item) => item.symbol), ["1111.T", "2222.T", "ABC"]);
   assert.match(indexSource, /data-idea-tab="candidates"[^>]*>株の買い候補/);
   assert.match(indexSource, /data-idea-tab="pe"[^>]*>PEが買いそう/);
-  assert.match(indexSource, /data-idea-tab="success"[^>]*>紹介後\+10% <span/);
+  assert.match(indexSource, /data-idea-tab="success"[^>]*>紹介後の結果/);
+  assert.match(indexSource, /id="underperformingCandidateList"/);
   assert.match(indexSource, /data-idea-tab="sector"[^>]*>業種Evidence/);
   assert.match(indexSource, /id="peCandidateList"/);
   assert.match(appSource, /function peCandidateReportsHtml/);
