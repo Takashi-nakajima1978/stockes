@@ -3,6 +3,8 @@ const VIEW_KEYS = new Set(["analysis", "stocks", "us", "crypto", "ideas", "setti
 const VIEW_STORAGE_KEY = "stockSignalActiveView";
 const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2400000;
 const NISA_GROWTH_LIFETIME_LIMIT_YEN = 12000000;
+const loadedDataSections = new Set();
+const pendingDataLoads = new Map();
 const JP_DISCOVERY_NAME_BY_SYMBOL = {
   "5842.T": "インテグラル",
 };
@@ -18,9 +20,11 @@ const state = {
   usStocks: [],
   usAnalyses: {},
   usSummary: null,
+  cacheVersions: { jp: "", us: "", crypto: "" },
   cryptoHolding: null,
   cryptoAnalysis: null,
   suggestions: [],
+  successfulCandidates: [],
   excludedCandidates: [],
   sectorEvidence: [],
   sourceSummary: null,
@@ -181,6 +185,8 @@ const els = {
   suggestionSource: document.getElementById("suggestionSource"),
   candidateSavedAt: document.getElementById("candidateSavedAt"),
   candidatePerformance: document.getElementById("candidatePerformance"),
+  successfulCandidateList: document.getElementById("successfulCandidateList"),
+  successfulCandidateCount: document.getElementById("successfulCandidateCount"),
   excludedCandidateCount: document.getElementById("excludedCandidateCount"),
   excludedCandidateList: document.getElementById("excludedCandidateList"),
   sectorEvidenceList: document.getElementById("sectorEvidenceList"),
@@ -452,25 +458,26 @@ function applySettings(settings = {}) {
   if (els.settingsGoogleApiKey) els.settingsGoogleApiKey.placeholder = settings.hasGoogleApiKey ? "保存済み。変更時だけ入力" : "Googleを使う場合に入力";
 }
 
-async function loadStocks() {
-  const payload = await request("/api/stocks");
+async function loadStocks(cachedPayload = null) {
+  const payload = cachedPayload || await request("/api/stocks");
   state.stocks = payload.stocks || [];
   state.stocksLoaded = true;
   state.stockLoadError = "";
   if (!state.selected && state.stocks.length) state.selected = state.stocks[0].symbol;
-  render();
+  renderCurrentDataView();
 }
 
 async function loadUsStocks() {
   const payload = await request("/api/us-stocks");
   state.usStocks = payload.stocks || [];
   if (!state.usSelected && state.usStocks.length) state.usSelected = state.usStocks[0].symbol;
-  render();
+  if (state.view === "us") renderUs();
 }
 
-async function loadAnalysisCache(background = false) {
-  const payload = await request("/api/analysis");
-  if (background && !acceptBackgroundCache("jp", payload)) return;
+async function loadAnalysisCache(background = false, cachedPayload = null) {
+  const payload = cachedPayload || await request("/api/analysis");
+  if (background && payload.cacheVersion && state.cacheVersions.jp === payload.cacheVersion) return;
+  if (payload.cacheVersion) state.cacheVersions.jp = payload.cacheVersion;
   const currentSymbols = new Set(state.stocks.map((stock) => stock.symbol));
   state.analyses = Object.fromEntries((payload.analyses || [])
     .filter((item) => currentSymbols.has(item.symbol))
@@ -483,48 +490,103 @@ async function loadAnalysisCache(background = false) {
       : payload.usedLmStudio ? "保存済み LM Studio分析" : "保存済みルール分析";
   }
   if (background) {
-    renderTable();
-    renderProfitSummary();
-    if (!isDetailFormEditing() && !document.activeElement?.closest("form")) renderSelection();
-  } else render();
+    if (state.view === "analysis") {
+      renderTable();
+      renderProfitSummary();
+      if (!isDetailFormEditing() && !document.activeElement?.closest("form")) renderSelection();
+    }
+    return;
+  }
+  renderCurrentDataView();
 }
 
 async function loadUsAnalysisCache(background = false) {
   const payload = await request("/api/us-analysis");
-  if (background && !acceptBackgroundCache("us", payload)) return;
+  if (background && payload.cacheVersion && state.cacheVersions.us === payload.cacheVersion) return;
+  if (payload.cacheVersion) state.cacheVersions.us = payload.cacheVersion;
   applyUsAnalysisPayload(payload);
-  if (background) {
-    renderUsSummary();
-    renderUsTable();
-    if (!isDetailFormEditing() && !document.activeElement?.closest("form")) renderUsDetail();
-  } else renderUs();
+  if (state.view === "us" && (!background || (!isDetailFormEditing() && !document.activeElement?.closest("form")))) renderUs();
 }
 
 async function loadCrypto(background = false) {
   const payload = await request("/api/crypto");
-  if (background && !acceptBackgroundCache("crypto", payload)) return;
+  if (background && payload.cacheVersion && state.cacheVersions.crypto === payload.cacheVersion) return;
+  if (payload.cacheVersion) state.cacheVersions.crypto = payload.cacheVersion;
   applyCryptoPayload(payload);
-  if (!background || (!isDetailFormEditing() && !document.activeElement?.closest("form"))) renderCrypto();
+  if (state.view === "crypto" && (!background || (!isDetailFormEditing() && !document.activeElement?.closest("form")))) renderCrypto();
 }
 
-const backgroundCacheVersions = new Map();
 let backgroundCacheLoading = false;
-
-function acceptBackgroundCache(market, payload) {
-  const version = payload.generatedAt || payload.analysis?.generatedAt;
-  if (!version || backgroundCacheVersions.get(market) === version) return false;
-  backgroundCacheVersions.set(market, version);
-  return true;
-}
 
 async function syncBackgroundPrices() {
   if (document.hidden || backgroundCacheLoading) return;
   backgroundCacheLoading = true;
   try {
-    await Promise.allSettled([loadAnalysisCache(true), loadUsAnalysisCache(true), loadCrypto(true)]);
+    const payload = await request("/api/cache-versions");
+    const versions = payload.versions || {};
+    const refreshes = [];
+    if (loadedDataSections.has("jp") && versions.jp && versions.jp !== state.cacheVersions.jp) refreshes.push(loadAnalysisCache(true));
+    if (loadedDataSections.has("us") && versions.us && versions.us !== state.cacheVersions.us) refreshes.push(loadUsAnalysisCache(true));
+    if (loadedDataSections.has("crypto") && versions.crypto && versions.crypto !== state.cacheVersions.crypto) refreshes.push(loadCrypto(true));
+    await Promise.allSettled(refreshes);
   } finally {
     backgroundCacheLoading = false;
   }
+}
+
+function renderCurrentDataView() {
+  if (state.view === "analysis") {
+    renderTable();
+    renderProfitSummary();
+    renderSelection();
+    renderAnalysisJob();
+  } else if (state.view === "stocks") {
+    renderTable();
+  } else if (state.view === "us") {
+    renderUs();
+  } else if (state.view === "crypto") {
+    renderCrypto();
+  } else if (state.view === "ideas") {
+    renderCandidateList();
+    renderSectorEvidence();
+    renderDiscoveryJob();
+  }
+}
+
+function ensureDataSection(key, loader) {
+  if (loadedDataSections.has(key)) return Promise.resolve();
+  if (pendingDataLoads.has(key)) return pendingDataLoads.get(key);
+  const task = (async () => {
+    try {
+      await loader();
+      loadedDataSections.add(key);
+    } finally {
+      pendingDataLoads.delete(key);
+    }
+  })();
+  pendingDataLoads.set(key, task);
+  return task;
+}
+
+function ensureViewData(view) {
+  if (view === "analysis" || view === "stocks") {
+    return ensureDataSection("jp", async () => {
+      const stocksTask = request("/api/stocks").then(loadStocks);
+      const analysisTask = request("/api/analysis").then(async (payload) => {
+        await stocksTask;
+        await loadAnalysisCache(false, payload);
+      });
+      await Promise.all([stocksTask, analysisTask, loadAnalysisJob()]);
+    });
+  }
+  if (view === "us") {
+    return ensureDataSection("us", async () => {
+      await Promise.all([loadUsStocks(), loadUsAnalysisCache(), loadUsAnalysisJob()]);
+    });
+  }
+  if (view === "crypto") return ensureDataSection("crypto", () => loadCrypto());
+  if (view === "ideas") return ensureDataSection("ideas", () => loadDiscoveryCache());
+  return Promise.resolve();
 }
 
 function applyUsAnalysisPayload(payload = {}) {
@@ -577,7 +639,7 @@ async function loadAnalysisJob() {
     .then((result) => {
       applyAnalysisPayload(result);
       state.jpRefreshing = false;
-      render();
+      renderCurrentDataView();
     })
     .catch((error) => {
       toast(error.message);
@@ -601,7 +663,7 @@ async function loadUsAnalysisJob() {
     .then((result) => {
       applyUsAnalysisPayload(result);
       state.usRefreshing = false;
-      renderUs();
+      if (state.view === "us") renderUs();
     })
     .catch((error) => {
       toast(error.message);
@@ -615,6 +677,7 @@ async function loadUsAnalysisJob() {
 async function loadDiscoveryCache() {
   const payload = await request("/api/discovery");
   state.suggestions = sanitizeDiscoverySuggestions(payload.suggestions || []);
+  state.successfulCandidates = payload.successfulCandidates || [];
   state.excludedCandidates = payload.excludedCandidates || [];
   state.sourceSummary = payload.sourceSummary || null;
   state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || null;
@@ -625,7 +688,10 @@ async function loadDiscoveryCache() {
   state.discoveryGeneratedAt = payload.generatedAt || "";
   renderDiscoveryJob();
   if (state.discoveryJob?.running) void pollDiscoveryJob();
-  render();
+  if (state.view === "ideas") {
+    renderCandidateList();
+    renderSectorEvidence();
+  }
 }
 
 function render() {
@@ -685,6 +751,12 @@ function setView(view) {
   if (nextView === "analysis") renderSelection();
   if (nextView === "us") renderUs();
   if (nextView === "crypto") renderCrypto();
+  if (nextView === "ideas") {
+    renderCandidateList();
+    renderSectorEvidence();
+    renderDiscoveryJob();
+  }
+  void safeLoad("画面データ", () => ensureViewData(nextView));
 }
 
 function preferredView() {
@@ -3776,7 +3848,7 @@ async function analyze(options = {}) {
       applyAnalysisPayload(quickPayload, false);
       els.researchProgress.textContent = "価格更新済み。AI分析を続行中";
       priceUpdated = true;
-      render();
+      renderCurrentDataView();
     } catch (quickError) {
       console.warn("価格だけの高速更新に失敗しました", quickError);
       els.researchProgress.textContent = "価格更新に時間がかかっています。AI分析へ進みます";
@@ -3789,7 +3861,7 @@ async function analyze(options = {}) {
     renderAnalysisJob();
     const result = payload.analyses ? payload : await pollAnalysisJob();
     applyAnalysisPayload(result);
-    render();
+    renderCurrentDataView();
   } catch (error) {
     toast(error.message);
     els.researchProgress.textContent = "失敗";
@@ -4018,12 +4090,15 @@ async function discover(mode = "general") {
     state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || state.candidatePerformance;
     state.discoveryJob = payload.job || null;
     state.discoveryGeneratedAt = payload.generatedAt || "";
+    state.successfulCandidates = payload.successfulCandidates || state.successfulCandidates;
     state.stocks = payload.stocks || state.stocks;
     if (!state.selected && state.stocks.length) state.selected = state.stocks[0].symbol;
     if (added.length) toast(`${added.map((item) => item.name).join("、")}を追加しました。`);
     else toast(payload.message || "候補検索を裏で開始しました。");
     renderDiscoveryJob();
-    render();
+    renderTable();
+    renderCandidateList();
+    renderSectorEvidence();
     if (payload.job?.running && payload.job.mode && payload.job.mode !== mode) {
       els.candidateProgress.textContent = `${payload.job.mode === "nisa" ? "NISA候補" : "通常候補"}の検索が進行中です。完了後にもう一度検索してください。`;
     } else if (payload.job?.running) {
@@ -4055,6 +4130,7 @@ async function pollDiscoveryJob() {
       state.sourceSummary = payload.sourceSummary || state.sourceSummary;
       state.discoveryGeneratedAt = payload.generatedAt || state.discoveryGeneratedAt;
     }
+    state.successfulCandidates = payload.successfulCandidates || state.successfulCandidates;
     state.excludedCandidates = payload.excludedCandidates || state.excludedCandidates;
     state.candidatePerformance = payload.candidatePerformance || payload.sourceSummary?.performance || state.candidatePerformance;
     state.discoveryJob = payload.job || state.discoveryJob;
@@ -4943,6 +5019,7 @@ function renderCandidateList() {
   state.suggestions = sanitizeDiscoverySuggestions(state.suggestions);
   renderExcludedCandidates();
   renderCandidatePerformance();
+  renderSuccessfulCandidateList();
   if (els.candidateSavedAt) {
     els.candidateSavedAt.textContent = state.discoveryGeneratedAt
       ? `前回検索 ${new Date(state.discoveryGeneratedAt).toLocaleString("ja-JP")}`
@@ -4994,7 +5071,7 @@ function renderCandidateList() {
       : "";
     const earlyText = "買い場以下・反発初動・短期非過熱に加えて、ゴールデンクロスと大引けの強さも見ます。";
     const learnText = source.performance?.evaluated
-      ? `過去候補は${source.performance.evaluated}件判定済み、当たり${Math.round((source.performance.hitRate || 0) * 100)}%です。`
+      ? `過去候補は${source.performance.evaluated}件判定済み、+10%到達率${Math.round((source.performance.hitRate || 0) * 100)}%です。`
       : "";
     const briefText = source.marketBrief?.summary ? ` 市場メモ: ${source.marketBrief.summary}` : "";
     const countText = Number.isFinite(source.suggestionCount)
@@ -5170,10 +5247,44 @@ function renderCandidatePerformance() {
   els.candidatePerformance.innerHTML = `
     <span><strong>保存候補</strong>${performance.total}件</span>
     <span><strong>判定済み</strong>${performance.evaluated || 0}件</span>
-    <span><strong>当たり率</strong>${hitRate}</span>
+    <span><strong>+10%到達率</strong>${hitRate}</span>
     <span><strong>平均</strong>${avg}</span>
     <span><strong>PE系</strong>${peRate}</span>
   `;
+}
+
+function renderSuccessfulCandidateList() {
+  if (!els.successfulCandidateList) return;
+  const items = Array.isArray(state.successfulCandidates) ? state.successfulCandidates : [];
+  const total = (state.candidatePerformance || state.sourceSummary?.performance)?.hits;
+  if (els.successfulCandidateCount) {
+    els.successfulCandidateCount.textContent = `${Number.isFinite(total) ? total : items.length}件`;
+  }
+  els.successfulCandidateList.classList.toggle("empty-state", !items.length);
+  if (!items.length) {
+    els.successfulCandidateList.innerHTML = '<p>紹介後に+10%へ到達した候補はまだありません。候補の価格を定期確認して記録します。</p>';
+    return;
+  }
+  els.successfulCandidateList.innerHTML = items.map((item) => {
+    const currency = candidateTarget(item) === "us" ? usd : yen;
+    const gainPct = Number(item.maxReturnPct);
+    const entryPrice = Number(item.entryPrice);
+    const peakPrice = Number(item.maxPrice) || (entryPrice * (1 + gainPct / 100));
+    const currentPct = Number.isFinite(item.latestReturnPct) ? signedPct(item.latestReturnPct) : "-";
+    const symbol = symbolLinkHtml(item.symbol, candidateTarget(item));
+    const introDate = item.generatedAt ? new Date(item.generatedAt).toLocaleDateString("ja-JP") : "日付不明";
+    const peakDate = item.maxDate ? new Date(`${item.maxDate}T00:00:00`).toLocaleDateString("ja-JP") : "記録日不明";
+    return `
+      <article class="candidate-success-item">
+        <div class="candidate-success-heading">
+          <div><strong>${escapeHtml(item.name || item.symbol)}</strong><small>${symbol} ・ 紹介 ${escapeHtml(introDate)}</small></div>
+          <strong class="candidate-success-return">${signedPct(gainPct)}</strong>
+        </div>
+        <p>紹介価格 ${currency(entryPrice)} → 到達高値 ${currency(peakPrice)}</p>
+        <small>最高値 ${escapeHtml(peakDate)} ・ ${Number(item.elapsedTradingDays || 0)}営業日後 ・ 判定時 ${escapeHtml(item.latestDate || "")}終値 ${currentPct}</small>
+      </article>
+    `;
+  }).join("");
 }
 
 function renderExcludedCandidates() {
@@ -6468,33 +6579,28 @@ window.addEventListener("resize", () => {
 
 await loadInitialData();
 void refreshAfterBrowserReload();
-setInterval(loadStatus, 15000);
+setInterval(() => {
+  if (!document.hidden) void loadStatus();
+}, 60000);
 setInterval(syncBackgroundPrices, 15000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) void syncBackgroundPrices();
 });
 
 async function loadInitialData() {
-  render();
+  renderNavigation();
+  renderIdeaTabs();
+  renderSettingsTabs();
+  renderCurrentDataView();
   void safeLoad("設定", loadSettings);
   void safeLoad("接続状態", loadStatus);
-
-  await safeLoad("銘柄", loadStocks, (error) => {
-    state.stocksLoaded = true;
-    state.stockLoadError = `銘柄を読み込めませんでした。${error.message || ""}`.trim();
-    render();
+  await safeLoad("表示データ", () => ensureViewData(state.view), (error) => {
+    if (state.view === "analysis" || state.view === "stocks") {
+      state.stocksLoaded = true;
+      state.stockLoadError = `銘柄を読み込めませんでした。${error.message || ""}`.trim();
+    }
+    renderCurrentDataView();
   });
-  await safeLoad("保存済み分析", loadAnalysisCache);
-
-  await Promise.allSettled([
-    safeLoad("分析ジョブ", loadAnalysisJob),
-    safeLoad("米国株", loadUsStocks),
-    safeLoad("米国株分析", loadUsAnalysisCache),
-    safeLoad("米国株分析ジョブ", loadUsAnalysisJob),
-    safeLoad("BTC・為替", loadCrypto),
-    safeLoad("候補検索", loadDiscoveryCache),
-  ]);
-  render();
 }
 
 async function refreshAfterBrowserReload() {
@@ -6507,6 +6613,7 @@ async function refreshAfterBrowserReload() {
     await analyzeCrypto({ source: "reload" });
     return;
   }
+  if (state.view !== "analysis") return;
   await analyze({ source: "reload" });
 }
 

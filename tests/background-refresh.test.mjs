@@ -4,6 +4,7 @@ import { readFile, writeFile, mkdir, rename, mkdtemp, rm } from "node:fs/promise
 import path from "node:path";
 import os from "node:os";
 import vm from "node:vm";
+import { gzip, gunzipSync } from "node:zlib";
 import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "../refresh-control.mjs";
 
 const serverSource = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
@@ -519,6 +520,174 @@ test("day trade monitoring and broker controls are fully removed", () => {
   assert.match(appSource, /setInterval\(syncBackgroundPrices, 15000\)/);
   assert.match(serverSource, /if \(url\.pathname === "\/api\/stocks" && req\.method === "GET"\)/);
   assert.match(serverSource, /rakutenAccountMemo:/);
+});
+
+test("startup only loads data for the active view", () => {
+  assert.match(appSource, /await safeLoad\("表示データ", \(\) => ensureViewData\(state\.view\)/);
+  assert.match(appSource, /function ensureViewData\(view\)/);
+  assert.match(appSource, /if \(view === "ideas"\) return ensureDataSection\("ideas", \(\) => loadDiscoveryCache\(\)\)/);
+  assert.match(appSource, /if \(state\.view !== "analysis"\) return;/);
+});
+
+test("background polling checks cache versions and reloads only changed, loaded markets", async () => {
+  const calls = [];
+  const context = {
+    document: { hidden: false },
+    backgroundCacheLoading: false,
+    loadedDataSections: new Set(["jp", "crypto"]),
+    state: { cacheVersions: { jp: "jp-1", us: "us-1", crypto: "crypto-1" } },
+    request: async (url) => {
+      calls.push(url);
+      return { versions: { jp: "jp-2", us: "us-2", crypto: "crypto-1" } };
+    },
+    loadAnalysisCache: async (background) => { calls.push(`JP:${background}`); },
+    loadUsAnalysisCache: async (background) => { calls.push(`US:${background}`); },
+    loadCrypto: async (background) => { calls.push(`crypto:${background}`); },
+  };
+  const sync = loadFunction(appSource, "syncBackgroundPrices", context);
+  await sync();
+  assert.deepEqual(calls, ["/api/cache-versions", "JP:true"]);
+  assert.equal(context.backgroundCacheLoading, false);
+  context.document.hidden = true;
+  await sync();
+  assert.equal(calls.length, 2);
+});
+
+test("large API JSON responses are gzip-compressed when supported", async () => {
+  const sendJson = loadFunction(serverSource, "json", { Buffer, gzip });
+  const response = {
+    destroyed: false,
+    writeHead(status, headers) { this.status = status; this.headers = headers; },
+    end(body) { this.body = body; },
+    shouldGzip: true,
+  };
+  const completed = new Promise((resolve) => {
+    response.end = (body) => { response.body = body; resolve(); };
+  });
+  sendJson(response, 200, { text: "株価情報".repeat(1000) });
+  await completed;
+  assert.equal(response.status, 200);
+  assert.equal(response.headers["content-encoding"], "gzip");
+  assert.equal(JSON.parse(gunzipSync(response.body).toString("utf8")).text, "株価情報".repeat(1000));
+  assert.match(serverSource, /if \(url\.pathname === "\/api\/cache-versions" && req\.method === "GET"\)/);
+});
+
+test("large static application assets are gzip-compressed and cache-aware", async () => {
+  const content = Buffer.from("const stockSignal = true;\n".repeat(1000));
+  const response = {
+    destroyed: false,
+    writeHead(status, headers) { this.status = status; this.headers = headers; },
+    shouldGzip: true,
+  };
+  const completed = new Promise((resolve) => {
+    response.end = (body) => { response.body = body; resolve(); };
+  });
+  const serveFile = loadFunction(serverSource, "serveFile", {
+    path,
+    existsSync: () => true,
+    readFile: async () => content,
+    mime: { ".js": "application/javascript; charset=utf-8" },
+    PUBLIC_DIR: "/public",
+    gzip,
+    json() { throw new Error("unexpected error response"); },
+  });
+  await serveFile(response, "/public/app.js", { cacheControl: "public, max-age=31536000, immutable" });
+  await completed;
+  assert.equal(response.status, 200);
+  assert.equal(response.headers["content-encoding"], "gzip");
+  assert.equal(response.headers["cache-control"], "public, max-age=31536000, immutable");
+  assert.equal(gunzipSync(response.body).toString("utf8"), content.toString("utf8"));
+});
+
+test("candidate success is measured as a 10 percent rise from the introduction price", () => {
+  const evaluate = loadFunction(serverSource, "evaluateCandidateOutcome", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 });
+  const item = {
+    id: "2026-10-01:X",
+    symbol: "X.T",
+    generatedAt: "2026-10-01T12:00:00+09:00",
+    entryPrice: 100,
+    sellTarget: 105,
+    stopLine: 90,
+    outcome: "pending",
+  };
+  const succeeded = evaluate(item, [
+    { date: "2026-10-01", close: 100, high: 120, low: 98 },
+    { date: "2026-10-02", close: 104, high: 111, low: 99 },
+    { date: "2026-10-05", close: 103, high: 108, low: 97 },
+  ]);
+  assert.equal(succeeded.outcome, "hit");
+  assert.equal(succeeded.maxReturnPct, 11);
+  assert.equal(succeeded.maxPrice, 111);
+  assert.equal(succeeded.maxDate, "2026-10-02");
+  assert.equal(succeeded.latestReturnPct, 3);
+  assert.match(succeeded.outcomeReason, /日足高値で\+10%到達/);
+
+  const insufficient = Array.from({ length: 20 }, (_, index) => ({
+    date: `2026-10-${String(index + 2).padStart(2, "0")}`,
+    close: 104,
+    high: 109.9,
+    low: 95,
+  }));
+  const missed = evaluate(item, insufficient);
+  assert.equal(missed.outcome, "miss");
+  assert.match(missed.outcomeReason, /20営業日時点で\+10%未到達/);
+  const laterSuccess = evaluate(missed, [
+    ...insufficient,
+    { date: "2026-11-01", close: 108, high: 111, low: 103 },
+  ]);
+  assert.equal(laterSuccess.outcome, "hit");
+  assert.equal(laterSuccess.maxReturnPct, 11);
+});
+
+test("candidate outcomes keep tracking after 20 sessions until the 10 percent target is reached", async () => {
+  const item = {
+    id: "2026-10-01:X",
+    symbol: "X.T",
+    generatedAt: "2026-10-01T12:00:00+09:00",
+    entryPrice: 100,
+    outcome: "miss",
+    maxReturnPct: 9.9,
+    evaluatedAt: "2026-10-21T00:00:00Z",
+  };
+  let saved;
+  let fetched = 0;
+  const update = loadFunction(serverSource, "updateCandidateHistoryOutcomes", {
+    CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
+    readCandidateHistory: async () => ({ items: [item] }),
+    fetchPriceHistory: async () => {
+      fetched += 1;
+      return { series: [{ date: "2026-11-01", close: 108, high: 111, low: 103 }] };
+    },
+    emptyPrice: () => ({ series: [] }),
+    evaluateCandidateOutcome: loadFunction(serverSource, "evaluateCandidateOutcome", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 }),
+    saveCandidateHistory: async (history) => { saved = history; return history; },
+  });
+  await update();
+  assert.equal(fetched, 1);
+  assert.equal(saved.items[0].outcome, "hit");
+  assert.equal(saved.items[0].maxReturnPct, 11);
+});
+
+test("candidate learning and success tab use the same 10 percent threshold", () => {
+  const history = { items: [
+    { id: "a", symbol: "A.T", generatedAt: "2026-10-01", outcome: "hit", maxReturnPct: 8, latestReturnPct: 4, sector: "機械" },
+    { id: "b", symbol: "B.T", generatedAt: "2026-10-02", outcome: "miss", maxReturnPct: 12, latestReturnPct: -2, sector: "機械" },
+    { id: "c", symbol: "C.T", generatedAt: "2026-10-03", outcome: "miss", maxReturnPct: 3, latestReturnPct: -4, sector: "食品" },
+    { id: "d", symbol: "D.T", generatedAt: "2026-10-04", outcome: "pending", maxReturnPct: 10, latestReturnPct: 5, sector: "食品" },
+  ] };
+  const summarize = loadFunction(serverSource, "candidatePerformanceSummary", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 });
+  const successItems = loadFunction(serverSource, "successfulCandidateHistoryItems", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 });
+  const performance = summarize(history);
+  assert.equal(performance.successThresholdPct, 10);
+  assert.equal(performance.evaluated, 4);
+  assert.equal(performance.hits, 2);
+  assert.equal(performance.misses, 2);
+  assert.equal(performance.hitRate, 0.5);
+  assert.deepEqual(Array.from(successItems(history), (candidate) => candidate.symbol), ["D.T", "B.T"]);
+  assert.match(indexSource, /data-idea-tab="success"[^>]*>紹介後\+10% <span/);
+  assert.match(indexSource, /id="successfulCandidateList"/);
+  assert.match(appSource, /function renderSuccessfulCandidateList/);
+  assert.match(appSource, /<strong>\+10%到達率<\/strong>/);
 });
 
 test("Japan watchlist resolves sectors and shows FX/overseas sales context", () => {
@@ -1372,6 +1541,7 @@ test("discovery separates PE candidates, stock candidates, and sector evidence i
   assert.deepEqual(Array.from(splitDiscoveryCandidates(suggestions, true).stockItems, (item) => item.symbol), ["1111.T", "2222.T", "ABC"]);
   assert.match(indexSource, /data-idea-tab="candidates"[^>]*>株の買い候補/);
   assert.match(indexSource, /data-idea-tab="pe"[^>]*>PEが買いそう/);
+  assert.match(indexSource, /data-idea-tab="success"[^>]*>紹介後\+10% <span/);
   assert.match(indexSource, /data-idea-tab="sector"[^>]*>業種Evidence/);
   assert.match(indexSource, /id="peCandidateList"/);
   assert.match(appSource, /function peCandidateReportsHtml/);
@@ -1431,27 +1601,6 @@ test("timeout covers a stalled response body after headers arrive", async () => 
     }),
   });
   await assert.rejects(fetchWithTimeout("https://example.test", { timeout: 20, parseJson: true }), /Timed out/);
-});
-
-test("browser synchronizes all cached prices once per cycle and resumes after failures", async () => {
-  const calls = [];
-  let release;
-  const context = {
-    document: { hidden: false }, backgroundCacheLoading: false,
-    loadAnalysisCache: async () => { calls.push("JP"); throw new Error("offline"); },
-    loadUsAnalysisCache: async () => { calls.push("US"); },
-    loadCrypto: () => { calls.push("crypto"); return new Promise((resolve) => { release = resolve; }); },
-  };
-  const sync = loadFunction(appSource, "syncBackgroundPrices", context);
-  const pending = sync();
-  await sync();
-  assert.deepEqual(calls, ["JP", "US", "crypto"]);
-  release();
-  await pending;
-  assert.equal(context.backgroundCacheLoading, false);
-  context.document.hidden = true;
-  await sync();
-  assert.equal(calls.length, 3);
 });
 
 test("concurrent cache saves produce valid JSON and preserve the newest price", async () => {

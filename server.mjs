@@ -1,9 +1,9 @@
 import http from "node:http";
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, stat } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inflateRawSync } from "node:zlib";
+import { gzip, inflateRawSync } from "node:zlib";
 import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "./refresh-control.mjs";
 
 const runPriceRefresh = createSingleFlight();
@@ -35,6 +35,7 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const MAX_MANAGED_STOCKS = 50;
 const MAX_US_STOCKS = 40;
 const MAX_DISCOVERY_SUGGESTIONS = 100;
+const CANDIDATE_SUCCESS_THRESHOLD_PCT = 10;
 const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
@@ -762,11 +763,17 @@ const usDiscoveryUniverse = [
 
 const server = http.createServer(async (req, res) => {
   try {
+    res.shouldGzip = /(?:^|,)\s*gzip(?:\s*;[^,]*)?(?:,|$)/i.test(req.headers["accept-encoding"] || "");
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     if (url.pathname === "/") return await serveFile(res, path.join(PUBLIC_DIR, "index.html"));
-    if (url.pathname === "/favicon.ico") return await serveFile(res, path.join(PUBLIC_DIR, "stock-signal-logo.svg"));
+    if (url.pathname === "/favicon.ico") {
+      return await serveFile(res, path.join(PUBLIC_DIR, "stock-signal-logo.svg"), { cacheControl: "public, max-age=86400" });
+    }
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
-    return await serveFile(res, path.join(PUBLIC_DIR, sanitizePath(url.pathname)));
+    const cacheControl = url.searchParams.has("v")
+      ? "public, max-age=31536000, immutable"
+      : "no-cache";
+    return await serveFile(res, path.join(PUBLIC_DIR, sanitizePath(url.pathname)), { cacheControl });
   } catch (error) {
     json(res, 500, { error: error.message || "Internal server error" });
   }
@@ -778,6 +785,10 @@ server.listen(PORT, HOST, () => {
 });
 
 async function handleApi(req, res, url) {
+  if (url.pathname === "/api/cache-versions" && req.method === "GET") {
+    return json(res, 200, { versions: await analysisCacheVersions() });
+  }
+
   if (url.pathname === "/api/status" && req.method === "GET") {
     return json(res, 200, await status());
   }
@@ -819,24 +830,33 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/crypto" && req.method === "GET") {
-    const [holding, analysis] = await Promise.all([
+    const [holding, analysis, cacheVersion] = await Promise.all([
       readCryptoHolding(),
       readCryptoAnalysisCache(),
+      cacheFileVersion(CRYPTO_ANALYSIS_CACHE_PATH),
     ]);
-    return json(res, 200, { holding, analysis });
+    return json(res, 200, { holding, analysis, cacheVersion });
   }
 
   if (url.pathname === "/api/analysis" && req.method === "GET") {
-    const [cached, settings] = await Promise.all([readAnalysisCache(), readSettings()]);
+    const [cached, settings, cacheVersion] = await Promise.all([
+      readAnalysisCache(),
+      readSettings(),
+      cacheFileVersion(ANALYSIS_CACHE_PATH),
+    ]);
     const withFinancials = await attachFinancialsToAnalyses(cached.analyses);
     const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(withFinancials, settings));
-    return json(res, 200, { ...cached, analyses });
+    return json(res, 200, { ...cached, analyses, cacheVersion });
   }
 
   if (url.pathname === "/api/us-analysis" && req.method === "GET") {
-    const [cached, settings] = await Promise.all([readUsAnalysisCache(), readSettings()]);
+    const [cached, settings, cacheVersion] = await Promise.all([
+      readUsAnalysisCache(),
+      readSettings(),
+      cacheFileVersion(US_ANALYSIS_CACHE_PATH),
+    ]);
     const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(cached.analyses, settings, { currency: "USD" }));
-    return json(res, 200, { ...cached, analyses, summary: usPortfolioSummary(analyses) });
+    return json(res, 200, { ...cached, analyses, summary: usPortfolioSummary(analyses), cacheVersion });
   }
 
   if (url.pathname === "/api/crypto-analyze" && req.method === "POST") {
@@ -892,11 +912,12 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/discovery" && req.method === "GET") {
     const excludedCandidates = await readExcludedCandidates();
-    const candidatePerformance = candidatePerformanceSummary(await readCandidateHistory());
+    const candidateHistory = await readCandidateHistory();
     return json(res, 200, {
       ...filterDiscoveryResultByExclusions(await discoveryCacheForCurrentSettings(), excludedCandidates),
       excludedCandidates,
-      candidatePerformance,
+      candidatePerformance: candidatePerformanceSummary(candidateHistory),
+      successfulCandidates: successfulCandidateHistoryItems(candidateHistory),
       job: discoveryJobSnapshot(),
     });
   }
@@ -921,6 +942,7 @@ async function handleApi(req, res, url) {
     const history = await readCandidateHistory();
     return json(res, 200, {
       performance: candidatePerformanceSummary(history),
+      successfulItems: successfulCandidateHistoryItems(history),
       items: history.items.slice(-200).reverse(),
     });
   }
@@ -1161,10 +1183,12 @@ async function handleApi(req, res, url) {
     const excludedCandidates = await readExcludedCandidates();
     const requestedMode = body.mode === "nisa" ? "nisa" : "general";
     const jobConflict = Boolean(job.running && job.mode !== requestedMode);
+    const candidateHistory = await readCandidateHistory();
     return json(res, 202, {
       ...filterDiscoveryResultByExclusions(await discoveryCacheForCurrentSettings(), excludedCandidates),
       excludedCandidates,
-      candidatePerformance: candidatePerformanceSummary(await readCandidateHistory()),
+      candidatePerformance: candidatePerformanceSummary(candidateHistory),
+      successfulCandidates: successfulCandidateHistoryItems(candidateHistory),
       job,
       message: jobConflict
         ? `${job.mode === "nisa" ? "NISA候補" : "通常候補"}の検索が進行中です。完了後に再度実行してください。`
@@ -11787,6 +11811,8 @@ function normalizeCandidateHistoryItem(item = {}) {
     latestDate: normalizeDate(item.latestDate),
     latestReturnPct: numberOrNull(item.latestReturnPct),
     maxReturnPct: numberOrNull(item.maxReturnPct),
+    maxPrice: nullablePositiveNumber(item.maxPrice),
+    maxDate: normalizeDate(item.maxDate),
     minReturnPct: numberOrNull(item.minReturnPct),
     elapsedTradingDays: nullableNonNegativeNumber(item.elapsedTradingDays) || 0,
     outcome: ["hit", "miss", "pending"].includes(item.outcome) ? item.outcome : "pending",
@@ -11832,7 +11858,7 @@ async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
 async function updateCandidateHistoryOutcomes({ maxUpdates = 50 } = {}) {
   const history = await readCandidateHistory();
   const pending = history.items
-    .filter((item) => item.outcome === "pending" && item.entryPrice)
+    .filter((item) => item.entryPrice && (!Number.isFinite(item.maxReturnPct) || item.maxReturnPct < CANDIDATE_SUCCESS_THRESHOLD_PCT))
     .sort((a, b) => a.evaluatedAt.localeCompare(b.evaluatedAt))
     .slice(0, maxUpdates);
   if (!pending.length) return history;
@@ -11849,32 +11875,40 @@ function evaluateCandidateOutcome(item, series = []) {
   if (Number.isNaN(start.getTime())) return { ...item, evaluatedAt: new Date().toISOString(), outcome: "pending", outcomeReason: "候補作成日の形式を確認" };
   const startDate = start.toISOString().slice(0, 10);
   const after = (series || [])
-    .filter((point) => point.date >= startDate && Number.isFinite(point.close))
+    .filter((point) => point.date > startDate && Number.isFinite(point.close))
     .sort((a, b) => a.date.localeCompare(b.date));
   if (!after.length || !item.entryPrice) {
-    return { ...item, evaluatedAt: new Date().toISOString(), outcome: "pending", outcomeReason: "評価できる価格がまだありません" };
+    return {
+      ...item,
+      latestPrice: item.entryPrice,
+      latestDate: startDate,
+      latestReturnPct: 0,
+      maxReturnPct: 0,
+      maxPrice: item.entryPrice,
+      maxDate: startDate,
+      minReturnPct: 0,
+      elapsedTradingDays: 0,
+      evaluatedAt: new Date().toISOString(),
+      outcome: "pending",
+      outcomeReason: "紹介日の翌営業日以降の価格待ち",
+    };
   }
-  const closes = after.map((point) => point.close);
   const latest = after.at(-1);
-  const maxPrice = Math.max(...closes);
-  const minPrice = Math.min(...closes);
+  const maxPoint = after.reduce((best, point) => (point.high || point.close) > (best.high || best.close) ? point : best);
+  const minPoint = after.reduce((best, point) => (point.low || point.close) < (best.low || best.close) ? point : best);
+  const maxPrice = maxPoint.high || maxPoint.close;
+  const minPrice = minPoint.low || minPoint.close;
   const latestReturnPct = ((latest.close - item.entryPrice) / item.entryPrice) * 100;
   const maxReturnPct = ((maxPrice - item.entryPrice) / item.entryPrice) * 100;
   const minReturnPct = ((minPrice - item.entryPrice) / item.entryPrice) * 100;
   let outcome = "pending";
-  let outcomeReason = "判定に必要な日数がまだ不足";
-  if (item.sellTarget && maxPrice >= item.sellTarget) {
+  let outcomeReason = `+${CANDIDATE_SUCCESS_THRESHOLD_PCT}%到達を確認中`;
+  if (maxReturnPct >= CANDIDATE_SUCCESS_THRESHOLD_PCT) {
     outcome = "hit";
-    outcomeReason = "売り場ラインに到達";
-  } else if (item.stopLine && minPrice <= item.stopLine && after.length >= 5) {
+    outcomeReason = `紹介時価格から日足高値で+${CANDIDATE_SUCCESS_THRESHOLD_PCT}%到達`;
+  } else if (after.length >= 20) {
     outcome = "miss";
-    outcomeReason = "損切り確認ラインを割った";
-  } else if (after.length >= 20 && latestReturnPct >= 2) {
-    outcome = "hit";
-    outcomeReason = "20営業日後にプラスを維持";
-  } else if (after.length >= 20 && latestReturnPct < 0) {
-    outcome = "miss";
-    outcomeReason = "20営業日後にマイナス";
+    outcomeReason = `20営業日時点で+${CANDIDATE_SUCCESS_THRESHOLD_PCT}%未到達（以後も追跡）`;
   }
   return {
     ...item,
@@ -11882,6 +11916,8 @@ function evaluateCandidateOutcome(item, series = []) {
     latestDate: latest.date,
     latestReturnPct,
     maxReturnPct,
+    maxPrice,
+    maxDate: maxPoint.date,
     minReturnPct,
     elapsedTradingDays: after.length,
     outcome,
@@ -11892,14 +11928,19 @@ function evaluateCandidateOutcome(item, series = []) {
 
 function candidatePerformanceSummary(history = {}) {
   const items = Array.isArray(history.items) ? history.items : [];
-  const evaluatedItems = items.filter((item) => item.outcome === "hit" || item.outcome === "miss");
-  const hitItems = evaluatedItems.filter((item) => item.outcome === "hit");
+  const hitItems = items.filter((item) => Number.isFinite(item.maxReturnPct) && item.maxReturnPct >= CANDIDATE_SUCCESS_THRESHOLD_PCT);
+  const hitIds = new Set(hitItems.map((item) => item.id));
+  const evaluatedById = new Map(items
+    .filter((item) => item.outcome === "hit" || item.outcome === "miss")
+    .concat(hitItems)
+    .map((item) => [item.id, item]));
+  const evaluatedItems = [...evaluatedById.values()];
   const bySector = {};
   for (const item of evaluatedItems) {
     const key = item.sector || "その他";
     bySector[key] ||= { evaluated: 0, hits: 0, avgReturnPct: 0 };
     bySector[key].evaluated += 1;
-    if (item.outcome === "hit") bySector[key].hits += 1;
+    if (hitIds.has(item.id)) bySector[key].hits += 1;
     bySector[key].avgReturnPct += Number(item.latestReturnPct || 0);
   }
   for (const stats of Object.values(bySector)) {
@@ -11912,19 +11953,27 @@ function candidatePerformanceSummary(history = {}) {
     : null;
   return {
     total: items.length,
-    pending: items.filter((item) => item.outcome === "pending").length,
+    pending: items.filter((item) => item.outcome === "pending" && !hitIds.has(item.id)).length,
     evaluated: evaluatedItems.length,
     hits: hitItems.length,
     misses: evaluatedItems.length - hitItems.length,
     hitRate: evaluatedItems.length ? hitItems.length / evaluatedItems.length : null,
     avgReturnPct,
+    successThresholdPct: CANDIDATE_SUCCESS_THRESHOLD_PCT,
     bySector,
     peLike: {
       evaluated: peLikeItems.length,
-      hits: peLikeItems.filter((item) => item.outcome === "hit").length,
-      hitRate: peLikeItems.length ? peLikeItems.filter((item) => item.outcome === "hit").length / peLikeItems.length : null,
+      hits: peLikeItems.filter((item) => hitIds.has(item.id)).length,
+      hitRate: peLikeItems.length ? peLikeItems.filter((item) => hitIds.has(item.id)).length / peLikeItems.length : null,
     },
   };
+}
+
+function successfulCandidateHistoryItems(history = {}) {
+  return (Array.isArray(history.items) ? history.items : [])
+    .filter((item) => Number.isFinite(item.maxReturnPct) && item.maxReturnPct >= CANDIDATE_SUCCESS_THRESHOLD_PCT)
+    .sort((a, b) => b.generatedAt.localeCompare(a.generatedAt) || b.maxReturnPct - a.maxReturnPct)
+    .slice(0, 200);
 }
 
 async function readExcludedCandidates() {
@@ -14618,16 +14667,32 @@ async function saveCryptoAnalysisCache(result) {
   }, null, 2));
 }
 
-async function serveFile(res, filePath) {
+async function serveFile(res, filePath, { cacheControl = "no-store" } = {}) {
   const normalized = path.normalize(filePath);
   if (!normalized.startsWith(PUBLIC_DIR)) return json(res, 403, { error: "Forbidden" });
   if (!existsSync(normalized)) return json(res, 404, { error: "Not found" });
   const extension = path.extname(normalized) || ".html";
   const content = await readFile(normalized);
-  res.writeHead(200, {
-    "content-type": mime[extension] || "application/octet-stream",
-    "cache-control": "no-store",
-  });
+  const contentType = mime[extension] || "application/octet-stream";
+  const headers = {
+    "content-type": contentType,
+    "cache-control": cacheControl,
+    vary: "Accept-Encoding",
+  };
+  if (res.shouldGzip && content.byteLength >= 1024 && /^(?:text\/|application\/(?:javascript|json)|image\/svg\+xml)/i.test(contentType)) {
+    gzip(content, (error, compressed) => {
+      if (res.destroyed) return;
+      if (error) {
+        res.writeHead(200, headers);
+        res.end(content);
+        return;
+      }
+      res.writeHead(200, { ...headers, "content-encoding": "gzip" });
+      res.end(compressed);
+    });
+    return;
+  }
+  res.writeHead(200, headers);
   res.end(content);
 }
 
@@ -14644,11 +14709,45 @@ async function readJson(req) {
 }
 
 function json(res, statusCode, payload) {
-  res.writeHead(statusCode, {
+  const body = Buffer.from(JSON.stringify(payload));
+  const headers = {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
-  });
-  res.end(JSON.stringify(payload));
+    vary: "Accept-Encoding",
+  };
+  if (res.shouldGzip && body.byteLength >= 1024) {
+    gzip(body, (error, compressed) => {
+      if (res.destroyed) return;
+      if (error) {
+        res.writeHead(statusCode, headers);
+        res.end(body);
+        return;
+      }
+      res.writeHead(statusCode, { ...headers, "content-encoding": "gzip" });
+      res.end(compressed);
+    });
+    return;
+  }
+  res.writeHead(statusCode, headers);
+  res.end(body);
+}
+
+async function cacheFileVersion(filePath) {
+  try {
+    const metadata = await stat(filePath);
+    return `${metadata.mtimeMs}:${metadata.size}`;
+  } catch {
+    return "";
+  }
+}
+
+async function analysisCacheVersions() {
+  const [jp, us, crypto] = await Promise.all([
+    cacheFileVersion(ANALYSIS_CACHE_PATH),
+    cacheFileVersion(US_ANALYSIS_CACHE_PATH),
+    cacheFileVersion(CRYPTO_ANALYSIS_CACHE_PATH),
+  ]);
+  return { jp, us, crypto };
 }
 
 function empty(res, statusCode) {

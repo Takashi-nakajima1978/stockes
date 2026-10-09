@@ -2191,6 +2191,60 @@ tr:hover .drag-handle,
   font-weight: 800;
 }
 
+#ideaTabSuccess span {
+  margin-left: 4px;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.candidate-success-intro {
+  margin: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.candidate-success-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfc;
+}
+
+.candidate-success-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.candidate-success-heading > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.candidate-success-heading small,
+.candidate-success-item > small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.candidate-success-return {
+  flex: 0 0 auto;
+  color: var(--positive, #14804a);
+  font-size: 16px;
+}
+
+.candidate-success-item p {
+  margin: 0;
+  font-weight: 800;
+}
+
 .idea-tabs {
   display: flex;
   gap: 8px;
