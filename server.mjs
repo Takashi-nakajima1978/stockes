@@ -36,12 +36,19 @@ const MAX_MANAGED_STOCKS = 50;
 const MAX_US_STOCKS = 40;
 const MAX_DISCOVERY_SUGGESTIONS = 100;
 const CANDIDATE_SUCCESS_THRESHOLD_PCT = 10;
+const CANDIDATE_LEARNING_HORIZON_DAYS = 20;
+const MIN_CANDIDATE_LEARNING_SAMPLES = 8;
+const MIN_CANDIDATE_VALIDATION_SAMPLES = 5;
+const MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES = 10;
+const MIN_CANDIDATE_AI_LEARNING_SAMPLES = 30;
+const CANDIDATE_LEARNING_PRIOR_STRENGTH = 8;
+const MAX_CANDIDATE_SIGNAL_ADJUSTMENT = 3;
 const MAX_WEBSITE_LIMIT = 100;
 const MAX_DEPTH_LIMIT = 50;
 const MAX_PAGES_PER_SITE = 100;
 const AI_DISCOVERY_REVIEW_LIMIT = 24;
 const NISA_FIT_MIN_SCORE = 45;
-const DISCOVERY_SCORING_VERSION = 14;
+const DISCOVERY_SCORING_VERSION = 16;
 const SEASONAL_BUY_TARGET_ALLOWANCE = 0.02;
 const US_DISCOVERY_UNIT_SIZE = 1;
 const US_DISCOVERY_UNIT_BUDGET = 2000;
@@ -3798,6 +3805,22 @@ async function discoverStocks(options = {}, job = null) {
     })
     : null;
   const performance = candidatePerformanceSummary(await readCandidateHistory());
+  const hasCandidateLearningSamples = Number(performance.learningBaseline?.evaluated || 0) >= MIN_CANDIDATE_LEARNING_SAMPLES
+    && Number(performance.validationBaseline?.evaluated || 0) >= MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES
+    && Object.entries(performance.bySignal || {})
+      .some(([signal, stats]) => stats.evaluated >= MIN_CANDIDATE_LEARNING_SAMPLES
+        && (performance.bySignalValidation?.[signal]?.evaluated || 0) >= MIN_CANDIDATE_VALIDATION_SAMPLES);
+  const candidateLearningStatEligible = hasCandidateLearningSamples;
+  const candidateLearningAiEligible = Number(performance.learningBaseline?.evaluated || 0) >= MIN_CANDIDATE_AI_LEARNING_SAMPLES
+    && hasCandidateLearningSamples;
+  let candidateLearningAiFailed = false;
+  const candidateLearningReviewPromise = candidateLearningAiEligible
+    ? withTimeout(aiCandidateLearningReview(performance), 30000).catch((error) => {
+      candidateLearningAiFailed = true;
+      aiWarnings.push(`候補実績AI学習: ${error.message || "LM Studioの確認が時間内に完了しませんでした"}`);
+      return null;
+    })
+    : Promise.resolve(null);
   const financialCache = await readFinancialCache();
   let financialBySymbol = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
   const fxContext = await readUsdJpyContext().catch(() => normalizeUsdJpyContext({}));
@@ -3837,10 +3860,7 @@ async function discoverStocks(options = {}, job = null) {
       unitBudgetUnlimited,
       fxContext,
     });
-    const scoredCandidate = applyCandidateLearning(
-      scoreDiscoveryCandidate(resolvedCandidate, price, haystack, sectorCounts, candidateBudget),
-      performance,
-    );
+    const scoredCandidate = scoreDiscoveryCandidate(resolvedCandidate, price, haystack, sectorCounts, candidateBudget);
     checked += 1;
     if (checked === candidates.length || checked % 25 === 0) {
       updateDiscoveryJob(job, { checked, phase: "全プライム銘柄の価格と3年傾向を確認中" });
@@ -3854,10 +3874,33 @@ async function discoverStocks(options = {}, job = null) {
     edinetDiscoveryChecked: discoveryFinancials.checked,
     edinetDiscoveryWarnings: discoveryFinancials.warnings,
   };
-  const scored = pricedCandidates.map((candidate) => applyDiscoveryFinancialAdjustment(
-    candidate,
-    financialBySymbol.get(candidate.symbol),
-    fxContext,
+  const candidateLearningReview = await candidateLearningReviewPromise;
+  performance.aiLearningStatus = candidateLearningReview
+    ? Object.keys(candidateLearningReview.weights || {}).length ? "applied" : "reviewed"
+    : candidateLearningStatEligible ? "statistical" : "waiting";
+  performance.aiLearningSummary = candidateLearningReview
+    ? Object.keys(candidateLearningReview.weights || {}).length
+      ? candidateLearningReview.summary || "学習期間と後続検証の両方で再現した条件を、上限付きで候補評価に反映しました。"
+      : "学習期間と後続検証の両方で基準を上回る条件は確認できず、AI補正は採用しませんでした。"
+    : (candidateLearningAiFailed
+      ? candidateLearningStatEligible
+        ? "AI補正は利用できないため、時系列検証済み条件の統計補正を使いました。"
+        : "AIの応答がなく、かつ後続検証条件も揃っていないため、候補順位への学習補正は行っていません。"
+      : candidateLearningAiEligible
+      ? candidateLearningStatEligible
+        ? "AIの条件分析結果が取得できず、時系列検証済み条件の統計補正を使いました。"
+        : "AIの条件分析結果が取得できず、後続検証条件も揃っていないため学習補正は保留しています。"
+      : candidateLearningStatEligible
+      ? `+10%到達の20営業日判定を時系列検証中です。AI分析は学習${MIN_CANDIDATE_AI_LEARNING_SAMPLES}銘柄以上で開始します。`
+      : Number(performance.learningValidation?.evaluatedDistinctSymbols || 0) < MIN_CANDIDATE_LEARNING_SAMPLES + MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES
+      ? `+10%到達の20営業日判定は${performance.learningValidation?.evaluatedDistinctSymbols || 0}銘柄。時系列検証用の結果が集まるまで、学習補正は行いません。`
+      : Number(performance.validationBaseline?.evaluated || 0) < MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES
+      ? `学習${performance.learningBaseline?.evaluated || 0}銘柄・後続検証${performance.validationBaseline?.evaluated || 0}銘柄。検証標本が${MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES}銘柄に達するまで補正を保留します。`
+      : `学習${performance.learningBaseline?.evaluated || 0}銘柄・後続検証${performance.validationBaseline?.evaluated || 0}銘柄。条件ごとに学習${MIN_CANDIDATE_LEARNING_SAMPLES}件と検証${MIN_CANDIDATE_VALIDATION_SAMPLES}件が揃うまで補正を保留します。`);
+  performance.aiWeights = candidateLearningReview?.weights || {};
+  const scored = pricedCandidates.map((candidate) => applyCandidateLearning(
+    applyDiscoveryFinancialAdjustment(candidate, financialBySymbol.get(candidate.symbol), fxContext),
+    performance,
   ));
   const prelimPool = scored
     .filter((candidate) => candidate.nearBudget)
@@ -3886,6 +3929,7 @@ async function discoverStocks(options = {}, job = null) {
     const enhancedCandidate = applyCandidateLearning(
       enhanceBusinessCandidate(candidate, relevantResults, positionSignal, peSignal),
       performance,
+      { rebase: results.length > 0 },
     );
     enhancedSoFar.push(enhancedCandidate);
     if (enhancedSoFar.length % 20 === 0 || enhancedSoFar.length === shortlist.length) {
@@ -4006,6 +4050,15 @@ async function discoverStocks(options = {}, job = null) {
       marketBrief,
       discoveryAiWarning: aiWarnings.join(" / "),
       performance,
+      candidateLearning: {
+        method: performance.aiLearningStatus,
+        evaluatedSymbols: performance.learningBaseline?.evaluated || 0,
+        validationSymbols: performance.validationBaseline?.evaluated || 0,
+        horizonTradingDays: CANDIDATE_LEARNING_HORIZON_DAYS,
+        validationMethod: performance.learningValidation?.method || "chronological-70-30",
+        analyzedSignals: Object.keys(performance.aiWeights || {}).length,
+        summary: performance.aiLearningSummary,
+      },
       stageStats,
       incomeSeasonalityUsed: true,
       seasonalBuyPremiumPct: SEASONAL_BUY_TARGET_ALLOWANCE * 100,
@@ -4783,34 +4836,337 @@ function peSignalSummary(label, criteria = [], buyerHits = [], options = {}) {
   return `${label}${parts.length ? `。${parts.join("。")}` : "。PE候補としては根拠が薄い"}`;
 }
 
-function applyCandidateLearning(candidate, performance = {}) {
+function candidateLearningSignals(candidate = {}) {
+  const allowed = new Set([
+    "trend:up", "trend:down", "trend:flat",
+    "buyline:deep", "buyline:under", "buyline:near", "buyline:above",
+    "short:steady", "short:weak", "short:hot", "long:strong", "long:weak",
+    "drawdown:stable", "drawdown:severe", "volatility:calm", "volatility:high",
+    "dividend:yield", "dividend:growing", "dividend:cut",
+    "technical:golden", "technical:dead", "pe:strong", "pe:weak",
+    "evidence:strong", "evidence:mixed", "evidence:negative", "evidence:weak",
+    "financial:cashflow-positive", "financial:cashflow-negative", "financial:cashflow-stable",
+    "financial:net-cash", "financial:net-debt", "financial:valuation-cheap", "financial:valuation-rich",
+    "financial:roe-strong", "financial:roe-negative", "financial:growth-positive", "financial:growth-negative",
+    "financial:pbr-low", "financial:pbr-high", "financial:leverage-low", "financial:leverage-high",
+  ]);
+  const clean = (values) => [...new Set((values || []).filter((value) => allowed.has(value)))];
+  if (Array.isArray(candidate.learningSignals) && candidate.learningSignals.length) {
+    return clean(candidate.learningSignals).slice(0, 24);
+  }
+  const price = candidate.price || candidate.learningFeatures || {};
+  const tags = [];
+  const finite = (value) => value !== null && value !== "" && Number.isFinite(Number(value));
+  const add = (condition, value) => { if (condition) tags.push(value); };
+  const trend = String(price.trend3y || "").toUpperCase();
+  if (finite(price.trendSlope3y)) {
+    add(Number(price.trendSlope3y) > 10, "trend:up");
+    add(Number(price.trendSlope3y) < -6, "trend:down");
+  }
+  if (!tags.some((tag) => tag.startsWith("trend:"))) {
+    add(trend === "UP" || (finite(price.return3y) && Number(price.return3y) >= 15), "trend:up");
+    add(trend === "DOWN" || (finite(price.return3y) && Number(price.return3y) <= -20), "trend:down");
+    add(!["UP", "DOWN"].includes(trend) && finite(price.return3y) && Number(price.return3y) > -20 && Number(price.return3y) < 15, "trend:flat");
+  }
+  const timing = String(price.buyTiming1y || "").toUpperCase();
+  if (["DEEP", "UNDER", "NEAR"].includes(timing)) tags.push(`buyline:${timing.toLowerCase()}`);
+  else if (finite(price.distanceFromBuyLine1y)) {
+    const distance = Number(price.distanceFromBuyLine1y);
+    add(distance <= -8, "buyline:deep");
+    add(distance > -8 && distance <= 0, "buyline:under");
+    add(distance > 0 && distance <= 8, "buyline:near");
+    add(distance > 18, "buyline:above");
+  }
+  if (finite(price.return3m)) {
+    const value = Number(price.return3m);
+    add(value > 6 && value < 28, "short:steady");
+    add(value < -8, "short:weak");
+    add(value >= 35, "short:hot");
+  }
+  if (finite(price.return1y)) {
+    const value = Number(price.return1y);
+    add(value > 18, "long:strong");
+    add(value < -15, "long:weak");
+  }
+  if (finite(price.maxDrawdown3y)) {
+    const value = Number(price.maxDrawdown3y);
+    add(value > -28, "drawdown:stable");
+    add(value < -50, "drawdown:severe");
+  }
+  if (finite(price.volatility)) {
+    const value = Number(price.volatility);
+    add(value < 28, "volatility:calm");
+    add(value > 55, "volatility:high");
+  }
+  if (finite(price.dividendYield)) add(Number(price.dividendYield) >= 4, "dividend:yield");
+  if (finite(price.dividendChangePct)) {
+    add(Number(price.dividendChangePct) > 5, "dividend:growing");
+    add(Number(price.dividendChangePct) < -5, "dividend:cut");
+  }
+  add(price.goldenCross === true, "technical:golden");
+  add(price.deadCross === true, "technical:dead");
+  const peScore = Number(candidate.peSignal?.matchScore ?? candidate.peMatchScore);
+  if (Number.isFinite(peScore)) {
+    add(peScore >= 70, "pe:strong");
+    add(peScore < 45, "pe:weak");
+  }
+  const evidence = String(candidate.evidenceQuality || candidate.learningFeatures?.evidenceQuality || "");
+  add(/業績根拠あり/.test(evidence), "evidence:strong");
+  add(/好悪混在/.test(evidence), "evidence:mixed");
+  add(/悪材料あり/.test(evidence), "evidence:negative");
+  add(/価格中心|関連検索のみ|根拠待ち/.test(evidence), "evidence:weak");
+
+  const text = [...(candidate.reasons || []), ...(candidate.risks || [])].join(" ");
+  add(/過去3年の株価の流れが上向き|3年でしっかり伸び|3年で大きく伸び/.test(text), "trend:up");
+  add(/過去3年の株価の流れが下向き|株価は3年で弱く/.test(text), "trend:down");
+  add(/買い場ラインを大きく下回/.test(text), "buyline:deep");
+  add(/買い場ラインを下回/.test(text) && !/大きく下回/.test(text), "buyline:under");
+  add(/買い場ラインに近い/.test(text), "buyline:near");
+  add(/買い場ラインより高く/.test(text), "buyline:above");
+  add(/直近3カ月も崩れていない/.test(text), "short:steady");
+  add(/直近3カ月が弱い/.test(text), "short:weak");
+  add(/短期で上がりすぎ/.test(text), "short:hot");
+  add(/1年の勢いもある/.test(text), "long:strong");
+  add(/1年では弱い/.test(text), "long:weak");
+  add(/最大下落が比較的小さい/.test(text), "drawdown:stable");
+  add(/最大下落が大きい/.test(text), "drawdown:severe");
+  add(/配当利回りが[4-9]/.test(text), "dividend:yield");
+  add(/配当が増えている/.test(text), "dividend:growing");
+  add(/配当が減っている/.test(text), "dividend:cut");
+  add(/PE候補チェック/.test(text) && peScore >= 70, "pe:strong");
+  add(/業績根拠あり/.test(text), "evidence:strong");
+  add(/業績悪化|悪材料あり/.test(text), "evidence:negative");
+  const financials = candidate.financials || candidate.learningFeatures || {};
+  const operatingCashFlow = finite(financials.operatingCashFlow) ? Number(financials.operatingCashFlow) : null;
+  if (operatingCashFlow !== null) {
+    add(operatingCashFlow > 0, "financial:cashflow-positive");
+    add(operatingCashFlow < 0, "financial:cashflow-negative");
+  } else if (financials.operatingCashFlowPositive === true) {
+    tags.push("financial:cashflow-positive");
+  }
+  add(finite(financials.operatingCashFlowYears) && Number(financials.operatingCashFlowYears) >= 3, "financial:cashflow-stable");
+  const netCashRatio = finite(financials.netCashRatio) ? Number(financials.netCashRatio) : null;
+  add(netCashRatio !== null && netCashRatio > 0, "financial:net-cash");
+  add(netCashRatio !== null && netCashRatio < 0, "financial:net-debt");
+  const rawEvEbitda = financials.evEbitda ?? financials.evToEbitda;
+  const evEbitda = finite(rawEvEbitda) ? Number(rawEvEbitda) : null;
+  add(evEbitda !== null && evEbitda > 0 && evEbitda <= 8, "financial:valuation-cheap");
+  add(evEbitda !== null && evEbitda >= 18, "financial:valuation-rich");
+  const rawPbr = financials.pbr ?? financials.priceToBook;
+  const pbr = finite(rawPbr) ? Number(rawPbr) : null;
+  add(pbr !== null && pbr > 0 && pbr <= 1, "financial:pbr-low");
+  add(pbr !== null && pbr >= 3, "financial:pbr-high");
+  const debtToEquityPct = finite(financials.debtToEquityPct) ? Number(financials.debtToEquityPct) : null;
+  add(debtToEquityPct !== null && debtToEquityPct >= 200, "financial:leverage-high");
+  add(debtToEquityPct !== null && debtToEquityPct >= 0 && debtToEquityPct <= 50, "financial:leverage-low");
+  const roe = finite(financials.returnOnEquityPct) ? Number(financials.returnOnEquityPct) : null;
+  add(roe !== null && roe >= 10, "financial:roe-strong");
+  add(roe !== null && roe < 0, "financial:roe-negative");
+  const revenueGrowth = finite(financials.revenueGrowthPct) ? Number(financials.revenueGrowthPct) : null;
+  add(revenueGrowth !== null && revenueGrowth >= 8, "financial:growth-positive");
+  add(revenueGrowth !== null && revenueGrowth < 0, "financial:growth-negative");
+  return clean(tags).slice(0, 24);
+}
+
+function candidateLearningSignalLabel(signal = "") {
+  return ({
+    "trend:up": "3年上昇傾向", "trend:down": "3年下落傾向", "trend:flat": "3年横ばい",
+    "buyline:deep": "買い場ラインを大きく下回る", "buyline:under": "買い場ラインを下回る",
+    "buyline:near": "買い場ラインに近い", "buyline:above": "買い場ラインより高い",
+    "short:steady": "直近3カ月の値動きが安定", "short:weak": "直近3カ月が弱い", "short:hot": "短期上昇が過熱",
+    "long:strong": "1年の上昇傾向", "long:weak": "1年の下落傾向",
+    "drawdown:stable": "過去の下落幅が小さい", "drawdown:severe": "過去の下落幅が大きい",
+    "volatility:calm": "値動きが穏やか", "volatility:high": "値動きが大きい",
+    "dividend:yield": "高配当", "dividend:growing": "増配", "dividend:cut": "減配",
+    "technical:golden": "ゴールデンクロス", "technical:dead": "デッドクロス",
+    "pe:strong": "PE適性が高い", "pe:weak": "PE適性が低い",
+    "evidence:strong": "業績根拠あり", "evidence:mixed": "好悪材料が混在",
+    "evidence:negative": "悪材料あり", "evidence:weak": "根拠が限定的",
+    "financial:cashflow-positive": "営業キャッシュフローが黒字", "financial:cashflow-negative": "営業キャッシュフローが赤字",
+    "financial:cashflow-stable": "営業キャッシュフローが複数年黒字", "financial:net-cash": "ネットキャッシュ",
+    "financial:net-debt": "ネット有利子負債", "financial:valuation-cheap": "EV/EBITDAが低い",
+    "financial:valuation-rich": "EV/EBITDAが高い", "financial:roe-strong": "ROEが高い",
+    "financial:roe-negative": "ROEが赤字", "financial:growth-positive": "売上成長が高い",
+    "financial:growth-negative": "売上が減少", "financial:pbr-low": "PBRが1倍以下",
+    "financial:pbr-high": "PBRが高い", "financial:leverage-low": "自己資本に対する負債が低い",
+    "financial:leverage-high": "自己資本に対する負債が高い",
+  })[signal] || signal;
+}
+
+function candidateLearningEvidenceDelta(stats = {}, baseline = {}) {
+  if (!Number.isFinite(stats.hitRate) || !Number.isFinite(baseline.hitRate)) return null;
+  const hitDelta = (stats.hitRate - baseline.hitRate) * 18;
+  const returnDelta = Number.isFinite(stats.avgReturnPct) && Number.isFinite(baseline.avgReturnPct)
+    ? (stats.avgReturnPct - baseline.avgReturnPct) * 0.25
+    : 0;
+  const lossDelta = Number.isFinite(stats.negativeRate) && Number.isFinite(baseline.negativeRate)
+    ? (baseline.negativeRate - stats.negativeRate) * 6
+    : 0;
+  const adverseDelta = Number.isFinite(stats.avgAdversePct) && Number.isFinite(baseline.avgAdversePct)
+    ? (stats.avgAdversePct - baseline.avgAdversePct) * 0.1
+    : 0;
+  return hitDelta + returnDelta + lossDelta + adverseDelta;
+}
+
+function applyCandidateLearning(candidate, performance = {}, { rebase = false } = {}) {
   if (!candidate) return candidate;
-  const score = Number(candidate.businessValueScore || candidate.score || 0);
-  let adjustment = 0;
+  const priorAdjustment = rebase ? 0 : Number(candidate.learning?.adjustment || 0);
+  const baseScore = Number(candidate.businessValueScore ?? candidate.score ?? 0) - priorAdjustment;
+  let sectorAdjustment = 0;
   const reasons = [];
-  const sectorStats = performance.bySector?.[candidate.sector || "その他"];
-  if (sectorStats?.evaluated >= 3 && Number.isFinite(sectorStats.hitRate) && Number.isFinite(performance.hitRate)) {
-    const delta = sectorStats.hitRate - performance.hitRate;
-    adjustment += clamp(Math.round(delta * 18), -8, 8);
-    reasons.push(`${candidate.sector || "その他"}の過去候補成績を反映`);
+  const sector = candidate.sector || "その他";
+  const sectorStats = performance.bySectorLearning?.[sector];
+  const sectorValidation = performance.bySectorLearningValidation?.[sector];
+  if (sectorStats?.evaluated >= MIN_CANDIDATE_LEARNING_SAMPLES
+    && sectorValidation?.evaluated >= MIN_CANDIDATE_VALIDATION_SAMPLES
+    && performance.validationBaseline?.evaluated >= MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES
+    && Number.isFinite(performance.learningBaseline?.hitRate)
+    && Number.isFinite(performance.validationBaseline?.hitRate)) {
+    const trainDelta = sectorStats.hitRate - performance.learningBaseline.hitRate;
+    const validationDelta = sectorValidation.hitRate - performance.validationBaseline.hitRate;
+    const shrink = Math.min(
+      sectorStats.evaluated / (sectorStats.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH),
+      sectorValidation.evaluated / (sectorValidation.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH),
+    );
+    if (Math.abs(trainDelta) >= 0.1 && Math.sign(trainDelta) === Math.sign(validationDelta)) {
+      sectorAdjustment = clamp(Math.round(trainDelta * 8 * shrink), -2, 2);
+    }
+    if (sectorAdjustment) reasons.push(`${candidate.sector || "その他"}の過去成績`);
   }
-  if (candidate.peSignal?.matchScore >= 70 && performance.peLike?.evaluated >= 3 && performance.peLike.hitRate >= performance.hitRate) {
-    adjustment += 3;
-    reasons.push("PE要素がある候補の過去成績を加点");
+  let signalAdjustment = 0;
+  let aiAssisted = false;
+  for (const signal of candidateLearningSignals(candidate)) {
+    const stats = performance.bySignal?.[signal];
+    const validationStats = performance.bySignalValidation?.[signal];
+    if (!stats || stats.evaluated < MIN_CANDIDATE_LEARNING_SAMPLES
+      || !validationStats || validationStats.evaluated < MIN_CANDIDATE_VALIDATION_SAMPLES
+      || performance.validationBaseline?.evaluated < MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES) continue;
+    const baseline = performance.learningBaseline || {};
+    const validationBaseline = performance.validationBaseline || {};
+    const trainEvidence = candidateLearningEvidenceDelta(stats, baseline);
+    const validationEvidence = candidateLearningEvidenceDelta(validationStats, validationBaseline);
+    if (!Number.isFinite(trainEvidence) || !Number.isFinite(validationEvidence)
+      || Math.abs(trainEvidence) < 0.75
+      || Math.abs(validationEvidence) < 0.75
+      || Math.sign(trainEvidence) !== Math.sign(validationEvidence)) continue;
+    const aiWeight = performance.aiWeights?.[signal];
+    let change = 0;
+    if (aiWeight && Number.isFinite(aiWeight.adjustment)) {
+      const validationShrink = validationStats.evaluated / (validationStats.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH);
+      change = clamp(Math.round(aiWeight.adjustment * validationShrink), -MAX_CANDIDATE_SIGNAL_ADJUSTMENT, MAX_CANDIDATE_SIGNAL_ADJUSTMENT);
+      aiAssisted ||= change !== 0;
+      if (change) reasons.push(aiWeight.reason || `${candidateLearningSignalLabel(signal)}の勝ち負けをAI分析`);
+    } else {
+      const shrink = Math.min(
+        stats.evaluated / (stats.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH),
+        validationStats.evaluated / (validationStats.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH),
+      );
+      change = clamp(Math.round(trainEvidence * shrink), -MAX_CANDIDATE_SIGNAL_ADJUSTMENT, MAX_CANDIDATE_SIGNAL_ADJUSTMENT);
+      if (change) reasons.push(`${candidateLearningSignalLabel(signal)}の条件別実績`);
+    }
+    signalAdjustment += change;
   }
-  if (!adjustment) return candidate;
-  const businessValueScore = clamp(Math.round(score + adjustment), 0, 100);
+  signalAdjustment = clamp(signalAdjustment, -6, 6);
+  const adjustment = clamp(sectorAdjustment + signalAdjustment, -8, 8);
+  const businessValueScore = clamp(Math.round(baseScore + adjustment), 0, 100);
+  if (!adjustment && !candidate.learning && businessValueScore === candidate.businessValueScore) return candidate;
+  const learning = {
+    adjustment,
+    reasons: uniqueText(reasons).slice(0, 4),
+    evaluated: performance.evaluated || 0,
+    hitRate: performance.hitRate,
+    aiAssisted,
+  };
   return {
     ...candidate,
     businessValueScore,
     rankLabel: discoveryRankLabel(businessValueScore),
-    learning: {
-      adjustment,
-      reasons: uniqueText(reasons),
-      evaluated: performance.evaluated || 0,
-      hitRate: performance.hitRate,
-    },
+    learning,
   };
+}
+
+function candidateLearningPrompt(performance = {}) {
+  const baseline = performance.learningBaseline || {};
+  const factors = Object.entries(performance.bySignal || {})
+    .filter(([signal, stats]) => stats.evaluated >= MIN_CANDIDATE_LEARNING_SAMPLES
+      && (performance.bySignalValidation?.[signal]?.evaluated || 0) >= MIN_CANDIDATE_VALIDATION_SAMPLES)
+    .map(([signal, stats]) => ({
+      signal,
+      label: candidateLearningSignalLabel(signal),
+      training: stats,
+      laterValidation: performance.bySignalValidation[signal],
+    }));
+  return [
+    "株式候補の過去結果を分析し、候補スコアに使う条件別の補正を提案してください。内部思考の逐語出力は不要です。学習期間の傾向と後続期間での再現性を比較し、結論と検証可能な短い根拠を返してください。",
+    `目的変数は紹介後${CANDIDATE_LEARNING_HORIZON_DAYS}営業日以内の日足高値で+${CANDIDATE_SUCCESS_THRESHOLD_PCT}%到達です。学習と後続検証は候補作成時刻で分離し、同一銘柄は一度だけ数えます。期間外の最高値は学習ラベルに使いません。`,
+    "訓練と後続検証の両方で全体基準を上回る条件だけ正、両方で下回る条件だけ負にしてください。検証で再現しない・下落リスクが大きい・標本が少ない条件は0です。相関を因果関係や利益保証と断定せず、各補正は-3から+3の整数。入力にない条件は作らないでください。",
+    "JSONのみで返答: {\"summary\":\"日本語で結論を1-2文\",\"weights\":[{\"signal\":\"入力signal\",\"adjustment\":-3,\"reason\":\"日本語で短い根拠\"}]}",
+    JSON.stringify({
+      successDefinition: `within ${CANDIDATE_LEARNING_HORIZON_DAYS} trading sessions, daily high >= +${CANDIDATE_SUCCESS_THRESHOLD_PCT}% from introduction price`,
+      split: performance.learningValidation,
+      trainingBaseline: baseline,
+      laterValidationBaseline: performance.validationBaseline,
+      factors,
+    }),
+  ].join("\n");
+}
+
+function validateCandidateLearningReview(review = {}, performance = {}) {
+  const baseline = performance.learningBaseline || {};
+  const validationBaseline = performance.validationBaseline || {};
+  const summary = String(review.summary || "").trim().slice(0, 360);
+  const weights = {};
+  if (Number(validationBaseline.evaluated || 0) < MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES) {
+    return { summary, weights };
+  }
+  for (const item of Array.isArray(review.weights) ? review.weights : []) {
+    const signal = String(item?.signal || "");
+    const stats = performance.bySignal?.[signal];
+    const validationStats = performance.bySignalValidation?.[signal];
+    const proposed = Number(item?.adjustment);
+    if (!stats || stats.evaluated < MIN_CANDIDATE_LEARNING_SAMPLES
+      || !validationStats || validationStats.evaluated < MIN_CANDIDATE_VALIDATION_SAMPLES
+      || !Number.isFinite(proposed)) continue;
+    const trainingEvidence = candidateLearningEvidenceDelta(stats, baseline);
+    const validationEvidence = candidateLearningEvidenceDelta(validationStats, validationBaseline);
+    if (!Number.isFinite(trainingEvidence) || !Number.isFinite(validationEvidence)
+      || Math.abs(trainingEvidence) < 0.75 || Math.abs(validationEvidence) < 0.75
+      || Math.sign(trainingEvidence) !== Math.sign(validationEvidence)
+      || Math.sign(proposed) !== Math.sign(trainingEvidence)) continue;
+    const shrink = Math.min(
+      stats.evaluated / (stats.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH),
+      validationStats.evaluated / (validationStats.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH),
+    );
+    const adjustment = clamp(Math.round(clamp(proposed, -MAX_CANDIDATE_SIGNAL_ADJUSTMENT, MAX_CANDIDATE_SIGNAL_ADJUSTMENT) * shrink), -MAX_CANDIDATE_SIGNAL_ADJUSTMENT, MAX_CANDIDATE_SIGNAL_ADJUSTMENT);
+    if (!adjustment) continue;
+    weights[signal] = {
+      adjustment,
+      reason: String(item.reason || `${candidateLearningSignalLabel(signal)}の過去実績をAIが評価`).trim().slice(0, 120),
+      evaluated: stats.evaluated,
+      validationEvaluated: validationStats.evaluated,
+    };
+  }
+  return { summary, weights };
+}
+
+async function aiCandidateLearningReview(performance = {}) {
+  const model = await getLmStudioModel();
+  const prompt = candidateLearningPrompt(performance);
+  const content = await callLmStudioResponses(model, prompt, {
+    instructions: lmJsonInstructions("Return concise Japanese evidence-based output. Do not reveal chain-of-thought; return only a short summary and requested JSON fields."),
+    timeoutMs: 30000,
+    maxOutputTokens: 1200,
+  }).catch(async (error) => {
+    if (String(error.message || "").includes("404")) {
+      return callLmStudioChat(model, prompt, {
+        system: lmJsonInstructions("Return concise Japanese evidence-based output. Do not reveal chain-of-thought; return only a short summary and requested JSON fields."),
+        timeoutMs: 30000,
+        maxTokens: 1200,
+      });
+    }
+    throw error;
+  });
+  return validateCandidateLearningReview(parseJsonObject(content), performance);
 }
 
 async function savePartialDiscovery({
@@ -11811,6 +12167,8 @@ function normalizeCandidateHistoryItem(item = {}) {
     buyLine1y: nullablePositiveNumber(item.buyLine1y),
     peMatchScore: nullableNonNegativeNumber(item.peMatchScore),
     peLabel: String(item.peLabel || ""),
+    learningSignals: asStringArray(item.learningSignals).slice(0, 24),
+    learningFeatures: normalizeCandidateLearningFeatures(item.learningFeatures),
     reasons: asStringArray(item.reasons).slice(0, 5),
     risks: asStringArray(item.risks).slice(0, 5),
     latestPrice: nullablePositiveNumber(item.latestPrice),
@@ -11823,8 +12181,59 @@ function normalizeCandidateHistoryItem(item = {}) {
     elapsedTradingDays: nullableNonNegativeNumber(item.elapsedTradingDays) || 0,
     outcome: ["hit", "miss", "pending"].includes(item.outcome) ? item.outcome : "pending",
     outcomeReason: String(item.outcomeReason || ""),
+    learningOutcome: ["hit", "miss", "pending"].includes(item.learningOutcome) ? item.learningOutcome : "pending",
+    learningOutcomeReason: String(item.learningOutcomeReason || ""),
+    learningHorizonMaxReturnPct: numberOrNull(item.learningHorizonMaxReturnPct),
+    learningHorizonMinReturnPct: numberOrNull(item.learningHorizonMinReturnPct),
+    learningHorizonReturnPct: numberOrNull(item.learningHorizonReturnPct),
+    learningHorizonDays: nullableNonNegativeNumber(item.learningHorizonDays) || 0,
+    learningEvaluatedAt: item.learningEvaluatedAt || "",
     evaluatedAt: item.evaluatedAt || "",
   };
+}
+
+function normalizeCandidateLearningFeatures(features = {}) {
+  const allowed = [
+    "return3m", "return1y", "return3y", "trendSlope3y", "maxDrawdown3y", "volatility",
+    "dividendYield", "dividendChangePct", "distanceFromBuyLine1y",
+    "peMatchScore", "evidenceQuality", "marketCap", "priceToBook", "evToEbitda", "netCashRatio",
+    "operatingCashFlow", "operatingCashFlowYears", "operatingCashFlowPositive", "returnOnEquityPct",
+    "revenueGrowthPct", "debtToEquityPct", "pbr",
+  ];
+  return Object.fromEntries(allowed
+    .filter((key) => features && Object.hasOwn(features, key))
+    .map((key) => [key, typeof features[key] === "string"
+      ? String(features[key]).slice(0, 80)
+      : typeof features[key] === "boolean" ? features[key] : numberOrNull(features[key])])
+    .filter(([, value]) => value !== null && value !== ""));
+}
+
+function candidateLearningFeatureSnapshot(candidate = {}) {
+  const price = candidate.price || {};
+  return normalizeCandidateLearningFeatures({
+    return3m: price.return3m,
+    return1y: price.return1y,
+    return3y: price.return3y,
+    trendSlope3y: price.trendSlope3y,
+    maxDrawdown3y: price.maxDrawdown3y,
+    volatility: price.volatility,
+    dividendYield: price.dividendYield,
+    dividendChangePct: price.dividendChangePct,
+    distanceFromBuyLine1y: price.distanceFromBuyLine1y,
+    peMatchScore: candidate.peSignal?.matchScore,
+    evidenceQuality: candidate.evidenceQuality,
+    marketCap: candidate.financials?.marketCap,
+    priceToBook: candidate.financials?.pbr ?? candidate.financials?.priceToBook,
+    pbr: candidate.financials?.pbr,
+    evToEbitda: candidate.financials?.evEbitda ?? candidate.financials?.evToEbitda,
+    netCashRatio: candidate.financials?.netCashRatio,
+    operatingCashFlow: candidate.financials?.operatingCashFlow,
+    operatingCashFlowYears: candidate.financials?.operatingCashFlowYears,
+    operatingCashFlowPositive: candidate.financials?.operatingCashFlowPositive,
+    returnOnEquityPct: candidate.financials?.returnOnEquityPct,
+    revenueGrowthPct: candidate.financials?.revenueGrowthPct,
+    debtToEquityPct: candidate.financials?.debtToEquityPct,
+  });
 }
 
 async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
@@ -11852,6 +12261,8 @@ async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
       buyLine1y: candidate.price?.buyLine1y,
       peMatchScore: candidate.peSignal?.matchScore,
       peLabel: candidate.peSignal?.label,
+      learningSignals: candidateLearningSignals(candidate),
+      learningFeatures: candidateLearningFeatureSnapshot(candidate),
       reasons: candidate.reasons,
       risks: candidate.risks,
       outcome: "pending",
@@ -11880,8 +12291,10 @@ function evaluateCandidateOutcome(item, series = []) {
   const start = new Date(item.generatedAt);
   if (Number.isNaN(start.getTime())) return { ...item, evaluatedAt: new Date().toISOString(), outcome: "pending", outcomeReason: "候補作成日の形式を確認" };
   const startDate = start.toISOString().slice(0, 10);
-  const after = (series || [])
-    .filter((point) => point.date > startDate && Number.isFinite(point.close))
+  const afterByDate = new Map((series || [])
+    .filter((point) => point?.date && point.date > startDate && Number.isFinite(point.close))
+    .map((point) => [point.date, point]));
+  const after = [...afterByDate.values()]
     .sort((a, b) => a.date.localeCompare(b.date));
   if (!after.length || !item.entryPrice) {
     return {
@@ -11889,6 +12302,28 @@ function evaluateCandidateOutcome(item, series = []) {
       evaluatedAt: new Date().toISOString(),
       outcomeReason: "価格履歴を取得できず前回判定を維持",
     };
+  }
+  const horizonPoints = after.slice(0, CANDIDATE_LEARNING_HORIZON_DAYS);
+  let learningOutcome = item.learningOutcome || "pending";
+  let learningOutcomeReason = item.learningOutcomeReason || `${CANDIDATE_LEARNING_HORIZON_DAYS}営業日の評価期間中`;
+  let learningHorizonMaxReturnPct = item.learningHorizonMaxReturnPct;
+  let learningHorizonMinReturnPct = item.learningHorizonMinReturnPct;
+  let learningHorizonReturnPct = item.learningHorizonReturnPct;
+  let learningHorizonDays = Number(item.learningHorizonDays || 0);
+  let learningEvaluatedAt = item.learningEvaluatedAt || "";
+  if (learningOutcome === "pending" && horizonPoints.length >= CANDIDATE_LEARNING_HORIZON_DAYS) {
+    const horizonHigh = Math.max(...horizonPoints.map((point) => Number(point.high || point.close)));
+    const horizonLow = Math.min(...horizonPoints.map((point) => Number(point.low || point.close)));
+    const horizonClose = Number(horizonPoints.at(-1).close);
+    learningHorizonMaxReturnPct = ((horizonHigh - item.entryPrice) / item.entryPrice) * 100;
+    learningHorizonMinReturnPct = ((horizonLow - item.entryPrice) / item.entryPrice) * 100;
+    learningHorizonReturnPct = ((horizonClose - item.entryPrice) / item.entryPrice) * 100;
+    learningHorizonDays = CANDIDATE_LEARNING_HORIZON_DAYS;
+    learningOutcome = learningHorizonMaxReturnPct >= CANDIDATE_SUCCESS_THRESHOLD_PCT ? "hit" : "miss";
+    learningOutcomeReason = learningOutcome === "hit"
+      ? `${CANDIDATE_LEARNING_HORIZON_DAYS}営業日以内に日足高値で+${CANDIDATE_SUCCESS_THRESHOLD_PCT}%到達`
+      : `${CANDIDATE_LEARNING_HORIZON_DAYS}営業日以内に+${CANDIDATE_SUCCESS_THRESHOLD_PCT}%未到達`;
+    learningEvaluatedAt = new Date().toISOString();
   }
   const latest = after.at(-1);
   const maxPoint = after.reduce((best, point) => (point.high || point.close) > (best.high || best.close) ? point : best);
@@ -11917,6 +12352,13 @@ function evaluateCandidateOutcome(item, series = []) {
     maxDate: maxPoint.date,
     minReturnPct,
     elapsedTradingDays: after.length,
+    learningOutcome,
+    learningOutcomeReason,
+    learningHorizonMaxReturnPct,
+    learningHorizonMinReturnPct,
+    learningHorizonReturnPct,
+    learningHorizonDays,
+    learningEvaluatedAt,
     outcome,
     outcomeReason,
     evaluatedAt: new Date().toISOString(),
@@ -11944,6 +12386,81 @@ function candidatePerformanceSummary(history = {}) {
     stats.hitRate = stats.evaluated ? stats.hits / stats.evaluated : null;
     stats.avgReturnPct = stats.evaluated ? stats.avgReturnPct / stats.evaluated : null;
   }
+  const latestBySymbol = new Map();
+  for (const item of items.filter((candidate) =>
+    ["hit", "miss"].includes(candidate.learningOutcome)
+    && Number.isFinite(candidate.learningHorizonReturnPct))) {
+    const previous = latestBySymbol.get(item.symbol);
+    if (!previous || String(item.generatedAt).localeCompare(String(previous.generatedAt)) > 0) {
+      latestBySymbol.set(item.symbol, item);
+    }
+  }
+  const learningItems = [...latestBySymbol.values()].sort((a, b) =>
+    String(a.generatedAt).localeCompare(String(b.generatedAt)) || String(a.symbol).localeCompare(String(b.symbol)));
+  const trainingCount = Math.floor(learningItems.length * 0.7);
+  const trainingItems = learningItems.slice(0, trainingCount);
+  const validationItems = learningItems.slice(trainingCount);
+  const summarizeLearningCohort = (cohort) => {
+    const evaluated = cohort.length;
+    const hits = cohort.filter((item) => item.learningOutcome === "hit").length;
+    return {
+      evaluated,
+      hits,
+      hitRate: evaluated ? hits / evaluated : null,
+      avgReturnPct: evaluated
+        ? cohort.reduce((sum, item) => sum + Number(item.learningHorizonReturnPct || 0), 0) / evaluated
+        : null,
+      negativeRate: evaluated
+        ? cohort.filter((item) => Number(item.learningHorizonReturnPct || 0) < 0).length / evaluated
+        : null,
+      avgAdversePct: evaluated
+        ? cohort.reduce((sum, item) => sum + Number(item.learningHorizonMinReturnPct || 0), 0) / evaluated
+        : null,
+    };
+  };
+  const learningBaseline = summarizeLearningCohort(trainingItems);
+  const validationBaseline = summarizeLearningCohort(validationItems);
+  const aggregateSignals = (cohort) => {
+    const signalByUniqueSymbol = new Map();
+    for (const item of cohort) {
+      for (const signal of candidateLearningSignals(item)) {
+        signalByUniqueSymbol.set(`${signal}:${item.symbol}`, { signal, item });
+      }
+    }
+    const result = {};
+    for (const { signal, item } of signalByUniqueSymbol.values()) {
+      result[signal] ||= { evaluated: 0, hits: 0, avgReturnPct: 0, negativeCount: 0, avgAdversePct: 0 };
+      const stats = result[signal];
+      stats.evaluated += 1;
+      if (item.learningOutcome === "hit") stats.hits += 1;
+      stats.avgReturnPct += Number(item.learningHorizonReturnPct || 0);
+      stats.avgAdversePct += Number(item.learningHorizonMinReturnPct || 0);
+      if (Number(item.learningHorizonReturnPct || 0) < 0) stats.negativeCount += 1;
+    }
+    for (const stats of Object.values(result)) {
+      stats.hitRate = stats.evaluated ? stats.hits / stats.evaluated : null;
+      stats.avgReturnPct = stats.evaluated ? stats.avgReturnPct / stats.evaluated : null;
+      stats.avgAdversePct = stats.evaluated ? stats.avgAdversePct / stats.evaluated : null;
+      stats.negativeRate = stats.evaluated ? stats.negativeCount / stats.evaluated : null;
+      delete stats.negativeCount;
+    }
+    return result;
+  };
+  const bySignal = aggregateSignals(trainingItems);
+  const bySignalValidation = aggregateSignals(validationItems);
+  const summarizeSectors = (cohort) => {
+    const result = {};
+    for (const item of cohort) {
+      const key = item.sector || "その他";
+      result[key] ||= { evaluated: 0, hits: 0 };
+      result[key].evaluated += 1;
+      if (item.learningOutcome === "hit") result[key].hits += 1;
+    }
+    for (const stats of Object.values(result)) stats.hitRate = stats.evaluated ? stats.hits / stats.evaluated : null;
+    return result;
+  };
+  const bySectorLearning = summarizeSectors(trainingItems);
+  const bySectorLearningValidation = summarizeSectors(validationItems);
   const peLikeItems = evaluatedItems.filter((item) => Number(item.peMatchScore || 0) >= 60);
   const avgReturnPct = evaluatedItems.length
     ? evaluatedItems.reduce((sum, item) => sum + Number(item.latestReturnPct || 0), 0) / evaluatedItems.length
@@ -11958,6 +12475,19 @@ function candidatePerformanceSummary(history = {}) {
     avgReturnPct,
     successThresholdPct: CANDIDATE_SUCCESS_THRESHOLD_PCT,
     bySector,
+    bySignal,
+    bySignalValidation,
+    bySectorLearning,
+    bySectorLearningValidation,
+    learningBaseline,
+    validationBaseline,
+    learningValidation: {
+      horizonTradingDays: CANDIDATE_LEARNING_HORIZON_DAYS,
+      method: "chronological-70-30",
+      evaluatedDistinctSymbols: learningItems.length,
+      trainingSymbols: trainingItems.length,
+      validationSymbols: validationItems.length,
+    },
     peLike: {
       evaluated: peLikeItems.length,
       hits: peLikeItems.filter((item) => hitIds.has(item.id)).length,

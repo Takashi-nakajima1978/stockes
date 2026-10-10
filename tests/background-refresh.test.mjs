@@ -600,7 +600,10 @@ test("large static application assets are gzip-compressed and cache-aware", asyn
 });
 
 test("candidate success is measured as a 10 percent rise from the introduction price", () => {
-  const evaluate = loadFunction(serverSource, "evaluateCandidateOutcome", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 });
+  const evaluate = loadFunction(serverSource, "evaluateCandidateOutcome", {
+    CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
+    CANDIDATE_LEARNING_HORIZON_DAYS: 20,
+  });
   const item = {
     id: "2026-10-01:X",
     symbol: "X.T",
@@ -620,6 +623,7 @@ test("candidate success is measured as a 10 percent rise from the introduction p
   assert.equal(succeeded.maxPrice, 111);
   assert.equal(succeeded.maxDate, "2026-10-02");
   assert.equal(succeeded.latestReturnPct, 3);
+  assert.equal(succeeded.learningOutcome, "pending");
   assert.match(succeeded.outcomeReason, /日足高値で\+10%到達/);
 
   const insufficient = Array.from({ length: 20 }, (_, index) => ({
@@ -630,13 +634,28 @@ test("candidate success is measured as a 10 percent rise from the introduction p
   }));
   const missed = evaluate(item, insufficient);
   assert.equal(missed.outcome, "miss");
+  assert.equal(missed.learningOutcome, "miss");
+  assert.equal(missed.learningHorizonDays, 20);
+  assert.equal(missed.learningHorizonReturnPct, 4);
   assert.match(missed.outcomeReason, /20営業日時点で\+10%未到達/);
+  const duplicateSession = evaluate(item, [...insufficient.slice(0, 19), insufficient[0]]);
+  assert.equal(duplicateSession.learningOutcome, "pending", "duplicate daily rows must not count as separate trading sessions");
+  const reachedWithinHorizon = evaluate(item, Array.from({ length: 20 }, (_, index) => ({
+    date: `2026-11-${String(index + 1).padStart(2, "0")}`,
+    close: 103,
+    high: index === 4 ? 110 : 105,
+    low: 99,
+  })));
+  assert.equal(reachedWithinHorizon.learningOutcome, "hit");
+  assert.equal(reachedWithinHorizon.learningHorizonDays, 20);
   const laterSuccess = evaluate(missed, [
     ...insufficient,
     { date: "2026-11-01", close: 108, high: 111, low: 103 },
   ]);
   assert.equal(laterSuccess.outcome, "hit");
   assert.equal(laterSuccess.maxReturnPct, 11);
+  assert.equal(laterSuccess.learningOutcome, "miss", "the fixed-horizon learning label must not change later");
+  assert.equal(laterSuccess.learningHorizonReturnPct, missed.learningHorizonReturnPct);
 
   const preserved = evaluate({ ...succeeded, outcome: "hit" }, []);
   assert.equal(preserved.outcome, "hit");
@@ -668,6 +687,7 @@ test("candidate outcomes keep tracking after 20 sessions until the 10 percent ta
   let fetched = 0;
   const update = loadFunction(serverSource, "updateCandidateHistoryOutcomes", {
     CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
+    CANDIDATE_LEARNING_HORIZON_DAYS: 20,
     readCandidateHistory: async () => ({ items: [item, winnerNowDown] }),
     fetchPriceHistory: async (symbol) => {
       fetched += 1;
@@ -679,7 +699,10 @@ test("candidate outcomes keep tracking after 20 sessions until the 10 percent ta
         ] };
     },
     emptyPrice: () => ({ series: [] }),
-    evaluateCandidateOutcome: loadFunction(serverSource, "evaluateCandidateOutcome", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 }),
+    evaluateCandidateOutcome: loadFunction(serverSource, "evaluateCandidateOutcome", {
+      CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
+      CANDIDATE_LEARNING_HORIZON_DAYS: 20,
+    }),
     saveCandidateHistory: async (history) => { saved = history; return history; },
   });
   await update();
@@ -697,7 +720,11 @@ test("candidate learning and success tab use the same 10 percent threshold", () 
     { id: "c", symbol: "C.T", generatedAt: "2026-10-03", outcome: "miss", maxReturnPct: 3, latestReturnPct: -4, sector: "食品" },
     { id: "d", symbol: "D.T", generatedAt: "2026-10-04", outcome: "pending", maxReturnPct: 10, latestReturnPct: 5, sector: "食品" },
   ] };
-  const summarize = loadFunction(serverSource, "candidatePerformanceSummary", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 });
+  const summarize = loadFunction(serverSource, "candidatePerformanceSummary", {
+    CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
+    CANDIDATE_LEARNING_HORIZON_DAYS: 20,
+    candidateLearningSignals: loadFunction(serverSource, "candidateLearningSignals", {}),
+  });
   const successItems = loadFunction(serverSource, "successfulCandidateHistoryItems", { CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 });
   const underperformingItems = loadFunction(serverSource, "underperformingCandidateHistoryItems", {});
   const underperformingCount = loadFunction(serverSource, "underperformingCandidateHistoryCount", {});
@@ -722,6 +749,262 @@ test("candidate learning and success tab use the same 10 percent threshold", () 
   assert.match(appSource, /underperformingCandidates: \[\]/);
   assert.match(appSource, /function renderSuccessfulCandidateList/);
   assert.match(appSource, /<strong>\+10%到達率<\/strong>/);
+});
+
+test("candidate learning extracts price, dividend, technical, evidence, and PE signals", () => {
+  const signals = loadFunction(serverSource, "candidateLearningSignals", {});
+  const candidate = {
+    price: {
+      trendSlope3y: 12,
+      buyTiming1y: "DEEP",
+      return3m: 12,
+      return1y: 22,
+      maxDrawdown3y: -20,
+      volatility: 20,
+      dividendYield: 4.2,
+      dividendChangePct: 8,
+      goldenCross: true,
+    },
+    peSignal: { matchScore: 75 },
+    evidenceQuality: "業績根拠あり",
+  };
+  const result = Array.from(signals(candidate));
+  for (const expected of ["trend:up", "buyline:deep", "short:steady", "long:strong", "drawdown:stable", "volatility:calm", "dividend:yield", "dividend:growing", "technical:golden", "pe:strong", "evidence:strong"]) {
+    assert.ok(result.includes(expected), `missing ${expected}`);
+  }
+});
+
+test("candidate learning snapshots include auditable fundamentals and preserve them for later evaluation", () => {
+  const featureSnapshot = loadFunction(serverSource, "candidateLearningFeatureSnapshot", {
+    normalizeCandidateLearningFeatures: (features) => features,
+  });
+  const signalExtractor = loadFunction(serverSource, "candidateLearningSignals", {});
+  const candidate = {
+    price: { return3m: 8, return1y: 22, return3y: 35, volatility: 20 },
+    financials: {
+      marketCap: 50_000_000_000,
+      pbr: 0.8,
+      evEbitda: 6,
+      netCashRatio: 0.15,
+      operatingCashFlow: 2_000_000_000,
+      operatingCashFlowYears: 4,
+      operatingCashFlowPositive: true,
+      returnOnEquityPct: 12,
+      revenueGrowthPct: 9,
+    },
+    evidenceQuality: "業績根拠あり",
+  };
+  const savedFeatures = featureSnapshot(candidate);
+  const savedSignals = signalExtractor({ learningFeatures: savedFeatures });
+  assert.equal(savedFeatures.evToEbitda, 6);
+  assert.equal(savedFeatures.operatingCashFlow, 2_000_000_000);
+  for (const expected of [
+    "financial:cashflow-positive", "financial:cashflow-stable", "financial:net-cash",
+    "financial:valuation-cheap", "financial:roe-strong", "financial:growth-positive",
+  ]) assert.ok(savedSignals.includes(expected), `missing ${expected}`);
+});
+
+test("candidate learning uses a chronological holdout and counts each symbol once", () => {
+  const signals = loadFunction(serverSource, "candidateLearningSignals", {});
+  const summarize = loadFunction(serverSource, "candidatePerformanceSummary", {
+    CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
+    CANDIDATE_LEARNING_HORIZON_DAYS: 20,
+    candidateLearningSignals: signals,
+  });
+  const history = { items: Array.from({ length: 10 }, (_, index) => ({
+    id: `stock-${index}`,
+    symbol: `S${index}.T`,
+    generatedAt: `2026-09-${String(index + 1).padStart(2, "0")}`,
+    outcome: index < 5 ? "miss" : "hit",
+    maxReturnPct: index < 5 ? 3 : 12,
+    latestReturnPct: index < 5 ? -8 : 4,
+    learningOutcome: index < 5 ? "miss" : "hit",
+    learningHorizonReturnPct: index < 5 ? -8 : 4,
+    learningHorizonMinReturnPct: -12,
+    learningSignals: ["buyline:deep"],
+  })).concat({
+    id: "S9-latest",
+    symbol: "S9.T",
+    generatedAt: "2026-10-01",
+    learningOutcome: "hit",
+    learningHorizonReturnPct: 5,
+    learningHorizonMinReturnPct: -5,
+    learningSignals: ["buyline:deep"],
+  }) };
+  const performance = summarize(history);
+  assert.equal(performance.learningBaseline.evaluated, 7);
+  assert.equal(performance.learningBaseline.hits, 2);
+  assert.equal(performance.validationBaseline.evaluated, 3);
+  assert.equal(performance.validationBaseline.hits, 3);
+  assert.equal(performance.bySignal["buyline:deep"].evaluated, 7);
+  assert.equal(performance.bySignal["buyline:deep"].hits, 2);
+  assert.equal(performance.bySignalValidation["buyline:deep"].evaluated, 3);
+  assert.equal(performance.learningValidation.horizonTradingDays, 20);
+  assert.equal(performance.learningValidation.evaluatedDistinctSymbols, 10);
+});
+
+test("candidate outcome learning adjusts scores conservatively without compounding", () => {
+  const signals = loadFunction(serverSource, "candidateLearningSignals", {});
+  const apply = loadFunction(serverSource, "applyCandidateLearning", {
+    MIN_CANDIDATE_LEARNING_SAMPLES: 8,
+    MIN_CANDIDATE_VALIDATION_SAMPLES: 5,
+    MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES: 10,
+    CANDIDATE_LEARNING_PRIOR_STRENGTH: 8,
+    MAX_CANDIDATE_SIGNAL_ADJUSTMENT: 3,
+    clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
+    discoveryRankLabel: (score) => `rank-${score}`,
+    uniqueText: (items) => [...new Set(items)],
+    candidateLearningSignals: signals,
+    candidateLearningSignalLabel: (signal) => signal,
+    candidateLearningEvidenceDelta: (stats, baseline) => (stats.hitRate - baseline.hitRate) * 18 + (stats.avgReturnPct - baseline.avgReturnPct) * 0.25,
+  });
+  const performance = {
+    evaluated: 24,
+    hitRate: 0.5,
+    learningBaseline: { evaluated: 24, hitRate: 0.5, avgReturnPct: 0 },
+    validationBaseline: { evaluated: 16, hitRate: 0.5, avgReturnPct: 0 },
+    bySignal: { "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5 } },
+    bySignalValidation: { "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5 } },
+  };
+  const candidate = { businessValueScore: 60, score: 60, price: {}, learningSignals: ["buyline:deep"] };
+  const first = apply(candidate, performance);
+  const repeated = apply(first, performance);
+  assert.equal(first.businessValueScore, 63);
+  assert.equal(first.learning.adjustment, 3);
+  assert.equal(repeated.businessValueScore, 63);
+  assert.equal(repeated.learning.adjustment, 3);
+
+  const losingSignal = apply({ ...candidate, learningSignals: ["short:weak"] }, {
+    ...performance,
+    bySignal: { "short:weak": { evaluated: 16, hitRate: 0.25, avgReturnPct: -5 } },
+    bySignalValidation: { "short:weak": { evaluated: 16, hitRate: 0.25, avgReturnPct: -5 } },
+  });
+  assert.equal(losingSignal.businessValueScore, 57);
+  assert.ok(losingSignal.learning.adjustment < 0);
+
+  const withAi = apply(candidate, {
+    ...performance,
+    aiWeights: { "buyline:deep": { adjustment: 2, reason: "AI分析: 条件別の到達率が高い" } },
+  });
+  assert.equal(withAi.businessValueScore, 61);
+  assert.equal(withAi.learning.aiAssisted, true);
+  assert.match(withAi.learning.reasons[0], /AI分析/);
+
+  const withoutHoldout = apply(candidate, {
+    ...performance,
+    bySignalValidation: {},
+  });
+  assert.equal(withoutHoldout.businessValueScore, 60, "no out-of-sample confirmation means no learning adjustment");
+});
+
+test("AI learning proposals are bounded, sample-gated, and must agree with measured outcomes", () => {
+  const validate = loadFunction(serverSource, "validateCandidateLearningReview", {
+    MIN_CANDIDATE_LEARNING_SAMPLES: 8,
+    MIN_CANDIDATE_VALIDATION_SAMPLES: 5,
+    MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES: 10,
+    CANDIDATE_LEARNING_PRIOR_STRENGTH: 8,
+    MAX_CANDIDATE_SIGNAL_ADJUSTMENT: 3,
+    clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
+    candidateLearningSignalLabel: (signal) => signal,
+    candidateLearningEvidenceDelta: (stats, baseline) => (stats.hitRate - baseline.hitRate) * 18 + (stats.avgReturnPct - baseline.avgReturnPct) * 0.25,
+  });
+  const performance = {
+    learningBaseline: { hitRate: 0.5, avgReturnPct: 0 },
+    validationBaseline: { evaluated: 16, hitRate: 0.5, avgReturnPct: 0 },
+    bySignal: {
+      "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5 },
+      "short:weak": { evaluated: 16, hitRate: 0.25, avgReturnPct: -5 },
+      "long:strong": { evaluated: 7, hitRate: 0.9, avgReturnPct: 9 },
+    },
+    bySignalValidation: {
+      "buyline:deep": { evaluated: 8, hitRate: 0.75, avgReturnPct: 5 },
+      "short:weak": { evaluated: 8, hitRate: 0.25, avgReturnPct: -5 },
+      "long:strong": { evaluated: 8, hitRate: 0.9, avgReturnPct: 9 },
+    },
+  };
+  const review = validate({ summary: "好調条件と弱い条件を分けて反映。", weights: [
+    { signal: "buyline:deep", adjustment: 99, reason: "到達率が高い" },
+    { signal: "short:weak", adjustment: -2, reason: "平均成績が弱い" },
+    { signal: "long:strong", adjustment: 3, reason: "標本不足" },
+    { signal: "unknown:invented", adjustment: 3, reason: "入力にない" },
+    { signal: "buyline:deep", adjustment: -3, reason: "データと逆向き" },
+  ] }, performance);
+  assert.equal(review.weights["buyline:deep"].adjustment, 2);
+  assert.equal(review.weights["short:weak"].adjustment, -1);
+  assert.equal(review.weights["long:strong"], undefined);
+  assert.equal(review.weights["unknown:invented"], undefined);
+  assert.match(review.summary, /好調条件/);
+
+  const prompt = loadFunction(serverSource, "candidateLearningPrompt", {
+    MIN_CANDIDATE_LEARNING_SAMPLES: 8,
+    MIN_CANDIDATE_VALIDATION_SAMPLES: 5,
+    CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
+    CANDIDATE_LEARNING_HORIZON_DAYS: 20,
+    candidateLearningSignalLabel: (signal) => signal,
+  })(performance);
+  assert.match(prompt, /\+10%/);
+  assert.match(prompt, /hitRate/);
+  assert.match(prompt, /後続検証/);
+  assert.match(prompt, /weights/);
+
+  const contradicted = validate({ weights: [{ signal: "buyline:deep", adjustment: 2 }] }, {
+    ...performance,
+    bySignalValidation: {
+      ...performance.bySignalValidation,
+      "buyline:deep": { evaluated: 8, hitRate: 0.25, avgReturnPct: -5 },
+    },
+  });
+  assert.equal(contradicted.weights["buyline:deep"], undefined);
+  const tooFewValidationSamples = validate({ weights: [{ signal: "buyline:deep", adjustment: 2 }] }, {
+    ...performance,
+    validationBaseline: { evaluated: 9, hitRate: 0.5, avgReturnPct: 0 },
+  });
+  assert.deepEqual(Object.keys(tooFewValidationSamples.weights), []);
+});
+
+test("AI review receives aggregate history and returns only validated learning factors", async () => {
+  const validate = loadFunction(serverSource, "validateCandidateLearningReview", {
+    MIN_CANDIDATE_LEARNING_SAMPLES: 8,
+    MIN_CANDIDATE_VALIDATION_SAMPLES: 5,
+    MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES: 10,
+    CANDIDATE_LEARNING_PRIOR_STRENGTH: 8,
+    MAX_CANDIDATE_SIGNAL_ADJUSTMENT: 3,
+    clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
+    candidateLearningSignalLabel: (signal) => signal,
+    candidateLearningEvidenceDelta: (stats, baseline) => (stats.hitRate - baseline.hitRate) * 18 + (stats.avgReturnPct - baseline.avgReturnPct) * 0.25,
+  });
+  let requestPrompt = "";
+  const reviewAi = loadFunction(serverSource, "aiCandidateLearningReview", {
+    getLmStudioModel: async () => "test-model",
+    callLmStudioResponses: async (model, prompt, options) => {
+      assert.equal(model, "test-model");
+      assert.equal(options.timeoutMs, 30000);
+      requestPrompt = prompt;
+      return JSON.stringify({ summary: "買い場条件の成績が全体を上回りました。", weights: [
+        { signal: "buyline:deep", adjustment: 2, reason: "到達率と平均損益が高い" },
+      ] });
+    },
+    parseJsonObject: JSON.parse,
+    validateCandidateLearningReview: validate,
+    candidateLearningPrompt: () => "aggregate outcome data",
+    callLmStudioChat: async () => { throw new Error("chat fallback should not run"); },
+    lmJsonInstructions: (text) => text,
+  });
+  const result = await reviewAi({ learningBaseline: { hitRate: 0.5, avgReturnPct: 0 }, validationBaseline: { evaluated: 12, hitRate: 0.5, avgReturnPct: 0 }, bySignal: {
+    "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5 },
+  }, bySignalValidation: { "buyline:deep": { evaluated: 8, hitRate: 0.75, avgReturnPct: 5 } } });
+  assert.match(requestPrompt, /aggregate outcome data/);
+  assert.equal(result.weights["buyline:deep"].adjustment, 1);
+  assert.match(result.summary, /買い場条件/);
+});
+
+test("discovery applies outcome learning after financial rescoring and reports AI status", () => {
+  assert.match(serverSource, /aiCandidateLearningReview\(performance\)/);
+  assert.match(serverSource, /applyCandidateLearning\(\s*applyDiscoveryFinancialAdjustment\(candidate/s);
+  assert.match(serverSource, /candidateLearning:\s*\{\s*method: performance\.aiLearningStatus/s);
+  assert.match(indexSource, /id="candidateLearningSummary"/);
+  assert.match(appSource, /function renderCandidatePerformance\(\)/);
+  assert.match(appSource, /AI分析を含む候補成績/);
 });
 
 test("Japan watchlist resolves sectors and shows FX/overseas sales context", () => {

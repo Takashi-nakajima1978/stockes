@@ -2191,6 +2191,20 @@ tr:hover .drag-handle,
   font-weight: 800;
 }
 
+.candidate-learning-summary {
+  margin: 0;
+  padding: 0 16px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfc;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.candidate-learning-summary[hidden] {
+  display: none;
+}
+
 #ideaTabSuccess span {
   margin-left: 4px;
   color: inherit;

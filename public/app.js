@@ -187,6 +187,7 @@ const els = {
   suggestionSource: document.getElementById("suggestionSource"),
   candidateSavedAt: document.getElementById("candidateSavedAt"),
   candidatePerformance: document.getElementById("candidatePerformance"),
+  candidateLearningSummary: document.getElementById("candidateLearningSummary"),
   successfulCandidateList: document.getElementById("successfulCandidateList"),
   successfulCandidateCount: document.getElementById("successfulCandidateCount"),
   underperformingCandidateList: document.getElementById("underperformingCandidateList"),
@@ -5242,7 +5243,32 @@ function sortStockReportItems(a, b) {
 
 function renderCandidatePerformance() {
   if (!els.candidatePerformance) return;
-  const performance = state.candidatePerformance || state.sourceSummary?.performance || null;
+  const performance = {
+    ...(state.sourceSummary?.performance || {}),
+    ...(state.candidatePerformance || {}),
+  };
+  const learning = state.sourceSummary?.candidateLearning || {};
+  if (els.candidateLearningSummary) {
+    const aiCount = Number(learning.analyzedSignals || Object.keys(performance.aiWeights || {}).length);
+    const evaluated = Number(learning.evaluatedSymbols || performance.learningBaseline?.evaluated || performance.evaluated || 0);
+    const validationCount = Number(learning.validationSymbols || performance.validationBaseline?.evaluated || 0);
+    const horizon = Number(learning.horizonTradingDays || performance.learningValidation?.horizonTradingDays || 20);
+    const summary = learning.summary || performance.aiLearningSummary || (performance.total
+      ? "過去の勝ち負けと条件別実績を候補スコアに反映します。"
+      : "紹介後の結果が蓄積されると、勝ち負けの条件を候補スコアに反映します。");
+    const method = learning.method || performance.aiLearningStatus;
+    const status = !performance.total
+      ? "判定履歴待ち"
+      : method === "waiting"
+      ? `検証データ蓄積中（${horizon}営業日評価、学習${evaluated}・後続検証${validationCount}銘柄）`
+      : method === "applied"
+      ? `AI分析を${aiCount}条件に反映（${horizon}営業日評価、学習${evaluated}・後続検証${validationCount}銘柄）`
+      : method === "reviewed"
+      ? `AI分析済み・再現条件なし（${horizon}営業日評価、学習${evaluated}・後続検証${validationCount}銘柄）`
+      : `時系列検証済み条件を統計補正（${horizon}営業日評価、学習${evaluated}・後続検証${validationCount}銘柄）`;
+    els.candidateLearningSummary.textContent = `${status}。${summary}`;
+    els.candidateLearningSummary.hidden = false;
+  }
   if (!performance?.total) {
     els.candidatePerformance.innerHTML = `
       <span><strong>候補実績</strong>まだ蓄積中</span>
@@ -5595,7 +5621,7 @@ function learningHtml(learning) {
   const reasons = (learning.reasons || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
   return `
     <div class="learning-signal">
-      <strong>候補成績を反映 ${learning.adjustment > 0 ? "+" : ""}${learning.adjustment}</strong>
+      <strong>${learning.aiAssisted ? "AI分析を含む候補成績" : "候補成績を反映"} ${learning.adjustment > 0 ? "+" : ""}${learning.adjustment}</strong>
       ${reasons}
     </div>
   `;
