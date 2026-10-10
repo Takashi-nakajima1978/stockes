@@ -9,6 +9,7 @@ data/settings.json
 data/watchlist.json
 data/us-watchlist.json
 data/analysis-cache.json
+data/financial-cache.json
 data/us-analysis-cache.json
 data/crypto-analysis-cache.json
 data/crypto-holding.json
