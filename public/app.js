@@ -5280,12 +5280,17 @@ function renderCandidatePerformance() {
   const hitRate = Number.isFinite(performance.hitRate) ? `${Math.round(performance.hitRate * 100)}%` : "-";
   const avg = Number.isFinite(performance.avgReturnPct) ? signedPct(performance.avgReturnPct) : "-";
   const peRate = Number.isFinite(performance.peLike?.hitRate) ? `${Math.round(performance.peLike.hitRate * 100)}%` : "-";
+  const forecast = performance.forecastValidation || {};
+  const forecastSummary = forecast.evaluated < 10
+    ? `${forecast.evaluated}件・蓄積中`
+    : `${forecast.evaluated}件 / 上昇 ${Math.round(forecast.predictedRatePct)}%→${Math.round(forecast.actualRatePct)}%・下落 ${forecast.downsideEvaluated >= 10 ? `${Math.round(forecast.downsidePredictedRatePct)}%→${Math.round(forecast.downsideActualRatePct)}%` : "蓄積中"}`;
   els.candidatePerformance.innerHTML = `
     <span><strong>保存候補</strong>${performance.total}件</span>
     <span><strong>判定済み</strong>${performance.evaluated || 0}件</span>
     <span><strong>+10%到達率</strong>${hitRate}</span>
     <span><strong>平均</strong>${avg}</span>
     <span><strong>PE系</strong>${peRate}</span>
+    ${forecast.evaluated ? `<span><strong>予測照合</strong>${forecastSummary}</span>` : ""}
   `;
 }
 
@@ -5437,6 +5442,7 @@ function suggestionItem(item, index) {
         <span><strong>需給経験則</strong>${technicalExperienceBadge(price)}</span>
         <span><strong>検索順位</strong>${item.searchPosition?.rank ? `${item.searchPosition.rank}位` : "-"}</span>
       </div>
+      ${upsideOutlookHtml(item.upsideOutlook)}
       ${nisaFit ? `<section class="nisa-fit"><strong>NISA適性 ${escapeHtml(nisaFit.label)} ${Math.round(nisaFit.score)}点</strong><span>データ充足度 ${Math.round(nisaFit.confidence || 0)}%${(nisaFit.reasons || []).length ? ` / ${(nisaFit.reasons || []).slice(0, 2).map(escapeHtml).join("・")}` : ""}</span>${(nisaFit.risks || []).length ? `<small>${(nisaFit.risks || []).slice(0, 2).map(escapeHtml).join("・")}</small>` : ""}${(nisaFit.missingData || []).map((text) => `<small>${escapeHtml(text)}</small>`).join("")}</section>` : ""}
       <section class="business-overview"><strong>事業概要</strong><p>${escapeHtml(businessOverview || (target === "us" ? "米国企業の年次報告書・公式IRを根拠にした日本語要約は未取得です。" : "年次報告書・IR資料を根拠にした事業概要は未取得です。"))}</p><div>${profileSources.map((source) => `<a href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.source || source.title || "会社資料")}</a>`).join("")}</div></section>
       ${marketPerspectiveHtml(item)}
@@ -5528,6 +5534,38 @@ function earlySignalHtml(signal) {
       <p>${escapeHtml(signal.summary || "買い場と初動条件を確認します。")}</p>
       <div>${criteria}${risks}</div>
     </div>
+  `;
+}
+
+function upsideOutlookHtml(outlook = null) {
+  if (!outlook) return "";
+  const conditionTags = (outlook.conditions || []).map((condition) => {
+    const direction = condition.deltaPct > 0 ? "良" : condition.deltaPct < 0 ? "注意" : "中立";
+    const className = condition.deltaPct > 0 ? "positive" : condition.deltaPct < 0 ? "risk" : "neutral";
+    return `<span class="${className}">${escapeHtml(condition.label)}: ${condition.ratePct}% (${condition.evaluated}件・${direction})</span>`;
+  }).join("");
+  if (outlook.status !== "reference") {
+    const overall = Number.isFinite(outlook.baselineRatePct) ? `全体基準 ${outlook.baselineRatePct}%` : "全体基準 未算出";
+    return `
+      <section class="upside-outlook insufficient">
+        <div class="upside-outlook-head"><strong>上昇見込みの参考実績</strong><span>データ蓄積中</span></div>
+        <p>+10%到達の個別目安はまだ出せません。同じ市場の全体検証 ${outlook.validationSamples}/${outlook.requiredBaselineSamples}件、類似候補 ${outlook.peerCount}/${outlook.requiredPeerSamples}件。${overall}。</p>
+        ${conditionTags ? `<div class="upside-outlook-conditions">${conditionTags}</div>` : ""}
+        <small>候補点やAIの見解を、上昇確率として置き換えていません。</small>
+      </section>
+    `;
+  }
+  return `
+    <section class="upside-outlook">
+      <div class="upside-outlook-head"><strong>上昇見込みの参考実績</strong><span>20営業日 / 類似 ${outlook.peerCount}銘柄</span></div>
+      <div class="upside-outlook-metrics">
+        <span><strong>日足高値で+${outlook.targetPct}%到達</strong>${outlook.hitRatePct}% (${outlook.hitCount}/${outlook.peerCount})<small>参考幅 95%: ${outlook.intervalLowPct}〜${outlook.intervalHighPct}%</small></span>
+        <span class="risk"><strong>一時 -${outlook.downsideThresholdPct}%以上下落</strong>${outlook.downsideRatePct}% (${outlook.downsideCount}/${outlook.peerCount})</span>
+        <span><strong>全体基準</strong>${outlook.baselineRatePct}% (${outlook.validationSamples}銘柄)</span>
+      </div>
+      ${conditionTags ? `<div class="upside-outlook-conditions">${conditionTags}</div>` : ""}
+      <small>同じ市場の候補を銘柄ごとに分けた後続期間の実績です。到達判定は20営業日以内の日足高値。将来の確率や利益を保証するものではありません。</small>
+    </section>
   `;
 }
 

@@ -2625,6 +2625,104 @@ tr:hover .drag-handle,
   background: #fffafa;
 }
 
+.upside-outlook {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #cfe4dc;
+  border-left: 3px solid var(--accent);
+  border-radius: 7px;
+  background: #f3faf7;
+  padding: 10px;
+}
+
+.upside-outlook.insufficient {
+  border-color: #ead7a5;
+  border-left-color: var(--watch);
+  background: #fffaf0;
+}
+
+.upside-outlook-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.upside-outlook-head strong {
+  color: var(--accent-2);
+  font-size: 13px;
+}
+
+.upside-outlook-head span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+}
+
+.upside-outlook > p,
+.upside-outlook > small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.upside-outlook-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  gap: 7px;
+}
+
+.upside-outlook-metrics > span {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  border-radius: 5px;
+  background: #fff;
+  color: var(--ink);
+  padding: 8px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.upside-outlook-metrics > span strong,
+.upside-outlook-metrics > span small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.upside-outlook-metrics > span.risk {
+  color: var(--sell);
+}
+
+.upside-outlook-conditions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.upside-outlook-conditions span {
+  border-radius: 5px;
+  background: #e5f4ed;
+  color: var(--accent);
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.upside-outlook-conditions span.risk {
+  background: #f8e6e7;
+  color: var(--sell);
+}
+
+.upside-outlook-conditions span.neutral {
+  background: #edf1ef;
+  color: var(--muted);
+}
+
 .pe-signal.strong {
   border-color: #bad9ca;
   background: #f4fbf7;

@@ -843,6 +843,87 @@ test("candidate learning uses a chronological holdout and counts each symbol onc
   assert.equal(performance.learningValidation.evaluatedDistinctSymbols, 10);
 });
 
+test("candidate upside outlook uses later holdout peers and shows target and drawdown history", () => {
+  const signals = loadFunction(serverSource, "candidateLearningSignals", {});
+  const cohort = loadFunction(serverSource, "candidateForecastValidationCohort", {});
+  const interval = loadFunction(serverSource, "wilsonInterval", {});
+  const outlook = loadFunction(serverSource, "candidateUpsideOutlook", {
+    candidateLearningSignals: signals,
+    candidateLearningSignalLabel: (signal) => signal,
+    wilsonInterval: interval,
+    CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
+    CANDIDATE_LEARNING_HORIZON_DAYS: 20,
+    MIN_CANDIDATE_FORECAST_BASELINE_SAMPLES: 30,
+    MIN_CANDIDATE_FORECAST_PEER_SAMPLES: 8,
+    MAX_CANDIDATE_FORECAST_PEERS: 25,
+  });
+  const history = { items: Array.from({ length: 100 }, (_, index) => {
+    const validation = index >= 70;
+    const peer = validation && index < 90;
+    const hit = peer && index < 80;
+    return {
+      symbol: `S${index}.T`,
+      currency: "JPY",
+      generatedAt: new Date(Date.UTC(2025, 0, index + 1)).toISOString(),
+      learningOutcome: hit || (!peer && validation && index % 3 === 0) ? "hit" : "miss",
+      learningHorizonReturnPct: hit ? 3 : -2,
+      learningHorizonMinReturnPct: peer && index < 80 ? -6 : -3,
+      learningSignals: peer ? ["trend:up", "buyline:under"] : ["trend:down", "volatility:high"],
+    };
+  }) };
+  history.items.push(...Array.from({ length: 40 }, (_, index) => ({
+    symbol: `U${index}`,
+    currency: "USD",
+    generatedAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+    learningOutcome: "hit",
+    learningHorizonReturnPct: 4,
+    learningHorizonMinReturnPct: -2,
+    learningSignals: ["trend:up", "buyline:under"],
+  })));
+  const validation = cohort(history, "JPY");
+  const result = outlook({ symbol: "CURRENT.T", currency: "JPY", learningSignals: ["trend:up", "buyline:under"] }, validation);
+  assert.equal(result.status, "reference");
+  assert.equal(result.validationSamples, 30);
+  assert.equal(result.baselineRatePct, 47, "US outcomes must not influence the Japanese stock baseline");
+  assert.equal(result.peerCount, 20);
+  assert.equal(result.hitCount, 10);
+  assert.equal(result.hitRatePct, 50);
+  assert.equal(result.downsideCount, 10);
+  assert.equal(result.downsideRatePct, 50);
+  assert.ok(result.intervalLowPct < result.hitRatePct);
+  assert.ok(result.intervalHighPct > result.hitRatePct);
+  assert.ok(result.conditions.some((condition) => condition.label === "trend:up" && condition.ratePct === 50));
+  const renderOutlook = loadFunction(appSource, "upsideOutlookHtml", { escapeHtml: (value) => String(value) });
+  const rendered = renderOutlook(result);
+  assert.match(rendered, /日足高値で\+10%到達/);
+  assert.match(rendered, /一時 -5%以上下落/);
+  assert.match(rendered, /参考幅 95%/);
+
+  const insufficient = outlook({ symbol: "CURRENT.T", currency: "JPY", learningSignals: ["trend:up", "buyline:under"] }, []);
+  assert.equal(insufficient.status, "insufficient");
+  assert.equal(insufficient.hitRatePct, undefined, "small or missing samples must not produce an individual rate");
+  assert.match(renderOutlook(insufficient), /データ蓄積中/);
+  assert.match(renderOutlook(insufficient), /個別目安はまだ出せません/);
+});
+
+test("candidate forecast outcomes are tracked separately from the overall hit rate", () => {
+  const summarize = loadFunction(serverSource, "candidatePerformanceSummary", {
+    CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
+    CANDIDATE_LEARNING_HORIZON_DAYS: 20,
+    candidateLearningSignals: loadFunction(serverSource, "candidateLearningSignals", {}),
+  });
+  const result = summarize({ items: [
+    { id: "A", symbol: "A.T", generatedAt: "2026-01-01", outcome: "hit", maxReturnPct: 12, latestReturnPct: 8, learningOutcome: "hit", learningHorizonReturnPct: 4, learningHorizonMinReturnPct: -6, forecastHitRatePct: 40, forecastDownsideRatePct: 25 },
+    { id: "B", symbol: "B.T", generatedAt: "2026-01-02", outcome: "miss", maxReturnPct: 5, latestReturnPct: -2, learningOutcome: "miss", learningHorizonReturnPct: -2, learningHorizonMinReturnPct: -2, forecastHitRatePct: 40, forecastDownsideRatePct: 25 },
+  ] });
+  assert.equal(result.forecastValidation.evaluated, 2);
+  assert.equal(result.forecastValidation.predictedRatePct, 40);
+  assert.equal(result.forecastValidation.actualRatePct, 50);
+  assert.equal(result.forecastValidation.brierScore, 0.26);
+  assert.equal(result.forecastValidation.downsidePredictedRatePct, 25);
+  assert.equal(result.forecastValidation.downsideActualRatePct, 50);
+});
+
 test("candidate outcome learning adjusts scores conservatively without compounding", () => {
   const signals = loadFunction(serverSource, "candidateLearningSignals", {});
   const apply = loadFunction(serverSource, "applyCandidateLearning", {

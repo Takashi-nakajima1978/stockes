@@ -41,6 +41,9 @@ const MIN_CANDIDATE_LEARNING_SAMPLES = 8;
 const MIN_CANDIDATE_VALIDATION_SAMPLES = 5;
 const MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES = 10;
 const MIN_CANDIDATE_AI_LEARNING_SAMPLES = 30;
+const MIN_CANDIDATE_FORECAST_BASELINE_SAMPLES = 30;
+const MIN_CANDIDATE_FORECAST_PEER_SAMPLES = 8;
+const MAX_CANDIDATE_FORECAST_PEERS = 25;
 const CANDIDATE_LEARNING_PRIOR_STRENGTH = 8;
 const MAX_CANDIDATE_SIGNAL_ADJUSTMENT = 3;
 const MAX_WEBSITE_LIMIT = 100;
@@ -920,10 +923,12 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/discovery" && req.method === "GET") {
     const excludedCandidates = await readExcludedCandidates();
     const candidateHistory = await readCandidateHistory();
+    const candidatePerformance = candidatePerformanceSummary(candidateHistory);
+    const discovery = filterDiscoveryResultByExclusions(await discoveryCacheForCurrentSettings(), excludedCandidates);
     return json(res, 200, {
-      ...filterDiscoveryResultByExclusions(await discoveryCacheForCurrentSettings(), excludedCandidates),
+      ...enrichCandidateOutlooks(discovery, candidateHistory),
       excludedCandidates,
-      candidatePerformance: candidatePerformanceSummary(candidateHistory),
+      candidatePerformance,
       successfulCandidates: successfulCandidateHistoryItems(candidateHistory),
       underperformingCandidates: underperformingCandidateHistoryItems(candidateHistory),
       underperformingCandidateCount: underperformingCandidateHistoryCount(candidateHistory),
@@ -1195,10 +1200,12 @@ async function handleApi(req, res, url) {
     const requestedMode = body.mode === "nisa" ? "nisa" : "general";
     const jobConflict = Boolean(job.running && job.mode !== requestedMode);
     const candidateHistory = await readCandidateHistory();
+    const candidatePerformance = candidatePerformanceSummary(candidateHistory);
+    const discovery = filterDiscoveryResultByExclusions(await discoveryCacheForCurrentSettings(), excludedCandidates);
     return json(res, 202, {
-      ...filterDiscoveryResultByExclusions(await discoveryCacheForCurrentSettings(), excludedCandidates),
+      ...enrichCandidateOutlooks(discovery, candidateHistory),
       excludedCandidates,
-      candidatePerformance: candidatePerformanceSummary(candidateHistory),
+      candidatePerformance,
       successfulCandidates: successfulCandidateHistoryItems(candidateHistory),
       underperformingCandidates: underperformingCandidateHistoryItems(candidateHistory),
       underperformingCandidateCount: underperformingCandidateHistoryCount(candidateHistory),
@@ -3804,7 +3811,8 @@ async function discoverStocks(options = {}, job = null) {
       return null;
     })
     : null;
-  const performance = candidatePerformanceSummary(await readCandidateHistory());
+  const candidateHistory = await readCandidateHistory();
+  const performance = candidatePerformanceSummary(candidateHistory);
   const hasCandidateLearningSamples = Number(performance.learningBaseline?.evaluated || 0) >= MIN_CANDIDATE_LEARNING_SAMPLES
     && Number(performance.validationBaseline?.evaluated || 0) >= MIN_CANDIDATE_VALIDATION_BASELINE_SAMPLES
     && Object.entries(performance.bySignal || {})
@@ -3998,6 +4006,7 @@ async function discoverStocks(options = {}, job = null) {
     aiWarnings.push(`上位候補再点検: ${error.message || "LM Studioが時間内に返りませんでした"}`);
     updateDiscoveryJob(job, { phase: "AI再点検は未完了。候補はルールで保存中" });
   }
+  suggestions = enrichCandidateOutlooks({ suggestions }, candidateHistory).suggestions;
   const stageStats = discoveryStageStats({
     scored,
     prelimPool,
@@ -12187,6 +12196,9 @@ function normalizeCandidateHistoryItem(item = {}) {
     learningHorizonMinReturnPct: numberOrNull(item.learningHorizonMinReturnPct),
     learningHorizonReturnPct: numberOrNull(item.learningHorizonReturnPct),
     learningHorizonDays: nullableNonNegativeNumber(item.learningHorizonDays) || 0,
+    forecastHitRatePct: numberOrNull(item.forecastHitRatePct),
+    forecastDownsideRatePct: numberOrNull(item.forecastDownsideRatePct),
+    forecastPeerCount: nullableNonNegativeNumber(item.forecastPeerCount) || 0,
     learningEvaluatedAt: item.learningEvaluatedAt || "",
     evaluatedAt: item.evaluatedAt || "",
   };
@@ -12236,6 +12248,120 @@ function candidateLearningFeatureSnapshot(candidate = {}) {
   });
 }
 
+function candidateForecastValidationCohort(history = {}, currency = "") {
+  const market = String(currency || "").toUpperCase();
+  const latestBySymbol = new Map();
+  for (const item of Array.isArray(history.items) ? history.items : []) {
+    if (!item?.symbol || !["hit", "miss"].includes(item.learningOutcome)
+      || !Number.isFinite(item.learningHorizonReturnPct)) continue;
+    const itemCurrency = String(item.currency || (/\.T$/.test(item.symbol) ? "JPY" : "USD")).toUpperCase();
+    if (market && itemCurrency !== market) continue;
+    const previous = latestBySymbol.get(item.symbol);
+    if (!previous || String(item.generatedAt).localeCompare(String(previous.generatedAt)) > 0) {
+      latestBySymbol.set(item.symbol, item);
+    }
+  }
+  const ordered = [...latestBySymbol.values()].sort((a, b) =>
+    String(a.generatedAt).localeCompare(String(b.generatedAt)) || String(a.symbol).localeCompare(String(b.symbol)));
+  return ordered.slice(Math.floor(ordered.length * 0.7));
+}
+
+function wilsonInterval(successes, total) {
+  if (!total) return null;
+  const z = 1.96;
+  const rate = successes / total;
+  const denominator = 1 + (z * z) / total;
+  const center = (rate + (z * z) / (2 * total)) / denominator;
+  const margin = (z * Math.sqrt((rate * (1 - rate) / total) + (z * z) / (4 * total * total))) / denominator;
+  return {
+    lowPct: Math.max(0, Math.round((center - margin) * 100)),
+    highPct: Math.min(100, Math.round((center + margin) * 100)),
+  };
+}
+
+function candidateUpsideOutlook(candidate = {}, validation = []) {
+  const validationSamples = validation.length;
+  const baselineHits = validation.filter((item) => item.learningOutcome === "hit").length;
+  const baselineRate = validationSamples ? baselineHits / validationSamples : null;
+  const baselineRatePct = Number.isFinite(baselineRate) ? Math.round(baselineRate * 100) : null;
+  const signals = new Set(candidateLearningSignals(candidate));
+  const peers = signals.size
+    ? validation.map((item) => {
+      const peerSignals = new Set(candidateLearningSignals(item));
+      const shared = [...signals].filter((signal) => peerSignals.has(signal)).length;
+      const union = new Set([...signals, ...peerSignals]).size;
+      return { item, shared, similarity: union ? shared / union : 0 };
+    })
+      .filter((peer) => peer.shared >= 2 && peer.similarity >= 0.18)
+      .sort((a, b) => b.similarity - a.similarity
+        || String(b.item.generatedAt).localeCompare(String(a.item.generatedAt)))
+      .slice(0, MAX_CANDIDATE_FORECAST_PEERS)
+    : [];
+  const enoughBaseline = validationSamples >= MIN_CANDIDATE_FORECAST_BASELINE_SAMPLES;
+  const enoughPeers = peers.length >= MIN_CANDIDATE_FORECAST_PEER_SAMPLES;
+  const conditions = [...signals].map((signal) => {
+    const matched = validation.filter((item) => candidateLearningSignals(item).includes(signal));
+    if (matched.length < MIN_CANDIDATE_FORECAST_PEER_SAMPLES) return null;
+    const ratePct = Math.round((matched.filter((item) => item.learningOutcome === "hit").length / matched.length) * 100);
+    return {
+      label: candidateLearningSignalLabel(signal),
+      ratePct,
+      evaluated: matched.length,
+      deltaPct: baselineRatePct === null ? null : ratePct - baselineRatePct,
+    };
+  }).filter(Boolean).sort((a, b) => Math.abs(b.deltaPct || 0) - Math.abs(a.deltaPct || 0)).slice(0, 4);
+
+  if (!enoughBaseline || !enoughPeers) {
+    return {
+      status: "insufficient",
+      targetPct: CANDIDATE_SUCCESS_THRESHOLD_PCT,
+      horizonTradingDays: CANDIDATE_LEARNING_HORIZON_DAYS,
+      validationSamples,
+      baselineRatePct,
+      peerCount: peers.length,
+      requiredBaselineSamples: MIN_CANDIDATE_FORECAST_BASELINE_SAMPLES,
+      requiredPeerSamples: MIN_CANDIDATE_FORECAST_PEER_SAMPLES,
+      conditions,
+    };
+  }
+
+  const hits = peers.filter(({ item }) => item.learningOutcome === "hit").length;
+  const downsideEvents = peers.filter(({ item }) => Number(item.learningHorizonMinReturnPct) <= -5).length;
+  const interval = wilsonInterval(hits, peers.length);
+  return {
+    status: "reference",
+    targetPct: CANDIDATE_SUCCESS_THRESHOLD_PCT,
+    horizonTradingDays: CANDIDATE_LEARNING_HORIZON_DAYS,
+    validationSamples,
+    baselineRatePct,
+    peerCount: peers.length,
+    hitCount: hits,
+    hitRatePct: Math.round((hits / peers.length) * 100),
+    intervalLowPct: interval.lowPct,
+    intervalHighPct: interval.highPct,
+    downsideThresholdPct: 5,
+    downsideCount: downsideEvents,
+    downsideRatePct: Math.round((downsideEvents / peers.length) * 100),
+    conditions,
+  };
+}
+
+function enrichCandidateOutlooks(discovery = {}, history = {}) {
+  const cohorts = new Map();
+  return {
+    ...discovery,
+    suggestions: (discovery.suggestions || []).map((candidate) => {
+      const currency = String(candidate.currency || candidate.price?.currency
+        || (/\.T$/.test(String(candidate.symbol || "")) ? "JPY" : "USD")).toUpperCase();
+      if (!cohorts.has(currency)) cohorts.set(currency, candidateForecastValidationCohort(history, currency));
+      return {
+        ...candidate,
+        upsideOutlook: candidateUpsideOutlook(candidate, cohorts.get(currency)),
+      };
+    }),
+  };
+}
+
 async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
   if (!suggestions.length) return;
   const history = await readCandidateHistory();
@@ -12263,6 +12389,9 @@ async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
       peLabel: candidate.peSignal?.label,
       learningSignals: candidateLearningSignals(candidate),
       learningFeatures: candidateLearningFeatureSnapshot(candidate),
+      forecastHitRatePct: candidate.upsideOutlook?.status === "reference" ? candidate.upsideOutlook.hitRatePct : null,
+      forecastDownsideRatePct: candidate.upsideOutlook?.status === "reference" ? candidate.upsideOutlook.downsideRatePct : null,
+      forecastPeerCount: candidate.upsideOutlook?.status === "reference" ? candidate.upsideOutlook.peerCount : 0,
       reasons: candidate.reasons,
       risks: candidate.risks,
       outcome: "pending",
@@ -12462,6 +12591,34 @@ function candidatePerformanceSummary(history = {}) {
   const bySectorLearning = summarizeSectors(trainingItems);
   const bySectorLearningValidation = summarizeSectors(validationItems);
   const peLikeItems = evaluatedItems.filter((item) => Number(item.peMatchScore || 0) >= 60);
+  const forecastItems = items.filter((item) => Number.isFinite(item.forecastHitRatePct)
+    && ["hit", "miss"].includes(item.learningOutcome)
+    && Number.isFinite(item.learningHorizonReturnPct));
+  const downsideForecastItems = forecastItems.filter((item) => Number.isFinite(item.forecastDownsideRatePct)
+    && Number.isFinite(item.learningHorizonMinReturnPct));
+  const forecastValidation = {
+    evaluated: forecastItems.length,
+    predictedRatePct: forecastItems.length
+      ? forecastItems.reduce((sum, item) => sum + item.forecastHitRatePct, 0) / forecastItems.length
+      : null,
+    actualRatePct: forecastItems.length
+      ? (forecastItems.filter((item) => item.learningOutcome === "hit").length / forecastItems.length) * 100
+      : null,
+    brierScore: forecastItems.length
+      ? forecastItems.reduce((sum, item) => {
+        const predicted = item.forecastHitRatePct / 100;
+        const actual = item.learningOutcome === "hit" ? 1 : 0;
+        return sum + ((predicted - actual) ** 2);
+      }, 0) / forecastItems.length
+      : null,
+    downsideEvaluated: downsideForecastItems.length,
+    downsidePredictedRatePct: downsideForecastItems.length
+      ? downsideForecastItems.reduce((sum, item) => sum + item.forecastDownsideRatePct, 0) / downsideForecastItems.length
+      : null,
+    downsideActualRatePct: downsideForecastItems.length
+      ? (downsideForecastItems.filter((item) => item.learningHorizonMinReturnPct <= -5).length / downsideForecastItems.length) * 100
+      : null,
+  };
   const avgReturnPct = evaluatedItems.length
     ? evaluatedItems.reduce((sum, item) => sum + Number(item.latestReturnPct || 0), 0) / evaluatedItems.length
     : null;
@@ -12481,6 +12638,7 @@ function candidatePerformanceSummary(history = {}) {
     bySectorLearningValidation,
     learningBaseline,
     validationBaseline,
+    forecastValidation,
     learningValidation: {
       horizonTradingDays: CANDIDATE_LEARNING_HORIZON_DAYS,
       method: "chronological-70-30",
