@@ -2641,6 +2641,12 @@ tr:hover .drag-handle,
   background: #fffaf0;
 }
 
+.upside-outlook.unavailable {
+  border-color: #ead7a5;
+  border-left-color: var(--watch);
+  background: #fffaf0;
+}
+
 .upside-outlook-head {
   display: flex;
   align-items: center;

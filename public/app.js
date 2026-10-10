@@ -5538,7 +5538,15 @@ function earlySignalHtml(signal) {
 }
 
 function upsideOutlookHtml(outlook = null) {
-  if (!outlook) return "";
+  if (!outlook || typeof outlook !== "object") {
+    return `
+      <section class="upside-outlook unavailable" aria-label="上昇見込みの参考実績">
+        <div class="upside-outlook-head"><strong>上昇見込みの参考実績</strong><span>比較データ未取得</span></div>
+        <p>この候補の+10%到達率と一時下落率を表示するデータを受け取れていません。</p>
+        <small>現在は過去の候補実績と比較できません。候補情報を更新してください。</small>
+      </section>
+    `;
+  }
   const conditionTags = (outlook.conditions || []).map((condition) => {
     const direction = condition.deltaPct > 0 ? "良" : condition.deltaPct < 0 ? "注意" : "中立";
     const className = condition.deltaPct > 0 ? "positive" : condition.deltaPct < 0 ? "risk" : "neutral";

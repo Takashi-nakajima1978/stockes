@@ -904,6 +904,11 @@ test("candidate upside outlook uses later holdout peers and shows target and dra
   assert.equal(insufficient.hitRatePct, undefined, "small or missing samples must not produce an individual rate");
   assert.match(renderOutlook(insufficient), /データ蓄積中/);
   assert.match(renderOutlook(insufficient), /個別目安はまだ出せません/);
+
+  const unavailable = renderOutlook(null);
+  assert.match(unavailable, /上昇見込みの参考実績/);
+  assert.match(unavailable, /比較データ未取得/);
+  assert.match(unavailable, /過去の候補実績と比較できません/);
 });
 
 test("candidate forecast outcomes are tracked separately from the overall hit rate", () => {
