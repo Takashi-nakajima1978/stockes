@@ -7,7 +7,7 @@
   <title>Stock Signal</title>
   <link rel="icon" href="/stock-signal-logo.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/stock-signal-logo.svg">
-  <link rel="stylesheet" href="/styles.css?v=20261010-upside-visible">
+  <link rel="stylesheet" href="/styles.css?v=20261011-performance-chart">
 </head>
 <body>
   <div class="app-shell">
@@ -22,6 +22,7 @@
 
       <nav class="side-nav" aria-label="画面切り替え">
         <button type="button" data-view-target="analysis" class="active">損益を見る</button>
+        <button type="button" data-view-target="performance">損益推移</button>
         <button type="button" data-view-target="stocks">保有を入力</button>
         <button type="button" data-view-target="us">米国株</button>
         <button type="button" data-view-target="crypto">BTC・為替</button>
@@ -216,6 +217,56 @@
             <span id="researchProgress">待機中</span>
           </div>
           <div id="evidenceList" class="evidence-list"></div>
+        </section>
+      </section>
+
+      <section class="view-panel performance-view" data-view="performance">
+        <section class="command-band">
+          <div>
+            <p class="eyebrow">PORTFOLIO</p>
+            <h2>配当込み損益推移</h2>
+            <p class="performance-period">過去1年から今後1年まで</p>
+          </div>
+        </section>
+
+        <section class="performance-tabs" role="tablist" aria-label="市場">
+          <button type="button" role="tab" id="performanceJpTab" aria-controls="performanceChartPanel" aria-selected="true" class="active" data-performance-market="jp">日本株</button>
+          <button type="button" role="tab" id="performanceUsTab" aria-controls="performanceChartPanel" aria-selected="false" data-performance-market="us">米国株</button>
+        </section>
+
+        <section class="profit-summary performance-summary" aria-live="polite">
+          <article class="profit-card primary">
+            <span>現在の配当込み損益</span>
+            <strong id="performanceCurrent">-</strong>
+            <small id="performanceCurrentNote">保有・売却済みを含む</small>
+          </article>
+          <article class="profit-card">
+            <span>1年後の参考値</span>
+            <strong id="performanceForecast">-</strong>
+            <small id="performanceForecastNote">過去の値動きと予想配当による試算</small>
+          </article>
+          <article class="profit-card">
+            <span>今後1年の配当見込み</span>
+            <strong id="performanceDividend">-</strong>
+            <small>現在の保有株数ベース</small>
+          </article>
+        </section>
+
+        <section class="table-panel performance-panel" id="performanceChartPanel" role="tabpanel" aria-labelledby="performanceJpTab">
+          <div class="panel-title">
+            <h3 id="performanceChartTitle">日本株 配当込み損益</h3>
+            <span id="performanceUpdatedAt">価格データを読み込み中</span>
+          </div>
+          <div class="performance-chart-wrap">
+            <canvas id="performanceChart" role="img" aria-label="過去1年から今後1年の日本株配当込み損益グラフ"></canvas>
+          </div>
+          <div class="performance-legend" aria-label="グラフの凡例">
+            <span><i class="legend-actual"></i>過去の実績</span>
+            <span><i class="legend-forecast"></i>今後1年の参考予測</span>
+            <span><i class="legend-today"></i>今日</span>
+          </div>
+          <p class="performance-assumption">予測線は、保有銘柄ごとに過去約1年の騰落率が続くと仮定し、今後1年の予想配当を加えた参考値です。価格履歴が足りない銘柄は株価変動を加算せず、将来の利益を保証するものではありません。</p>
+          <p id="performanceEmpty" class="empty-state" hidden></p>
         </section>
       </section>
 
@@ -919,6 +970,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20261010-upside-visible" type="module"></script>
+  <script src="/app.js?v=20261011-acquisition-yield" type="module"></script>
 </body>
 </html>

@@ -9,6 +9,7 @@ import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, pre
 const runPriceRefresh = createSingleFlight();
 const priceRefreshAttempts = new Map();
 const cacheWrites = new Map();
+const performanceSeriesCache = new Map();
 const PRICE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -934,6 +935,29 @@ async function handleApi(req, res, url) {
       underperformingCandidateCount: underperformingCandidateHistoryCount(candidateHistory),
       job: discoveryJobSnapshot(),
     });
+  }
+
+  if (url.pathname === "/api/price-series" && req.method === "GET") {
+    const market = String(url.searchParams.get("market") || "").toLowerCase();
+    const symbol = normalizeDiscoverySymbol(url.searchParams.get("symbol"), {
+      market: market === "us" ? "NYSE" : "東証",
+      currency: market === "us" ? "USD" : "JPY",
+    });
+    if (!symbol) return json(res, 400, { error: "銘柄コードを確認してください。" });
+    const cached = performanceSeriesCache.get(symbol);
+    if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000) {
+      return json(res, 200, cached.payload);
+    }
+    const price = await fetchPriceHistory(symbol, { timeout: 9000 });
+    const payload = {
+      symbol,
+      current: price.current,
+      return1y: price.return1y,
+      series: compactPerformanceSeries(price.series || []),
+    };
+    if (performanceSeriesCache.size >= 200) performanceSeriesCache.delete(performanceSeriesCache.keys().next().value);
+    performanceSeriesCache.set(symbol, { cachedAt: Date.now(), payload });
+    return json(res, 200, payload);
   }
 
   if (url.pathname === "/api/discovery-job" && req.method === "GET") {
@@ -7260,6 +7284,7 @@ function compactDiscoveryPrice(price, unitSize = 100, currency = "JPY") {
   return {
     currency,
     current: price.current,
+    series: compactPerformanceSeries(price.series || []),
     unitAmount: Number.isFinite(price.current) ? price.current * unitSize : null,
     return3m: price.return3m,
     return1y: price.return1y,
@@ -7324,6 +7349,20 @@ function compactDiscoveryPrice(price, unitSize = 100, currency = "JPY") {
     dividendPaymentDate: price.dividendPaymentDate,
     dividendAnnualSource: price.dividendAnnualSource,
   };
+}
+
+function compactPerformanceSeries(series = []) {
+  const points = (series || [])
+    .filter((point) => point?.date && Number.isFinite(Number(point.close)) && Number(point.close) > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (points.length <= 60) return points.map(({ date, close }) => ({ date, close }));
+  const threshold = new Date(Date.now() - (365 * 86400000)).toISOString().slice(0, 10);
+  const earlier = points.filter((point) => point.date <= threshold).at(-1);
+  const recent = points.filter((point) => point.date > threshold);
+  const sampled = recent.filter((_, index) => index % 5 === 0);
+  const latest = recent.at(-1) || points.at(-1);
+  if (latest && sampled.at(-1)?.date !== latest.date) sampled.push(latest);
+  return [...(earlier ? [earlier] : []), ...sampled].map(({ date, close }) => ({ date, close }));
 }
 
 function candidateToStock(candidate) {

@@ -1,5 +1,5 @@
 const MANAGED_STOCK_LIMIT = 50;
-const VIEW_KEYS = new Set(["analysis", "stocks", "us", "crypto", "ideas", "settings"]);
+const VIEW_KEYS = new Set(["analysis", "performance", "stocks", "us", "crypto", "ideas", "settings"]);
 const VIEW_STORAGE_KEY = "stockSignalActiveView";
 const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2400000;
 const NISA_GROWTH_LIFETIME_LIMIT_YEN = 12000000;
@@ -41,6 +41,7 @@ const state = {
   selected: null,
   usSelected: null,
   view: preferredView(),
+  performanceMarket: "jp",
   ideaView: "candidates",
   cryptoView: "btc",
   jpUnheldExpanded: false,
@@ -73,6 +74,9 @@ const chartState = {
   plot: null,
   hoverIndex: null,
 };
+const forecastSeriesCache = new Map();
+const forecastSeriesRequests = new Map();
+let forecastChartObserver = null;
 
 const reorderState = {
   symbol: "",
@@ -111,6 +115,17 @@ const els = {
   usAnalyzeButton: document.getElementById("usAnalyzeButton"),
   profitSummary: document.querySelector('[data-view="analysis"] .profit-summary'),
   usProfitSummary: document.querySelector('[data-view="us"] .us-profit-summary'),
+  performanceTabs: [...document.querySelectorAll("[data-performance-market]")],
+  performanceCurrent: document.getElementById("performanceCurrent"),
+  performanceCurrentNote: document.getElementById("performanceCurrentNote"),
+  performanceForecast: document.getElementById("performanceForecast"),
+  performanceForecastNote: document.getElementById("performanceForecastNote"),
+  performanceDividend: document.getElementById("performanceDividend"),
+  performanceUpdatedAt: document.getElementById("performanceUpdatedAt"),
+  performanceChartTitle: document.getElementById("performanceChartTitle"),
+  performanceChart: document.getElementById("performanceChart"),
+  performanceChartPanel: document.getElementById("performanceChartPanel"),
+  performanceEmpty: document.getElementById("performanceEmpty"),
   usStockForm: document.getElementById("usStockForm"),
   usStockName: document.getElementById("usStockName"),
   usStockSymbol: document.getElementById("usStockSymbol"),
@@ -499,6 +514,8 @@ async function loadAnalysisCache(background = false, cachedPayload = null) {
       renderTable();
       renderProfitSummary();
       if (!isDetailFormEditing() && !document.activeElement?.closest("form")) renderSelection();
+    } else if (state.view === "performance") {
+      renderPerformance();
     }
     return;
   }
@@ -511,6 +528,7 @@ async function loadUsAnalysisCache(background = false) {
   if (payload.cacheVersion) state.cacheVersions.us = payload.cacheVersion;
   applyUsAnalysisPayload(payload);
   if (state.view === "us" && (!background || (!isDetailFormEditing() && !document.activeElement?.closest("form")))) renderUs();
+  else if (state.view === "performance" && (!background || !isDetailFormEditing())) renderPerformance();
 }
 
 async function loadCrypto(background = false) {
@@ -549,6 +567,8 @@ function renderCurrentDataView() {
     renderTable();
   } else if (state.view === "us") {
     renderUs();
+  } else if (state.view === "performance") {
+    renderPerformance();
   } else if (state.view === "crypto") {
     renderCrypto();
   } else if (state.view === "ideas") {
@@ -588,6 +608,9 @@ function ensureViewData(view) {
     return ensureDataSection("us", async () => {
       await Promise.all([loadUsStocks(), loadUsAnalysisCache(), loadUsAnalysisJob()]);
     });
+  }
+  if (view === "performance") {
+    return Promise.all([ensureViewData("stocks"), ensureViewData("us")]).then(() => renderPerformance());
   }
   if (view === "crypto") return ensureDataSection("crypto", () => loadCrypto());
   if (view === "ideas") return ensureDataSection("ideas", () => loadDiscoveryCache());
@@ -756,6 +779,7 @@ function setView(view) {
   renderIdeaTabs();
   renderSettingsTabs();
   if (nextView === "analysis") renderSelection();
+  if (nextView === "performance") renderPerformance();
   if (nextView === "us") renderUs();
   if (nextView === "crypto") renderCrypto();
   if (nextView === "ideas") {
@@ -946,17 +970,30 @@ function sectorBadge(sector) {
 }
 
 function dividendCell(position, price = {}, formatter = yen) {
-  const yieldText = Number.isFinite(price?.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-";
+  const yieldPct = positionDividendYieldPct(position);
+  const yieldText = Number.isFinite(yieldPct) ? `${yieldPct.toFixed(1)}%` : "-";
   const incomeText = Number.isFinite(position?.annualDividendEstimate) ? formatter(position.annualDividendEstimate) : "";
   const timingText = dividendTimingSummary(price);
   if (yieldText === "-" && !incomeText && !timingText) return "-";
   return `
     <span class="dividend-cell">
-      <strong>${yieldText}</strong>
+      <strong title="年間配当目安 ÷ 保有中の取得原価">${yieldText}</strong>
       ${incomeText ? `<small>${incomeText}/年</small>` : ""}
       ${timingText ? `<small>${escapeHtml(timingText)}</small>` : ""}
     </span>
   `;
+}
+
+function positionDividendYieldPct(position = {}) {
+  const annualDividend = position?.annualDividendEstimate;
+  const acquisitionCost = position?.invested;
+  if (!Number.isFinite(annualDividend) || annualDividend < 0 || !Number.isFinite(acquisitionCost) || acquisitionCost <= 0) return null;
+  return (annualDividend / acquisitionCost) * 100;
+}
+
+function positionDividendYieldText(position = {}) {
+  const yieldPct = positionDividendYieldPct(position);
+  return Number.isFinite(yieldPct) ? `${yieldPct.toFixed(1)}%` : "-";
 }
 
 function dividendPerShareText(price = {}, position = {}, formatter = yen) {
@@ -1197,6 +1234,53 @@ function renderUsSummary() {
   if (els.usLossCount) els.usLossCount.textContent = String(summary.lossCount || 0);
 }
 
+function renderPerformance() {
+  if (!els.performanceChart) return;
+  const isUs = state.performanceMarket === "us";
+  const stocks = isUs ? state.usStocks : state.stocks;
+  const analyses = isUs ? state.usAnalyses : state.analyses;
+  const currency = isUs ? "USD" : "JPY";
+  const timeline = portfolioPerformanceTimeline(stocks, analyses);
+  els.performanceTabs.forEach((button) => {
+    const active = button.dataset.performanceMarket === state.performanceMarket;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  if (els.performanceChartPanel) {
+    els.performanceChartPanel.setAttribute("aria-labelledby", isUs ? "performanceUsTab" : "performanceJpTab");
+  }
+  if (els.performanceChartTitle) els.performanceChartTitle.textContent = `${isUs ? "米国株" : "日本株"} 配当込み損益`;
+  if (els.performanceChart) {
+    els.performanceChart.setAttribute("aria-label", `過去1年から今後1年の${isUs ? "米国株" : "日本株"}配当込み損益グラフ`);
+  }
+  if (els.performanceCurrent) els.performanceCurrent.textContent = moneyByCurrency(timeline.currentTotal, currency);
+  if (els.performanceCurrentNote) els.performanceCurrentNote.textContent = `${timeline.stockCount}銘柄・売却済み損益と受取配当を含む`;
+  if (els.performanceForecast) els.performanceForecast.textContent = moneyByCurrency(timeline.forecastTotal, currency);
+  if (els.performanceForecastNote) {
+    els.performanceForecastNote.textContent = timeline.rateUnavailableCount
+      ? `${timeline.rateUnavailableCount}銘柄は価格履歴不足のため株価変動を加算せず`
+      : "保有株の過去1年騰落率を複利で反映・保証なし";
+  }
+  if (els.performanceDividend) els.performanceDividend.textContent = moneyByCurrency(timeline.annualDividend, currency);
+  if (els.performanceUpdatedAt) {
+    els.performanceUpdatedAt.textContent = timeline.stockCount ? "保存済み価格・配当データ" : "損益データなし";
+  }
+  if (els.performanceEmpty) {
+    els.performanceEmpty.hidden = timeline.stockCount > 0;
+    els.performanceEmpty.textContent = isUs
+      ? "米国株の購入・売却データがありません。保有を入力すると推移を表示します。"
+      : "日本株の購入・売却データがありません。保有を入力すると推移を表示します。";
+  }
+  drawDatedLineChart(els.performanceChart, timeline.actual, timeline.forecast, {
+    currency,
+    startDate: timeline.startDate,
+    today: timeline.today,
+    endDate: timeline.endDate,
+    includeZero: true,
+  });
+}
+
 function renderUsTable() {
   if (!els.usStockTable) return;
   if (!state.usStocks.length) {
@@ -1320,7 +1404,7 @@ function renderUsDetail() {
         <span><strong>現在値</strong>${usd(analysis?.price?.current)}</span>
         <span><strong>損益</strong>${positionPnlUsd(position)}</span>
         <span><strong>受取配当</strong>${usd(position.dividendReceived)}</span>
-        <span><strong>配当利回り</strong>${Number.isFinite(analysis?.price?.dividendYield) ? `${analysis.price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>取得額配当利回り</strong>${positionDividendYieldText(position)}</span>
         <span><strong>1株配当</strong>${dividendPerShareText(analysis?.price || {}, position, usd)}</span>
         <span><strong>年間配当目安</strong>${annualDividendText(position, usd)}</span>
         <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(analysis?.price || {}, usd))}</span>
@@ -1341,6 +1425,7 @@ function renderUsDetail() {
           <ul class="risk-list">${risks || "<li>更新後に表示します</li>"}</ul>
         </section>
       </div>
+      ${stockForecastChartHtml(stock.symbol, "us")}
     </section>
     <section class="evidence-list us-evidence-list">
       ${evidence || "<article class=\"evidence-item\"><p>英語記事の日本語要約は、更新後に表示します。</p></article>"}
@@ -1348,6 +1433,7 @@ function renderUsDetail() {
   `;
   attachUsPositionForm(stock.symbol);
   renderEmbeddedPriceChart(els.usDetail, analysis?.price?.series || [], usd, chartTradeMarkers(stock), analysis?.price || {});
+  renderStockForecastCharts(els.usDetail);
 }
 
 function renderCrypto() {
@@ -2076,7 +2162,7 @@ function usPositionEditor(stock, position, price = {}) {
         <span><strong>受取配当</strong>${usd(metrics.dividendReceived)}</span>
         <span><strong>1株配当</strong>${dividendPerShareText(price || {}, metrics, usd)}</span>
         <span><strong>年間配当目安</strong>${usd(metrics.annualDividendEstimate)}</span>
-        <span><strong>配当利回り</strong>${Number.isFinite(price?.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>取得額配当利回り</strong>${positionDividendYieldText(metrics)}</span>
         <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(price || {}, usd))}</span>
         <span><strong>残り元本</strong>${usd(metrics.invested)}</span>
         <span><strong>評価額</strong>${usd(metrics.marketValue)}</span>
@@ -2191,8 +2277,10 @@ function renderSelection() {
     els.decisionDetail.innerHTML = `
       ${positionEditor(stock, null, null)}
       <p>${escapeHtml(stock.name)}は未分析です。</p>
+      ${stockForecastChartHtml(stock.symbol, "jp")}
     `;
     attachPositionForm(stock.symbol);
+    renderStockForecastCharts(els.decisionDetail);
     els.evidenceList.innerHTML = "<article class=\"evidence-item\"><p>分析を実行すると根拠リンクを保存して表示します。</p></article>";
     return;
   }
@@ -2207,6 +2295,7 @@ function renderSelection() {
     ${shareholderInfoHtml(analysis.shareholders)}
   `;
   attachPositionForm(stock.symbol);
+  renderStockForecastCharts(els.decisionDetail);
 
   const evidence = analysis.evidence || [];
   const evidenceHtml = evidence.map((item) => `
@@ -2246,7 +2335,7 @@ function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
         <span><strong>平均売却</strong>${yen(position.averageSellPrice)}</span>
         <span><strong>残株数</strong>${shareCount(position.quantity)}</span>
         <span><strong>受取配当</strong>${yen(position.dividendReceived)}</span>
-        <span><strong>配当利回り</strong>${Number.isFinite(price.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>取得額配当利回り</strong>${positionDividendYieldText(position)}</span>
         <span><strong>1株配当</strong>${dividendPerShareText(price, position, yen)}</span>
         <span><strong>年間配当目安</strong>${annualDividendText(position, yen)}</span>
         <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(price, yen))}</span>
@@ -2272,6 +2361,7 @@ function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
           <ul class="risk-list">${risks || "<li>更新後に表示します</li>"}</ul>
         </section>
       </div>
+      ${stockForecastChartHtml(stock.symbol, "jp")}
     </section>
   `;
 }
@@ -3810,7 +3900,7 @@ function evidenceSummaryHtml(stock, analysis, position) {
       <section class="business-overview"><strong>事業概要</strong><p>${escapeHtml(analysis.businessOverview || "年次報告書・IR資料からの事業概要は未取得です。銘柄を更新すると、会社資料を優先して確認します。")}</p><div>${businessSources || ""}</div></section>
       <div class="evidence-summary-grid">
         <span><strong>配当込み損益</strong>${positionPnl(position, true)}</span>
-        <span><strong>配当利回り</strong>${Number.isFinite(analysis.price?.dividendYield) ? `${analysis.price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>取得額配当利回り</strong>${positionDividendYieldText(position)}</span>
         <span><strong>1株配当</strong>${dividendPerShareText(analysis.price || {}, position, yen)}</span>
         <span><strong>年間配当目安</strong>${annualDividendText(position, yen)}</span>
         <span><strong>直近45日のニュース・見解</strong>${Number(analysis.researchStats?.marketPerspectives || 0)}件</span>
@@ -4700,6 +4790,350 @@ function dividendMarket(context = {}) {
   return "US";
 }
 
+function performanceAnnualizedReturn(series = [], asOfDate = "") {
+  const points = series
+    .filter((point) => point?.date && Number.isFinite(Number(point.close)) && Number(point.close) > 0 && point.date <= asOfDate)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const latest = points.at(-1);
+  if (!latest) return null;
+  const asOf = new Date(`${asOfDate}T00:00:00Z`).getTime();
+  const target = asOf - (365 * 86400000);
+  const baseline = points.filter((point) => new Date(`${point.date}T00:00:00Z`).getTime() <= target).at(-1);
+  if (!baseline) return null;
+  const elapsedDays = (new Date(`${latest.date}T00:00:00Z`).getTime() - new Date(`${baseline.date}T00:00:00Z`).getTime()) / 86400000;
+  if (elapsedDays < 300) return null;
+  return ((Number(latest.close) / Number(baseline.close)) ** (365 / elapsedDays)) - 1;
+}
+
+function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new Date()) {
+  const now = new Date(nowValue);
+  const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const today = new Date(todayMs).toISOString().slice(0, 10);
+  const start = new Date(todayMs);
+  start.setUTCFullYear(start.getUTCFullYear() - 1);
+  const startDate = start.toISOString().slice(0, 10);
+  const end = new Date(todayMs);
+  end.setUTCFullYear(end.getUTCFullYear() + 1);
+  const endDate = end.toISOString().slice(0, 10);
+  const entries = stocks.map((stock) => ({ stock, analysis: analyses[stock.symbol], price: analyses[stock.symbol]?.price || {} }))
+    .filter(({ stock }) => positionLots(stock).length || saleLots(stock).length);
+  const actualDates = [];
+  for (let time = start.getTime(); time < todayMs; time += 7 * 86400000) {
+    actualDates.push(new Date(time).toISOString().slice(0, 10));
+  }
+  actualDates.push(today);
+
+  const actual = actualDates.map((date) => {
+    let total = 0;
+    let incomplete = false;
+    for (const { stock, price } of entries) {
+      const allLots = positionLots(stock);
+      const allSales = saleLots(stock);
+      const current = date === today;
+      const lots = current ? allLots : allLots.filter((lot) => lot.purchaseDate && lot.purchaseDate <= date);
+      const sales = current ? allSales : allSales.filter((sale) => sale.sellDate && sale.sellDate <= date);
+      if (!lots.length && !sales.length) continue;
+      const historicalPrice = current
+        ? Number(price.current) > 0 ? Number(price.current) : null
+        : (price.series || []).filter((point) => point.date <= date).at(-1)?.close || null;
+      const lotState = positionLotState(lots, sales);
+      if (lotState.remainingQuantity > 0 && !(Number(historicalPrice) > 0)) {
+        incomplete = true;
+        continue;
+      }
+      const events = (price.dividendEvents || []).filter((event) => event.date <= date);
+      const metrics = positionMetrics(
+        { ...stock, positions: lots, sales },
+        { ...price, current: historicalPrice, dividendEvents: events },
+      );
+      if (Number.isFinite(metrics.totalReturnAmount)) total += metrics.totalReturnAmount;
+      else if (lots.length || sales.length) incomplete = true;
+    }
+    return { date, value: incomplete ? null : total };
+  });
+
+  let currentTotal = 0;
+  let currentIncomplete = false;
+  let annualDividend = 0;
+  let rateUnavailableCount = 0;
+  const forecastStocks = [];
+  for (const { stock, price } of entries) {
+    const currentPrice = Number(price.current) > 0
+      ? Number(price.current)
+      : (price.series || []).at(-1)?.close || null;
+    const metrics = positionMetrics(stock, { ...price, current: currentPrice });
+    if (Number.isFinite(metrics.totalReturnAmount)) currentTotal += metrics.totalReturnAmount;
+    else currentIncomplete = true;
+    const quantity = Number(metrics.quantity) || 0;
+    const annualPerShare = annualDividendPerShare(price) || 0;
+    const dividend = annualPerShare * quantity;
+    annualDividend += dividend;
+    const rate = quantity > 0 ? performanceAnnualizedReturn(price.series || [], today) : 0;
+    if (quantity > 0 && rate === null) rateUnavailableCount += 1;
+    forecastStocks.push({ currentPrice, quantity, rate: rate ?? 0, dividend });
+  }
+  const forecast = [];
+  for (let month = 0; month <= 12; month += 1) {
+    const pointDate = new Date(todayMs);
+    const day = pointDate.getUTCDate();
+    pointDate.setUTCDate(1);
+    pointDate.setUTCMonth(pointDate.getUTCMonth() + month);
+    const lastDay = new Date(Date.UTC(pointDate.getUTCFullYear(), pointDate.getUTCMonth() + 1, 0)).getUTCDate();
+    pointDate.setUTCDate(Math.min(day, lastDay));
+    const date = month === 12 ? endDate : pointDate.toISOString().slice(0, 10);
+    const years = (new Date(`${date}T00:00:00Z`).getTime() - todayMs) / (365 * 86400000);
+    let value = currentTotal;
+    for (const item of forecastStocks) {
+      if (item.quantity > 0 && item.currentPrice) {
+        value += (item.currentPrice * ((1 + item.rate) ** years) - item.currentPrice) * item.quantity;
+      }
+      value += item.dividend * years;
+    }
+    forecast.push({ date, value: currentIncomplete ? null : value });
+  }
+
+  return {
+    startDate,
+    today,
+    endDate,
+    actual,
+    forecast,
+    currentTotal: currentIncomplete ? null : currentTotal,
+    forecastTotal: currentIncomplete ? null : forecast.at(-1)?.value ?? null,
+    annualDividend,
+    rateUnavailableCount,
+    stockCount: entries.length,
+  };
+}
+
+function stockForecastChartHtml(symbol, market = "jp") {
+  const title = `${market === "us" ? "米国株" : "日本株"} ${symbol}の株価推移`;
+  return `
+    <section class="stock-forecast" data-stock-forecast data-forecast-symbol="${escapeAttr(symbol)}" data-forecast-market="${market}">
+      <div class="stock-forecast-heading"><strong>株価推移・1年後参考予測</strong><span>配当込み損益とは別</span></div>
+      <div class="stock-forecast-chart-wrap"><canvas data-stock-forecast-chart role="img" aria-label="${escapeAttr(title)}"></canvas></div>
+      <p class="stock-forecast-note" data-forecast-note>価格履歴を読み込み中</p>
+    </section>
+  `;
+}
+
+function renderStockForecastCharts(root) {
+  if (!root) return;
+  const charts = [...root.querySelectorAll("[data-stock-forecast-chart]")];
+  if (typeof IntersectionObserver === "function") {
+    if (!forecastChartObserver) {
+      forecastChartObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          forecastChartObserver.unobserve(entry.target);
+          void loadStockForecastChart(entry.target);
+        });
+      }, { rootMargin: "160px 0px" });
+    }
+    charts.forEach((canvas) => {
+      if (canvas.dataset.forecastReady !== "true" && canvas.dataset.forecastObserved !== "true") {
+        canvas.dataset.forecastObserved = "true";
+        forecastChartObserver.observe(canvas);
+      }
+    });
+    return;
+  }
+  charts.forEach((canvas) => void loadStockForecastChart(canvas));
+}
+
+function redrawVisibleStockForecastCharts(root) {
+  root?.querySelectorAll("[data-stock-forecast-chart]").forEach((canvas) => {
+    if (canvas.dataset.forecastReady !== "true" || !canvas.getClientRects().length) return;
+    canvas.dataset.forecastReady = "false";
+    void loadStockForecastChart(canvas);
+  });
+}
+
+async function loadStockForecastChart(canvas) {
+  if (!canvas || canvas.dataset.forecastReady === "true") return;
+  canvas.dataset.forecastReady = "true";
+  const shell = canvas.closest("[data-stock-forecast]");
+  const symbol = shell?.dataset.forecastSymbol || "";
+  const market = shell?.dataset.forecastMarket || "jp";
+  const note = shell?.querySelector("[data-forecast-note]");
+  const currency = market === "us" ? "USD" : "JPY";
+  const analysis = market === "us" ? state.usAnalyses[symbol] : state.analyses[symbol];
+  const candidate = state.suggestions.find((item) => item.symbol === symbol && candidateTarget(item) === market);
+  const price = analysis?.price || candidate?.price || {};
+  let series = Array.isArray(price.series) ? price.series : [];
+  const cacheKey = `${market}:${symbol}`;
+  if (series.length < 2) {
+    if (forecastSeriesCache.has(cacheKey)) {
+      series = forecastSeriesCache.get(cacheKey);
+    } else {
+      try {
+        let requestTask = forecastSeriesRequests.get(cacheKey);
+        if (!requestTask) {
+          requestTask = request(`/api/price-series?market=${encodeURIComponent(market)}&symbol=${encodeURIComponent(symbol)}`);
+          forecastSeriesRequests.set(cacheKey, requestTask);
+        }
+        const result = await requestTask;
+        forecastSeriesRequests.delete(cacheKey);
+        series = Array.isArray(result.series) ? result.series : [];
+        forecastSeriesCache.set(cacheKey, series);
+        price.current = result.current || price.current;
+      } catch {
+        forecastSeriesRequests.delete(cacheKey);
+        canvas.dataset.forecastReady = "false";
+        if (note) note.textContent = "価格履歴を取得できませんでした。時間をおいて再表示してください。";
+        return;
+      }
+    }
+  }
+  const current = Number(price.current) > 0 ? Number(price.current) : Number(series.at(-1)?.close);
+  const now = new Date();
+  const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const today = new Date(todayMs).toISOString().slice(0, 10);
+  const start = new Date(todayMs);
+  start.setUTCFullYear(start.getUTCFullYear() - 1);
+  const startDate = start.toISOString().slice(0, 10);
+  const end = new Date(todayMs);
+  end.setUTCFullYear(end.getUTCFullYear() + 1);
+  const endDate = end.toISOString().slice(0, 10);
+  const actual = series
+    .filter((point) => point.date >= startDate && point.date <= today && Number(point.close) > 0)
+    .map((point) => ({ date: point.date, value: Number(point.close) }));
+  if (current > 0 && actual.at(-1)?.date !== today) actual.push({ date: today, value: current });
+  const rate = performanceAnnualizedReturn(series, today);
+  const forecast = [];
+  if (current > 0 && rate !== null) {
+    for (let month = 0; month <= 12; month += 1) {
+      const date = new Date(todayMs);
+      const day = date.getUTCDate();
+      date.setUTCDate(1);
+      date.setUTCMonth(date.getUTCMonth() + month);
+      const finalDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+      date.setUTCDate(Math.min(day, finalDay));
+      const dateKey = month === 12 ? endDate : date.toISOString().slice(0, 10);
+      forecast.push({
+        date: dateKey,
+        value: current * ((1 + rate) ** ((month / 12))),
+      });
+    }
+  }
+  drawDatedLineChart(canvas, actual, forecast, {
+    currency,
+    startDate,
+    today,
+    endDate,
+    includeZero: false,
+  });
+  if (note) {
+    note.textContent = rate === null
+      ? "過去1年分の履歴が足りないため、将来予測は表示していません。"
+      : `過去約1年 ${rate >= 0 ? "+" : ""}${(rate * 100).toFixed(1)}% / 1年後 ${moneyByCurrency(forecast.at(-1)?.value, currency)}（同じ騰落率が続く仮定）`;
+  }
+}
+
+function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(280, Math.floor(rect.width || canvas.parentElement?.clientWidth || 600));
+  const height = Math.max(180, Math.floor(rect.height || 250));
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  const startMs = new Date(`${options.startDate}T00:00:00Z`).getTime();
+  const todayMs = new Date(`${options.today}T00:00:00Z`).getTime();
+  const endMs = new Date(`${options.endDate}T00:00:00Z`).getTime();
+  const inRange = (items) => items.filter((point) => Number.isFinite(point.value)
+    && point.date >= options.startDate && point.date <= options.endDate);
+  const actualPoints = inRange(actual);
+  const forecastPoints = inRange(forecast);
+  const values = [...actualPoints, ...forecastPoints].map((point) => point.value);
+  if (options.includeZero) values.push(0);
+  if (!values.length) {
+    context.fillStyle = "#667277";
+    context.font = "13px system-ui";
+    context.fillText("損益・価格データがありません", 18, 32);
+    return;
+  }
+  const low = Math.min(...values);
+  const high = Math.max(...values);
+  const spread = high - low || Math.max(Math.abs(high) * 0.08, 1);
+  const min = low - (spread * 0.1);
+  const max = high + (spread * 0.1);
+  const pad = { top: 18, right: 18, bottom: 30, left: 92 };
+  const plotWidth = Math.max(20, width - pad.left - pad.right);
+  const plotHeight = Math.max(20, height - pad.top - pad.bottom);
+  const x = (date) => pad.left + ((new Date(`${date}T00:00:00Z`).getTime() - startMs) / (endMs - startMs)) * plotWidth;
+  const y = (value) => pad.top + ((max - value) / (max - min)) * plotHeight;
+  const formatter = new Intl.NumberFormat(options.currency === "USD" ? "en-US" : "ja-JP", {
+    style: "currency",
+    currency: options.currency || "JPY",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  });
+  context.font = "11px system-ui";
+  context.textAlign = "right";
+  for (let index = 0; index <= 4; index += 1) {
+    const value = max - ((max - min) * index / 4);
+    const py = y(value);
+    context.strokeStyle = options.includeZero && Math.abs(value) < spread / 10 ? "#c0ccd0" : "#e5eaec";
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(pad.left, py);
+    context.lineTo(width - pad.right, py);
+    context.stroke();
+    context.fillStyle = "#667277";
+    context.fillText(formatter.format(value), pad.left - 8, py + 4);
+  }
+  const todayX = x(options.today);
+  context.strokeStyle = "#155c9a";
+  context.setLineDash([3, 4]);
+  context.beginPath();
+  context.moveTo(todayX, pad.top);
+  context.lineTo(todayX, height - pad.bottom);
+  context.stroke();
+  context.setLineDash([]);
+  context.fillStyle = "#155c9a";
+  context.textAlign = "center";
+  context.fillText("今日", todayX, pad.top + 11);
+
+  const drawLine = (points, color, dashed) => {
+    context.strokeStyle = color;
+    context.lineWidth = 2.4;
+    context.setLineDash(dashed ? [5, 5] : []);
+    context.beginPath();
+    let started = false;
+    points.forEach((point) => {
+      if (!Number.isFinite(point.value)) {
+        started = false;
+        return;
+      }
+      if (!started) {
+        context.moveTo(x(point.date), y(point.value));
+        started = true;
+      } else {
+        context.lineTo(x(point.date), y(point.value));
+      }
+    });
+    context.stroke();
+    context.setLineDash([]);
+  };
+  drawLine(actualPoints, "#0b6b58", false);
+  drawLine(forecastPoints, "#bd6927", true);
+  const tickDates = [startMs, startMs + (endMs - startMs) * 0.25, todayMs, startMs + (endMs - startMs) * 0.75, endMs];
+  context.fillStyle = "#667277";
+  context.textAlign = "center";
+  tickDates.forEach((time) => {
+    const date = new Date(time);
+    const label = `${date.getUTCFullYear()}/${date.getUTCMonth() + 1}`;
+    context.fillText(label, pad.left + ((time - startMs) / (endMs - startMs)) * plotWidth, height - 8);
+  });
+}
+
 function dividendDate(value = "") {
   const text = String(value || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
@@ -5104,11 +5538,13 @@ function renderCandidateList() {
   const { peItems, stockItems } = splitDiscoveryCandidates(state.suggestions, nisaMode);
   els.candidateList.classList.toggle("empty-state", !stockItems.length);
   els.candidateList.innerHTML = candidateReportsHtml(stockItems);
+  renderStockForecastCharts(els.candidateList);
   if (els.peCandidateList) {
     els.peCandidateList.classList.toggle("empty-state", nisaMode || !peItems.length);
     els.peCandidateList.innerHTML = nisaMode
       ? '<p class="report-empty">NISA向き候補の検索ではPE候補を扱いません。通常の「候補を検索」を実行してください。</p>'
       : peCandidateReportsHtml(peItems);
+    renderStockForecastCharts(els.peCandidateList);
   }
   attachSuggestionButtons();
 }
@@ -5437,7 +5873,7 @@ function suggestionItem(item, index) {
         <span><strong>3カ月</strong>${pct(price.return3m)}</span>
         <span><strong>1年</strong>${pct(price.return1y)}</span>
         <span><strong>3年</strong>${pct(price.return3y)}</span>
-        <span><strong>配当</strong>${Number.isFinite(price.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
+        <span><strong>市場配当利回り</strong>${Number.isFinite(price.dividendYield) ? `${price.dividendYield.toFixed(1)}%` : "-"}</span>
         <span><strong>配当/優待</strong>${incomeSeasonalityBadge(item.incomeSeasonality)}</span>
         <span><strong>需給経験則</strong>${technicalExperienceBadge(price)}</span>
         <span><strong>検索順位</strong>${item.searchPosition?.rank ? `${item.searchPosition.rank}位` : "-"}</span>
@@ -5456,6 +5892,7 @@ function suggestionItem(item, index) {
       ${processHtml(process)}
       <div class="suggestion-points">${reasons}${risks}</div>
       <div class="suggestion-evidence ${evidence ? "" : "muted"}"><strong>確認元</strong>${evidence || "<span>業績材料は未確認</span>"}</div>
+      ${stockForecastChartHtml(item.symbol, target)}
     </article>
   `;
 }
@@ -6645,6 +7082,23 @@ els.settingsTabButtons.forEach((button) => {
   });
 });
 
+els.performanceTabs.forEach((button) => {
+  button.addEventListener("click", () => {
+    state.performanceMarket = button.dataset.performanceMarket === "us" ? "us" : "jp";
+    renderPerformance();
+  });
+  button.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const index = els.performanceTabs.indexOf(button);
+    const next = els.performanceTabs[(index + direction + els.performanceTabs.length) % els.performanceTabs.length];
+    state.performanceMarket = next.dataset.performanceMarket === "us" ? "us" : "jp";
+    renderPerformance();
+    next.focus();
+  });
+});
+
 els.analyzeButton.addEventListener("click", analyze);
 els.usAnalyzeButton?.addEventListener("click", analyzeUs);
 els.cryptoAnalyzeButton?.addEventListener("click", analyzeCrypto);
@@ -6677,7 +7131,17 @@ els.chart?.addEventListener("pointermove", updateChartHover);
 els.chart?.addEventListener("pointerleave", clearChartHover);
 window.addEventListener("resize", () => {
   if (isDetailFormEditing()) return;
-  renderSelection();
+  if (state.view === "analysis") {
+    renderSelection();
+    renderStockForecastCharts(els.decisionDetail);
+  } else if (state.view === "us") {
+    renderUsDetail();
+  } else if (state.view === "performance") {
+    renderPerformance();
+  } else if (state.view === "ideas") {
+    redrawVisibleStockForecastCharts(els.candidateList);
+    redrawVisibleStockForecastCharts(els.peCandidateList);
+  }
 });
 
 await loadInitialData();

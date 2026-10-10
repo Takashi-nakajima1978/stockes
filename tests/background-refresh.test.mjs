@@ -515,7 +515,7 @@ test("day trade monitoring and broker controls are fully removed", () => {
   assert.doesNotMatch(appSource, /dayTrade|DayTrade|daytrade|デイトレ|rakutenOrderEnabled|rakutenRssBridgeUrl/);
   assert.doesNotMatch(serverSource, /dayTrade|DayTrade|daytrade|デイトレ|rakutenOrderEnabled|rakutenRssBridgeUrl|RssStockOrder/);
   assert.doesNotMatch(stylesSource, /daytrade|autopilot|simulation-monitor|simulation-status-grid/);
-  assert.match(appSource, /const VIEW_KEYS = new Set\(\["analysis", "stocks", "us", "crypto", "ideas", "settings"\]\)/);
+  assert.match(appSource, /const VIEW_KEYS = new Set\(\["analysis", "performance", "stocks", "us", "crypto", "ideas", "settings"\]\)/);
   assert.match(indexSource, /settings-tab-panel" data-settings-panel="monitoring"/);
   assert.match(appSource, /setInterval\(syncBackgroundPrices, 15000\)/);
   assert.match(serverSource, /if \(url\.pathname === "\/api\/stocks" && req\.method === "GET"\)/);
@@ -1410,10 +1410,20 @@ test("FIFO realized and unrealized P/L retain completed loss cycles after rebuy"
   assert.match(appSource, /class="unmatched-sale-warning"/);
 });
 
-test("detail pages show absolute dividend amounts without changing watchlist dividend cell", () => {
+test("held-position dividend yield is based on remaining acquisition cost", () => {
+  const yieldPct = loadFunction(appSource, "positionDividendYieldPct", {});
+  assert.equal(yieldPct({ annualDividendEstimate: 94.31, invested: 3141, grossInvested: 4200 }), (94.31 / 3141) * 100);
+  assert.equal(yieldPct({ annualDividendEstimate: 0, invested: 1000 }), 0);
+  assert.equal(yieldPct({ annualDividendEstimate: 94.31, invested: null }), null);
+  assert.equal(yieldPct({ annualDividendEstimate: 94.31, invested: 0 }), null);
+  assert.equal(yieldPct({ annualDividendEstimate: null, invested: 3141 }), null);
+});
+
+test("held-stock dividend yield labels and detail displays use acquisition cost", () => {
   assert.match(appSource, /function dividendPerShareText/);
   assert.match(appSource, /function annualDividendText/);
-  assert.match(appSource, /function dividendCell[\s\S]*<strong>\$\{yieldText\}<\/strong>/);
+  assert.match(appSource, /function dividendCell[\s\S]*positionDividendYieldPct\(position\)[\s\S]*年間配当目安 ÷ 保有中の取得原価/);
+  assert.match(appSource, /function positionDividendYieldPct[\s\S]*annualDividendEstimate[\s\S]*invested/);
   assert.match(indexSource, /id="dividendReceivedTotal"/);
   assert.match(indexSource, /id="usDividendIncomeTotal"/);
   assert.match(indexSource, /id="usDividendReceivedTotal"/);
@@ -1430,8 +1440,10 @@ test("detail pages show absolute dividend amounts without changing watchlist div
   assert.match(appSource, /els\.usDividendReceivedTotal[\s\S]*summary\.dividendReceived/);
   assert.match(appSource, /els\.dividendReceivedTiming[\s\S]*nextDividendPaymentLabel\(state\.stocks, state\.analyses\)/);
   assert.match(appSource, /els\.usDividendReceivedTiming[\s\S]*nextDividendPaymentLabel\(state\.usStocks, state\.usAnalyses\)/);
-  assert.match(appSource, /function jpAiConfirmationHtml[\s\S]*<strong>配当利回り<\/strong>[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
-  assert.match(appSource, /function renderUsDetail[\s\S]*<strong>配当利回り<\/strong>[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
+  assert.match(appSource, /function jpAiConfirmationHtml[\s\S]*<strong>取得額配当利回り<\/strong>\$\{positionDividendYieldText\(position\)\}[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
+  assert.match(appSource, /function renderUsDetail[\s\S]*<strong>取得額配当利回り<\/strong>\$\{positionDividendYieldText\(metrics\)\}[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
+  assert.match(appSource, /function evidenceSummaryHtml[\s\S]*<strong>取得額配当利回り<\/strong>\$\{positionDividendYieldText\(position\)\}/);
+  assert.match(appSource, /<strong>市場配当利回り<\/strong>/);
   assert.match(appSource, /function positionEditor[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
   assert.match(appSource, /function usPositionEditor[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
 });
@@ -2087,4 +2099,82 @@ test("crypto refresh fetches EUR/JPY independently and keeps BTC position in yen
   assert.equal(result.btcJpy.current, 9750000);
   assert.equal(result.eurJpy.current, 175);
   assert.equal(result.eurJpy.pair, "EUR/JPY");
+});
+
+test("portfolio P/L timeline uses an exact one-year window and compounds historical return with dividends", () => {
+  const annualizedReturn = loadFunction(appSource, "performanceAnnualizedReturn", {});
+  const timeline = loadFunction(appSource, "portfolioPerformanceTimeline", {
+    performanceAnnualizedReturn: annualizedReturn,
+    positionLots: (stock) => stock.positions || [],
+    saleLots: (stock) => stock.sales || [],
+    positionLotState: (lots, sales) => ({
+      remainingQuantity: lots.reduce((sum, lot) => sum + lot.quantity, 0) - sales.reduce((sum, sale) => sum + sale.quantity, 0),
+    }),
+    positionMetrics: (stock, price) => {
+      const lots = stock.positions || [];
+      const sales = stock.sales || [];
+      const quantity = lots.reduce((sum, lot) => sum + lot.quantity, 0) - sales.reduce((sum, sale) => sum + sale.quantity, 0);
+      const cost = lots.reduce((sum, lot) => sum + lot.purchasePrice * lot.quantity, 0);
+      const dividends = (price.dividendEvents || []).reduce((sum, event) => sum + event.amount * lots[0].quantity, 0);
+      return { quantity, totalReturnAmount: Number(price.current) * quantity - cost + dividends };
+    },
+    annualDividendPerShare: (price) => price.dividendPerShareAnnual,
+  });
+  const now = "2026-10-11T00:00:00.000Z";
+  const stock = {
+    symbol: "TEST.T",
+    market: "JP",
+    positions: [{ purchaseDate: "2026-02-01", purchasePrice: 105, quantity: 10 }],
+    sales: [],
+  };
+  const analysis = {
+    price: {
+      current: 120,
+      dividendPerShareAnnual: 4,
+      dividendEvents: [{ date: "2026-03-01", amount: 2 }],
+      series: [
+        { date: "2025-10-10", close: 100 },
+        { date: "2026-02-02", close: 105 },
+        { date: "2026-10-09", close: 120 },
+      ],
+    },
+  };
+  assert.ok(annualizedReturn(analysis.price.series, "2026-10-11") > 0.19);
+  const result = timeline([stock], { "TEST.T": analysis }, now);
+  assert.equal(result.startDate, "2025-10-11");
+  assert.equal(result.today, "2026-10-11");
+  assert.equal(result.endDate, "2027-10-11");
+  assert.equal(result.currentTotal, 170);
+  assert.ok(result.forecastTotal > 448 && result.forecastTotal < 455);
+  assert.equal(result.annualDividend, 40);
+  assert.equal(result.rateUnavailableCount, 0);
+  assert.equal(result.actual.at(-1).value, 170);
+  assert.equal(result.actual[0].value, 0);
+});
+
+test("discovery cards retain compact price history and watchlist/candidate cards expose one-year charts", () => {
+  assert.match(indexSource, /data-view-target="performance"/);
+  assert.match(indexSource, /過去1年から今後1年まで/);
+  assert.match(indexSource, /data-performance-market="jp"/);
+  assert.match(indexSource, /data-performance-market="us"/);
+  assert.match(appSource, /function stockForecastChartHtml\(/);
+  assert.match(appSource, /stockForecastChartHtml\(stock\.symbol, "jp"\)/);
+  assert.match(appSource, /stockForecastChartHtml\(stock\.symbol, "us"\)/);
+  assert.match(appSource, /stockForecastChartHtml\(item\.symbol, target\)/);
+  assert.match(serverSource, /function compactPerformanceSeries\(/);
+  assert.match(serverSource, /url\.pathname === "\/api\/price-series"/);
+});
+
+test("compact performance price history includes a one-year baseline and stays weekly-sized", () => {
+  const compact = loadFunction(serverSource, "compactPerformanceSeries", {});
+  const series = Array.from({ length: 900 }, (_, index) => {
+    const date = new Date(Date.UTC(2024, 0, 1 + index));
+    return { date: date.toISOString().slice(0, 10), close: 100 + index };
+  });
+  const result = compact(series);
+  assert.ok(result.length <= 60);
+  assert.ok(result.length >= 50);
+  assert.ok(result[0].date < result.at(-1).date);
+  assert.ok(result.some((point, index) => index > 0 && point.date >= "2025-10-01"));
+  assert.deepEqual(Object.keys(result[0]).sort(), ["close", "date"]);
 });
