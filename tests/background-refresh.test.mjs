@@ -577,6 +577,10 @@ test("large API JSON responses are gzip-compressed when supported", async () => 
 });
 
 test("large static application assets are gzip-compressed and cache-aware", async () => {
+  assert.match(indexSource, /href="\/styles\.css"/);
+  assert.match(indexSource, /src="\/app\.js" type="module"/);
+  assert.doesNotMatch(indexSource, /(?:app\.js|styles\.css)\?v=/);
+
   const content = Buffer.from("const stockSignal = true;\n".repeat(1000));
   const response = {
     destroyed: false,
