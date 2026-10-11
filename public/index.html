@@ -243,7 +243,7 @@
           <article class="profit-card">
             <span>1年後の中央値（参考）</span>
             <strong id="performanceForecast">-</strong>
-            <small id="performanceForecastNote">過去1年の週次変動を再抽出した参考試算</small>
+            <small id="performanceForecastNote">過去1年の日次変動を再抽出した参考試算</small>
           </article>
           <article class="profit-card">
             <span>今後1年の配当見込み</span>
@@ -262,11 +262,11 @@
           </div>
           <div class="performance-legend" aria-label="グラフの凡例">
             <span><i class="legend-actual"></i>過去の実績</span>
-            <span><i class="legend-forecast"></i>今後1年の中央値</span>
+            <span><i class="legend-forecast"></i>中央値付近の経路</span>
             <span><i class="legend-band"></i>参考幅（10〜90%）</span>
             <span><i class="legend-today"></i>今日</span>
           </div>
-          <p class="performance-assumption">過去1年の週次リターンを4週単位で再抽出した1,000経路の中央値と10〜90%幅です。損益推移では保有銘柄の同じ週の値動きをまとめ、銘柄間の連動も反映します。予想配当は各経路に加算します。過去の変動を使った参考試算で、上昇確率や将来の利益を示すものではありません。履歴不足の銘柄は価格変動の試算対象外です。</p>
+          <p class="performance-assumption">過去1年の日次リターンを5営業日単位で再抽出した1,000経路です。線は1年後の中央値に近い一経路、帯は各日の10〜90%参考幅です。損益推移では保有銘柄の同じ日の値動きをまとめ、銘柄間の連動も反映します。予想配当は各経路に加算します。過去の変動を使った参考試算で、上昇確率や将来の利益を示すものではありません。履歴不足の銘柄は価格変動の試算対象外です。</p>
           <p id="performanceEmpty" class="empty-state" hidden></p>
         </section>
       </section>

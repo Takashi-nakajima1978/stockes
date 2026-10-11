@@ -939,12 +939,14 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/price-series" && req.method === "GET") {
     const market = String(url.searchParams.get("market") || "").toLowerCase();
+    const daily = url.searchParams.get("daily") === "1";
     const symbol = normalizeDiscoverySymbol(url.searchParams.get("symbol"), {
       market: market === "us" ? "NYSE" : "東証",
       currency: market === "us" ? "USD" : "JPY",
     });
     if (!symbol) return json(res, 400, { error: "銘柄コードを確認してください。" });
-    const cached = performanceSeriesCache.get(symbol);
+    const cacheKey = `${symbol}:${daily ? "daily" : "compact"}`;
+    const cached = performanceSeriesCache.get(cacheKey);
     if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000) {
       return json(res, 200, cached.payload);
     }
@@ -953,10 +955,10 @@ async function handleApi(req, res, url) {
       symbol,
       current: price.current,
       return1y: price.return1y,
-      series: compactPerformanceSeries(price.series || []),
+      series: daily ? dailyForecastSeries(price.series || []) : compactPerformanceSeries(price.series || []),
     };
     if (performanceSeriesCache.size >= 200) performanceSeriesCache.delete(performanceSeriesCache.keys().next().value);
-    performanceSeriesCache.set(symbol, { cachedAt: Date.now(), payload });
+    performanceSeriesCache.set(cacheKey, { cachedAt: Date.now(), payload });
     return json(res, 200, payload);
   }
 
@@ -7363,6 +7365,16 @@ function compactPerformanceSeries(series = []) {
   const latest = recent.at(-1) || points.at(-1);
   if (latest && sampled.at(-1)?.date !== latest.date) sampled.push(latest);
   return [...(earlier ? [earlier] : []), ...sampled].map(({ date, close }) => ({ date, close }));
+}
+
+function dailyForecastSeries(series = [], asOfDate = new Date().toISOString().slice(0, 10)) {
+  const points = (series || [])
+    .filter((point) => point?.date && point.date <= asOfDate && Number.isFinite(Number(point.close)) && Number(point.close) > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const threshold = new Date(new Date(`${asOfDate}T00:00:00Z`).getTime() - (365 * 86400000)).toISOString().slice(0, 10);
+  const baseline = points.filter((point) => point.date <= threshold).at(-1);
+  const recent = points.filter((point) => point.date > threshold);
+  return [...(baseline ? [baseline] : []), ...recent].map(({ date, close }) => ({ date, close }));
 }
 
 function candidateToStock(candidate) {

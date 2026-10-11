@@ -2101,17 +2101,17 @@ test("crypto refresh fetches EUR/JPY independently and keeps BTC position in yen
   assert.equal(result.eurJpy.pair, "EUR/JPY");
 });
 
-test("portfolio P/L timeline resamples weekly returns, shows a range, and adds forecast dividends", () => {
+test("portfolio P/L timeline resamples daily returns, shows a range, and adds forecast dividends", () => {
   const annualizedReturn = loadFunction(appSource, "performanceAnnualizedReturn", {});
   const timeline = loadFunction(appSource, "portfolioPerformanceTimeline", {
-    weeklyPriceGrid: loadFunction(appSource, "weeklyPriceGrid", {}),
+    dailyReturnHistory: loadFunction(appSource, "dailyReturnHistory", {}),
     calendarYearOffset: loadFunction(appSource, "calendarYearOffset", {}),
-    weeklyReturnStatistics: loadFunction(appSource, "weeklyReturnStatistics", {}),
+    dailyReturnStatistics: loadFunction(appSource, "dailyReturnStatistics", {}),
     bootstrapForecast: loadFunction(appSource, "bootstrapForecast", {
       seededForecastRandom: loadFunction(appSource, "seededForecastRandom", {}),
       forecastQuantile: loadFunction(appSource, "forecastQuantile", {}),
     }),
-    forecastMonthDates: loadFunction(appSource, "forecastMonthDates", {}),
+    forecastBusinessDates: loadFunction(appSource, "forecastBusinessDates", {}),
     positionLots: (stock) => stock.positions || [],
     saleLots: (stock) => stock.sales || [],
     positionLotState: (lots, sales) => ({
@@ -2134,18 +2134,22 @@ test("portfolio P/L timeline resamples weekly returns, shows a range, and adds f
     positions: [{ purchaseDate: "2026-02-01", purchasePrice: 105, quantity: 10 }],
     sales: [],
   };
+  const dailySeries = [];
+  let close = 100;
+  let session = 0;
+  for (let time = Date.UTC(2025, 9, 10); time <= Date.UTC(2026, 9, 11); time += 86400000) {
+    const day = new Date(time).getUTCDay();
+    if (day === 0 || day === 6) continue;
+    close *= Math.exp((Math.sin(session * 0.38) * 0.012) + 0.0008);
+    dailySeries.push({ date: new Date(time).toISOString().slice(0, 10), close });
+    session += 1;
+  }
   const analysis = {
     price: {
       current: 120,
       dividendPerShareAnnual: 4,
       dividendEvents: [{ date: "2026-03-01", amount: 2 }],
-      series: [
-        { date: "2025-10-11", close: 100 },
-        ...Array.from({ length: 53 }, (_, index) => ({
-          date: new Date(Date.UTC(2025, 9, 12 + (index * 7))).toISOString().slice(0, 10),
-          close: 100 + ((20 * index) / 52) + (index % 2 ? 1 : -1),
-        })),
-      ],
+      series: dailySeries,
     },
   };
   assert.ok(annualizedReturn(analysis.price.series, "2026-10-11") > 0.18);
@@ -2162,19 +2166,22 @@ test("portfolio P/L timeline resamples weekly returns, shows a range, and adds f
   assert.ok(result.forecastTotal < result.forecastHigh);
   assert.ok(result.annualizedVolatilityPct > 0);
   assert.equal(result.forecast.at(-1).pathCount, 1000);
+  assert.ok(result.forecast.length > 240);
+  const forecastMoves = result.forecast.slice(1).map((point, index) => point.value - result.forecast[index].value);
+  assert.ok(forecastMoves.some((move) => move > 0) && forecastMoves.some((move) => move < 0));
   assert.equal(result.annualDividend, 40);
   assert.equal(result.rateUnavailableCount, 0);
   assert.equal(result.actual.at(-1).value, 170);
   assert.equal(result.actual[0].value, 0);
 });
 
-test("forecast bands are repeatable and candidates do not show watchlist price charts", () => {
+test("daily forecast paths are repeatable, jagged, and candidates do not show watchlist price charts", () => {
   const forecast = loadFunction(appSource, "bootstrapForecast", {
     seededForecastRandom: loadFunction(appSource, "seededForecastRandom", {}),
     forecastQuantile: loadFunction(appSource, "forecastQuantile", {}),
   });
-  const returns = Array.from({ length: 52 }, (_, index) => [((index % 5) - 2) * 0.006 + 0.002]);
-  const dates = loadFunction(appSource, "forecastMonthDates", {})("2026-01-01");
+  const returns = Array.from({ length: 252 }, (_, index) => [((index % 9) - 4) * 0.002 + 0.0003]);
+  const dates = loadFunction(appSource, "forecastBusinessDates", {})("2026-01-01", "2027-01-01");
   const first = forecast(
     returns,
     [100],
@@ -2195,9 +2202,15 @@ test("forecast bands are repeatable and candidates do not show watchlist price c
   assert.ok(first.at(-1).low < first.at(-1).value);
   assert.ok(first.at(-1).value < first.at(-1).high);
   assert.equal(first.at(-1).pathCount, 1000);
+  assert.ok(first.length > 250);
+  const moves = first.slice(1).map((point, index) => point.value - first[index].value);
+  assert.ok(moves.some((move) => move > 0) && moves.some((move) => move < 0));
   const yearOffset = loadFunction(appSource, "calendarYearOffset", {});
   assert.equal(yearOffset("2024-02-29", 1), "2025-02-28");
   assert.equal(yearOffset("2025-02-28", -1), "2024-02-28");
+  const weekendDates = loadFunction(appSource, "forecastBusinessDates", {})("2026-01-03", "2026-01-04");
+  const weekendForecast = forecast(returns, [100], 0, 0, weekendDates, "weekend-test");
+  assert.equal(weekendForecast[1].value, weekendForecast[0].value);
 });
 
 test("discovery cards retain compact price history while watchlists and P/L show one-year forecast charts", () => {
@@ -2227,4 +2240,19 @@ test("compact performance price history includes a one-year baseline and stays w
   assert.ok(result[0].date < result.at(-1).date);
   assert.ok(result.some((point, index) => index > 0 && point.date >= "2025-10-01"));
   assert.deepEqual(Object.keys(result[0]).sort(), ["close", "date"]);
+});
+
+test("daily forecast price history retains each observation for the latest year", () => {
+  const daily = loadFunction(serverSource, "dailyForecastSeries", {});
+  const asOfDate = "2025-10-01";
+  const end = Date.parse(`${asOfDate}T00:00:00Z`);
+  const series = Array.from({ length: 501 }, (_, index) => {
+    const date = new Date(end - ((500 - index) * 86400000)).toISOString().slice(0, 10);
+    return { date, close: 100 + index };
+  });
+  const result = daily(series, asOfDate);
+  assert.equal(result.length, 366);
+  assert.equal(result[0].date, "2024-10-01");
+  assert.equal(result.at(-1).date, asOfDate);
+  assert.ok(result.every((point, index) => index === 0 || point.date > result[index - 1].date));
 });
