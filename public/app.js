@@ -1252,7 +1252,7 @@ function renderPerformance() {
   }
   if (els.performanceChartTitle) els.performanceChartTitle.textContent = `${isUs ? "米国株" : "日本株"} 配当込み損益`;
   if (els.performanceChart) {
-    els.performanceChart.setAttribute("aria-label", `過去1年から今後1年の${isUs ? "米国株" : "日本株"}配当込み損益グラフ`);
+    els.performanceChart.setAttribute("aria-label", `過去2年9か月から今後3か月の${isUs ? "米国株" : "日本株"}配当込み損益グラフ`);
   }
   if (els.performanceCurrent) els.performanceCurrent.textContent = moneyByCurrency(timeline.currentTotal, currency);
   if (els.performanceCurrentNote) els.performanceCurrentNote.textContent = `${timeline.stockCount}銘柄・売却済み損益と受取配当を含む`;
@@ -1264,7 +1264,7 @@ function renderPerformance() {
         ? ` / 年率変動率 ${timeline.annualizedVolatilityPct.toFixed(1)}%`
         : "";
       const excluded = timeline.rateUnavailableCount ? ` / 履歴不足 ${timeline.rateUnavailableCount}銘柄は価格変動対象外` : "";
-      els.performanceForecastNote.textContent = `10〜90%参考幅 ${range}${volatility}${excluded}`;
+      els.performanceForecastNote.textContent = `3か月後の10〜90%参考幅 ${range}${volatility}${excluded}`;
     } else {
       els.performanceForecastNote.textContent = timeline.stockCount
         ? `価格履歴不足のため変動幅を試算できません${timeline.rateUnavailableCount ? `（対象外 ${timeline.rateUnavailableCount}銘柄）` : ""}`
@@ -4823,6 +4823,14 @@ function calendarYearOffset(date = "", years = 0) {
   return new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10);
 }
 
+function calendarMonthOffset(date = "", months = 0) {
+  const source = new Date(`${date}T00:00:00Z`);
+  if (!Number.isFinite(source.getTime())) return "";
+  const target = new Date(Date.UTC(source.getUTCFullYear(), source.getUTCMonth() + months, 1));
+  const day = Math.min(source.getUTCDate(), new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate());
+  return new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), day)).toISOString().slice(0, 10);
+}
+
 function weeklyPriceGrid(series = [], asOfDate = "", currentPrice = null, weeks = 156) {
   const asOfMs = new Date(`${asOfDate}T00:00:00Z`).getTime();
   if (!Number.isFinite(asOfMs)) return { dates: [], prices: [] };
@@ -4890,7 +4898,8 @@ function forecastWeeklyDates(today = "", endDate = "") {
   const endMs = new Date(`${endDate}T00:00:00Z`).getTime();
   if (!Number.isFinite(todayMs) || !Number.isFinite(endMs) || endMs < todayMs) return [];
   const totalDays = (endMs - todayMs) / 86400000;
-  return Array.from({ length: 53 }, (_, week) => new Date(todayMs + (totalDays * week / 52)).toISOString().slice(0, 10));
+  const intervals = Math.max(1, Math.round(totalDays / 7));
+  return Array.from({ length: intervals + 1 }, (_, week) => new Date(todayMs + ((endMs - todayMs) * week / intervals)).toISOString().slice(0, 10));
 }
 
 function businessDates(startDate = "", endDate = "") {
@@ -4964,8 +4973,8 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
   const now = new Date(nowValue);
   const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const today = new Date(todayMs).toISOString().slice(0, 10);
-  const startDate = calendarYearOffset(today, -1);
-  const endDate = calendarYearOffset(today, 1);
+  const startDate = calendarMonthOffset(today, -33);
+  const endDate = calendarMonthOffset(today, 3);
   const entries = stocks.map((stock) => ({ stock, analysis: analyses[stock.symbol], price: analyses[stock.symbol]?.price || {} }))
     .filter(({ stock }) => positionLots(stock).length || saleLots(stock).length);
   const actualDates = businessDates(startDate, today);
@@ -5088,7 +5097,7 @@ function stockForecastChartHtml(symbol, market = "jp") {
   const title = `${market === "us" ? "米国株" : "日本株"} ${symbol}の株価推移`;
   return `
     <section class="stock-forecast" data-stock-forecast data-forecast-symbol="${escapeAttr(symbol)}" data-forecast-market="${market}">
-      <div class="stock-forecast-heading"><strong>株価推移・1年後の変動幅</strong><span>中央値付近の経路 / 10〜90%参考幅・配当別</span></div>
+      <div class="stock-forecast-heading"><strong>株価推移・3か月先の変動幅</strong><span>中央値付近の経路 / 10〜90%参考幅・配当別</span></div>
       <div class="stock-forecast-chart-wrap"><canvas data-stock-forecast-chart role="img" aria-label="${escapeAttr(title)}"></canvas></div>
       <p class="stock-forecast-note" data-forecast-note>価格履歴を読み込み中</p>
     </section>
@@ -5167,8 +5176,8 @@ async function loadStockForecastChart(canvas) {
   const now = new Date();
   const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const today = new Date(todayMs).toISOString().slice(0, 10);
-  const startDate = calendarYearOffset(today, -1);
-  const endDate = calendarYearOffset(today, 1);
+  const startDate = calendarMonthOffset(today, -33);
+  const endDate = calendarMonthOffset(today, 3);
   const actual = series
     .filter((point) => point.date >= startDate && point.date <= today && Number(point.close) > 0)
     .map((point) => ({ date: point.date, value: Number(point.close) }));
@@ -5192,10 +5201,10 @@ async function loadStockForecastChart(canvas) {
     includeZero: false,
   });
   if (note) {
-    const yearEnd = forecast.at(-1);
-    note.textContent = !stats || !yearEnd
-      ? "過去1年の価格履歴が不足しているため、変動幅を試算できません。"
-      : `過去3年データ・年率換算騰落率 ${stats.annualizedReturnPct >= 0 ? "+" : ""}${stats.annualizedReturnPct.toFixed(1)}% / 年率変動率 ${stats.annualizedVolatilityPct.toFixed(1)}% / 1年後参考幅 ${moneyByCurrency(yearEnd.low, currency)}〜${moneyByCurrency(yearEnd.high, currency)}（週次変動を4週単位で再抽出・1,000経路）`;
+    const forecastEnd = forecast.at(-1);
+    note.textContent = !stats || !forecastEnd
+      ? "過去3年の価格履歴が不足しているため、変動幅を試算できません。"
+      : `過去3年データ・年率換算騰落率 ${stats.annualizedReturnPct >= 0 ? "+" : ""}${stats.annualizedReturnPct.toFixed(1)}% / 年率変動率 ${stats.annualizedVolatilityPct.toFixed(1)}% / 3か月先参考幅 ${moneyByCurrency(forecastEnd.low, currency)}〜${moneyByCurrency(forecastEnd.high, currency)}（週次変動を4週単位で再抽出・1,000経路）`;
   }
 }
 

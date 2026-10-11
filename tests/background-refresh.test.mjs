@@ -2105,7 +2105,7 @@ test("portfolio P/L timeline resamples three years of weekly returns and adds fo
   const annualizedReturn = loadFunction(appSource, "performanceAnnualizedReturn", {});
   const timeline = loadFunction(appSource, "portfolioPerformanceTimeline", {
     weeklyPriceGrid: loadFunction(appSource, "weeklyPriceGrid", {}),
-    calendarYearOffset: loadFunction(appSource, "calendarYearOffset", {}),
+    calendarMonthOffset: loadFunction(appSource, "calendarMonthOffset", {}),
     weeklyReturnStatistics: loadFunction(appSource, "weeklyReturnStatistics", {}),
     bootstrapForecast: loadFunction(appSource, "bootstrapForecast", {
       seededForecastRandom: loadFunction(appSource, "seededForecastRandom", {}),
@@ -2155,9 +2155,9 @@ test("portfolio P/L timeline resamples three years of weekly returns and adds fo
   };
   assert.ok(annualizedReturn(analysis.price.series, "2026-10-11") > 0.18);
   const result = timeline([stock], { "TEST.T": analysis }, now);
-  assert.equal(result.startDate, "2025-10-11");
+  assert.equal(result.startDate, "2024-01-11");
   assert.equal(result.today, "2026-10-11");
-  assert.equal(result.endDate, "2027-10-11");
+  assert.equal(result.endDate, "2027-01-11");
   assert.equal(result.currentTotal, 170);
   assert.equal(result.forecast[0].value, result.currentTotal);
   assert.equal(result.forecast[0].low, result.currentTotal);
@@ -2167,7 +2167,7 @@ test("portfolio P/L timeline resamples three years of weekly returns and adds fo
   assert.ok(result.forecastTotal < result.forecastHigh);
   assert.ok(result.annualizedVolatilityPct > 0);
   assert.equal(result.forecast.at(-1).pathCount, 1000);
-  assert.equal(result.forecast.length, 53);
+  assert.equal(result.forecast.length, 14);
   const forecastMoves = result.forecast.slice(1).map((point, index) => point.value - result.forecast[index].value);
   assert.ok(forecastMoves.some((move) => move > 0) && forecastMoves.some((move) => move < 0));
   assert.equal(result.annualDividend, 40);
@@ -2204,23 +2204,34 @@ test("weekly forecast paths are repeatable and visibly variable", () => {
   assert.ok(first.at(-1).value < first.at(-1).high);
   assert.equal(first.at(-1).pathCount, 1000);
   assert.equal(first.length, 53);
+  assert.equal(first.at(-1).date, "2027-01-01");
   const moves = first.slice(1).map((point, index) => point.value - first[index].value);
   assert.ok(moves.some((move) => move > 0) && moves.some((move) => move < 0));
   const yearOffset = loadFunction(appSource, "calendarYearOffset", {});
   assert.equal(yearOffset("2024-02-29", 1), "2025-02-28");
   assert.equal(yearOffset("2025-02-28", -1), "2024-02-28");
+  const monthOffset = loadFunction(appSource, "calendarMonthOffset", {});
+  assert.equal(monthOffset("2026-10-11", -33), "2024-01-11");
+  assert.equal(monthOffset("2026-10-11", 3), "2027-01-11");
+  assert.equal(monthOffset("2026-10-31", 1), "2026-11-30");
+  const quarterDates = loadFunction(appSource, "forecastWeeklyDates", {})("2026-10-11", "2027-01-11");
+  assert.equal(quarterDates.length, 14);
+  assert.equal(quarterDates[0], "2026-10-11");
+  assert.equal(quarterDates.at(-1), "2027-01-11");
 });
 
-test("discovery cards retain compact price history while watchlists and P/L show one-year forecast charts", () => {
+test("discovery cards retain compact price history while watchlists and P/L show three-month forecast charts", () => {
   assert.match(indexSource, /data-view-target="performance"/);
-  assert.match(indexSource, /過去1年から今後1年まで/);
+  assert.match(indexSource, /過去2年9か月から今後3か月まで/);
+  assert.match(indexSource, /3か月後の中央値（参考）/);
   assert.match(indexSource, /data-performance-market="jp"/);
   assert.match(indexSource, /data-performance-market="us"/);
   assert.match(appSource, /function stockForecastChartHtml\(/);
   assert.match(appSource, /stockForecastChartHtml\(stock\.symbol, "jp"\)/);
   assert.match(appSource, /stockForecastChartHtml\(stock\.symbol, "us"\)/);
   assert.doesNotMatch(appSource, /stockForecastChartHtml\(item\.symbol, target\)/);
-  assert.match(appSource, /10〜90%参考幅/);
+  assert.match(appSource, /3か月先の変動幅/);
+  assert.match(appSource, /過去3年データ・年率換算騰落率/);
   assert.match(indexSource, /参考幅（10〜90%）/);
   assert.match(serverSource, /function compactPerformanceSeries\(/);
   assert.match(serverSource, /url\.pathname === "\/api\/price-series"/);
