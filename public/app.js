@@ -266,6 +266,7 @@ const els = {
   chart: document.getElementById("priceChart"),
   chartTooltip: document.getElementById("chartTooltip"),
   chartTiming: document.getElementById("chartTiming"),
+  forecastReview: document.getElementById("forecastReview"),
 };
 
 async function request(path, options = {}) {
@@ -1367,6 +1368,9 @@ function renderUsDetail() {
   const position = positionMetrics(stock, analysis?.price);
   const fundamentals = analysis?.fundamentals || {};
   const ai = analysis?.ai || null;
+  const price = analysis?.price || {};
+  const forecastReview = evaluateDecisionForecast(price.series || [], stock.symbol);
+  const forecast = decisionChartForecast(price.series || [], price, stock.symbol, new Date(), forecastReview);
   if (els.usSelectedSymbol) els.usSelectedSymbol.innerHTML = symbolLinkHtml(stock.symbol, "us");
   const good = (ai?.good || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const risks = (ai?.risks || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
@@ -1389,14 +1393,15 @@ function renderUsDetail() {
     ${usFinancialCard(fundamentals)}
     <section class="decision-card">
       <div>
-        <h4>3年チャート</h4>
+        <h4>株価推移・3か月予測</h4>
         <span>${escapeHtml(stock.symbol)}</span>
       </div>
       <div class="chart-frame embedded-chart">
-        <canvas data-us-price-chart aria-label="${escapeAttr(stock.name)}の3年チャート"></canvas>
+        <canvas data-us-price-chart aria-label="${escapeAttr(stock.name)}の過去2年9か月実績と今後3か月予測"></canvas>
         <div class="chart-tooltip" data-us-chart-tooltip hidden></div>
       </div>
       <div class="chart-timing" data-us-chart-timing hidden></div>
+      <p class="forecast-review" data-us-forecast-review hidden></p>
     </section>
     <section class="decision-card">
       <div>
@@ -1437,7 +1442,8 @@ function renderUsDetail() {
     </section>
   `;
   attachUsPositionForm(stock.symbol);
-  renderEmbeddedPriceChart(els.usDetail, analysis?.price?.series || [], usd, chartTradeMarkers(stock), analysis?.price || {});
+  renderEmbeddedPriceChart(els.usDetail, price.series || [], usd, chartTradeMarkers(stock), price, forecast);
+  renderForecastReview(els.usDetail.querySelector("[data-us-forecast-review]"), forecastReview);
 }
 
 function renderCrypto() {
@@ -2268,9 +2274,11 @@ function renderSelection() {
   els.selectedSymbol.innerHTML = stock ? symbolLinkHtml(stock.symbol, "jp") : "未選択";
 
   const price = analysis?.price || {};
-  const forecast = stock ? decisionChartForecast(price.series || [], price, stock.symbol) : [];
+  const forecastReview = stock ? evaluateDecisionForecast(price.series || [], stock.symbol) : null;
+  const forecast = stock ? decisionChartForecast(price.series || [], price, stock.symbol, new Date(), forecastReview) : [];
   drawChart(price.series || [], stock ? chartTradeMarkers(stock) : [], price, forecast);
   renderChartTiming(price);
+  renderForecastReview(els.forecastReview, forecastReview);
 
   if (!stock) {
     els.decisionDetail.innerHTML = "<p>銘柄を追加してください。</p>";
@@ -2314,7 +2322,99 @@ function renderSelection() {
   els.evidenceList.innerHTML = `${evidenceSummaryHtml(stock, analysis, position)}${evidenceHtml}`;
 }
 
-function decisionChartForecast(series = [], price = {}, symbol = "", nowValue = new Date()) {
+function evaluateDecisionForecast(series = [], symbol = "", nowValue = new Date()) {
+  const now = new Date(nowValue);
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString().slice(0, 10);
+  const points = cleanChartSeries(series).filter((point) => point.date <= today);
+  const latest = points.at(-1);
+  if (!latest) return { evaluated: 0, directionAccuracyPct: null, meanAbsoluteErrorPct: null, medianAbsoluteErrorPct: null, intervalCoveragePct: null, biasPct: 0, rangeMultiplier: 1 };
+
+  const grid = weeklyPriceGrid(points, latest.date, null, 156);
+  const outcomes = [];
+  for (let originIndex = 78; originIndex <= 143; originIndex += 13) {
+    const origin = grid.prices[originIndex];
+    const actual = grid.prices[originIndex + 13];
+    if (!(origin > 0) || !(actual > 0)) continue;
+    const train = [];
+    for (let week = originIndex - 77; week <= originIndex; week += 1) {
+      const previous = grid.prices[week - 1];
+      const next = grid.prices[week];
+      if (!(previous > 0) || !(next > 0)) {
+        train.length = 0;
+        break;
+      }
+      train.push([Math.log(next / previous)]);
+    }
+    if (train.length < 52) continue;
+    const originDate = grid.dates[originIndex];
+    const horizonDate = grid.dates[originIndex + 13];
+    const dates = grid.dates.slice(originIndex, originIndex + 14);
+    const simulated = bootstrapForecast(train, [origin], 0, 0, dates, `validation:${symbol}:${originDate}`, 250, 52);
+    const terminal = simulated.at(-1);
+    if (!terminal || !(terminal.value > 0) || !(terminal.low > 0) || !(terminal.high > 0)) continue;
+    const predictedReturnPct = ((terminal.value / origin) - 1) * 100;
+    const actualReturnPct = ((actual / origin) - 1) * 100;
+    const halfRangePct = ((terminal.high - terminal.low) / (2 * origin)) * 100;
+    outcomes.push({
+      originDate,
+      horizonDate,
+      predictedReturnPct,
+      actualReturnPct,
+      errorPct: actualReturnPct - predictedReturnPct,
+      covered: actual >= terminal.low && actual <= terminal.high,
+      halfRangePct,
+    });
+  }
+
+  const errors = outcomes.map((item) => item.errorPct);
+  const absoluteErrors = errors.map(Math.abs);
+  const biasPct = outcomes.length >= 5
+    ? clampNumber(forecastQuantile(errors, 0.5) * (outcomes.length / (outcomes.length + 4)), -5, 5)
+    : 0;
+  const widthRatios = outcomes
+    .filter((item) => item.halfRangePct > 0)
+    .map((item) => Math.abs(item.errorPct - biasPct) / item.halfRangePct);
+  const rangeMultiplier = outcomes.length >= 5 && widthRatios.length >= 5
+    ? clampNumber(forecastQuantile(widthRatios, 0.8), 0.75, 1.8)
+    : 1;
+  return {
+    evaluated: outcomes.length,
+    directionAccuracyPct: outcomes.length
+      ? (outcomes.filter((item) => Math.sign(item.predictedReturnPct) === Math.sign(item.actualReturnPct)).length / outcomes.length) * 100
+      : null,
+    meanAbsoluteErrorPct: absoluteErrors.length
+      ? absoluteErrors.reduce((sum, value) => sum + value, 0) / absoluteErrors.length
+      : null,
+    medianAbsoluteErrorPct: absoluteErrors.length ? forecastQuantile(absoluteErrors, 0.5) : null,
+    intervalCoveragePct: outcomes.length
+      ? (outcomes.filter((item) => item.covered).length / outcomes.length) * 100
+      : null,
+    biasPct,
+    rangeMultiplier,
+    outcomes,
+  };
+}
+
+function renderForecastReview(node, review = null) {
+  if (!node) return;
+  if (!review?.evaluated) {
+    node.hidden = true;
+    node.textContent = "";
+    return;
+  }
+  const count = review.evaluated;
+  const tested = `${count}回の非重複3か月検証`;
+  const direction = Number.isFinite(review.directionAccuracyPct) ? `方向一致 ${Math.round(review.directionAccuracyPct)}%` : "方向一致 -";
+  const error = Number.isFinite(review.medianAbsoluteErrorPct) ? `誤差中央値 ${review.medianAbsoluteErrorPct.toFixed(1)}pt` : "誤差 -";
+  const coverage = Number.isFinite(review.intervalCoveragePct) ? `10〜90%予測幅の捕捉 ${Math.round(review.intervalCoveragePct)}%` : "予測幅の捕捉 -";
+  const correction = count >= 5
+    ? `次回補正: 中心 ${review.biasPct >= 0 ? "+" : ""}${review.biasPct.toFixed(1)}pt・幅 ×${review.rangeMultiplier.toFixed(2)}`
+    : "標本不足のため補正なし（非重複検証5回以上で反映）";
+  node.hidden = false;
+  node.textContent = `AI予測の過去検証: ${tested} / ${direction} / ${error} / ${coverage}。${correction}`;
+}
+
+function decisionChartForecast(series = [], price = {}, symbol = "", nowValue = new Date(), validation = null) {
   const now = new Date(nowValue);
   const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const today = new Date(todayMs).toISOString().slice(0, 10);
@@ -2329,7 +2429,7 @@ function decisionChartForecast(series = [], price = {}, symbol = "", nowValue = 
   }
   if (!weeklyReturnStatistics(returns.map((row) => row[0]))) return [];
   const endDate = calendarMonthOffset(today, 3);
-  return bootstrapForecast(
+  const forecast = bootstrapForecast(
     returns,
     [current],
     0,
@@ -2337,6 +2437,23 @@ function decisionChartForecast(series = [], price = {}, symbol = "", nowValue = 
     forecastWeeklyDates(today, endDate),
     `decision:${symbol}:${today}`,
   );
+  if (!forecast.length || Number(validation?.evaluated || 0) < 5) return forecast;
+  const biasPct = clampNumber(Number(validation.biasPct) || 0, -5, 5);
+  const rangeMultiplier = clampNumber(Number(validation.rangeMultiplier) || 1, 0.75, 1.8);
+  const start = new Date(`${today}T00:00:00Z`).getTime();
+  const end = new Date(`${endDate}T00:00:00Z`).getTime();
+  return forecast.map((point) => {
+    const progress = end > start ? (new Date(`${point.date}T00:00:00Z`).getTime() - start) / (end - start) : 0;
+    const correctedValue = current * (1 + ((point.value / current) - 1) + ((biasPct / 100) * progress));
+    const lowSpread = Math.max(0, point.value - point.low) * rangeMultiplier;
+    const highSpread = Math.max(0, point.high - point.value) * rangeMultiplier;
+    return {
+      ...point,
+      value: correctedValue,
+      low: Math.max(0.01, correctedValue - lowSpread),
+      high: correctedValue + highSpread,
+    };
+  });
 }
 
 function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
@@ -3086,7 +3203,11 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price =
   chartState.price = price || {};
   chartState.forecast = forecast;
   const markers = resolveChartTradeMarkers(cleanSeries, tradeMarkers);
-  const values = [...cleanSeries.map((point) => point.close), ...markers.map((marker) => marker.price), ...forecast.map((point) => point.value)];
+  const values = [
+    ...cleanSeries.map((point) => point.close),
+    ...markers.map((marker) => marker.price),
+    ...forecast.flatMap((point) => [point.low, point.value, point.high]),
+  ];
   chartState.series = cleanSeries;
   chartState.tradeMarkers = tradeMarkers;
   chartState.points = [];
@@ -3175,6 +3296,17 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price =
   });
   context.stroke();
   if (forecast.length > 1) {
+    context.beginPath();
+    forecast.forEach((point, index) => {
+      const px = xForDate(point.date);
+      const py = y(point.high);
+      if (index === 0) context.moveTo(px, py);
+      else context.lineTo(px, py);
+    });
+    [...forecast].reverse().forEach((point) => context.lineTo(xForDate(point.date), y(point.low)));
+    context.closePath();
+    context.fillStyle = "rgba(212, 107, 44, 0.12)";
+    context.fill();
     context.strokeStyle = "#d46b2c";
     context.lineWidth = 2.5;
     context.setLineDash([6, 5]);
@@ -3289,7 +3421,7 @@ function hideChartTooltip() {
   if (els.chartTooltip) els.chartTooltip.hidden = true;
 }
 
-function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarkers = [], price = {}) {
+function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarkers = [], price = {}, forecast = []) {
   const canvas = root?.querySelector("[data-us-price-chart]");
   const tooltip = root?.querySelector("[data-us-chart-tooltip]");
   const timingNode = root?.querySelector("[data-us-chart-timing]");
@@ -3312,7 +3444,15 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, width, height);
     const pad = { top: 22, right: 18, bottom: 28, left: 64 };
-    const cleanSeries = cleanChartSeries(series);
+    const now = new Date();
+    const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString().slice(0, 10);
+    const startDate = forecast.length ? calendarMonthOffset(today, -33) : "";
+    const endDate = forecast.length ? calendarMonthOffset(today, 3) : "";
+    const fullSeries = cleanChartSeries(series);
+    const cleanSeries = fullSeries
+      .filter((point) => !forecast.length || (point.date >= startDate && point.date <= today));
+    const current = Number(price.current) > 0 ? Number(price.current) : Number(cleanSeries.at(-1)?.close);
+    if (forecast.length && current > 0 && cleanSeries.at(-1)?.date !== today) cleanSeries.push({ date: today, close: current });
     state.series = cleanSeries;
     state.points = [];
     state.plot = null;
@@ -3325,11 +3465,20 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
       return;
     }
     const markers = resolveChartTradeMarkers(cleanSeries, tradeMarkers);
-    const values = [...cleanSeries.map((point) => point.close), ...markers.map((marker) => marker.price)];
+    const values = [
+      ...cleanSeries.map((point) => point.close),
+      ...markers.map((marker) => marker.price),
+      ...forecast.flatMap((point) => [point.low, point.value, point.high]),
+    ];
     const min = Math.min(...values);
     const max = Math.max(...values);
     const span = max - min || 1;
-    const x = (index) => pad.left + (index / (cleanSeries.length - 1)) * (width - pad.left - pad.right);
+    const startMs = forecast.length ? new Date(`${startDate}T00:00:00Z`).getTime() : 0;
+    const endMs = forecast.length ? new Date(`${endDate}T00:00:00Z`).getTime() : 0;
+    const xForDate = (date) => pad.left + (clampNumber((new Date(`${date}T00:00:00Z`).getTime() - startMs) / (endMs - startMs), 0, 1) * (width - pad.left - pad.right));
+    const x = (index) => forecast.length
+      ? xForDate(cleanSeries[index]?.date || today)
+      : pad.left + (index / (cleanSeries.length - 1)) * (width - pad.left - pad.right);
     const y = (value) => pad.top + (1 - ((value - min) / span)) * (height - pad.top - pad.bottom);
     state.plot = { left: pad.left, right: width - pad.right, top: pad.top, bottom: height - pad.bottom };
 
@@ -3344,7 +3493,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
     }
 
     const timing = buyTimingFromSeries(
-      cleanSeries,
+      fullSeries,
       formatter,
       price.dividendEvents || [],
       price.dividendNextAmount,
@@ -3387,6 +3536,46 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
       else context.lineTo(px, py);
     });
     context.stroke();
+    if (forecast.length > 1) {
+      const todayX = xForDate(today);
+      context.strokeStyle = "rgba(21, 92, 154, 0.55)";
+      context.lineWidth = 1;
+      context.setLineDash([3, 4]);
+      context.beginPath();
+      context.moveTo(todayX, pad.top);
+      context.lineTo(todayX, height - pad.bottom);
+      context.stroke();
+      context.setLineDash([]);
+      context.beginPath();
+      forecast.forEach((point, index) => {
+        const px = xForDate(point.date);
+        const py = y(point.high);
+        if (index === 0) context.moveTo(px, py);
+        else context.lineTo(px, py);
+      });
+      [...forecast].reverse().forEach((point) => context.lineTo(xForDate(point.date), y(point.low)));
+      context.closePath();
+      context.fillStyle = "rgba(212, 107, 44, 0.12)";
+      context.fill();
+      context.strokeStyle = "#d46b2c";
+      context.lineWidth = 2.5;
+      context.setLineDash([6, 5]);
+      context.beginPath();
+      forecast.forEach((point, index) => {
+        const px = xForDate(point.date);
+        const py = y(point.value);
+        if (index === 0) context.moveTo(px, py);
+        else context.lineTo(px, py);
+      });
+      context.stroke();
+      context.setLineDash([]);
+      context.fillStyle = "#b85a20";
+      context.textAlign = "right";
+      context.fillText("3か月先予測", width - pad.right - 4, clampNumber(y(forecast.at(-1).value) - 8, pad.top + 12, height - pad.bottom - 4));
+      context.textAlign = "left";
+      context.fillStyle = "#155c9a";
+      context.fillText("今日", todayX + 4, pad.top + 12);
+    }
     drawChartTradeMarkers(context, markers, x, y, {
       top: pad.top,
       bottom: height - pad.bottom,
@@ -3396,9 +3585,18 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
     });
     context.fillStyle = "#1a2428";
     context.font = "12px system-ui";
-    context.fillText("3年", pad.left, 16);
+    context.fillText(forecast.length ? "過去2年9か月＋3か月予測" : "3年", pad.left, 16);
     context.fillText(formatter(max), 8, pad.top + 4);
     context.fillText(formatter(min), 8, height - pad.bottom + 4);
+    if (forecast.length) {
+      context.fillStyle = "#667277";
+      context.textAlign = "center";
+      [startDate, calendarMonthOffset(today, -16), today, calendarMonthOffset(today, 1), endDate].forEach((date) => {
+        const parsed = new Date(`${date}T00:00:00Z`);
+        context.fillText(`${parsed.getUTCFullYear()}/${parsed.getUTCMonth() + 1}`, xForDate(date), height - 8);
+      });
+      context.textAlign = "left";
+    }
     state.points = cleanSeries.map((point, index) => ({ index, point, x: x(index), y: y(point.close) }));
 
     if (Number.isFinite(state.hoverIndex)) {
@@ -4964,13 +5162,12 @@ function businessDates(startDate = "", endDate = "") {
   return dates;
 }
 
-function bootstrapForecast(returnVectors = [], currentValues = [], baselineValue = 0, annualDividend = 0, dates = [], seed = "") {
+function bootstrapForecast(returnVectors = [], currentValues = [], baselineValue = 0, annualDividend = 0, dates = [], seed = "", pathCount = 1000, minimumRows = 100) {
   const rows = returnVectors.filter((row) => Array.isArray(row)
     && row.length === currentValues.length && row.every(Number.isFinite));
-  if (rows.length < 100 || !currentValues.length || dates.length < 2) return [];
+  if (rows.length < minimumRows || !currentValues.length || dates.length < 2) return [];
   const random = seededForecastRandom(seed);
   const samples = dates.map(() => []);
-  const pathCount = 1000;
   const blockWeeks = 4;
   const blockStarts = rows.length - blockWeeks + 1;
   const dateTimes = dates.map((date) => new Date(`${date}T00:00:00Z`).getTime());

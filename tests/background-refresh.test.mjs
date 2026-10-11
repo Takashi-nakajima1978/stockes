@@ -1504,17 +1504,26 @@ test("price charts show visible purchase and sale markers", () => {
   assert.match(appSource, /function chartTradeMarkers/);
   assert.match(appSource, /function drawChartTradeMarkers/);
   assert.match(appSource, /drawChart\(price\.series \|\| \[\], stock \? chartTradeMarkers\(stock\) : \[\], price, forecast\)/);
-  assert.match(appSource, /renderEmbeddedPriceChart\(els\.usDetail, analysis\?\.price\?\.series \|\| \[\], usd, chartTradeMarkers\(stock\), analysis\?\.price \|\| \{\}\)/);
+  assert.match(appSource, /renderEmbeddedPriceChart\(els\.usDetail, price\.series \|\| \[\], usd, chartTradeMarkers\(stock\), price, forecast\)/);
+  assert.match(appSource, /const forecastReview = evaluateDecisionForecast\(price\.series \|\| \[\], stock\.symbol\)/);
+  assert.match(appSource, /過去2年9か月実績と今後3か月予測/);
   assert.match(appSource, /const label = marker\.type === "sell" \? "売" : "買"/);
   assert.match(indexSource, /過去2年9か月の実績と今後3か月の予測を含む価格チャート/);
   assert.match(appSource, /context\.fillText\("過去2年9か月＋3か月予測"/);
   assert.match(appSource, /context\.fillText\("3か月先予測"/);
+  assert.match(appSource, /function evaluateDecisionForecast\(/);
+  assert.match(appSource, /function renderForecastReview\(/);
+  assert.match(appSource, /過去検証/);
 });
 
 test("Decision chart forecast uses three years of weekly prices and ends after three months", () => {
+  const chartQuantile = loadFunction(appSource, "quantile", {});
+  const suspiciousPoint = loadFunction(appSource, "isSuspiciousChartPoint", { quantile: chartQuantile });
+  const clean = loadFunction(appSource, "cleanChartSeries", { isSuspiciousChartPoint: suspiciousPoint });
   const weeklyGrid = loadFunction(appSource, "weeklyPriceGrid", {});
   let trainingWeeks = 0;
   const decisionForecast = loadFunction(appSource, "decisionChartForecast", {
+    cleanChartSeries: clean,
     weeklyPriceGrid: (...args) => {
       trainingWeeks = args[3] ?? 156;
       return weeklyGrid(...args);
@@ -1522,6 +1531,7 @@ test("Decision chart forecast uses three years of weekly prices and ends after t
     weeklyReturnStatistics: loadFunction(appSource, "weeklyReturnStatistics", {}),
     calendarMonthOffset: loadFunction(appSource, "calendarMonthOffset", {}),
     forecastWeeklyDates: loadFunction(appSource, "forecastWeeklyDates", {}),
+    clampNumber: loadFunction(appSource, "clampNumber", {}),
     bootstrapForecast: loadFunction(appSource, "bootstrapForecast", {
       seededForecastRandom: loadFunction(appSource, "seededForecastRandom", {}),
       forecastQuantile: loadFunction(appSource, "forecastQuantile", {}),
@@ -1543,6 +1553,50 @@ test("Decision chart forecast uses three years of weekly prices and ends after t
   assert.equal(forecast[0].date, "2026-10-11");
   assert.equal(forecast.at(-1).date, "2027-01-11");
   assert.ok(forecast.slice(1).some((point, index) => point.value !== forecast[index].value));
+  const calibratedForecast = decisionForecast(series, { current: 120 }, "TEST.T", new Date("2026-10-11T00:00:00Z"), {
+    evaluated: 6,
+    biasPct: 2,
+    rangeMultiplier: 1.2,
+  });
+  assert.ok(calibratedForecast.at(-1).value > forecast.at(-1).value);
+  assert.ok(calibratedForecast.at(-1).low < calibratedForecast.at(-1).value);
+  assert.ok(calibratedForecast.at(-1).high > calibratedForecast.at(-1).value);
+});
+
+test("forecast model is evaluated on rolling three-month holdouts and emits bounded calibration", () => {
+  const chartQuantile = loadFunction(appSource, "quantile", {});
+  const suspiciousPoint = loadFunction(appSource, "isSuspiciousChartPoint", { quantile: chartQuantile });
+  const cleanChartSeries = loadFunction(appSource, "cleanChartSeries", { isSuspiciousChartPoint: suspiciousPoint });
+  const weeklyGrid = loadFunction(appSource, "weeklyPriceGrid", {});
+  const seededRandom = loadFunction(appSource, "seededForecastRandom", {});
+  const quantile = loadFunction(appSource, "forecastQuantile", {});
+  const bootstrap = loadFunction(appSource, "bootstrapForecast", {
+    seededForecastRandom: seededRandom,
+    forecastQuantile: quantile,
+  });
+  const evaluate = loadFunction(appSource, "evaluateDecisionForecast", {
+    cleanChartSeries,
+    weeklyPriceGrid: weeklyGrid,
+    bootstrapForecast: bootstrap,
+    forecastQuantile: quantile,
+    clampNumber: loadFunction(appSource, "clampNumber", {}),
+  });
+  const series = [];
+  let close = 100;
+  let session = 0;
+  for (let time = Date.UTC(2023, 9, 11); time <= Date.UTC(2026, 9, 11); time += 86400000) {
+    const day = new Date(time).getUTCDay();
+    if (day === 0 || day === 6) continue;
+    close *= Math.exp(Math.sin(session * 0.31) * 0.009 + Math.sin(session * 0.017) * 0.001);
+    series.push({ date: new Date(time).toISOString().slice(0, 10), close });
+    session += 1;
+  }
+  const review = evaluate(series, "TEST", new Date("2026-10-11T00:00:00Z"));
+  assert.ok(review.evaluated >= 4);
+  assert.ok(Number.isFinite(review.directionAccuracyPct));
+  assert.ok(Number.isFinite(review.medianAbsoluteErrorPct));
+  assert.ok(review.biasPct >= -5 && review.biasPct <= 5);
+  assert.ok(review.rangeMultiplier >= 0.75 && review.rangeMultiplier <= 1.8);
 });
 
 test("mobile position entry is not closed by keyboard resize or background refresh", () => {
