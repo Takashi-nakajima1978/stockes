@@ -51,3 +51,50 @@ export function buildSavingsContributionHistory(
     monthlyAmount: scheduledContribution(schedule, currentMonth, Boolean(plan.recurring)),
   };
 }
+
+export function buildSavingsValuationHistory(contributionHistory = {}, navSeries = []) {
+  const quotes = (Array.isArray(navSeries) ? navSeries : [])
+    .map((point) => ({ date: String(point?.date || ""), close: Number(point?.close) }))
+    .filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.date) && Number.isFinite(point.close) && point.close > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const contributions = (Array.isArray(contributionHistory.rows) ? contributionHistory.rows : [])
+    .filter((row) => Number(row.amount) > 0)
+    .map((row) => {
+      const quote = quotes.find((point) => point.date.startsWith(`${row.month}-`));
+      return quote ? { date: quote.date, amount: Number(row.amount), month: row.month } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const unpricedMonths = (Array.isArray(contributionHistory.rows) ? contributionHistory.rows : [])
+    .filter((row) => Number(row.amount) > 0 && !quotes.some((point) => point.date.startsWith(`${row.month}-`)))
+    .map((row) => row.month);
+  if (!quotes.length || !contributions.length) {
+    return { rows: [], principalSeries: [], unpricedMonths, totalPrincipal: 0, latestValue: null };
+  }
+
+  const rows = [];
+  const principalSeries = [];
+  let units = 0;
+  let principal = 0;
+  let contributionIndex = 0;
+  for (const quote of quotes) {
+    while (contributionIndex < contributions.length && contributions[contributionIndex].date <= quote.date) {
+      const contribution = contributions[contributionIndex];
+      units += contribution.amount / quote.close;
+      principal += contribution.amount;
+      contributionIndex += 1;
+    }
+    if (principal > 0) {
+      rows.push({ date: quote.date, value: units * quote.close, nav: quote.close, principal });
+      principalSeries.push({ date: quote.date, value: principal });
+    }
+  }
+  const latest = rows.at(-1);
+  return {
+    rows,
+    principalSeries,
+    unpricedMonths,
+    totalPrincipal: principal,
+    latestValue: latest?.value ?? null,
+  };
+}

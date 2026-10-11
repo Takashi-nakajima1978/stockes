@@ -3936,29 +3936,56 @@ tr:hover .drag-handle,
   min-width: 0;
 }
 
-.savings-chart-tabs {
+.savings-chart-legend {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
-  padding: 4px;
-  width: fit-content;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f5f8f7;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
-.savings-chart-tabs button {
-  min-height: 34px;
-  padding: 6px 12px;
-  border: 1px solid transparent;
-  background: transparent;
+.savings-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.savings-chart-legend i {
+  display: inline-block;
+  width: 20px;
+  height: 0;
+  border-top: 3px solid #0b6b58;
+}
+
+.savings-chart-legend .savings-legend-principal {
+  border-color: #47758a;
+}
+
+.savings-value-difference {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.savings-value-difference span,
+.savings-value-difference small {
   color: var(--muted);
   font-size: 12px;
 }
 
-.savings-chart-tabs button.active {
-  border-color: var(--line);
-  background: #fff;
-  color: var(--ink);
+.savings-value-difference strong.gain {
+  color: #08794e;
+}
+
+.savings-value-difference strong.loss {
+  color: #b33e43;
 }
 
 .savings-chart-wrap {

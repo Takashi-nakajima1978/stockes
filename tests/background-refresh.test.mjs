@@ -6,7 +6,7 @@ import os from "node:os";
 import vm from "node:vm";
 import { gzip, gunzipSync } from "node:zlib";
 import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "../refresh-control.mjs";
-import { buildSavingsContributionHistory, scheduledContribution } from "../public/savings-calculation.mjs";
+import { buildSavingsContributionHistory, buildSavingsValuationHistory, scheduledContribution } from "../public/savings-calculation.mjs";
 
 const serverSource = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
@@ -1540,6 +1540,16 @@ test("all forecast charts expose date, value, and forecast interval tooltips", (
   assert.match(actual, /2026-10-10/);
   assert.match(actual, /実績/);
   assert.match(actual, /¥1234/);
+  const savings = tooltipHtml({
+    kind: "actual",
+    label: "基準価額換算の参考評価額",
+    date: "2026-10-09",
+    value: 37263,
+    comparisonValue: 35000,
+    comparisonLabel: "累計積立元本",
+  }, (value) => `¥${value.toLocaleString("ja-JP")}`);
+  assert.match(savings, /¥37,263/);
+  assert.match(savings, /累計積立元本 ¥35,000/);
   assert.match(forecast, /2026-10-17/);
   assert.match(forecast, /予測中央値/);
   assert.match(forecast, /¥1300/);
@@ -2467,6 +2477,61 @@ test("savings history carries March contributions through September and leaves O
   assert.equal(buildSavingsContributionHistory(plan, "2026-02").total, 0);
 });
 
+test("savings valuation compares NAV-based value with stepped monthly contributions", () => {
+  const history = { rows: [
+    { month: "2026-03", amount: 5000, total: 5000 },
+    { month: "2026-04", amount: 5000, total: 10000 },
+    { month: "2026-05", amount: 5000, total: 15000 },
+  ] };
+  const valuation = buildSavingsValuationHistory(history, [
+    { date: "2026-03-02", close: 10000 },
+    { date: "2026-03-09", close: 10200 },
+    { date: "2026-04-06", close: 9000 },
+    { date: "2026-04-13", close: 9500 },
+    { date: "2026-05-04", close: 11000 },
+  ]);
+  assert.deepEqual(valuation.rows.map((point) => point.principal), [5000, 5000, 10000, 10000, 15000]);
+  assert.notEqual(valuation.rows[1].value, valuation.rows[0].value);
+  assert.notEqual(valuation.rows[2].value - valuation.rows[1].value, 5000);
+  assert.equal(valuation.principalSeries.length, valuation.rows.length);
+  assert.equal(valuation.latestValue, valuation.rows.at(-1).value);
+  assert.deepEqual(valuation.unpricedMonths, []);
+});
+
+test("fund NAV history parser reads dated observations from Yahoo history rows", () => {
+  const parseHistory = loadFunction(serverSource, "parseYahooFundHistoryPage", {
+    htmlToText: (value) => String(value).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
+  });
+  const series = parseHistory('<table><tbody><tr><th scope="row">2026/9/8</th><td><span>19,436</span></td></tr><tr><th scope="row">2026/9/7</th><td>19,715</td></tr></tbody></table>');
+  assert.deepEqual(JSON.parse(JSON.stringify(series.map(({ date, close }) => ({ date, close })))), [
+    { date: "2026-09-07", close: 19715 },
+    { date: "2026-09-08", close: 19436 },
+  ]);
+});
+
+test("fund NAV history pages backward through weekly rows to the requested contribution month", async () => {
+  const calls = [];
+  const fetchHistory = loadFunction(serverSource, "fetchYahooFundNavHistory", {
+    URL,
+    fetchWithTimeout: async (url) => {
+      const page = Number(new URL(url).searchParams.get("page"));
+      calls.push(url.toString());
+      return { ok: true, text: async () => String(page) };
+    },
+    parseYahooFundHistoryPage: (page) => page === "1"
+      ? Array.from({ length: 20 }, (_, index) => ({ date: `2026-${String(10 - Math.floor(index / 4)).padStart(2, "0")}-${String(5 + (index % 4) * 7).padStart(2, "0")}`, close: 20000 - index }))
+        .sort((a, b) => a.date.localeCompare(b.date))
+      : Array.from({ length: 8 }, (_, index) => ({ date: `2026-03-${String(2 + index * 7).padStart(2, "0")}`, close: 19900 - index })),
+    cleanPriceSeries: (series) => series.sort((a, b) => a.date.localeCompare(b.date)),
+    shiftCalendarYear: (date, years) => `${Number(date.slice(0, 4)) + years}${date.slice(4)}`,
+  });
+  const series = await fetchHistory("9I31223A", { fromDate: "2026-03-01" });
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every((url) => new URL(url).searchParams.get("timeFrame") === "w"));
+  assert.ok(calls.every((url) => new URL(url).searchParams.get("from") === "20260301"));
+  assert.equal(series.length, 28);
+});
+
 test("savings screen tracks actual monthly contributions and supports editing the registered fund", () => {
   assert.match(indexSource, /data-view-target="savings"/);
   assert.match(indexSource, /MUFG iDeCo/);
@@ -2485,9 +2550,14 @@ test("savings screen tracks actual monthly contributions and supports editing th
   assert.match(appSource, /data-savings-chart/);
   assert.match(appSource, /chartPointTooltipHtml/);
   assert.match(appSource, /name="symbol" maxlength="14" required pattern=/);
-  assert.match(appSource, /data-savings-chart-mode="nav"/);
+  assert.doesNotMatch(appSource, /data-savings-chart-mode/);
+  assert.match(appSource, /buildSavingsValuationHistory/);
+  assert.match(appSource, /基準価額換算の参考評価額/);
+  assert.match(appSource, /累計積立元本/);
+  assert.match(serverSource, /fetchYahooFundNavHistory/);
+  assert.match(serverSource, /timeFrame", "w"/);
   assert.match(stylesSource, /\.savings-create-fields/);
-  assert.match(stylesSource, /\.savings-chart-tabs/);
+  assert.match(stylesSource, /\.savings-chart-legend/);
   const normalizeSavingsPlan = loadFunction(serverSource, "normalizeSavingsPlan", {
     normalizeFundCode: (value) => /^[A-Z0-9]{4,14}$/.test(String(value || "").trim().toUpperCase())
       ? String(value).trim().toUpperCase()

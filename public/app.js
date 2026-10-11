@@ -1,4 +1,4 @@
-import { buildSavingsContributionHistory } from "./savings-calculation.mjs";
+import { buildSavingsContributionHistory, buildSavingsValuationHistory } from "./savings-calculation.mjs";
 
 const MANAGED_STOCK_LIMIT = 50;
 const VIEW_KEYS = new Set(["analysis", "performance", "stocks", "us", "crypto", "ideas", "savings", "settings"]);
@@ -90,7 +90,6 @@ const performanceChartState = {
   hoverIndex: null,
 };
 const savingsChartStates = new Map();
-const savingsChartModes = new Map();
 const instrumentForecastCache = new Map();
 const reorderState = {
   symbol: "",
@@ -571,8 +570,10 @@ async function loadSavingsPlans() {
   const plans = state.savingsPlans.slice(0, 30);
   for (let index = 0; index < plans.length; index += 4) {
     await Promise.allSettled(plans.slice(index, index + 4).map(async (plan) => {
-      if (state.savingsSeries[plan.symbol]?.loaded) return;
-      await fetchSavingsSeries(plan.symbol);
+      const fromDate = savingsPlanStartDate(plan);
+      const cached = state.savingsSeries[plan.symbol];
+      if (cached?.loaded && cached.fromDate <= fromDate && !cached.error) return;
+      await fetchSavingsSeries(plan.symbol, fromDate);
     }));
     if (state.view === "savings" && !document.activeElement?.closest(".savings-plan-form")) renderSavings();
   }
@@ -599,33 +600,39 @@ function renderSavings() {
   }
   const currentMonth = localMonthKey();
   const completedThrough = calendarMonthOffset(`${currentMonth}-01`, -1).slice(0, 7);
-  const histories = new Map(state.savingsPlans.map((plan) => [
-    plan.id,
-    buildSavingsContributionHistory(plan, completedThrough, currentMonth),
-  ]));
-  els.savingsPlans.innerHTML = state.savingsPlans.map((plan) => savingsPlanHtml(plan, histories.get(plan.id))).join("");
+  const views = new Map(state.savingsPlans.map((plan) => {
+    const history = buildSavingsContributionHistory(plan, completedThrough, currentMonth);
+    const series = state.savingsSeries[plan.symbol]?.series || [];
+    return [plan.id, { history, valuation: buildSavingsValuationHistory(history, series) }];
+  }));
+  els.savingsPlans.innerHTML = state.savingsPlans.map((plan) => savingsPlanHtml(plan, views.get(plan.id))).join("");
   els.savingsPlans.querySelectorAll("[data-savings-chart]").forEach((canvas) => {
     const plan = state.savingsPlans.find((item) => item.id === canvas.dataset.savingsChart);
-    const history = plan && histories.get(plan.id);
-    if (!plan || !history) return;
-    const mode = savingsChartModes.get(plan.id) || "principal";
-    const series = state.savingsSeries[plan.symbol]?.series || [];
-    const points = mode === "nav"
-      ? series.map((point) => ({ date: point.date, value: Number(point.close) }))
-      : history.rows.map((point) => ({ date: point.date, value: point.total }));
+    const view = plan && views.get(plan.id);
+    if (!plan || !view) return;
+    const seriesState = state.savingsSeries[plan.symbol];
+    const points = view.valuation.rows;
     const today = localDateKey();
     const chartState = savingsChartStates.get(plan.id) || { actual: [], forecast: [], points: [], plot: null, hoverIndex: null };
     chartState.hoverIndex = null;
     savingsChartStates.set(plan.id, chartState);
-    const startDate = points[0]?.date && points[0].date < today ? points[0].date : calendarMonthOffset(today, -1);
+    const startDate = points[0]?.date || calendarMonthOffset(today, -1);
+    const endDate = points.at(-1)?.date || today;
     drawDatedLineChart(canvas, points, [], {
       startDate,
       today,
-      endDate: today,
+      endDate,
       currency: "JPY",
       compactCurrency: false,
-      actualLabel: mode === "nav" ? "基準価額" : "累計積立額",
-      emptyLabel: mode === "nav" ? "基準価額の履歴がありません" : "積立履歴がありません",
+      actualLabel: "基準価額換算の参考評価額",
+      emptyLabel: seriesState?.loading
+        ? "基準価額を取得しています"
+        : seriesState?.error
+          ? "基準価額を取得できません。再取得してください"
+          : "積立月に一致する基準価額がありません",
+      principalLabel: "累計積立元本",
+      principalSeries: view.valuation.principalSeries,
+      principalStepped: true,
       hideTodayMarker: true,
       chartState,
       tooltip: canvas.parentElement.querySelector("[data-savings-tooltip]"),
@@ -639,18 +646,25 @@ function renderSavings() {
   });
 }
 
-function savingsPlanHtml(plan, history = { rows: [], total: 0, monthlyAmount: 0 }) {
+function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAmount: 0 }, valuation: { rows: [], unpricedMonths: [] } }) {
+  const { history, valuation } = view;
   const series = state.savingsSeries[plan.symbol];
-  const chartMode = savingsChartModes.get(plan.id) || "principal";
   const firstMonth = history.rows[0]?.month || "";
   const latestMonth = history.rows.at(-1)?.month || "";
   const historySummary = history.rows.length
     ? `${firstMonth}〜${latestMonth}・${history.rows.length}か月 / 前月まで ${yen(history.total)}`
     : "前月までの積立履歴はありません";
+  const valuationDifference = valuation.latestValue === null ? null : valuation.latestValue - valuation.totalPrincipal;
+  const valuationSummary = valuationDifference === null ? "" : `
+    <p class="savings-value-difference">
+      基準価額換算 ${yen(valuation.latestValue)} <span>／ 積立元本 ${yen(valuation.totalPrincipal)}</span>
+      <span>／ 差額 <strong class="${valuationDifference >= 0 ? "gain" : "loss"}">${valuationDifference > 0 ? "+" : ""}${yen(valuationDifference)}</strong></span>
+      ${valuation.unpricedMonths?.length ? "<small>取得できた月分のみ</small>" : ""}
+    </p>`;
   const historyNote = series?.error
     ? `基準価額を取得できません: ${series.error}`
     : series?.series?.length
-      ? `基準価額の実績 ${formatDate(series.series[0].date)}〜${formatDate(series.series.at(-1).date)}。`
+      ? `週次の公表基準価額 ${formatDate(series.series[0].date)}〜${formatDate(series.series.at(-1).date)}を使用。月内の最初の観測値で口数換算した参考評価額です。`
       : series?.loading
         ? "基準価額を取得しています。"
         : "ファンドコードから基準価額の履歴を取得します。";
@@ -679,13 +693,14 @@ function savingsPlanHtml(plan, history = { rows: [], total: 0, monthlyAmount: 0 
       </div>
       <section class="savings-chart-section">
         <div class="savings-chart-heading"><h4>積立記録グラフ</h4><span>${escapeHtml(historySummary)}</span></div>
-        <div class="savings-chart-tabs" role="group" aria-label="積立グラフの種類">
-          <button type="button" aria-pressed="${chartMode === "principal"}" class="${chartMode === "principal" ? "active" : ""}" data-savings-chart-mode="principal" data-savings-plan="${escapeAttr(plan.id)}">積立額累計</button>
-          <button type="button" aria-pressed="${chartMode === "nav"}" class="${chartMode === "nav" ? "active" : ""}" data-savings-chart-mode="nav" data-savings-plan="${escapeAttr(plan.id)}">基準価額</button>
+        <div class="savings-chart-legend" aria-label="グラフの凡例">
+          <span><i class="savings-legend-value"></i>基準価額換算の参考評価額</span>
+          <span><i class="savings-legend-principal"></i>累計積立元本</span>
         </div>
-        <div class="performance-chart-wrap savings-chart-wrap"><canvas data-savings-chart="${escapeAttr(plan.id)}" aria-label="${chartMode === "nav" ? "ファンド基準価額の実績" : "月別積立元本の実績"}"></canvas><div class="chart-tooltip" data-savings-tooltip hidden></div></div>
-        <p class="savings-history-note">${chartMode === "nav" ? escapeHtml(historyNote) : "登録した積立額を月別に展開しています。継続中は未入力月に直近の金額を反映し、当月分と将来分は累計に含めません。"} ${series?.error && chartMode !== "nav" ? `基準価額: ${escapeHtml(series.error)}` : ""} 証券会社の約定データには接続していません。</p>
-        ${series?.error ? `<button type="button" class="secondary savings-retry" data-savings-refresh="${escapeAttr(plan.id)}" ${series.loading ? "disabled" : ""}>基準価額を再取得</button>` : ""}
+        ${valuationSummary}
+        <div class="performance-chart-wrap savings-chart-wrap"><canvas data-savings-chart="${escapeAttr(plan.id)}" aria-label="基準価額換算の参考評価額と累計積立元本の比較"></canvas><div class="chart-tooltip" data-savings-tooltip hidden></div></div>
+        <p class="savings-history-note">${escapeHtml(historyNote)} ${valuation.unpricedMonths?.length ? `基準価額が見つからない月: ${escapeHtml(valuation.unpricedMonths.join("、"))}。` : ""} 継続中は未入力月に直近の金額を反映し、当月分は未計上です。実際の買付日・約定データには接続しておらず、分配金・手数料も含みません。</p>
+        ${series?.error || !series?.loaded ? `<button type="button" class="secondary savings-retry" data-savings-refresh="${escapeAttr(plan.id)}" ${series?.loading ? "disabled" : ""}>基準価額を再取得</button>` : ""}
         <details class="savings-month-history" open>
           <summary>月別の積立額と累計</summary>
           <div class="savings-month-table-wrap"><table><thead><tr><th>対象月</th><th>積立額</th><th>累計</th></tr></thead><tbody>${monthlyRows || '<tr><td colspan="3">積立設定を追加してください。</td></tr>'}${currentMonthRow}</tbody></table></div>
@@ -714,13 +729,20 @@ function savingsScheduleRow(item = {}) {
   return `<div class="savings-schedule-row"><label><span>対象月</span><input name="scheduleMonth" type="month" value="${escapeAttr(item.month || localMonthKey())}" required></label><label><span>積立額</span><input name="scheduleAmount" type="number" min="1" step="1" inputmode="numeric" value="${Number(item.amount) || ""}" required></label><button type="button" class="icon savings-remove-month" data-savings-remove-month aria-label="この月を削除">×</button></div>`;
 }
 
-async function fetchSavingsSeries(symbol) {
+function savingsPlanStartDate(plan) {
+  const firstMonth = (plan?.schedule || []).map((item) => item.month).filter(Boolean).sort()[0];
+  return firstMonth ? `${firstMonth}-01` : calendarMonthOffset(localDateKey(), -36);
+}
+
+async function fetchSavingsSeries(symbol, fromDate = "") {
+  const cached = state.savingsSeries[symbol];
+  if (cached?.loaded && cached.fromDate <= fromDate && !cached.error) return;
   state.savingsSeries[symbol] = { ...(state.savingsSeries[symbol] || {}), loading: true, error: "" };
   try {
-    const data = await request(`/api/price-series?market=fund&daily=1&symbol=${encodeURIComponent(symbol)}`);
-    state.savingsSeries[symbol] = { series: data.series || [], loaded: true, fetchedAt: Date.now() };
+    const data = await request(`/api/price-series?market=fund&daily=1&from=${encodeURIComponent(fromDate)}&symbol=${encodeURIComponent(symbol)}`);
+    state.savingsSeries[symbol] = { series: data.series || [], loaded: true, fromDate, fetchedAt: Date.now() };
   } catch (error) {
-    state.savingsSeries[symbol] = { series: [], loaded: true, error: error.message || "価格履歴を取得できません" };
+    state.savingsSeries[symbol] = { series: [], loaded: true, fromDate, error: error.message || "価格履歴を取得できません" };
   }
 }
 
@@ -761,8 +783,9 @@ async function saveSavingsPlan(form) {
     state.savingsPlans = payload.plans || [];
     renderSavings();
     toast("積立設定を保存しました。");
-    if (!state.savingsSeries[symbol]?.series?.length) {
-      void fetchSavingsSeries(symbol).then(() => {
+    const savedPlan = state.savingsPlans.find((item) => item.symbol === symbol);
+    if (!state.savingsSeries[symbol]?.series?.length || state.savingsSeries[symbol]?.fromDate > savingsPlanStartDate(savedPlan)) {
+      void fetchSavingsSeries(symbol, savingsPlanStartDate(savedPlan)).then(() => {
         if (state.view === "savings") renderSavings();
       });
     }
@@ -3853,12 +3876,16 @@ function chartPointTooltipHtml(point, formatter) {
   const principal = Number.isFinite(point.principal) && point.kind === "forecast"
     ? `<small>積立元本 ${escapeHtml(formatter(point.principal))}</small>`
     : "";
+  const comparison = Number.isFinite(point.comparisonValue)
+    ? `<small>${escapeHtml(point.comparisonLabel || "累計積立元本")} ${escapeHtml(formatter(point.comparisonValue))}</small>`
+    : "";
   return `
     <strong>${escapeHtml(formatDate(point.date))}</strong>
     <small class="chart-tooltip-kind">${label}</small>
     <span>${escapeHtml(formatter(point.value))}</span>
     ${range}
     ${principal}
+    ${comparison}
   `;
 }
 
@@ -5829,7 +5856,8 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
   context.fillRect(0, 0, width, height);
   const startMs = new Date(`${options.startDate}T00:00:00Z`).getTime();
   const todayMs = new Date(`${options.today}T00:00:00Z`).getTime();
-  const endMs = new Date(`${options.endDate}T00:00:00Z`).getTime();
+  const requestedEndMs = new Date(`${options.endDate}T00:00:00Z`).getTime();
+  const endMs = requestedEndMs > startMs ? requestedEndMs : startMs + 86400000;
   const inRange = (items) => items.filter((point) => Number.isFinite(point.value)
     && point.date >= options.startDate && point.date <= options.endDate);
   const actualPoints = inRange(actual);
@@ -5906,31 +5934,33 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
     context.fillText("今日", todayX, pad.top + 11);
   }
 
-  const drawLine = (points, color, dashed) => {
+  const drawLine = (points, color, dashed, stepped = false) => {
     context.strokeStyle = color;
     context.lineWidth = 2.4;
     context.setLineDash(dashed ? [5, 5] : []);
     context.beginPath();
-    let started = false;
+    let previous = null;
     points.forEach((point) => {
       if (!Number.isFinite(point.value)) {
-        started = false;
+        previous = null;
         return;
       }
-      if (!started) {
+      if (!previous) {
         context.moveTo(x(point.date), y(point.value));
-        started = true;
       } else {
+        if (stepped) context.lineTo(x(point.date), y(previous.value));
         context.lineTo(x(point.date), y(point.value));
       }
+      previous = point;
     });
     context.stroke();
     context.setLineDash([]);
   };
   drawLine(actualPoints, "#0b6b58", false);
-  drawLine(inRange(options.principalSeries || []), "#47758a", false);
+  drawLine(inRange(options.principalSeries || []), "#47758a", false, Boolean(options.principalStepped));
   drawLine(forecastPoints, "#bd6927", true);
-  const tickDates = [startMs, startMs + (endMs - startMs) * 0.25, todayMs, startMs + (endMs - startMs) * 0.75, endMs];
+  const tickDates = [startMs, startMs + (endMs - startMs) * 0.25, startMs + (endMs - startMs) * 0.5, startMs + (endMs - startMs) * 0.75, endMs];
+  if (todayMs > startMs && todayMs < endMs) tickDates[2] = todayMs;
   context.fillStyle = "#667277";
   context.textAlign = "center";
   tickDates.forEach((time) => {
@@ -5939,9 +5969,17 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
     context.fillText(label, pad.left + ((time - startMs) / (endMs - startMs)) * plotWidth, height - 8);
   });
 
+  const comparisonByDate = new Map((options.principalSeries || []).map((point) => [point.date, point.value]));
   const actualHoverPoints = actualPoints
     .filter((point) => Number.isFinite(point.value))
-    .map((point) => ({ kind: "actual", label: options.actualLabel || "実績", date: point.date, value: point.value }));
+    .map((point) => ({
+      kind: "actual",
+      label: options.actualLabel || "実績",
+      date: point.date,
+      value: point.value,
+      comparisonValue: comparisonByDate.get(point.date),
+      comparisonLabel: options.principalLabel,
+    }));
   const forecastHoverPoints = forecastPoints
     .filter((point) => point.date > options.today && Number.isFinite(point.value))
     .map((point) => ({ kind: "forecast", date: point.date, value: point.value, low: point.low, high: point.high, principal: point.principal }));
@@ -7967,7 +8005,8 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
     form.elements.namedItem("startMonth").value = localMonthKey();
     if (status) status.textContent = "登録しました。基準価額を取得中です。";
     renderSavings();
-    void fetchSavingsSeries(symbol).then(() => {
+    const savedPlan = state.savingsPlans.find((item) => item.symbol === symbol);
+    void fetchSavingsSeries(symbol, savingsPlanStartDate(savedPlan)).then(() => {
       if (state.view === "savings") renderSavings();
       if (status) status.textContent = state.savingsSeries[symbol]?.error || "価格履歴を更新しました。";
     });
@@ -7979,18 +8018,12 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
 });
 
 els.savingsPlans?.addEventListener("click", async (event) => {
-  const chartTab = event.target.closest("[data-savings-chart-mode]");
-  if (chartTab) {
-    savingsChartModes.set(chartTab.dataset.savingsPlan, chartTab.dataset.savingsChartMode);
-    renderSavings();
-    return;
-  }
   const refreshButton = event.target.closest("[data-savings-refresh]");
   if (refreshButton) {
     const plan = state.savingsPlans.find((item) => item.id === refreshButton.dataset.savingsRefresh);
     if (plan) {
       refreshButton.disabled = true;
-      await fetchSavingsSeries(plan.symbol);
+      await fetchSavingsSeries(plan.symbol, savingsPlanStartDate(plan));
       renderSavings();
     }
     return;

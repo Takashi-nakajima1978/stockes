@@ -965,6 +965,9 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/price-series" && req.method === "GET") {
     const market = String(url.searchParams.get("market") || "").toLowerCase();
     const daily = url.searchParams.get("daily") === "1";
+    const fromDate = market === "fund" && /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("from") || "")
+      ? url.searchParams.get("from")
+      : "";
     const symbol = market === "fund"
       ? normalizeFundCode(url.searchParams.get("symbol"))
       : normalizeDiscoverySymbol(url.searchParams.get("symbol"), {
@@ -972,20 +975,24 @@ async function handleApi(req, res, url) {
       currency: market === "us" ? "USD" : "JPY",
     });
     if (!symbol) return json(res, 400, { error: "銘柄コードを確認してください。" });
-    const cacheKey = `${market}:${symbol}:${daily ? "daily" : "compact"}`;
+    const cacheKey = `${market}:${symbol}:${daily ? "daily" : "compact"}${fromDate ? `:${fromDate}` : ""}`;
     const cached = performanceSeriesCache.get(cacheKey);
     if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000) {
       return json(res, 200, cached.payload);
     }
     const price = market === "fund"
-      ? await fetchFundPriceHistory(symbol, { timeout: 4500 })
+      ? await fetchFundPriceHistory(symbol, { timeout: 4500, fromDate })
       : await fetchPriceHistory(symbol, { timeout: 9000 });
     if (!price.series?.length) return json(res, 404, { error: "基準価額の履歴を取得できません。ファンドコードを確認してください。" });
     const payload = {
       symbol,
       current: price.current,
       return1y: price.return1y,
-      series: daily ? dailyForecastSeries(price.series || []) : compactPerformanceSeries(price.series || []),
+      series: market === "fund" && daily
+        ? price.series || []
+        : daily
+          ? dailyForecastSeries(price.series || [])
+          : compactPerformanceSeries(price.series || []),
     };
     if (performanceSeriesCache.size >= 200) performanceSeriesCache.delete(performanceSeriesCache.keys().next().value);
     performanceSeriesCache.set(cacheKey, { cachedAt: Date.now(), payload });
@@ -7953,7 +7960,78 @@ async function fetchPriceHistory(symbol, options = {}) {
 async function fetchFundPriceHistory(symbol, options = {}) {
   const direct = await fetchPriceHistory(symbol, options);
   if (direct.series?.length) return direct;
-  return fetchPriceHistory(`${symbol}.T`, options);
+  const ticker = await fetchPriceHistory(`${symbol}.T`, options);
+  if (ticker.series?.length) return ticker;
+  const series = await fetchYahooFundNavHistory(symbol, options);
+  const latest = series.at(-1);
+  const yearAgo = series.find((point) => point.date >= shiftCalendarYear(latest?.date || "", -1));
+  return {
+    series,
+    current: latest?.close ?? null,
+    return1y: latest && yearAgo ? ((latest.close / yearAgo.close) - 1) * 100 : null,
+  };
+}
+
+async function fetchYahooFundNavHistory(symbol, options = {}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(options.fromDate || "")
+    ? options.fromDate
+    : shiftCalendarYear(today, -3);
+  const points = [];
+  const maxPages = 60;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const url = new URL(`https://finance.yahoo.co.jp/quote/${encodeURIComponent(symbol)}/history`);
+    url.searchParams.set("from", fromDate.replaceAll("-", ""));
+    url.searchParams.set("to", today.replaceAll("-", ""));
+    url.searchParams.set("timeFrame", "w");
+    url.searchParams.set("page", String(page));
+    const response = await fetchWithTimeout(url, {
+      timeout: options.timeout || 4500,
+      headers: {
+        "user-agent": "Mozilla/5.0 local-stock-analysis",
+        accept: "text/html,application/xhtml+xml",
+      },
+    }).catch(() => null);
+    if (!response?.ok) break;
+    const rows = parseYahooFundHistoryPage(await response.text());
+    if (!rows.length) break;
+    points.push(...rows);
+    if (rows[0].date <= fromDate || rows.length < 20) break;
+  }
+  return cleanPriceSeries(points);
+}
+
+function shiftCalendarYear(date = "", years = 0) {
+  const source = new Date(`${date}T00:00:00Z`);
+  if (!Number.isFinite(source.getTime())) return "";
+  source.setUTCFullYear(source.getUTCFullYear() + years);
+  return source.toISOString().slice(0, 10);
+}
+
+function parseYahooFundHistoryPage(html = "") {
+  const points = [];
+  const rows = String(html).matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi);
+  for (const [, row] of rows) {
+    const dateCell = row.match(/<th\b[^>]*scope=["']row["'][^>]*>([\s\S]*?)<\/th>/i);
+    if (!dateCell) continue;
+    const dateText = htmlToText(dateCell[1]);
+    const dateMatch = dateText.match(/(\d{4})\/(\d{1,2})\/(\d{1,2})/);
+    if (!dateMatch) continue;
+    const cells = [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)];
+    if (!cells.length) continue;
+    const navText = htmlToText(cells[0][1]).replace(/,/g, "");
+    const close = Number(navText.match(/\d+(?:\.\d+)?/)?.[0]);
+    if (!Number.isFinite(close) || close <= 0) continue;
+    points.push({
+      date: `${dateMatch[1]}-${String(dateMatch[2]).padStart(2, "0")}-${String(dateMatch[3]).padStart(2, "0")}`,
+      open: close,
+      high: close,
+      low: close,
+      close,
+      volume: 0,
+    });
+  }
+  return points.sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function combineBtcJpySeries(btcSeries = [], fxSeries = []) {
