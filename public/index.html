@@ -7,7 +7,7 @@
   <title>Stock Signal</title>
   <link rel="icon" href="/stock-signal-logo.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/stock-signal-logo.svg">
-  <link rel="stylesheet" href="/styles.css?v=20261011-us-ai-forecast">
+  <link rel="stylesheet" href="/styles.css?v=20261011-savings">
 </head>
 <body>
   <div class="app-shell">
@@ -27,6 +27,7 @@
         <button type="button" data-view-target="us">米国株</button>
         <button type="button" data-view-target="crypto">BTC・為替</button>
         <button type="button" data-view-target="ideas">候補を探す</button>
+        <button type="button" data-view-target="savings">積立</button>
         <button type="button" data-view-target="settings">設定</button>
       </nav>
 
@@ -260,6 +261,7 @@
           </div>
           <div class="performance-chart-wrap">
             <canvas id="performanceChart" role="img" aria-label="過去1年から今後1年の日本株配当込み損益グラフ"></canvas>
+            <div id="performanceChartTooltip" class="chart-tooltip" hidden></div>
           </div>
           <div class="performance-legend" aria-label="グラフの凡例">
             <span><i class="legend-actual"></i>過去の実績</span>
@@ -626,6 +628,42 @@
         </section>
       </section>
 
+      <section class="view-panel savings-view" data-view="savings">
+        <section class="command-band">
+          <div>
+            <p class="eyebrow">Savings Plan</p>
+            <h2>積立シミュレーション</h2>
+          </div>
+          <label class="savings-horizon-control">
+            <span>予測期間</span>
+            <select id="savingsHorizon">
+              <option value="12">1年</option>
+              <option value="36">3年</option>
+              <option value="60">5年</option>
+              <option value="120" selected>10年</option>
+            </select>
+          </label>
+        </section>
+        <p class="savings-note">月別の積立額を登録できます。継続をオンにすると、設定した金額を翌月以降にも反映します。証券会社への注文は行いません。予測は登録商品の過去約3年の値動きを使った参考値です。</p>
+        <form id="savingsCreateForm" class="savings-create-form">
+          <h3>運用商品を追加</h3>
+          <div class="savings-create-fields">
+            <label><span>口座</span><select name="provider"><option value="rakuten">楽天証券</option><option value="sbi">SBI証券</option><option value="ideco">MUFG iDeCo</option></select></label>
+            <label><span>商品名</span><input name="name" maxlength="100" required placeholder="例：全世界株式インデックス"></label>
+            <label><span>商品コード（Yahoo!ファイナンス）</span><input name="symbol" maxlength="14" required placeholder="例：0331418A" autocapitalize="characters"></label>
+            <label><span>現在の評価額（任意）</span><input name="currentValue" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
+            <label><span>開始月</span><input name="startMonth" type="month" required></label>
+            <label><span>月の積立額</span><input name="amount" type="number" min="1" step="1" inputmode="numeric" required placeholder="例：30000"></label>
+          </div>
+          <div class="savings-create-actions">
+            <label class="checkbox-line"><input name="recurring" type="checkbox"><span>この金額で毎月継続</span></label>
+            <button type="submit">商品を登録</button>
+            <span id="savingsFormStatus" role="status"></span>
+          </div>
+        </form>
+        <div id="savingsPlans" class="savings-plans" aria-live="polite"><p class="empty-state">積立商品を読み込み中です。</p></div>
+      </section>
+
       <section class="view-panel" data-view="settings">
         <section class="command-band">
           <div>
@@ -972,6 +1010,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=20261011-us-ai-forecast" type="module"></script>
+  <script src="/app.js?v=20261011-savings" type="module"></script>
 </body>
 </html>

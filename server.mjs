@@ -19,6 +19,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const WATCHLIST_PATH = path.join(__dirname, "data", "watchlist.json");
 const US_WATCHLIST_PATH = path.join(__dirname, "data", "us-watchlist.json");
 const CRYPTO_HOLDING_PATH = path.join(__dirname, "data", "crypto-holding.json");
+const SAVINGS_PLANS_PATH = path.join(__dirname, "data", "savings-plans.json");
 const ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "analysis-cache.json");
 const US_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "us-analysis-cache.json");
 const CRYPTO_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "crypto-analysis-cache.json");
@@ -457,6 +458,7 @@ function lmJsonInstructions(extra = "") {
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml; charset=utf-8",
@@ -849,6 +851,10 @@ async function handleApi(req, res, url) {
     return json(res, 200, { holding, analysis, cacheVersion });
   }
 
+  if (url.pathname === "/api/savings-plans" && req.method === "GET") {
+    return json(res, 200, { plans: await readSavingsPlans() });
+  }
+
   if (url.pathname === "/api/analysis" && req.method === "GET") {
     const [cached, settings, cacheVersion] = await Promise.all([
       readAnalysisCache(),
@@ -940,17 +946,20 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/price-series" && req.method === "GET") {
     const market = String(url.searchParams.get("market") || "").toLowerCase();
     const daily = url.searchParams.get("daily") === "1";
-    const symbol = normalizeDiscoverySymbol(url.searchParams.get("symbol"), {
+    const symbol = market === "fund"
+      ? normalizeFundCode(url.searchParams.get("symbol"))
+      : normalizeDiscoverySymbol(url.searchParams.get("symbol"), {
       market: market === "us" ? "NYSE" : "東証",
       currency: market === "us" ? "USD" : "JPY",
     });
     if (!symbol) return json(res, 400, { error: "銘柄コードを確認してください。" });
-    const cacheKey = `${symbol}:${daily ? "daily" : "compact"}`;
+    const cacheKey = `${market}:${symbol}:${daily ? "daily" : "compact"}`;
     const cached = performanceSeriesCache.get(cacheKey);
     if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000) {
       return json(res, 200, cached.payload);
     }
     const price = await fetchPriceHistory(symbol, { timeout: 9000 });
+    if (!price.series?.length) return json(res, 404, { error: "基準価額の履歴を取得できません。ファンドコードを確認してください。" });
     const payload = {
       symbol,
       current: price.current,
@@ -1181,6 +1190,24 @@ async function handleApi(req, res, url) {
       sales: body.sales,
     });
     return json(res, 200, { holding, analysis: await readCryptoAnalysisCache() });
+  }
+
+  if (url.pathname === "/api/savings-plans" && req.method === "POST") {
+    const body = await readJson(req);
+    const plan = normalizeSavingsPlan(body.plan || body);
+    if (!plan.name || !plan.symbol) return json(res, 400, { error: "商品名とファンドコードを入力してください。" });
+    const plans = await readSavingsPlans();
+    const index = plans.findIndex((item) => item.id === plan.id);
+    if (index >= 0) plans[index] = plan;
+    else plans.unshift({ ...plan, id: createSavingsPlanId() });
+    const savedPlans = await saveSavingsPlans(plans);
+    return json(res, 200, { plans: savedPlans });
+  }
+
+  if (url.pathname.startsWith("/api/savings-plans/") && req.method === "DELETE") {
+    const id = decodeURIComponent(url.pathname.split("/").pop() || "");
+    const plans = (await readSavingsPlans()).filter((item) => item.id !== id);
+    return json(res, 200, { plans: await saveSavingsPlans(plans) });
   }
 
   if (url.pathname.startsWith("/api/stocks/") && req.method === "DELETE") {
@@ -15271,6 +15298,61 @@ async function saveCryptoHolding(holding) {
   await mkdir(path.dirname(CRYPTO_HOLDING_PATH), { recursive: true });
   await writeFile(CRYPTO_HOLDING_PATH, JSON.stringify(normalized, null, 2));
   return normalized;
+}
+
+async function readSavingsPlans() {
+  try {
+    const plans = JSON.parse(await readFile(SAVINGS_PLANS_PATH, "utf8"));
+    return Array.isArray(plans) ? plans.slice(0, 50).map(normalizeSavingsPlan) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveSavingsPlans(plans) {
+  const normalized = plans.slice(0, 50).map(normalizeSavingsPlan);
+  await mkdir(path.dirname(SAVINGS_PLANS_PATH), { recursive: true });
+  await writeFile(SAVINGS_PLANS_PATH, JSON.stringify(normalized, null, 2));
+  return normalized;
+}
+
+function normalizeSavingsPlan(plan = {}) {
+  const provider = ["rakuten", "sbi", "ideco"].includes(String(plan.provider || ""))
+    ? String(plan.provider)
+    : "rakuten";
+  const schedule = (Array.isArray(plan.schedule) ? plan.schedule : [])
+    .slice(0, 120)
+    .map((item) => ({
+      month: /^\d{4}-(0[1-9]|1[0-2])$/.test(String(item?.month || "")) ? String(item.month) : "",
+      amount: Math.max(0, Math.min(100000000, Number(item?.amount) || 0)),
+    }))
+    .filter((item) => item.month && item.amount > 0)
+    .reduce((items, item) => {
+      const previous = items.findIndex((entry) => entry.month === item.month);
+      if (previous >= 0) items[previous] = item;
+      else items.push(item);
+      return items;
+    }, [])
+    .sort((a, b) => a.month.localeCompare(b.month));
+  return {
+    id: /^[a-zA-Z0-9_-]{1,64}$/.test(String(plan.id || "")) ? String(plan.id) : "",
+    provider,
+    name: cleanText(plan.name || "").slice(0, 100),
+    symbol: normalizeFundCode(plan.symbol || ""),
+    currentValue: Math.max(0, Math.min(1000000000, Number(plan.currentValue) || 0)),
+    recurring: Boolean(plan.recurring),
+    schedule,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function createSavingsPlanId() {
+  return `fund-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function normalizeFundCode(value = "") {
+  const code = String(value || "").trim().toUpperCase();
+  return /^[A-Z0-9]{4,14}$/.test(code) ? code : "";
 }
 
 async function readUsAnalysisCache() {

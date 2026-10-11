@@ -6,12 +6,14 @@ import os from "node:os";
 import vm from "node:vm";
 import { gzip, gunzipSync } from "node:zlib";
 import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "../refresh-control.mjs";
+import { buildSavingsForecast, scheduledContribution } from "../public/savings-calculation.mjs";
 
 const serverSource = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 const indexSource = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 const stylesSource = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 const logoSource = await readFile(new URL("../public/stock-signal-logo.svg", import.meta.url), "utf8");
+const savingsSource = await readFile(new URL("../public/savings-calculation.mjs", import.meta.url), "utf8");
 
 function loadFunction(source, name, globals) {
   const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
@@ -515,7 +517,7 @@ test("day trade monitoring and broker controls are fully removed", () => {
   assert.doesNotMatch(appSource, /dayTrade|DayTrade|daytrade|デイトレ|rakutenOrderEnabled|rakutenRssBridgeUrl/);
   assert.doesNotMatch(serverSource, /dayTrade|DayTrade|daytrade|デイトレ|rakutenOrderEnabled|rakutenRssBridgeUrl|RssStockOrder/);
   assert.doesNotMatch(stylesSource, /daytrade|autopilot|simulation-monitor|simulation-status-grid/);
-  assert.match(appSource, /const VIEW_KEYS = new Set\(\["analysis", "performance", "stocks", "us", "crypto", "ideas", "settings"\]\)/);
+  assert.match(appSource, /const VIEW_KEYS = new Set\(\["analysis", "performance", "stocks", "us", "crypto", "ideas", "savings", "settings"\]\)/);
   assert.match(indexSource, /settings-tab-panel" data-settings-panel="monitoring"/);
   assert.match(appSource, /setInterval\(syncBackgroundPrices, 15000\)/);
   assert.match(serverSource, /if \(url\.pathname === "\/api\/stocks" && req\.method === "GET"\)/);
@@ -1516,6 +1518,73 @@ test("price charts show visible purchase and sale markers", () => {
   assert.match(appSource, /過去検証/);
 });
 
+test("all forecast charts expose date, value, and forecast interval tooltips", () => {
+  const tooltipHtml = loadFunction(appSource, "chartPointTooltipHtml", {
+    escapeHtml: (value) => String(value),
+    formatDate: (value) => value,
+  });
+  const actual = tooltipHtml({ kind: "actual", date: "2026-10-10", value: 1234 }, (value) => `¥${value}`);
+  const forecast = tooltipHtml({
+    kind: "forecast",
+    date: "2026-10-17",
+    value: 1300,
+    low: 1180,
+    high: 1450,
+  }, (value) => `¥${value}`);
+  assert.match(actual, /2026-10-10/);
+  assert.match(actual, /実績/);
+  assert.match(actual, /¥1234/);
+  assert.match(forecast, /2026-10-17/);
+  assert.match(forecast, /予測中央値/);
+  assert.match(forecast, /¥1300/);
+  assert.match(forecast, /参考幅 ¥1180〜¥1450/);
+  assert.match(indexSource, /id="performanceChartTooltip"/);
+  assert.match(appSource, /els\.performanceChart\?\.addEventListener\("pointermove", updatePerformanceChartHover\)/);
+  assert.match(appSource, /function positionEmbeddedTooltip\(/);
+  assert.match(appSource, /const forecastHoverPoints = forecast\s*\.filter\(\(point\) => point\.date > today/);
+});
+
+test("hovering anywhere in the forecast time range selects forecast dates", () => {
+  const nearestChartHoverPoint = loadFunction(appSource, "nearestChartHoverPoint", {});
+  const points = [
+    { kind: "actual", date: "2026-10-10", x: 98, y: 20 },
+    { kind: "forecast", date: "2026-10-17", x: 108, y: 420 },
+    { kind: "principal", date: "2026-10-17", x: 108, y: 22 },
+  ];
+  assert.equal(nearestChartHoverPoint(points, 109, 100).kind, "forecast");
+  assert.equal(nearestChartHoverPoint(points, 99, 100).kind, "actual");
+  assert.match(appSource, /nearestChartHoverPoint\(chartState\.points, x, chartState\.futureStartX\)/);
+  assert.match(appSource, /nearestChartHoverPoint\(points, px, chartState\.futureStartX\)/);
+  assert.match(appSource, /nearestChartHoverPoint\(state\.points, px, state\.futureStartX\)/);
+});
+
+test("BTC and FX charts use calibrated forecasts and preserve FX price history", () => {
+  let evaluations = 0;
+  const instrumentForecast = loadFunction(appSource, "instrumentChartForecast", {
+    instrumentForecastCache: new Map(),
+    evaluateDecisionForecast: () => { evaluations += 1; return { evaluated: 6 }; },
+    decisionChartForecast: (_series, price, symbol, _now, review) => [{ date: symbol, value: price.current, reviewCount: review.evaluated }],
+  });
+  const price = { current: 150, series: [{ date: "2026-10-10", close: 149 }] };
+  const first = instrumentForecast(price, "USD-JPY", new Date("2026-10-11T00:00:00Z"));
+  const second = instrumentForecast(price, "USD-JPY", new Date("2026-10-11T00:00:00Z"));
+  assert.equal(first[0].date, "USD-JPY");
+  assert.equal(first[0].value, 150);
+  assert.equal(first[0].reviewCount, 6);
+  assert.equal(second[0].value, first[0].value);
+  assert.equal(evaluations, 1);
+  assert.match(appSource, /instrumentChartForecast\(btcPrice, "BTC-JPY"\)/);
+  assert.match(appSource, /instrumentChartForecast\(usdJpyPrice, "USD-JPY"\)/);
+  assert.match(appSource, /instrumentChartForecast\(eurJpyPrice, "EUR-JPY"\)/);
+  assert.match(appSource, /過去2年9か月実績と今後3か月予測/);
+
+  const compactFxPrice = loadFunctionBlock(serverSource, "compactFxPrice", "cryptoTradeTiming", {
+    technicalEntryFallback: () => ({}),
+  });
+  const compact = compactFxPrice({ current: 150, series: price.series });
+  assert.equal(compact.series, price.series);
+});
+
 test("Decision chart forecast uses three years of weekly prices and ends after three months", () => {
   const chartQuantile = loadFunction(appSource, "quantile", {});
   const suspiciousPoint = loadFunction(appSource, "isSuspiciousChartPoint", { quantile: chartQuantile });
@@ -2351,4 +2420,84 @@ test("forecast price history retains daily observations across three years", () 
   assert.equal(result[0].date, "2022-10-01");
   assert.equal(result.at(-1).date, asOfDate);
   assert.ok(result.every((point, index) => index === 0 || point.date > result[index - 1].date));
+});
+
+test("recurring savings use month-specific overrides and carry the last amount forward", () => {
+  const schedule = [
+    { month: "2026-10", amount: 30000 },
+    { month: "2027-01", amount: 50000 },
+  ];
+  assert.equal(scheduledContribution(schedule, "2026-09", true), 0);
+  assert.equal(scheduledContribution(schedule, "2026-10", true), 30000);
+  assert.equal(scheduledContribution(schedule, "2026-12", true), 30000);
+  assert.equal(scheduledContribution(schedule, "2027-01", true), 50000);
+  assert.equal(scheduledContribution(schedule, "2027-02", true), 50000);
+  assert.equal(scheduledContribution(schedule, "2027-02", false), 0);
+});
+
+test("savings projection compounds monthly contributions against historical NAV returns", () => {
+  const series = Array.from({ length: 40 }, (_, index) => {
+    const date = new Date(Date.UTC(2023, index + 1, 0));
+    const close = 1000 * (1 + (index % 5 === 0 ? 0.035 : index % 4 === 0 ? -0.025 : 0.008)) ** index;
+    return { date: date.toISOString().slice(0, 10), close };
+  });
+  const plan = {
+    id: "test-fund",
+    symbol: "0331418A",
+    currentValue: 100000,
+    recurring: true,
+    schedule: [
+      { month: "2026-10", amount: 1000 },
+      { month: "2027-01", amount: 5000 },
+    ],
+  };
+  const result = buildSavingsForecast(plan, series, { today: "2026-10-11", months: 6, paths: 1000 });
+  assert.equal(result.forecast.length, 7);
+  assert.equal(result.endDate, "2027-03-31");
+  assert.equal(result.totalContributions, 118000);
+  assert.equal(result.forecast.at(-1).principal, 118000);
+  assert.ok(result.forecastLow < result.forecastTotal);
+  assert.ok(result.forecastTotal < result.forecastHigh);
+  assert.ok(result.sampleCount >= 6);
+  assert.equal(result.forecastTotal, buildSavingsForecast(plan, series, { today: "2026-10-11", months: 6, paths: 1000 }).forecastTotal);
+  assert.equal(buildSavingsForecast(plan, series.slice(0, 5), { today: "2026-10-11", months: 6 }).historyUnavailable, true);
+});
+
+test("savings screen persists manual products and provides a historical reference forecast", () => {
+  assert.match(indexSource, /data-view-target="savings"/);
+  assert.match(indexSource, /MUFG iDeCo/);
+  assert.match(indexSource, /name="startMonth" type="month"/);
+  assert.match(indexSource, /name="recurring" type="checkbox"/);
+  assert.match(indexSource, /証券会社への注文は行いません/);
+  assert.match(serverSource, /url\.pathname === "\/api\/savings-plans" && req\.method === "GET"/);
+  assert.match(serverSource, /url\.pathname === "\/api\/savings-plans" && req\.method === "POST"/);
+  assert.match(serverSource, /market === "fund"/);
+  assert.match(serverSource, /"\.mjs": "text\/javascript; charset=utf-8"/);
+  assert.match(savingsSource, /scheduledContribution\(plan\.schedule, month\.key, Boolean\(plan\.recurring\)\)/);
+  assert.match(appSource, /data-savings-chart/);
+  assert.match(appSource, /chartPointTooltipHtml/);
+  assert.match(stylesSource, /\.savings-create-fields/);
+  assert.match(stylesSource, /\.legend-principal/);
+  const normalizeSavingsPlan = loadFunction(serverSource, "normalizeSavingsPlan", {
+    normalizeFundCode: (value) => /^[A-Z0-9]{4,14}$/.test(String(value || "").trim().toUpperCase())
+      ? String(value).trim().toUpperCase()
+      : "",
+    cleanText: (value) => String(value || "").trim(),
+  });
+  const savedPlan = normalizeSavingsPlan({
+    id: "fund-1",
+    provider: "ideco",
+    name: "全世界株式",
+    symbol: "0331418a",
+    currentValue: 250000,
+    recurring: true,
+    schedule: [
+      { month: "2026-10", amount: 20000 },
+      { month: "2026-10", amount: 30000 },
+      { month: "2026-13", amount: 50000 },
+    ],
+  });
+  assert.equal(savedPlan.symbol, "0331418A");
+  assert.equal(savedPlan.currentValue, 250000);
+  assert.equal(JSON.stringify(savedPlan.schedule), JSON.stringify([{ month: "2026-10", amount: 30000 }]));
 });

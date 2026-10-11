@@ -13,6 +13,7 @@ data/financial-cache.json
 data/us-analysis-cache.json
 data/crypto-analysis-cache.json
 data/crypto-holding.json
+data/savings-plans.json
 data/discovery-cache.json
 data/exit-state.json
 data/excluded-candidates.json

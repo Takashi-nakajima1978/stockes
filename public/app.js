@@ -1,5 +1,7 @@
+import { buildSavingsForecast, scheduledContribution } from "./savings-calculation.mjs";
+
 const MANAGED_STOCK_LIMIT = 50;
-const VIEW_KEYS = new Set(["analysis", "performance", "stocks", "us", "crypto", "ideas", "settings"]);
+const VIEW_KEYS = new Set(["analysis", "performance", "stocks", "us", "crypto", "ideas", "savings", "settings"]);
 const VIEW_STORAGE_KEY = "stockSignalActiveView";
 const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2400000;
 const NISA_GROWTH_LIFETIME_LIMIT_YEN = 12000000;
@@ -23,6 +25,9 @@ const state = {
   cacheVersions: { jp: "", us: "", crypto: "" },
   cryptoHolding: null,
   cryptoAnalysis: null,
+  savingsPlans: [],
+  savingsSeries: {},
+  savingsHorizonMonths: 120,
   suggestions: [],
   successfulCandidates: [],
   underperformingCandidates: [],
@@ -75,6 +80,14 @@ const chartState = {
   plot: null,
   hoverIndex: null,
 };
+const performanceChartState = {
+  points: [],
+  plot: null,
+  hoverIndex: null,
+};
+const savingsChartStates = new Map();
+const savingsForecastCache = new Map();
+const instrumentForecastCache = new Map();
 const reorderState = {
   symbol: "",
   moved: false,
@@ -121,8 +134,13 @@ const els = {
   performanceUpdatedAt: document.getElementById("performanceUpdatedAt"),
   performanceChartTitle: document.getElementById("performanceChartTitle"),
   performanceChart: document.getElementById("performanceChart"),
+  performanceChartTooltip: document.getElementById("performanceChartTooltip"),
   performanceChartPanel: document.getElementById("performanceChartPanel"),
   performanceEmpty: document.getElementById("performanceEmpty"),
+  savingsHorizon: document.getElementById("savingsHorizon"),
+  savingsCreateForm: document.getElementById("savingsCreateForm"),
+  savingsFormStatus: document.getElementById("savingsFormStatus"),
+  savingsPlans: document.getElementById("savingsPlans"),
   usStockForm: document.getElementById("usStockForm"),
   usStockName: document.getElementById("usStockName"),
   usStockSymbol: document.getElementById("usStockSymbol"),
@@ -537,6 +555,173 @@ async function loadCrypto(background = false) {
   if (state.view === "crypto" && (!background || (!isDetailFormEditing() && !document.activeElement?.closest("form")))) renderCrypto();
 }
 
+async function loadSavingsPlans() {
+  const payload = await request("/api/savings-plans");
+  state.savingsPlans = Array.isArray(payload.plans) ? payload.plans : [];
+  const monthField = els.savingsCreateForm?.elements.namedItem("startMonth");
+  if (monthField && !monthField.value) monthField.value = localMonthKey();
+  renderSavings();
+  const plans = state.savingsPlans.slice(0, 30);
+  for (let index = 0; index < plans.length; index += 4) {
+    await Promise.allSettled(plans.slice(index, index + 4).map(async (plan) => {
+      if (state.savingsSeries[plan.symbol]?.loaded) return;
+      await fetchSavingsSeries(plan.symbol);
+    }));
+    if (state.view === "savings" && !document.activeElement?.closest(".savings-plan-form")) renderSavings();
+  }
+  if (state.view === "savings" && !document.activeElement?.closest(".savings-plan-form")) renderSavings();
+}
+
+function localMonthKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function localDateKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function savingsProviderName(provider) {
+  return ({ rakuten: "楽天証券", sbi: "SBI証券", ideco: "MUFG iDeCo" })[provider] || "楽天証券";
+}
+
+function renderSavings() {
+  if (!els.savingsPlans) return;
+  state.savingsHorizonMonths = Number(els.savingsHorizon?.value || state.savingsHorizonMonths || 120);
+  if (!state.savingsPlans.length) {
+    els.savingsPlans.innerHTML = '<p class="empty-state">運用商品を登録すると、月別積立と参考予測を表示します。</p>';
+    return;
+  }
+  const forecasts = new Map(state.savingsPlans.map((plan) => [plan.id, savingsForecastFor(plan)]));
+  els.savingsPlans.innerHTML = state.savingsPlans.map((plan) => savingsPlanHtml(plan, forecasts.get(plan.id))).join("");
+  els.savingsPlans.querySelectorAll("[data-savings-chart]").forEach((canvas) => {
+    const plan = state.savingsPlans.find((item) => item.id === canvas.dataset.savingsChart);
+    const result = plan && forecasts.get(plan.id);
+    if (!plan || !result || result.historyUnavailable) return;
+    const today = localDateKey();
+    const chartState = savingsChartStates.get(plan.id) || { points: [], plot: null, hoverIndex: null };
+    chartState.hoverIndex = null;
+    savingsChartStates.set(plan.id, chartState);
+    const principalSeries = result.forecast.map((point) => ({ date: point.date, value: point.principal }));
+    drawDatedLineChart(canvas, [{ date: today, value: Number(plan.currentValue) || 0 }], result.forecast, {
+      startDate: today,
+      today,
+      endDate: result.endDate,
+      currency: "JPY",
+      chartState,
+      principalSeries,
+      tooltip: canvas.parentElement.querySelector("[data-savings-tooltip]"),
+    });
+    const tooltip = canvas.parentElement.querySelector("[data-savings-tooltip]");
+    canvas.onpointermove = (event) => updateDatedLineChartHover(event, canvas, chartState, tooltip);
+    canvas.onpointerleave = (event) => clearDatedLineChartHover(event, canvas, chartState, tooltip);
+    canvas.onpointerdown = (event) => {
+      if (event.pointerType === "touch") updateDatedLineChartHover(event, canvas, chartState, tooltip);
+    };
+  });
+}
+
+function savingsForecastFor(plan) {
+  const series = state.savingsSeries[plan.symbol];
+  if (!series?.series?.length) return null;
+  const key = JSON.stringify([plan.id, plan.currentValue, plan.recurring, plan.schedule, state.savingsHorizonMonths, localDateKey(), series.fetchedAt]);
+  if (savingsForecastCache.has(key)) return savingsForecastCache.get(key);
+  const result = buildSavingsForecast(plan, series.series, { today: localDateKey(), months: state.savingsHorizonMonths, paths: 1000 });
+  if (savingsForecastCache.size >= 100) savingsForecastCache.delete(savingsForecastCache.keys().next().value);
+  savingsForecastCache.set(key, result);
+  return result;
+}
+
+function savingsPlanHtml(plan, result = null) {
+  const series = state.savingsSeries[plan.symbol];
+  const currentMonth = localMonthKey();
+  const currentMonthly = scheduledContribution(plan.schedule, currentMonth, plan.recurring);
+  const historyNote = result?.historyUnavailable
+    ? "月次データ不足のため、運用予測は未表示です。"
+    : series?.error
+      ? `価格履歴を取得できません。${escapeHtml(series.error)}`
+      : series?.series?.length
+        ? `過去${result.sampleCount}か月分の月次基準価額変動を再抽出。年率基準価額実績 ${Number.isFinite(result.historicalAnnualizedPct) ? signedPct(result.historicalAnnualizedPct) : "-"}。`
+        : "基準価額の履歴を取得中です。";
+  return `
+    <article class="savings-plan">
+      <header class="savings-plan-heading">
+        <div><span>${escapeHtml(savingsProviderName(plan.provider))} ・ ${escapeHtml(plan.symbol)}</span><h3>${escapeHtml(plan.name)}</h3></div>
+        <button type="button" class="secondary savings-delete" data-savings-delete="${escapeAttr(plan.id)}" aria-label="${escapeAttr(plan.name)}を削除">削除</button>
+      </header>
+      <div class="savings-metrics">
+        <div><span>現在評価額</span><strong>${yen(Number(plan.currentValue) || 0)}</strong></div>
+        <div><span>今月の積立</span><strong>${currentMonthly ? yen(currentMonthly) : "なし"}</strong></div>
+        <div><span>${state.savingsHorizonMonths / 12}年後の積立元本</span><strong>${yen(result?.totalContributions ?? (Number(plan.currentValue) || 0))}</strong></div>
+        <div><span>${state.savingsHorizonMonths / 12}年後の参考評価額</span><strong>${result && !result.historyUnavailable ? yen(result.forecastTotal) : "-"}</strong><small>${result && !result.historyUnavailable ? `10〜90% ${yen(result.forecastLow)}〜${yen(result.forecastHigh)}` : "過去実績を確認中"}</small></div>
+      </div>
+      <section class="savings-chart-section">
+        <div class="savings-chart-heading"><h4>積立元本・参考評価額の推移</h4><span>${state.savingsHorizonMonths / 12}年</span></div>
+        ${result && !result.historyUnavailable
+          ? '<div class="performance-chart-wrap savings-chart-wrap"><canvas data-savings-chart="' + escapeAttr(plan.id) + '" aria-label="積立元本と過去実績ベース予測のグラフ"></canvas><div class="chart-tooltip" data-savings-tooltip hidden></div></div><div class="performance-legend"><span><i class="legend-principal"></i>積立元本</span><span><i class="legend-forecast"></i>参考評価額中央値</span><span><i class="legend-band"></i>10〜90%参考幅</span></div>'
+          : ""}
+        <p class="savings-history-note">${historyNote} 分配金の再投資や税は個別計算していない参考値で、将来を保証しません。</p>
+      </section>
+      <form class="savings-plan-form" data-savings-form="${escapeAttr(plan.id)}">
+        <label class="savings-current-value"><span>現在の評価額</span><input name="currentValue" type="number" min="0" step="1" inputmode="numeric" value="${Number(plan.currentValue) || 0}"></label>
+        <div class="savings-schedule-head"><h4>月別の積立額</h4><label class="checkbox-line"><input name="recurring" type="checkbox" ${plan.recurring ? "checked" : ""}><span>継続</span></label></div>
+        <p>継続中は直近の設定額を翌月以降に適用します。特定月の設定があればそちらを優先します。</p>
+        <div class="savings-schedule-list">${(plan.schedule || []).map((item) => savingsScheduleRow(item)).join("")}</div>
+        <div class="savings-plan-actions"><button type="button" class="secondary" data-savings-add-month>月を追加</button><button type="submit">積立設定を保存</button><span data-savings-status role="status"></span></div>
+      </form>
+    </article>
+  `;
+}
+
+function savingsScheduleRow(item = {}) {
+  return `<div class="savings-schedule-row"><label><span>対象月</span><input name="scheduleMonth" type="month" value="${escapeAttr(item.month || localMonthKey())}" required></label><label><span>積立額</span><input name="scheduleAmount" type="number" min="1" step="1" inputmode="numeric" value="${Number(item.amount) || ""}" required></label><button type="button" class="icon savings-remove-month" data-savings-remove-month aria-label="この月を削除">×</button></div>`;
+}
+
+async function fetchSavingsSeries(symbol) {
+  state.savingsSeries[symbol] = { ...(state.savingsSeries[symbol] || {}), loading: true };
+  try {
+    const data = await request(`/api/price-series?market=fund&daily=1&symbol=${encodeURIComponent(symbol)}`);
+    state.savingsSeries[symbol] = { series: data.series || [], loaded: true, fetchedAt: Date.now() };
+  } catch (error) {
+    state.savingsSeries[symbol] = { series: [], loaded: true, error: error.message || "価格履歴を取得できません" };
+  }
+}
+
+async function saveSavingsPlan(form) {
+  const id = form.dataset.savingsForm || "";
+  const original = state.savingsPlans.find((plan) => plan.id === id);
+  const formData = new FormData(form);
+  const schedule = [...form.querySelectorAll(".savings-schedule-row")].map((row) => ({
+    month: row.querySelector('[name="scheduleMonth"]')?.value || "",
+    amount: Number(row.querySelector('[name="scheduleAmount"]')?.value),
+  })).filter((item) => item.month && Number.isFinite(item.amount) && item.amount > 0);
+  const status = form.querySelector("[data-savings-status]");
+  if (!schedule.length) {
+    if (status) status.textContent = "月と金額を1件以上入力してください。";
+    return;
+  }
+  if (status) status.textContent = "保存中";
+  const button = form.querySelector('[type="submit"]');
+  if (button) button.disabled = true;
+  try {
+    const payload = await request("/api/savings-plans", {
+      method: "POST",
+      body: JSON.stringify({ plan: {
+        ...original,
+        currentValue: Number(formData.get("currentValue")) || 0,
+        recurring: formData.has("recurring"),
+        schedule,
+      } }),
+    });
+    state.savingsPlans = payload.plans || [];
+    renderSavings();
+    toast("積立設定を保存しました。");
+  } catch (error) {
+    if (status) status.textContent = error.message || "保存できませんでした";
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 let backgroundCacheLoading = false;
 
 async function syncBackgroundPrices() {
@@ -569,6 +754,8 @@ function renderCurrentDataView() {
     renderPerformance();
   } else if (state.view === "crypto") {
     renderCrypto();
+  } else if (state.view === "savings") {
+    renderSavings();
   } else if (state.view === "ideas") {
     renderCandidateList();
     renderSectorEvidence();
@@ -612,6 +799,7 @@ function ensureViewData(view) {
   }
   if (view === "crypto") return ensureDataSection("crypto", () => loadCrypto());
   if (view === "ideas") return ensureDataSection("ideas", () => loadDiscoveryCache());
+  if (view === "savings") return ensureDataSection("savings", () => loadSavingsPlans());
   return Promise.resolve();
 }
 
@@ -751,7 +939,9 @@ function activeDetailForm() {
 }
 
 function isDetailFormEditing() {
-  return Boolean(activeDetailForm()) || Date.now() < detailFormEditHoldUntil;
+  return Boolean(activeDetailForm())
+    || Boolean(document.activeElement?.closest?.("#savingsCreateForm, .savings-plan-form"))
+    || Date.now() < detailFormEditHoldUntil;
 }
 
 function attachDetailFormEditGuard(form) {
@@ -780,6 +970,7 @@ function setView(view) {
   if (nextView === "performance") renderPerformance();
   if (nextView === "us") renderUs();
   if (nextView === "crypto") renderCrypto();
+  if (nextView === "savings") renderSavings();
   if (nextView === "ideas") {
     renderCandidateList();
     renderSectorEvidence();
@@ -1252,6 +1443,8 @@ function renderPerformance() {
   if (els.performanceChart) {
     els.performanceChart.setAttribute("aria-label", `過去1年から今後1年の${isUs ? "米国株" : "日本株"}配当込み損益グラフ`);
   }
+  performanceChartState.hoverIndex = null;
+  if (els.performanceChartTooltip) els.performanceChartTooltip.hidden = true;
   if (els.performanceCurrent) els.performanceCurrent.textContent = moneyByCurrency(timeline.currentTotal, currency);
   if (els.performanceCurrentNote) els.performanceCurrentNote.textContent = `${timeline.stockCount}銘柄・売却済み損益と受取配当を含む`;
   if (els.performanceForecast) els.performanceForecast.textContent = moneyByCurrency(timeline.forecastTotal, currency);
@@ -1492,6 +1685,8 @@ function renderCryptoDetail() {
   const holding = state.cryptoHolding || { holding: false, positions: [], sales: [] };
   const analysis = state.cryptoAnalysis || null;
   const position = analysis?.position || cryptoPositionFallback(holding);
+  const btcPrice = analysis?.btcJpy || {};
+  const btcForecast = instrumentChartForecast(btcPrice, "BTC-JPY");
   const generated = analysis?.generatedAt
     ? `更新 ${new Date(analysis.generatedAt).toLocaleString("ja-JP")}`
     : "未更新";
@@ -1499,11 +1694,11 @@ function renderCryptoDetail() {
   els.cryptoDetail.innerHTML = `
     <section class="decision-card crypto-chart-jpy">
         <div>
-          <h4>3年チャート JPY</h4>
+          <h4>BTC/JPY 価格推移・3か月予測</h4>
           <span>BTC/JPY（BTC/USDを円換算）</span>
         </div>
         <div class="chart-frame embedded-chart">
-          <canvas data-us-price-chart aria-label="Bitcoin円換算価格の3年チャート"></canvas>
+          <canvas data-us-price-chart aria-label="Bitcoin円換算価格の過去2年9か月実績と今後3か月予測"></canvas>
           <div class="chart-tooltip" data-us-chart-tooltip hidden></div>
         </div>
     </section>
@@ -1518,7 +1713,7 @@ function renderCryptoDetail() {
     </details>
   `;
   attachCryptoPositionForm();
-  renderEmbeddedPriceChart(els.cryptoDetail.querySelector(".crypto-chart-jpy"), analysis?.btcJpy?.series || [], yen);
+  renderEmbeddedPriceChart(els.cryptoDetail.querySelector(".crypto-chart-jpy"), btcPrice.series || [], yen, [], btcPrice, btcForecast);
 }
 
 function renderFxDetail() {
@@ -1526,14 +1721,18 @@ function renderFxDetail() {
   const analysis = state.cryptoAnalysis || null;
   const usdTiming = analysis?.fxTiming?.usdJpy || analysis?.fxTiming || null;
   const eurTiming = analysis?.fxTiming?.eurJpy || null;
+  const usdJpyPrice = analysis?.usdJpy || {};
+  const eurJpyPrice = analysis?.eurJpy || {};
+  const usdJpyForecast = instrumentChartForecast(usdJpyPrice, "USD-JPY");
+  const eurJpyForecast = instrumentChartForecast(eurJpyPrice, "EUR-JPY");
   els.fxDetail.innerHTML = `
     <section class="fx-pairs-grid">
-      ${fxPairHtml("USD/JPY", "米ドル", analysis?.usdJpy, usdTiming, "usd-jpy")}
-      ${fxPairHtml("EUR/JPY", "ユーロ", analysis?.eurJpy, eurTiming, "eur-jpy")}
+      ${fxPairHtml("USD/JPY", "米ドル", usdJpyPrice, usdTiming, "usd-jpy")}
+      ${fxPairHtml("EUR/JPY", "ユーロ", eurJpyPrice, eurTiming, "eur-jpy")}
     </section>
   `;
-  renderEmbeddedPriceChart(els.fxDetail.querySelector(".fx-chart-usd-jpy"), analysis?.usdJpy?.series || [], yen);
-  renderEmbeddedPriceChart(els.fxDetail.querySelector(".fx-chart-eur-jpy"), analysis?.eurJpy?.series || [], yen);
+  renderEmbeddedPriceChart(els.fxDetail.querySelector(".fx-chart-usd-jpy"), usdJpyPrice.series || [], yen, [], usdJpyPrice, usdJpyForecast);
+  renderEmbeddedPriceChart(els.fxDetail.querySelector(".fx-chart-eur-jpy"), eurJpyPrice.series || [], yen, [], eurJpyPrice, eurJpyForecast);
 }
 
 function fxPairHtml(pair, currencyName, price, timing, chartClass) {
@@ -1541,11 +1740,11 @@ function fxPairHtml(pair, currencyName, price, timing, chartClass) {
     <section class="fx-pair-section">
       <article class="decision-card fx-chart-${chartClass}">
         <div class="fx-pair-heading">
-          <h4>${pair}</h4>
+          <div><h4>${pair}</h4><small>3か月先予測</small></div>
           <strong>${fxRate(price?.current)}</strong>
         </div>
         <div class="chart-frame embedded-chart">
-          <canvas data-us-price-chart aria-label="${pair}の3年チャート"></canvas>
+          <canvas data-us-price-chart aria-label="${pair}の過去2年9か月実績と今後3か月予測"></canvas>
           <div class="chart-tooltip" data-us-chart-tooltip hidden></div>
         </div>
       </article>
@@ -2456,6 +2655,22 @@ function decisionChartForecast(series = [], price = {}, symbol = "", nowValue = 
   });
 }
 
+function instrumentChartForecast(price = {}, symbol = "", nowValue = new Date()) {
+  const series = Array.isArray(price.series) ? price.series : [];
+  const current = Number(price.current) > 0 ? Number(price.current) : Number(series.at(-1)?.close);
+  if (!(current > 0)) return [];
+  const now = new Date(nowValue);
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString().slice(0, 10);
+  const last = series.at(-1) || {};
+  const key = [symbol, today, current, series.length, last.date, last.close].join(":");
+  if (instrumentForecastCache.has(key)) return instrumentForecastCache.get(key);
+  const validation = evaluateDecisionForecast(series, symbol, now);
+  const forecast = decisionChartForecast(series, { ...price, current }, symbol, now, validation);
+  if (instrumentForecastCache.size >= 12) instrumentForecastCache.delete(instrumentForecastCache.keys().next().value);
+  instrumentForecastCache.set(key, forecast);
+  return forecast;
+}
+
 function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
   const action = analysis.action || "WATCH";
   const price = analysis.price || {};
@@ -3175,6 +3390,20 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function nearestChartHoverPoint(points = [], pointerX = 0, futureStartX = Infinity) {
+  if (!points.length) return null;
+  let candidates = points;
+  if (Number.isFinite(futureStartX)) {
+    const preferred = points.filter((point) => pointerX >= futureStartX
+      ? point.kind === "forecast"
+      : point.kind !== "forecast");
+    if (preferred.length) candidates = preferred;
+  }
+  return candidates.reduce((nearest, point) => (
+    Math.abs(point.x - pointerX) < Math.abs(nearest.x - pointerX) ? point : nearest
+  ));
+}
+
 function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price = chartState.price || {}, forecast = chartState.forecast || []) {
   const canvas = els.chart;
   if (!canvas) return;
@@ -3231,6 +3460,7 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price =
   };
   const x = (index) => xForDate(cleanSeries[index]?.date || today);
   const y = (value) => pad.top + (1 - ((value - min) / span)) * (height - pad.top - pad.bottom);
+  chartState.futureStartX = forecast.length ? xForDate(today) : Infinity;
   chartState.plot = {
     left: pad.left,
     right: width - pad.right,
@@ -3339,12 +3569,25 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price =
   context.fillText(yen(max), 10, pad.top + 4);
   context.fillText(yen(min), 10, height - pad.bottom + 4);
 
-  chartState.points = cleanSeries.map((point, index) => ({
-    index,
-    point,
+  const actualHoverPoints = cleanSeries.map((point, index) => ({
+    kind: "actual",
+    date: point.date,
+    value: point.close,
     x: x(index),
     y: y(point.close),
   }));
+  const forecastHoverPoints = forecast
+    .filter((point) => point.date > today && Number.isFinite(point.value))
+    .map((point) => ({
+      kind: "forecast",
+      date: point.date,
+      value: point.value,
+      low: point.low,
+      high: point.high,
+      x: xForDate(point.date),
+      y: y(point.value),
+    }));
+  chartState.points = [...actualHoverPoints, ...forecastHoverPoints].map((point, index) => ({ ...point, index }));
 
   if (Number.isFinite(chartState.hoverIndex)) {
     const hovered = chartState.points[chartState.hoverIndex];
@@ -3356,7 +3599,7 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price =
       context.lineTo(hovered.x, height - pad.bottom);
       context.stroke();
       context.fillStyle = "#ffffff";
-      context.strokeStyle = "#0b6b58";
+      context.strokeStyle = hovered.kind === "forecast" ? "#d46b2c" : "#0b6b58";
       context.lineWidth = 2;
       context.beginPath();
       context.arc(hovered.x, hovered.y, 4.5, 0, Math.PI * 2);
@@ -3377,15 +3620,8 @@ function updateChartHover(event) {
     clearChartHover();
     return;
   }
-  let nearest = chartState.points[0];
-  let best = Math.abs(nearest.x - x);
-  for (const point of chartState.points) {
-    const distance = Math.abs(point.x - x);
-    if (distance < best) {
-      nearest = point;
-      best = distance;
-    }
-  }
+  const nearest = nearestChartHoverPoint(chartState.points, x, chartState.futureStartX);
+  if (!nearest) return;
   if (nearest.index === chartState.hoverIndex) {
     positionChartTooltip(nearest);
     return;
@@ -3394,7 +3630,8 @@ function updateChartHover(event) {
   drawChart(chartState.series, chartState.tradeMarkers);
 }
 
-function clearChartHover() {
+function clearChartHover(event = {}) {
+  if (event.pointerType === "touch") return;
   if (!Number.isFinite(chartState.hoverIndex)) return;
   chartState.hoverIndex = null;
   hideChartTooltip();
@@ -3402,23 +3639,47 @@ function clearChartHover() {
 }
 
 function positionChartTooltip(point) {
-  const tooltip = els.chartTooltip;
-  if (!tooltip || !els.chart) return;
-  const rect = els.chart.getBoundingClientRect();
-  tooltip.hidden = false;
-  tooltip.innerHTML = `
-    <strong>${escapeHtml(formatDate(point.point.date))}</strong>
-    <span>${yen(point.point.close)}</span>
-  `;
-  const width = tooltip.offsetWidth || 120;
-  const left = Math.min(Math.max(point.x, width / 2 + 6), rect.width - width / 2 - 6);
-  const top = Math.max(12, point.y - 12);
-  tooltip.style.left = `${left}px`;
-  tooltip.style.top = `${top}px`;
+  showChartPointTooltip(els.chart, els.chartTooltip, point, yen);
 }
 
 function hideChartTooltip() {
   if (els.chartTooltip) els.chartTooltip.hidden = true;
+}
+
+function chartPointTooltipHtml(point, formatter) {
+  const label = point.kind === "forecast" ? "参考予測中央値" : point.kind === "principal" ? "積立元本" : "実績";
+  const range = Number.isFinite(point.low) && Number.isFinite(point.high)
+    ? `<small>参考幅 ${escapeHtml(formatter(point.low))}〜${escapeHtml(formatter(point.high))}</small>`
+    : "";
+  const principal = Number.isFinite(point.principal) && point.kind === "forecast"
+    ? `<small>積立元本 ${escapeHtml(formatter(point.principal))}</small>`
+    : "";
+  return `
+    <strong>${escapeHtml(formatDate(point.date))}</strong>
+    <small class="chart-tooltip-kind">${label}</small>
+    <span>${escapeHtml(formatter(point.value))}</span>
+    ${range}
+    ${principal}
+  `;
+}
+
+function showChartPointTooltip(canvas, tooltip, point, formatter) {
+  if (!tooltip || !canvas || !point) return;
+  const host = tooltip.offsetParent || canvas.parentElement;
+  if (!host) return;
+  const canvasRect = canvas.getBoundingClientRect();
+  const hostRect = host.getBoundingClientRect();
+  tooltip.innerHTML = chartPointTooltipHtml(point, formatter);
+  tooltip.hidden = false;
+  const width = tooltip.offsetWidth || 140;
+  const height = tooltip.offsetHeight || 64;
+  const leftInHost = canvasRect.left - hostRect.left + point.x;
+  const pointTopInHost = canvasRect.top - hostRect.top + point.y;
+  const belowPoint = pointTopInHost < height + 18;
+  tooltip.classList.toggle("chart-tooltip-below", belowPoint);
+  const left = clampNumber(leftInHost, width / 2 + 6, hostRect.width - width / 2 - 6);
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${Math.max(12, pointTopInHost + (belowPoint ? 12 : -12))}px`;
 }
 
 function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarkers = [], price = {}, forecast = []) {
@@ -3427,7 +3688,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
   const timingNode = root?.querySelector("[data-us-chart-timing]");
   if (!canvas) return;
   const frame = canvas.closest(".chart-frame") || canvas;
-  const state = { series: [], points: [], plot: null, hoverIndex: null };
+  const state = { series: [], points: [], plot: null, futureStartX: Infinity, hoverIndex: null };
 
   const draw = () => {
     const context = canvas.getContext("2d");
@@ -3480,6 +3741,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
       ? xForDate(cleanSeries[index]?.date || today)
       : pad.left + (index / (cleanSeries.length - 1)) * (width - pad.left - pad.right);
     const y = (value) => pad.top + (1 - ((value - min) / span)) * (height - pad.top - pad.bottom);
+    state.futureStartX = forecast.length ? xForDate(today) : Infinity;
     state.plot = { left: pad.left, right: width - pad.right, top: pad.top, bottom: height - pad.bottom };
 
     context.strokeStyle = "#dbe2e4";
@@ -3597,7 +3859,25 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
       });
       context.textAlign = "left";
     }
-    state.points = cleanSeries.map((point, index) => ({ index, point, x: x(index), y: y(point.close) }));
+    const actualHoverPoints = cleanSeries.map((point, index) => ({
+      kind: "actual",
+      date: point.date,
+      value: point.close,
+      x: x(index),
+      y: y(point.close),
+    }));
+    const forecastHoverPoints = forecast
+      .filter((point) => point.date > today && Number.isFinite(point.value))
+      .map((point) => ({
+        kind: "forecast",
+        date: point.date,
+        value: point.value,
+        low: point.low,
+        high: point.high,
+        x: xForDate(point.date),
+        y: y(point.value),
+      }));
+    state.points = [...actualHoverPoints, ...forecastHoverPoints].map((point, index) => ({ ...point, index }));
 
     if (Number.isFinite(state.hoverIndex)) {
       const hovered = state.points[state.hoverIndex];
@@ -3609,7 +3889,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
         context.lineTo(hovered.x, height - pad.bottom);
         context.stroke();
         context.fillStyle = "#ffffff";
-        context.strokeStyle = "#0b6b58";
+        context.strokeStyle = hovered.kind === "forecast" ? "#d46b2c" : "#0b6b58";
         context.lineWidth = 2;
         context.beginPath();
         context.arc(hovered.x, hovered.y, 4.5, 0, Math.PI * 2);
@@ -3621,7 +3901,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
     renderEmbeddedChartTiming(timingNode, timing, formatter);
   };
 
-  canvas.addEventListener("mousemove", (event) => {
+  const handlePointerMove = (event) => {
     if (!state.points.length || !state.plot) return;
     const rect = canvas.getBoundingClientRect();
     const px = event.clientX - rect.left;
@@ -3632,19 +3912,17 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
       draw();
       return;
     }
-    let nearest = state.points[0];
-    let best = Math.abs(nearest.x - px);
-    for (const point of state.points) {
-      const distance = Math.abs(point.x - px);
-      if (distance < best) {
-        nearest = point;
-        best = distance;
-      }
-    }
+    const nearest = nearestChartHoverPoint(state.points, px, state.futureStartX);
+    if (!nearest) return;
     state.hoverIndex = nearest.index;
     draw();
+  };
+  canvas.addEventListener("pointermove", handlePointerMove);
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "touch") handlePointerMove(event);
   });
-  canvas.addEventListener("mouseleave", () => {
+  canvas.addEventListener("pointerleave", (event) => {
+    if (event.pointerType === "touch") return;
     state.hoverIndex = null;
     if (tooltip) tooltip.hidden = true;
     draw();
@@ -3659,18 +3937,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
 }
 
 function positionEmbeddedTooltip(canvas, tooltip, point, formatter) {
-  if (!tooltip || !canvas) return;
-  const rect = canvas.getBoundingClientRect();
-  tooltip.hidden = false;
-  tooltip.innerHTML = `
-    <strong>${escapeHtml(formatDate(point.point.date))}</strong>
-    <span>${formatter(point.point.close)}</span>
-  `;
-  const width = tooltip.offsetWidth || 120;
-  const left = Math.min(Math.max(point.x, width / 2 + 6), rect.width - width / 2 - 6);
-  const top = Math.max(12, point.y - 12);
-  tooltip.style.left = `${left}px`;
-  tooltip.style.top = `${top}px`;
+  showChartPointTooltip(canvas, tooltip, point, formatter);
 }
 
 function renderEmbeddedChartTiming(node, timing, formatter) {
@@ -5342,6 +5609,13 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
 
 function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
   if (!canvas) return;
+  const chartState = options.chartState || performanceChartState;
+  const tooltip = options.tooltip || els.performanceChartTooltip;
+  chartState.actual = actual;
+  chartState.forecast = forecast;
+  chartState.options = options;
+  chartState.points = [];
+  chartState.plot = null;
   const context = canvas.getContext("2d");
   if (!context) return;
   const rect = canvas.getBoundingClientRect();
@@ -5364,12 +5638,14 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
   const values = [
     ...actualPoints.map((point) => point.value),
     ...forecastPoints.flatMap((point) => [point.low, point.value, point.high]),
+    ...(options.principalSeries || []).map((point) => point.value),
   ].filter(Number.isFinite);
   if (options.includeZero) values.push(0);
   if (!values.length) {
     context.fillStyle = "#667277";
     context.font = "13px system-ui";
     context.fillText("損益・価格データがありません", 18, 32);
+    if (tooltip) tooltip.hidden = true;
     return;
   }
   const low = Math.min(...values);
@@ -5382,6 +5658,7 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
   const plotHeight = Math.max(20, height - pad.top - pad.bottom);
   const x = (date) => pad.left + ((new Date(`${date}T00:00:00Z`).getTime() - startMs) / (endMs - startMs)) * plotWidth;
   const y = (value) => pad.top + ((max - value) / (max - min)) * plotHeight;
+  chartState.futureStartX = x(options.today);
   const formatter = new Intl.NumberFormat(options.currency === "USD" ? "en-US" : "ja-JP", {
     style: "currency",
     currency: options.currency || "JPY",
@@ -5450,6 +5727,7 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
     context.setLineDash([]);
   };
   drawLine(actualPoints, "#0b6b58", false);
+  drawLine(inRange(options.principalSeries || []), "#47758a", false);
   drawLine(forecastPoints, "#bd6927", true);
   const tickDates = [startMs, startMs + (endMs - startMs) * 0.25, todayMs, startMs + (endMs - startMs) * 0.75, endMs];
   context.fillStyle = "#667277";
@@ -5459,6 +5737,81 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
     const label = `${date.getUTCFullYear()}/${date.getUTCMonth() + 1}`;
     context.fillText(label, pad.left + ((time - startMs) / (endMs - startMs)) * plotWidth, height - 8);
   });
+
+  const actualHoverPoints = actualPoints
+    .filter((point) => Number.isFinite(point.value))
+    .map((point) => ({ kind: "actual", date: point.date, value: point.value }));
+  const forecastHoverPoints = forecastPoints
+    .filter((point) => point.date > options.today && Number.isFinite(point.value))
+    .map((point) => ({ kind: "forecast", date: point.date, value: point.value, low: point.low, high: point.high, principal: point.principal }));
+  const principalHoverPoints = inRange(options.principalSeries || [])
+    .filter((point) => point.date > options.today && Number.isFinite(point.value))
+    .map((point) => ({ kind: "principal", date: point.date, value: point.value }));
+  chartState.points = [...actualHoverPoints, ...principalHoverPoints, ...forecastHoverPoints]
+    .map((point, index) => ({ ...point, index, x: x(point.date), y: y(point.value) }));
+  chartState.plot = { left: pad.left, right: width - pad.right, top: pad.top, bottom: height - pad.bottom };
+  if (Number.isFinite(chartState.hoverIndex)) {
+    const hovered = chartState.points[chartState.hoverIndex];
+    if (hovered) {
+      context.strokeStyle = "rgba(26, 36, 40, 0.35)";
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(hovered.x, pad.top);
+      context.lineTo(hovered.x, height - pad.bottom);
+      context.stroke();
+      context.fillStyle = "#ffffff";
+      context.strokeStyle = hovered.kind === "forecast" ? "#bd6927" : hovered.kind === "principal" ? "#47758a" : "#0b6b58";
+      context.lineWidth = 2;
+      context.beginPath();
+      context.arc(hovered.x, hovered.y, 4.5, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+      const money = (value) => formatter.format(value);
+      showChartPointTooltip(canvas, tooltip, hovered, money);
+    }
+  }
+}
+
+function updatePerformanceChartHover(event) {
+  updateDatedLineChartHover(event, els.performanceChart, performanceChartState, els.performanceChartTooltip);
+}
+
+function updateDatedLineChartHover(event, canvas, chartState, tooltip) {
+  const { points, plot } = chartState;
+  if (!canvas || !points.length || !plot) return;
+  const rect = canvas.getBoundingClientRect();
+  const px = event.clientX - rect.left;
+  const py = event.clientY - rect.top;
+  if (px < plot.left || px > plot.right || py < plot.top - 12 || py > plot.bottom + 12) {
+    clearDatedLineChartHover(event, canvas, chartState, tooltip);
+    return;
+  }
+  const nearest = nearestChartHoverPoint(points, px, chartState.futureStartX);
+  if (!nearest) return;
+  if (nearest.index !== chartState.hoverIndex) {
+    chartState.hoverIndex = nearest.index;
+    drawDatedLineChart(canvas, chartState.actual, chartState.forecast, chartState.options);
+  } else {
+    const formatter = new Intl.NumberFormat(chartState.options.currency === "USD" ? "en-US" : "ja-JP", {
+      style: "currency",
+      currency: chartState.options.currency || "JPY",
+      notation: "compact",
+      maximumFractionDigits: 1,
+    });
+    showChartPointTooltip(canvas, tooltip, nearest, (value) => formatter.format(value));
+  }
+}
+
+function clearPerformanceChartHover(event = {}) {
+  clearDatedLineChartHover(event, els.performanceChart, performanceChartState, els.performanceChartTooltip);
+}
+
+function clearDatedLineChartHover(event = {}, canvas, chartState, tooltip) {
+  if (event.pointerType === "touch") return;
+  if (!Number.isFinite(chartState.hoverIndex)) return;
+  chartState.hoverIndex = null;
+  if (tooltip) tooltip.hidden = true;
+  drawDatedLineChart(canvas, chartState.actual || [], chartState.forecast || [], chartState.options || {});
 }
 
 function dividendDate(value = "") {
@@ -7381,6 +7734,86 @@ els.viewButtons.forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.viewTarget));
 });
 
+els.savingsHorizon?.addEventListener("change", renderSavings);
+els.savingsCreateForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!els.savingsCreateForm.reportValidity()) return;
+  const form = els.savingsCreateForm;
+  const formData = new FormData(form);
+  const amount = Number(formData.get("amount"));
+  const symbol = String(formData.get("symbol") || "").trim().toUpperCase();
+  const status = els.savingsFormStatus;
+  const button = form.querySelector('[type="submit"]');
+  if (!/^[A-Z0-9]{4,14}$/.test(symbol)) {
+    if (status) status.textContent = "ファンドコードを確認してください。";
+    return;
+  }
+  if (status) status.textContent = "保存中";
+  if (button) button.disabled = true;
+  try {
+    const payload = await request("/api/savings-plans", {
+      method: "POST",
+      body: JSON.stringify({ plan: {
+        provider: formData.get("provider"),
+        name: String(formData.get("name") || "").trim(),
+        symbol,
+        currentValue: Number(formData.get("currentValue")) || 0,
+        recurring: formData.has("recurring"),
+        schedule: [{ month: formData.get("startMonth"), amount }],
+      } }),
+    });
+    state.savingsPlans = payload.plans || [];
+    form.reset();
+    form.elements.namedItem("startMonth").value = localMonthKey();
+    if (status) status.textContent = "登録しました。基準価額を取得中です。";
+    renderSavings();
+    void fetchSavingsSeries(symbol).then(() => {
+      if (state.view === "savings") renderSavings();
+      if (status) status.textContent = state.savingsSeries[symbol]?.error || "価格履歴を更新しました。";
+    });
+  } catch (error) {
+    if (status) status.textContent = error.message || "登録できませんでした。";
+  } finally {
+    if (button) button.disabled = false;
+  }
+});
+
+els.savingsPlans?.addEventListener("click", async (event) => {
+  const addButton = event.target.closest("[data-savings-add-month]");
+  if (addButton) {
+    const list = addButton.closest(".savings-plan-form")?.querySelector(".savings-schedule-list");
+    list?.insertAdjacentHTML("beforeend", savingsScheduleRow({ month: localMonthKey(), amount: "" }));
+    return;
+  }
+  const removeButton = event.target.closest("[data-savings-remove-month]");
+  if (removeButton) {
+    removeButton.closest(".savings-schedule-row")?.remove();
+    return;
+  }
+  const deleteButton = event.target.closest("[data-savings-delete]");
+  if (deleteButton) {
+    const id = deleteButton.dataset.savingsDelete;
+    deleteButton.disabled = true;
+    try {
+      const payload = await request(`/api/savings-plans/${encodeURIComponent(id)}`, { method: "DELETE" });
+      state.savingsPlans = payload.plans || [];
+      savingsChartStates.delete(id);
+      renderSavings();
+      toast("積立商品を削除しました。");
+    } catch (error) {
+      deleteButton.disabled = false;
+      toast(error.message || "削除できませんでした。");
+    }
+  }
+});
+
+els.savingsPlans?.addEventListener("submit", async (event) => {
+  const form = event.target.closest("[data-savings-form]");
+  if (!form) return;
+  event.preventDefault();
+  await saveSavingsPlan(form);
+});
+
 els.ideaTabButtons.forEach((button) => {
   button.addEventListener("click", () => {
     state.ideaView = button.dataset.ideaTab || "candidates";
@@ -7453,6 +7886,14 @@ els.financialCheckButton?.addEventListener("click", checkFinancials);
 els.testNotificationButton?.addEventListener("click", testNotification);
 els.chart?.addEventListener("pointermove", updateChartHover);
 els.chart?.addEventListener("pointerleave", clearChartHover);
+els.chart?.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "touch") updateChartHover(event);
+});
+els.performanceChart?.addEventListener("pointermove", updatePerformanceChartHover);
+els.performanceChart?.addEventListener("pointerleave", clearPerformanceChartHover);
+els.performanceChart?.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "touch") updatePerformanceChartHover(event);
+});
 window.addEventListener("resize", () => {
   if (isDetailFormEditing()) return;
   if (state.view === "analysis") {
@@ -7461,6 +7902,8 @@ window.addEventListener("resize", () => {
     renderUsDetail();
   } else if (state.view === "performance") {
     renderPerformance();
+  } else if (state.view === "savings") {
+    renderSavings();
   }
 });
 
