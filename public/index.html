@@ -201,7 +201,7 @@
               <span id="selectedSymbol">未選択</span>
             </div>
             <div class="chart-frame">
-              <canvas id="priceChart" width="760" height="260" aria-label="3年価格チャート"></canvas>
+              <canvas id="priceChart" width="760" height="260" aria-label="過去2年9か月の実績と今後3か月の予測を含む価格チャート"></canvas>
               <div id="chartTooltip" class="chart-tooltip" hidden></div>
             </div>
             <div id="chartTiming" class="chart-timing" hidden></div>
@@ -225,7 +225,7 @@
           <div>
             <p class="eyebrow">PORTFOLIO</p>
             <h2>配当込み損益推移</h2>
-            <p class="performance-period">過去2年9か月から今後3か月まで</p>
+            <p class="performance-period">過去1年から今後1年まで</p>
           </div>
         </section>
 
@@ -241,7 +241,7 @@
             <small id="performanceCurrentNote">保有・売却済みを含む</small>
           </article>
           <article class="profit-card">
-            <span>3か月後の中央値（参考）</span>
+            <span>1年後の中央値（参考）</span>
             <strong id="performanceForecast">-</strong>
             <small id="performanceForecastNote">過去3年の週次変動を再抽出した参考試算</small>
           </article>
@@ -258,7 +258,7 @@
             <span id="performanceUpdatedAt">価格データを読み込み中</span>
           </div>
           <div class="performance-chart-wrap">
-            <canvas id="performanceChart" role="img" aria-label="過去2年9か月から今後3か月の日本株配当込み損益グラフ"></canvas>
+            <canvas id="performanceChart" role="img" aria-label="過去1年から今後1年の日本株配当込み損益グラフ"></canvas>
           </div>
           <div class="performance-legend" aria-label="グラフの凡例">
             <span><i class="legend-actual"></i>過去の実績</span>
@@ -266,7 +266,7 @@
             <span><i class="legend-band"></i>参考幅（10〜90%）</span>
             <span><i class="legend-today"></i>今日</span>
           </div>
-          <p class="performance-assumption">過去3年の週次リターンから4週単位の値動きを再抽出した1,000経路です。グラフは過去2年9か月と今後3か月を表示し、線は3か月後の中央値に近い一経路、帯は各週の10〜90%参考幅です。損益推移では保有銘柄の同じ週の値動きをまとめ、銘柄間の連動も反映します。予想配当は各経路に加算します。過去の変動を使った参考試算で、上昇確率や将来の利益を示すものではありません。履歴不足の銘柄は価格変動の試算対象外です。</p>
+          <p class="performance-assumption">過去3年の週次リターンから4週単位の値動きを再抽出した1,000経路です。線は1年後の中央値に近い一経路、帯は各週の10〜90%参考幅です。損益推移では保有銘柄の同じ週の値動きをまとめ、銘柄間の連動も反映します。予想配当は各経路に加算します。過去の変動を使った参考試算で、上昇確率や将来の利益を示すものではありません。履歴不足の銘柄は価格変動の試算対象外です。</p>
           <p id="performanceEmpty" class="empty-state" hidden></p>
         </section>
       </section>

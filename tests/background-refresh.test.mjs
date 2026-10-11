@@ -1503,9 +1503,46 @@ test("dividend receipt tile shows the nearest actual payment date for open holdi
 test("price charts show visible purchase and sale markers", () => {
   assert.match(appSource, /function chartTradeMarkers/);
   assert.match(appSource, /function drawChartTradeMarkers/);
-  assert.match(appSource, /drawChart\(price\.series \|\| \[\], stock \? chartTradeMarkers\(stock\) : \[\], price\)/);
+  assert.match(appSource, /drawChart\(price\.series \|\| \[\], stock \? chartTradeMarkers\(stock\) : \[\], price, forecast\)/);
   assert.match(appSource, /renderEmbeddedPriceChart\(els\.usDetail, analysis\?\.price\?\.series \|\| \[\], usd, chartTradeMarkers\(stock\), analysis\?\.price \|\| \{\}\)/);
   assert.match(appSource, /const label = marker\.type === "sell" \? "売" : "買"/);
+  assert.match(indexSource, /過去2年9か月の実績と今後3か月の予測を含む価格チャート/);
+  assert.match(appSource, /context\.fillText\("過去2年9か月＋3か月予測"/);
+  assert.match(appSource, /context\.fillText\("3か月先予測"/);
+});
+
+test("Decision chart forecast uses three years of weekly prices and ends after three months", () => {
+  const weeklyGrid = loadFunction(appSource, "weeklyPriceGrid", {});
+  let trainingWeeks = 0;
+  const decisionForecast = loadFunction(appSource, "decisionChartForecast", {
+    weeklyPriceGrid: (...args) => {
+      trainingWeeks = args[3] ?? 156;
+      return weeklyGrid(...args);
+    },
+    weeklyReturnStatistics: loadFunction(appSource, "weeklyReturnStatistics", {}),
+    calendarMonthOffset: loadFunction(appSource, "calendarMonthOffset", {}),
+    forecastWeeklyDates: loadFunction(appSource, "forecastWeeklyDates", {}),
+    bootstrapForecast: loadFunction(appSource, "bootstrapForecast", {
+      seededForecastRandom: loadFunction(appSource, "seededForecastRandom", {}),
+      forecastQuantile: loadFunction(appSource, "forecastQuantile", {}),
+    }),
+  });
+  const series = [];
+  let close = 100;
+  let session = 0;
+  for (let time = Date.UTC(2023, 9, 11); time <= Date.UTC(2026, 9, 11); time += 86400000) {
+    const day = new Date(time).getUTCDay();
+    if (day === 0 || day === 6) continue;
+    close *= Math.exp(Math.sin(session * 0.37) * 0.012 + 0.0005);
+    series.push({ date: new Date(time).toISOString().slice(0, 10), close });
+    session += 1;
+  }
+  const forecast = decisionForecast(series, { current: 120 }, "TEST.T", new Date("2026-10-11T00:00:00Z"));
+  assert.equal(trainingWeeks, 156);
+  assert.equal(forecast.length, 14);
+  assert.equal(forecast[0].date, "2026-10-11");
+  assert.equal(forecast.at(-1).date, "2027-01-11");
+  assert.ok(forecast.slice(1).some((point, index) => point.value !== forecast[index].value));
 });
 
 test("mobile position entry is not closed by keyboard resize or background refresh", () => {
@@ -2105,7 +2142,7 @@ test("portfolio P/L timeline resamples three years of weekly returns and adds fo
   const annualizedReturn = loadFunction(appSource, "performanceAnnualizedReturn", {});
   const timeline = loadFunction(appSource, "portfolioPerformanceTimeline", {
     weeklyPriceGrid: loadFunction(appSource, "weeklyPriceGrid", {}),
-    calendarMonthOffset: loadFunction(appSource, "calendarMonthOffset", {}),
+    calendarYearOffset: loadFunction(appSource, "calendarYearOffset", {}),
     weeklyReturnStatistics: loadFunction(appSource, "weeklyReturnStatistics", {}),
     bootstrapForecast: loadFunction(appSource, "bootstrapForecast", {
       seededForecastRandom: loadFunction(appSource, "seededForecastRandom", {}),
@@ -2155,9 +2192,9 @@ test("portfolio P/L timeline resamples three years of weekly returns and adds fo
   };
   assert.ok(annualizedReturn(analysis.price.series, "2026-10-11") > 0.18);
   const result = timeline([stock], { "TEST.T": analysis }, now);
-  assert.equal(result.startDate, "2024-01-11");
+  assert.equal(result.startDate, "2025-10-11");
   assert.equal(result.today, "2026-10-11");
-  assert.equal(result.endDate, "2027-01-11");
+  assert.equal(result.endDate, "2027-10-11");
   assert.equal(result.currentTotal, 170);
   assert.equal(result.forecast[0].value, result.currentTotal);
   assert.equal(result.forecast[0].low, result.currentTotal);
@@ -2167,7 +2204,7 @@ test("portfolio P/L timeline resamples three years of weekly returns and adds fo
   assert.ok(result.forecastTotal < result.forecastHigh);
   assert.ok(result.annualizedVolatilityPct > 0);
   assert.equal(result.forecast.at(-1).pathCount, 1000);
-  assert.equal(result.forecast.length, 14);
+  assert.equal(result.forecast.length, 53);
   const forecastMoves = result.forecast.slice(1).map((point, index) => point.value - result.forecast[index].value);
   assert.ok(forecastMoves.some((move) => move > 0) && forecastMoves.some((move) => move < 0));
   assert.equal(result.annualDividend, 40);
@@ -2220,18 +2257,14 @@ test("weekly forecast paths are repeatable and visibly variable", () => {
   assert.equal(quarterDates.at(-1), "2027-01-11");
 });
 
-test("discovery cards retain compact price history while watchlists and P/L show three-month forecast charts", () => {
+test("old stock forecast cards are removed while the P/L chart retains its one-year forecast", () => {
   assert.match(indexSource, /data-view-target="performance"/);
-  assert.match(indexSource, /過去2年9か月から今後3か月まで/);
-  assert.match(indexSource, /3か月後の中央値（参考）/);
+  assert.match(indexSource, /過去1年から今後1年まで/);
+  assert.match(indexSource, /1年後の中央値（参考）/);
   assert.match(indexSource, /data-performance-market="jp"/);
   assert.match(indexSource, /data-performance-market="us"/);
-  assert.match(appSource, /function stockForecastChartHtml\(/);
-  assert.match(appSource, /stockForecastChartHtml\(stock\.symbol, "jp"\)/);
-  assert.match(appSource, /stockForecastChartHtml\(stock\.symbol, "us"\)/);
-  assert.doesNotMatch(appSource, /stockForecastChartHtml\(item\.symbol, target\)/);
-  assert.match(appSource, /3か月先の変動幅/);
-  assert.match(appSource, /過去3年データ・年率換算騰落率/);
+  assert.doesNotMatch(appSource, /stockForecastChartHtml|stock-forecast-chart/);
+  assert.match(appSource, /function decisionChartForecast\(/);
   assert.match(indexSource, /参考幅（10〜90%）/);
   assert.match(serverSource, /function compactPerformanceSeries\(/);
   assert.match(serverSource, /url\.pathname === "\/api\/price-series"/);

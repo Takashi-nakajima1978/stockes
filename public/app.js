@@ -70,14 +70,11 @@ const chartState = {
   series: [],
   tradeMarkers: [],
   price: {},
+  forecast: [],
   points: [],
   plot: null,
   hoverIndex: null,
 };
-const forecastSeriesCache = new Map();
-const forecastSeriesRequests = new Map();
-let forecastChartObserver = null;
-
 const reorderState = {
   symbol: "",
   moved: false,
@@ -1252,7 +1249,7 @@ function renderPerformance() {
   }
   if (els.performanceChartTitle) els.performanceChartTitle.textContent = `${isUs ? "米国株" : "日本株"} 配当込み損益`;
   if (els.performanceChart) {
-    els.performanceChart.setAttribute("aria-label", `過去2年9か月から今後3か月の${isUs ? "米国株" : "日本株"}配当込み損益グラフ`);
+    els.performanceChart.setAttribute("aria-label", `過去1年から今後1年の${isUs ? "米国株" : "日本株"}配当込み損益グラフ`);
   }
   if (els.performanceCurrent) els.performanceCurrent.textContent = moneyByCurrency(timeline.currentTotal, currency);
   if (els.performanceCurrentNote) els.performanceCurrentNote.textContent = `${timeline.stockCount}銘柄・売却済み損益と受取配当を含む`;
@@ -1264,7 +1261,7 @@ function renderPerformance() {
         ? ` / 年率変動率 ${timeline.annualizedVolatilityPct.toFixed(1)}%`
         : "";
       const excluded = timeline.rateUnavailableCount ? ` / 履歴不足 ${timeline.rateUnavailableCount}銘柄は価格変動対象外` : "";
-      els.performanceForecastNote.textContent = `3か月後の10〜90%参考幅 ${range}${volatility}${excluded}`;
+      els.performanceForecastNote.textContent = `10〜90%参考幅 ${range}${volatility}${excluded}`;
     } else {
       els.performanceForecastNote.textContent = timeline.stockCount
         ? `価格履歴不足のため変動幅を試算できません${timeline.rateUnavailableCount ? `（対象外 ${timeline.rateUnavailableCount}銘柄）` : ""}`
@@ -1434,7 +1431,6 @@ function renderUsDetail() {
           <ul class="risk-list">${risks || "<li>更新後に表示します</li>"}</ul>
         </section>
       </div>
-      ${stockForecastChartHtml(stock.symbol, "us")}
     </section>
     <section class="evidence-list us-evidence-list">
       ${evidence || "<article class=\"evidence-item\"><p>英語記事の日本語要約は、更新後に表示します。</p></article>"}
@@ -1442,7 +1438,6 @@ function renderUsDetail() {
   `;
   attachUsPositionForm(stock.symbol);
   renderEmbeddedPriceChart(els.usDetail, analysis?.price?.series || [], usd, chartTradeMarkers(stock), analysis?.price || {});
-  renderStockForecastCharts(els.usDetail);
 }
 
 function renderCrypto() {
@@ -2273,7 +2268,8 @@ function renderSelection() {
   els.selectedSymbol.innerHTML = stock ? symbolLinkHtml(stock.symbol, "jp") : "未選択";
 
   const price = analysis?.price || {};
-  drawChart(price.series || [], stock ? chartTradeMarkers(stock) : [], price);
+  const forecast = stock ? decisionChartForecast(price.series || [], price, stock.symbol) : [];
+  drawChart(price.series || [], stock ? chartTradeMarkers(stock) : [], price, forecast);
   renderChartTiming(price);
 
   if (!stock) {
@@ -2286,10 +2282,8 @@ function renderSelection() {
     els.decisionDetail.innerHTML = `
       ${positionEditor(stock, null, null)}
       <p>${escapeHtml(stock.name)}は未分析です。</p>
-      ${stockForecastChartHtml(stock.symbol, "jp")}
     `;
     attachPositionForm(stock.symbol);
-    renderStockForecastCharts(els.decisionDetail);
     els.evidenceList.innerHTML = "<article class=\"evidence-item\"><p>分析を実行すると根拠リンクを保存して表示します。</p></article>";
     return;
   }
@@ -2304,7 +2298,6 @@ function renderSelection() {
     ${shareholderInfoHtml(analysis.shareholders)}
   `;
   attachPositionForm(stock.symbol);
-  renderStockForecastCharts(els.decisionDetail);
 
   const evidence = analysis.evidence || [];
   const evidenceHtml = evidence.map((item) => `
@@ -2319,6 +2312,31 @@ function renderSelection() {
     </article>
   `).join("") || "<article class=\"evidence-item\"><p>根拠リンクはまだありません。</p></article>";
   els.evidenceList.innerHTML = `${evidenceSummaryHtml(stock, analysis, position)}${evidenceHtml}`;
+}
+
+function decisionChartForecast(series = [], price = {}, symbol = "", nowValue = new Date()) {
+  const now = new Date(nowValue);
+  const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const today = new Date(todayMs).toISOString().slice(0, 10);
+  const current = Number(price.current) > 0 ? Number(price.current) : Number(series.at(-1)?.close);
+  if (!(current > 0)) return [];
+  const grid = weeklyPriceGrid(series, today, current);
+  const returns = [];
+  for (let week = 1; week < grid.prices.length; week += 1) {
+    const previous = grid.prices[week - 1];
+    const next = grid.prices[week];
+    if (previous > 0 && next > 0) returns.push([Math.log(next / previous)]);
+  }
+  if (!weeklyReturnStatistics(returns.map((row) => row[0]))) return [];
+  const endDate = calendarMonthOffset(today, 3);
+  return bootstrapForecast(
+    returns,
+    [current],
+    0,
+    0,
+    forecastWeeklyDates(today, endDate),
+    `decision:${symbol}:${today}`,
+  );
 }
 
 function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
@@ -2370,7 +2388,6 @@ function jpAiConfirmationHtml(stock = {}, analysis = {}, position = {}) {
           <ul class="risk-list">${risks || "<li>更新後に表示します</li>"}</ul>
         </section>
       </div>
-      ${stockForecastChartHtml(stock.symbol, "jp")}
     </section>
   `;
 }
@@ -3041,7 +3058,7 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price = chartState.price || {}) {
+function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price = chartState.price || {}, forecast = chartState.forecast || []) {
   const canvas = els.chart;
   if (!canvas) return;
   const context = canvas.getContext("2d");
@@ -3058,10 +3075,18 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price =
   context.fillRect(0, 0, width, height);
 
   const pad = { top: 22, right: 18, bottom: 28, left: 56 };
-  const cleanSeries = cleanChartSeries(series);
+  const now = new Date();
+  const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const today = new Date(todayMs).toISOString().slice(0, 10);
+  const startDate = calendarMonthOffset(today, -33);
+  const endDate = calendarMonthOffset(today, 3);
+  const cleanSeries = cleanChartSeries(series).filter((point) => point.date >= startDate && point.date <= today);
+  const current = Number(price?.current) > 0 ? Number(price.current) : Number(cleanSeries.at(-1)?.close);
+  if (current > 0 && cleanSeries.at(-1)?.date !== today) cleanSeries.push({ date: today, close: current });
   chartState.price = price || {};
+  chartState.forecast = forecast;
   const markers = resolveChartTradeMarkers(cleanSeries, tradeMarkers);
-  const values = [...cleanSeries.map((point) => point.close), ...markers.map((marker) => marker.price)];
+  const values = [...cleanSeries.map((point) => point.close), ...markers.map((marker) => marker.price), ...forecast.map((point) => point.value)];
   chartState.series = cleanSeries;
   chartState.tradeMarkers = tradeMarkers;
   chartState.points = [];
@@ -3077,7 +3102,13 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price =
   const min = Math.min(...values);
   const max = Math.max(...values);
   const span = max - min || 1;
-  const x = (index) => pad.left + (index / (cleanSeries.length - 1)) * (width - pad.left - pad.right);
+  const startMs = new Date(`${startDate}T00:00:00Z`).getTime();
+  const endMs = new Date(`${endDate}T00:00:00Z`).getTime();
+  const xForDate = (date) => {
+    const time = new Date(`${date}T00:00:00Z`).getTime();
+    return pad.left + (clampNumber((time - startMs) / (endMs - startMs), 0, 1) * (width - pad.left - pad.right));
+  };
+  const x = (index) => xForDate(cleanSeries[index]?.date || today);
   const y = (value) => pad.top + (1 - ((value - min) / span)) * (height - pad.top - pad.bottom);
   chartState.plot = {
     left: pad.left,
@@ -3143,6 +3174,25 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price =
     else context.lineTo(px, py);
   });
   context.stroke();
+  if (forecast.length > 1) {
+    context.strokeStyle = "#d46b2c";
+    context.lineWidth = 2.5;
+    context.setLineDash([6, 5]);
+    context.beginPath();
+    forecast.forEach((point, index) => {
+      const px = xForDate(point.date);
+      const py = y(point.value);
+      if (index === 0) context.moveTo(px, py);
+      else context.lineTo(px, py);
+    });
+    context.stroke();
+    context.setLineDash([]);
+    context.fillStyle = "#b85a20";
+    context.font = "11px system-ui";
+    context.textAlign = "right";
+    context.fillText("3か月先予測", width - pad.right - 4, clampNumber(y(forecast.at(-1).value) - 8, pad.top + 12, height - pad.bottom - 4));
+    context.textAlign = "left";
+  }
   drawChartTradeMarkers(context, markers, x, y, {
     top: pad.top,
     bottom: height - pad.bottom,
@@ -3153,7 +3203,7 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price =
 
   context.fillStyle = "#1a2428";
   context.font = "12px system-ui";
-  context.fillText("3年", pad.left, 16);
+  context.fillText("過去2年9か月＋3か月予測", pad.left, 16);
   context.fillText(yen(max), 10, pad.top + 4);
   context.fillText(yen(min), 10, height - pad.bottom + 4);
 
@@ -4973,8 +5023,8 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
   const now = new Date(nowValue);
   const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const today = new Date(todayMs).toISOString().slice(0, 10);
-  const startDate = calendarMonthOffset(today, -33);
-  const endDate = calendarMonthOffset(today, 3);
+  const startDate = calendarYearOffset(today, -1);
+  const endDate = calendarYearOffset(today, 1);
   const entries = stocks.map((stock) => ({ stock, analysis: analyses[stock.symbol], price: analyses[stock.symbol]?.price || {} }))
     .filter(({ stock }) => positionLots(stock).length || saleLots(stock).length);
   const actualDates = businessDates(startDate, today);
@@ -5091,121 +5141,6 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
     annualizedVolatilityPct: stats?.annualizedVolatilityPct ?? null,
     stockCount: entries.length,
   };
-}
-
-function stockForecastChartHtml(symbol, market = "jp") {
-  const title = `${market === "us" ? "米国株" : "日本株"} ${symbol}の株価推移`;
-  return `
-    <section class="stock-forecast" data-stock-forecast data-forecast-symbol="${escapeAttr(symbol)}" data-forecast-market="${market}">
-      <div class="stock-forecast-heading"><strong>株価推移・3か月先の変動幅</strong><span>中央値付近の経路 / 10〜90%参考幅・配当別</span></div>
-      <div class="stock-forecast-chart-wrap"><canvas data-stock-forecast-chart role="img" aria-label="${escapeAttr(title)}"></canvas></div>
-      <p class="stock-forecast-note" data-forecast-note>価格履歴を読み込み中</p>
-    </section>
-  `;
-}
-
-function renderStockForecastCharts(root) {
-  if (!root) return;
-  const charts = [...root.querySelectorAll("[data-stock-forecast-chart]")];
-  if (typeof IntersectionObserver === "function") {
-    if (!forecastChartObserver) {
-      forecastChartObserver = new IntersectionObserver((entries) => {
-        entries.forEach((entry) => {
-          if (!entry.isIntersecting) return;
-          forecastChartObserver.unobserve(entry.target);
-          void loadStockForecastChart(entry.target);
-        });
-      }, { rootMargin: "160px 0px" });
-    }
-    charts.forEach((canvas) => {
-      if (canvas.dataset.forecastReady !== "true" && canvas.dataset.forecastObserved !== "true") {
-        canvas.dataset.forecastObserved = "true";
-        forecastChartObserver.observe(canvas);
-      }
-    });
-    return;
-  }
-  charts.forEach((canvas) => void loadStockForecastChart(canvas));
-}
-
-function redrawVisibleStockForecastCharts(root) {
-  root?.querySelectorAll("[data-stock-forecast-chart]").forEach((canvas) => {
-    if (canvas.dataset.forecastReady !== "true" || !canvas.getClientRects().length) return;
-    canvas.dataset.forecastReady = "false";
-    void loadStockForecastChart(canvas);
-  });
-}
-
-async function loadStockForecastChart(canvas) {
-  if (!canvas || canvas.dataset.forecastReady === "true") return;
-  canvas.dataset.forecastReady = "true";
-  const shell = canvas.closest("[data-stock-forecast]");
-  const symbol = shell?.dataset.forecastSymbol || "";
-  const market = shell?.dataset.forecastMarket || "jp";
-  const note = shell?.querySelector("[data-forecast-note]");
-  const currency = market === "us" ? "USD" : "JPY";
-  const analysis = market === "us" ? state.usAnalyses[symbol] : state.analyses[symbol];
-  const candidate = state.suggestions.find((item) => item.symbol === symbol && candidateTarget(item) === market);
-  const price = analysis?.price || candidate?.price || {};
-  let series = Array.isArray(price.series) ? price.series : [];
-  const cacheKey = `${market}:${symbol}`;
-  if (series.length < 2) {
-    if (forecastSeriesCache.has(cacheKey)) {
-      series = forecastSeriesCache.get(cacheKey);
-    } else {
-      try {
-        let requestTask = forecastSeriesRequests.get(cacheKey);
-        if (!requestTask) {
-          requestTask = request(`/api/price-series?market=${encodeURIComponent(market)}&symbol=${encodeURIComponent(symbol)}&daily=1`);
-          forecastSeriesRequests.set(cacheKey, requestTask);
-        }
-        const result = await requestTask;
-        forecastSeriesRequests.delete(cacheKey);
-        series = Array.isArray(result.series) ? result.series : [];
-        forecastSeriesCache.set(cacheKey, series);
-        price.current = result.current || price.current;
-      } catch {
-        forecastSeriesRequests.delete(cacheKey);
-        canvas.dataset.forecastReady = "false";
-        if (note) note.textContent = "価格履歴を取得できませんでした。時間をおいて再表示してください。";
-        return;
-      }
-    }
-  }
-  const current = Number(price.current) > 0 ? Number(price.current) : Number(series.at(-1)?.close);
-  const now = new Date();
-  const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const today = new Date(todayMs).toISOString().slice(0, 10);
-  const startDate = calendarMonthOffset(today, -33);
-  const endDate = calendarMonthOffset(today, 3);
-  const actual = series
-    .filter((point) => point.date >= startDate && point.date <= today && Number(point.close) > 0)
-    .map((point) => ({ date: point.date, value: Number(point.close) }));
-  if (current > 0 && actual.at(-1)?.date !== today) actual.push({ date: today, value: current });
-  const grid = weeklyPriceGrid(series, today, current);
-  const weeklyReturns = [];
-  for (let week = 1; week < grid.prices.length; week += 1) {
-    const previous = grid.prices[week - 1];
-    const next = grid.prices[week];
-    if (previous > 0 && next > 0) weeklyReturns.push([Math.log(next / previous)]);
-  }
-  const stats = weeklyReturnStatistics(weeklyReturns.map((row) => row[0]));
-  const forecast = current > 0 && stats
-    ? bootstrapForecast(weeklyReturns, [current], 0, 0, forecastWeeklyDates(today, endDate), `${market}:${symbol}:${today}`)
-    : [];
-  drawDatedLineChart(canvas, actual, forecast, {
-    currency,
-    startDate,
-    today,
-    endDate,
-    includeZero: false,
-  });
-  if (note) {
-    const forecastEnd = forecast.at(-1);
-    note.textContent = !stats || !forecastEnd
-      ? "過去3年の価格履歴が不足しているため、変動幅を試算できません。"
-      : `過去3年データ・年率換算騰落率 ${stats.annualizedReturnPct >= 0 ? "+" : ""}${stats.annualizedReturnPct.toFixed(1)}% / 年率変動率 ${stats.annualizedVolatilityPct.toFixed(1)}% / 3か月先参考幅 ${moneyByCurrency(forecastEnd.low, currency)}〜${moneyByCurrency(forecastEnd.high, currency)}（週次変動を4週単位で再抽出・1,000経路）`;
-  }
 }
 
 function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
@@ -5733,13 +5668,11 @@ function renderCandidateList() {
   const { peItems, stockItems } = splitDiscoveryCandidates(state.suggestions, nisaMode);
   els.candidateList.classList.toggle("empty-state", !stockItems.length);
   els.candidateList.innerHTML = candidateReportsHtml(stockItems);
-  renderStockForecastCharts(els.candidateList);
   if (els.peCandidateList) {
     els.peCandidateList.classList.toggle("empty-state", nisaMode || !peItems.length);
     els.peCandidateList.innerHTML = nisaMode
       ? '<p class="report-empty">NISA向き候補の検索ではPE候補を扱いません。通常の「候補を検索」を実行してください。</p>'
       : peCandidateReportsHtml(peItems);
-    renderStockForecastCharts(els.peCandidateList);
   }
   attachSuggestionButtons();
 }
@@ -7327,14 +7260,10 @@ window.addEventListener("resize", () => {
   if (isDetailFormEditing()) return;
   if (state.view === "analysis") {
     renderSelection();
-    renderStockForecastCharts(els.decisionDetail);
   } else if (state.view === "us") {
     renderUsDetail();
   } else if (state.view === "performance") {
     renderPerformance();
-  } else if (state.view === "ideas") {
-    redrawVisibleStockForecastCharts(els.candidateList);
-    redrawVisibleStockForecastCharts(els.peCandidateList);
   }
 });
 

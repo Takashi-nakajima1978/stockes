@@ -3480,8 +3480,7 @@ tr:hover .drag-handle,
   padding: 14px 16px 0;
 }
 
-.performance-chart-wrap canvas,
-.stock-forecast-chart-wrap canvas {
+.performance-chart-wrap canvas {
   display: block;
   width: 100%;
   height: 100%;
@@ -3538,39 +3537,6 @@ tr:hover .drag-handle,
   line-height: 1.6;
 }
 
-.stock-forecast {
-  min-width: 0;
-  border-top: 1px solid var(--line);
-  padding-top: 12px;
-}
-
-.stock-forecast-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--ink);
-  font-size: 13px;
-}
-
-.stock-forecast-heading span,
-.stock-forecast-note {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.stock-forecast-chart-wrap {
-  width: 100%;
-  height: 220px;
-  margin-top: 6px;
-  overflow: hidden;
-}
-
-.stock-forecast-note {
-  margin: 4px 0 0;
-  line-height: 1.5;
-}
-
 @media (max-width: 720px) {
   .performance-summary {
     grid-template-columns: 1fr;
@@ -3592,13 +3558,4 @@ tr:hover .drag-handle,
     padding-left: 12px;
   }
 
-  .stock-forecast-chart-wrap {
-    height: 205px;
-  }
-
-  .stock-forecast-heading {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 3px;
-  }
 }
