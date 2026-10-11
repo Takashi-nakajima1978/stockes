@@ -583,6 +583,7 @@
             <button type="button" role="tab" id="ideaTabPe" aria-selected="false" aria-controls="ideaPanelPe" data-idea-tab="pe" tabindex="-1">PEが買いそう</button>
             <button type="button" role="tab" id="ideaTabSuccess" aria-selected="false" aria-controls="ideaPanelSuccess" data-idea-tab="success" tabindex="-1">紹介後の結果</button>
             <button type="button" role="tab" id="ideaTabSector" aria-selected="false" aria-controls="ideaPanelSector" data-idea-tab="sector" tabindex="-1">業種Evidence</button>
+            <button type="button" role="tab" id="ideaTabSurge" aria-selected="false" aria-controls="ideaPanelSurge" data-idea-tab="surge" tabindex="-1">3週間上昇予測</button>
           </div>
           <div id="ideaPanelStocks" role="tabpanel" aria-labelledby="ideaTabStocks" data-idea-panel="candidates">
             <div id="candidatePerformance" class="candidate-performance"></div>
@@ -625,6 +626,21 @@
               <p>一括分析を実行すると、業種Evidenceを保存してここに表示します。</p>
             </div>
           </div>
+          <div id="ideaPanelSurge" role="tabpanel" aria-labelledby="ideaTabSurge" data-idea-panel="surge" hidden>
+            <div class="surge-forecast-toolbar">
+              <div>
+                <h4>3週間上昇予測 上位15銘柄</h4>
+                <p>候補検索対象の日本株・米国株から、管理銘柄と「出さない」銘柄を除いて毎日5:00に走査。直近3年の週次変動を1,000通り試算し、3週間以内に+10%へ到達する参考確率順に表示します。</p>
+                <small id="surgeForecastStatus" aria-live="polite">予測データを読み込み中...</small>
+              </div>
+              <button id="surgeForecastRun" type="button" class="secondary">今すぐ更新</button>
+            </div>
+            <p class="surge-forecast-disclaimer">統計的な参考予測です。将来の株価や利益を保証するものではなく、ニュース・決算など突発材料は反映しません。上昇確率だけで売買を判断せず、予測幅と下落確率も確認してください。</p>
+            <div id="surgeForecastSummary" class="surge-forecast-summary" hidden></div>
+            <div id="surgeForecastList" class="surge-forecast-list empty-state">
+              <p>まだ予測結果がありません。毎朝5:00に自動更新します。</p>
+            </div>
+          </div>
         </section>
       </section>
 
@@ -632,19 +648,10 @@
         <section class="command-band">
           <div>
             <p class="eyebrow">Savings Plan</p>
-            <h2>積立シミュレーション</h2>
+            <h2>積立管理</h2>
           </div>
-          <label class="savings-horizon-control">
-            <span>予測期間</span>
-            <select id="savingsHorizon">
-              <option value="12">1年</option>
-              <option value="36">3年</option>
-              <option value="60">5年</option>
-              <option value="120" selected>10年</option>
-            </select>
-          </label>
         </section>
-        <p class="savings-note">月別の積立額を登録できます。継続をオンにすると、設定した金額を翌月以降にも反映します。証券会社への注文は行いません。予測は登録商品の過去約3年の値動きを使った参考値です。</p>
+        <p class="savings-note">月ごとの積立額、累計元本、現在評価額とファンドの基準価額を確認できます。今月分は設定額として表示し、累計には前月までを反映します。将来予測や証券会社への注文は行いません。</p>
         <form id="savingsCreateForm" class="savings-create-form">
           <h3>運用商品を追加</h3>
           <div class="savings-create-fields">

@@ -2356,6 +2356,202 @@ tr:hover .drag-handle,
   color: var(--accent);
 }
 
+.surge-forecast-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.surge-forecast-toolbar h4,
+.surge-forecast-card h5 {
+  margin: 0;
+  color: var(--ink);
+}
+
+.surge-forecast-toolbar p {
+  max-width: 900px;
+  margin: 6px 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.surge-forecast-toolbar small {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.surge-forecast-disclaimer {
+  margin: 12px 16px;
+  border-left: 4px solid var(--watch);
+  background: #f6f8f7;
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.surge-forecast-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 16px 12px;
+}
+
+.surge-forecast-summary[hidden] {
+  display: none;
+}
+
+.surge-forecast-summary > div,
+.surge-forecast-metrics > div {
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  padding: 9px 10px;
+}
+
+.surge-forecast-summary span,
+.surge-forecast-metrics span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.surge-forecast-summary strong {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.surge-forecast-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+
+.surge-forecast-list.empty-state {
+  display: block;
+}
+
+.surge-forecast-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.surge-forecast-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+}
+
+.surge-forecast-card-head > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+}
+
+.surge-forecast-card-head > div > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.surge-rank {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: #e7f3ef;
+  color: var(--accent);
+  font-weight: 900;
+}
+
+.surge-forecast-card h5 {
+  overflow-wrap: anywhere;
+  font-size: 15px;
+}
+
+.surge-forecast-card-head a {
+  width: fit-content;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.surge-market {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.surge-probability {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 22px;
+  text-align: right;
+}
+
+.surge-probability small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.surge-forecast-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+
+.surge-forecast-metrics strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.surge-forecast-metrics strong small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.surge-chart-frame {
+  position: relative;
+  height: 235px;
+  margin: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.surge-chart-frame canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: pan-y;
+  cursor: crosshair;
+}
+
+.surge-chart-note {
+  margin: 7px 12px 10px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .suggestion-item {
   display: grid;
   gap: 10px;
@@ -3585,19 +3781,15 @@ tr:hover .drag-handle,
   min-width: 0;
 }
 
-.savings-horizon-control,
 .savings-create-fields label,
-.savings-schedule-row label {
+.savings-schedule-row label,
+.savings-product-fields label {
   display: grid;
   gap: 6px;
   min-width: 0;
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
-}
-
-.savings-horizon-control select {
-  min-width: 110px;
 }
 
 .savings-note,
@@ -3629,9 +3821,18 @@ tr:hover .drag-handle,
   margin-top: 14px;
 }
 
+.savings-product-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
 .savings-create-fields input,
 .savings-create-fields select,
-.savings-schedule-row input {
+.savings-schedule-row input,
+.savings-product-fields input,
+.savings-product-fields select {
   width: 100%;
   min-width: 0;
 }
@@ -3735,6 +3936,31 @@ tr:hover .drag-handle,
   min-width: 0;
 }
 
+.savings-chart-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f5f8f7;
+}
+
+.savings-chart-tabs button {
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.savings-chart-tabs button.active {
+  border-color: var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
 .savings-chart-wrap {
   height: 300px;
   padding: 10px 12px 0;
@@ -3756,6 +3982,72 @@ tr:hover .drag-handle,
   gap: 10px;
   padding-top: 14px;
   border-top: 1px solid var(--line);
+}
+
+.savings-product-edit {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.savings-product-edit summary,
+.savings-month-history summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.savings-month-history {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.savings-month-table-wrap {
+  max-height: 260px;
+  margin-top: 8px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.savings-month-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.savings-month-table-wrap th,
+.savings-month-table-wrap td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.savings-month-table-wrap th:first-child,
+.savings-month-table-wrap td:first-child {
+  text-align: left;
+}
+
+.savings-month-table-wrap thead th {
+  position: sticky;
+  top: 0;
+  background: #f5f8f7;
+  color: var(--muted);
+}
+
+.savings-current-month {
+  background: #f0f7f4;
+}
+
+.savings-month-table-wrap td small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.savings-retry {
+  justify-self: start;
 }
 
 .savings-plan-form > p {
@@ -3803,6 +4095,38 @@ tr:hover .drag-handle,
     grid-template-columns: 1fr;
   }
 
+  .surge-forecast-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .surge-forecast-toolbar button {
+    width: 100%;
+  }
+
+  .surge-forecast-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .surge-forecast-list {
+    grid-template-columns: 1fr;
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .surge-forecast-disclaimer {
+    margin-right: 12px;
+    margin-left: 12px;
+  }
+
+  .surge-chart-frame {
+    height: 215px;
+    margin-right: 8px;
+    margin-left: 8px;
+  }
+
   .performance-chart-wrap {
     height: 290px;
     padding: 10px 8px 0;
@@ -3825,7 +4149,8 @@ tr:hover .drag-handle,
   }
 
   .savings-create-fields,
-  .savings-metrics {
+  .savings-metrics,
+  .savings-product-fields {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

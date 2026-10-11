@@ -15,6 +15,7 @@ data/crypto-analysis-cache.json
 data/crypto-holding.json
 data/savings-plans.json
 data/discovery-cache.json
+data/surge-forecast.json
 data/exit-state.json
 data/excluded-candidates.json
 data/notification-log.json

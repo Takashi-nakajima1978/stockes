@@ -6,7 +6,7 @@ import os from "node:os";
 import vm from "node:vm";
 import { gzip, gunzipSync } from "node:zlib";
 import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "../refresh-control.mjs";
-import { buildSavingsForecast, scheduledContribution } from "../public/savings-calculation.mjs";
+import { buildSavingsContributionHistory, scheduledContribution } from "../public/savings-calculation.mjs";
 
 const serverSource = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
@@ -14,6 +14,8 @@ const indexSource = await readFile(new URL("../public/index.html", import.meta.u
 const stylesSource = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 const logoSource = await readFile(new URL("../public/stock-signal-logo.svg", import.meta.url), "utf8");
 const savingsSource = await readFile(new URL("../public/savings-calculation.mjs", import.meta.url), "utf8");
+const dockerfileSource = await readFile(new URL("../Dockerfile", import.meta.url), "utf8");
+const dockerignoreSource = await readFile(new URL("../.dockerignore", import.meta.url), "utf8");
 
 function loadFunction(source, name, globals) {
   const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
@@ -2119,7 +2121,16 @@ test("discovery separates PE candidates, stock candidates, and sector evidence i
   assert.match(indexSource, /data-idea-tab="success"[^>]*>紹介後の結果/);
   assert.match(indexSource, /id="underperformingCandidateList"/);
   assert.match(indexSource, /data-idea-tab="sector"[^>]*>業種Evidence/);
+  assert.match(indexSource, /data-idea-tab="surge"[^>]*>3週間上昇予測/);
+  assert.match(indexSource, /id="surgeForecastList"/);
   assert.match(indexSource, /id="peCandidateList"/);
+  assert.match(serverSource, /scheduleDailySurgeForecast\(\)/);
+  assert.match(serverSource, /zonedParts\(new Date\(\), "Asia\/Tokyo"\)/);
+  assert.match(serverSource, /parts\.hour < 5/);
+  assert.match(serverSource, /results: ranked\.slice\(0, 15\)/);
+  assert.match(appSource, /function renderSurgeForecastCharts/);
+  assert.match(dockerfileSource, /COPY package\.json server\.mjs refresh-control\.mjs surge-forecast\.mjs \.\//);
+  assert.match(dockerignoreSource, /data\/surge-forecast\.json/);
   assert.match(appSource, /function peCandidateReportsHtml/);
   assert.match(appSource, /candidateButtons\("\[data-add-suggestion\]"\)/);
   assert.match(stylesSource, /\.idea-tabs\s*\{[^}]*overflow-x:\s*auto/s);
@@ -2435,49 +2446,44 @@ test("recurring savings use month-specific overrides and carry the last amount f
   assert.equal(scheduledContribution(schedule, "2027-02", false), 0);
 });
 
-test("savings projection compounds monthly contributions against historical NAV returns", () => {
-  const series = Array.from({ length: 40 }, (_, index) => {
-    const date = new Date(Date.UTC(2023, index + 1, 0));
-    const close = 1000 * (1 + (index % 5 === 0 ? 0.035 : index % 4 === 0 ? -0.025 : 0.008)) ** index;
-    return { date: date.toISOString().slice(0, 10), close };
-  });
+test("savings history carries March contributions through September and leaves October setting uncounted", () => {
   const plan = {
-    id: "test-fund",
-    symbol: "0331418A",
-    currentValue: 100000,
     recurring: true,
     schedule: [
-      { month: "2026-10", amount: 1000 },
-      { month: "2027-01", amount: 5000 },
+      { month: "2026-03", amount: 5000 },
+      { month: "2026-10", amount: 100000 },
     ],
   };
-  const result = buildSavingsForecast(plan, series, { today: "2026-10-11", months: 6, paths: 1000 });
-  assert.equal(result.forecast.length, 7);
-  assert.equal(result.endDate, "2027-03-31");
-  assert.equal(result.totalContributions, 118000);
-  assert.equal(result.forecast.at(-1).principal, 118000);
-  assert.ok(result.forecastLow < result.forecastTotal);
-  assert.ok(result.forecastTotal < result.forecastHigh);
-  assert.ok(result.sampleCount >= 6);
-  assert.equal(result.forecastTotal, buildSavingsForecast(plan, series, { today: "2026-10-11", months: 6, paths: 1000 }).forecastTotal);
-  assert.equal(buildSavingsForecast(plan, series.slice(0, 5), { today: "2026-10-11", months: 6 }).historyUnavailable, true);
+  const history = buildSavingsContributionHistory(plan, "2026-09", "2026-10");
+  assert.equal(history.rows.length, 7);
+  assert.deepEqual(history.rows.map((row) => row.amount), Array(7).fill(5000));
+  assert.equal(history.rows[6].total, 35000);
+  assert.equal(history.total, 35000);
+  assert.equal(history.monthlyAmount, 100000);
+  assert.equal(buildSavingsContributionHistory(plan, "2026-02").total, 0);
 });
 
-test("savings screen persists manual products and provides a historical reference forecast", () => {
+test("savings screen tracks actual monthly contributions and supports editing the registered fund", () => {
   assert.match(indexSource, /data-view-target="savings"/);
   assert.match(indexSource, /MUFG iDeCo/);
   assert.match(indexSource, /name="startMonth" type="month"/);
   assert.match(indexSource, /name="recurring" type="checkbox"/);
   assert.match(indexSource, /証券会社への注文は行いません/);
+  assert.match(indexSource, /積立管理/);
+  assert.doesNotMatch(indexSource, /積立シミュレーション/);
+  assert.doesNotMatch(indexSource, /savingsHorizon/);
   assert.match(serverSource, /url\.pathname === "\/api\/savings-plans" && req\.method === "GET"/);
   assert.match(serverSource, /url\.pathname === "\/api\/savings-plans" && req\.method === "POST"/);
   assert.match(serverSource, /market === "fund"/);
+  assert.match(serverSource, /fetchFundPriceHistory\(symbol/);
   assert.match(serverSource, /"\.mjs": "text\/javascript; charset=utf-8"/);
-  assert.match(savingsSource, /scheduledContribution\(plan\.schedule, month\.key, Boolean\(plan\.recurring\)\)/);
+  assert.match(savingsSource, /scheduledContribution\(schedule, currentMonth, Boolean\(plan\.recurring\)\)/);
   assert.match(appSource, /data-savings-chart/);
   assert.match(appSource, /chartPointTooltipHtml/);
+  assert.match(appSource, /name="symbol" maxlength="14" required pattern=/);
+  assert.match(appSource, /data-savings-chart-mode="nav"/);
   assert.match(stylesSource, /\.savings-create-fields/);
-  assert.match(stylesSource, /\.legend-principal/);
+  assert.match(stylesSource, /\.savings-chart-tabs/);
   const normalizeSavingsPlan = loadFunction(serverSource, "normalizeSavingsPlan", {
     normalizeFundCode: (value) => /^[A-Z0-9]{4,14}$/.test(String(value || "").trim().toUpperCase())
       ? String(value).trim().toUpperCase()
@@ -2500,4 +2506,17 @@ test("savings screen persists manual products and provides a historical referenc
   assert.equal(savedPlan.symbol, "0331418A");
   assert.equal(savedPlan.currentValue, 250000);
   assert.equal(JSON.stringify(savedPlan.schedule), JSON.stringify([{ month: "2026-10", amount: 30000 }]));
+});
+
+test("fund price history retries the Yahoo ticker suffix when the raw fund code has no series", async () => {
+  const calls = [];
+  const fetchFundPriceHistory = loadFunction(serverSource, "fetchFundPriceHistory", {
+    fetchPriceHistory: async (symbol) => {
+      calls.push(symbol);
+      return symbol.endsWith(".T") ? { series: [{ close: 100 }] } : { series: [] };
+    },
+  });
+  const result = await fetchFundPriceHistory("9I31223A", { timeout: 4500 });
+  assert.deepEqual(calls, ["9I31223A", "9I31223A.T"]);
+  assert.equal(result.series.length, 1);
 });

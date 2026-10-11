@@ -14,6 +14,7 @@ data/us-watchlist.json
 data/analysis-cache.json
 data/us-analysis-cache.json
 data/discovery-cache.json
+data/surge-forecast.json
 data/excluded-candidates.json
 data/notification-log.json
 data/jpx-listed-companies.xls

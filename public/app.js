@@ -1,4 +1,4 @@
-import { buildSavingsForecast, scheduledContribution } from "./savings-calculation.mjs";
+import { buildSavingsContributionHistory } from "./savings-calculation.mjs";
 
 const MANAGED_STOCK_LIMIT = 50;
 const VIEW_KEYS = new Set(["analysis", "performance", "stocks", "us", "crypto", "ideas", "savings", "settings"]);
@@ -27,7 +27,6 @@ const state = {
   cryptoAnalysis: null,
   savingsPlans: [],
   savingsSeries: {},
-  savingsHorizonMonths: 120,
   suggestions: [],
   successfulCandidates: [],
   underperformingCandidates: [],
@@ -37,6 +36,11 @@ const state = {
   sourceSummary: null,
   discoveryMode: "general",
   candidatePerformance: null,
+  surgeForecast: null,
+  surgeForecastJob: null,
+  surgeForecastLoading: false,
+  surgeForecastPolling: false,
+  surgeChartStates: [],
   analysisJob: null,
   usAnalysisJob: null,
   discoveryJob: null,
@@ -86,7 +90,7 @@ const performanceChartState = {
   hoverIndex: null,
 };
 const savingsChartStates = new Map();
-const savingsForecastCache = new Map();
+const savingsChartModes = new Map();
 const instrumentForecastCache = new Map();
 const reorderState = {
   symbol: "",
@@ -137,7 +141,6 @@ const els = {
   performanceChartTooltip: document.getElementById("performanceChartTooltip"),
   performanceChartPanel: document.getElementById("performanceChartPanel"),
   performanceEmpty: document.getElementById("performanceEmpty"),
-  savingsHorizon: document.getElementById("savingsHorizon"),
   savingsCreateForm: document.getElementById("savingsCreateForm"),
   savingsFormStatus: document.getElementById("savingsFormStatus"),
   savingsPlans: document.getElementById("savingsPlans"),
@@ -225,6 +228,10 @@ const els = {
   excludedCandidateCount: document.getElementById("excludedCandidateCount"),
   excludedCandidateList: document.getElementById("excludedCandidateList"),
   sectorEvidenceList: document.getElementById("sectorEvidenceList"),
+  surgeForecastStatus: document.getElementById("surgeForecastStatus"),
+  surgeForecastSummary: document.getElementById("surgeForecastSummary"),
+  surgeForecastList: document.getElementById("surgeForecastList"),
+  surgeForecastRun: document.getElementById("surgeForecastRun"),
   settingsForm: document.getElementById("settingsForm"),
   settingsSearchProvider: document.getElementById("settingsSearchProvider"),
   settingsSearxngUrl: document.getElementById("settingsSearxngUrl"),
@@ -586,29 +593,41 @@ function savingsProviderName(provider) {
 
 function renderSavings() {
   if (!els.savingsPlans) return;
-  state.savingsHorizonMonths = Number(els.savingsHorizon?.value || state.savingsHorizonMonths || 120);
   if (!state.savingsPlans.length) {
-    els.savingsPlans.innerHTML = '<p class="empty-state">運用商品を登録すると、月別積立と参考予測を表示します。</p>';
+    els.savingsPlans.innerHTML = '<p class="empty-state">運用商品を登録すると、月別の積立履歴を表示します。</p>';
     return;
   }
-  const forecasts = new Map(state.savingsPlans.map((plan) => [plan.id, savingsForecastFor(plan)]));
-  els.savingsPlans.innerHTML = state.savingsPlans.map((plan) => savingsPlanHtml(plan, forecasts.get(plan.id))).join("");
+  const currentMonth = localMonthKey();
+  const completedThrough = calendarMonthOffset(`${currentMonth}-01`, -1).slice(0, 7);
+  const histories = new Map(state.savingsPlans.map((plan) => [
+    plan.id,
+    buildSavingsContributionHistory(plan, completedThrough, currentMonth),
+  ]));
+  els.savingsPlans.innerHTML = state.savingsPlans.map((plan) => savingsPlanHtml(plan, histories.get(plan.id))).join("");
   els.savingsPlans.querySelectorAll("[data-savings-chart]").forEach((canvas) => {
     const plan = state.savingsPlans.find((item) => item.id === canvas.dataset.savingsChart);
-    const result = plan && forecasts.get(plan.id);
-    if (!plan || !result || result.historyUnavailable) return;
+    const history = plan && histories.get(plan.id);
+    if (!plan || !history) return;
+    const mode = savingsChartModes.get(plan.id) || "principal";
+    const series = state.savingsSeries[plan.symbol]?.series || [];
+    const points = mode === "nav"
+      ? series.map((point) => ({ date: point.date, value: Number(point.close) }))
+      : history.rows.map((point) => ({ date: point.date, value: point.total }));
     const today = localDateKey();
-    const chartState = savingsChartStates.get(plan.id) || { points: [], plot: null, hoverIndex: null };
+    const chartState = savingsChartStates.get(plan.id) || { actual: [], forecast: [], points: [], plot: null, hoverIndex: null };
     chartState.hoverIndex = null;
     savingsChartStates.set(plan.id, chartState);
-    const principalSeries = result.forecast.map((point) => ({ date: point.date, value: point.principal }));
-    drawDatedLineChart(canvas, [{ date: today, value: Number(plan.currentValue) || 0 }], result.forecast, {
-      startDate: today,
+    const startDate = points[0]?.date && points[0].date < today ? points[0].date : calendarMonthOffset(today, -1);
+    drawDatedLineChart(canvas, points, [], {
+      startDate,
       today,
-      endDate: result.endDate,
+      endDate: today,
       currency: "JPY",
+      compactCurrency: false,
+      actualLabel: mode === "nav" ? "基準価額" : "累計積立額",
+      emptyLabel: mode === "nav" ? "基準価額の履歴がありません" : "積立履歴がありません",
+      hideTodayMarker: true,
       chartState,
-      principalSeries,
       tooltip: canvas.parentElement.querySelector("[data-savings-tooltip]"),
     });
     const tooltip = canvas.parentElement.querySelector("[data-savings-tooltip]");
@@ -620,28 +639,32 @@ function renderSavings() {
   });
 }
 
-function savingsForecastFor(plan) {
+function savingsPlanHtml(plan, history = { rows: [], total: 0, monthlyAmount: 0 }) {
   const series = state.savingsSeries[plan.symbol];
-  if (!series?.series?.length) return null;
-  const key = JSON.stringify([plan.id, plan.currentValue, plan.recurring, plan.schedule, state.savingsHorizonMonths, localDateKey(), series.fetchedAt]);
-  if (savingsForecastCache.has(key)) return savingsForecastCache.get(key);
-  const result = buildSavingsForecast(plan, series.series, { today: localDateKey(), months: state.savingsHorizonMonths, paths: 1000 });
-  if (savingsForecastCache.size >= 100) savingsForecastCache.delete(savingsForecastCache.keys().next().value);
-  savingsForecastCache.set(key, result);
-  return result;
-}
-
-function savingsPlanHtml(plan, result = null) {
-  const series = state.savingsSeries[plan.symbol];
-  const currentMonth = localMonthKey();
-  const currentMonthly = scheduledContribution(plan.schedule, currentMonth, plan.recurring);
-  const historyNote = result?.historyUnavailable
-    ? "月次データ不足のため、運用予測は未表示です。"
-    : series?.error
-      ? `価格履歴を取得できません。${escapeHtml(series.error)}`
-      : series?.series?.length
-        ? `過去${result.sampleCount}か月分の月次基準価額変動を再抽出。年率基準価額実績 ${Number.isFinite(result.historicalAnnualizedPct) ? signedPct(result.historicalAnnualizedPct) : "-"}。`
-        : "基準価額の履歴を取得中です。";
+  const chartMode = savingsChartModes.get(plan.id) || "principal";
+  const firstMonth = history.rows[0]?.month || "";
+  const latestMonth = history.rows.at(-1)?.month || "";
+  const historySummary = history.rows.length
+    ? `${firstMonth}〜${latestMonth}・${history.rows.length}か月 / 前月まで ${yen(history.total)}`
+    : "前月までの積立履歴はありません";
+  const historyNote = series?.error
+    ? `基準価額を取得できません: ${series.error}`
+    : series?.series?.length
+      ? `基準価額の実績 ${formatDate(series.series[0].date)}〜${formatDate(series.series.at(-1).date)}。`
+      : series?.loading
+        ? "基準価額を取得しています。"
+        : "ファンドコードから基準価額の履歴を取得します。";
+  const providerOptions = [
+    ["rakuten", "楽天証券"],
+    ["sbi", "SBI証券"],
+    ["ideco", "MUFG iDeCo"],
+  ].map(([value, label]) => `<option value="${value}" ${plan.provider === value ? "selected" : ""}>${label}</option>`).join("");
+  const monthlyRows = history.rows.map((row) => `
+    <tr><th scope="row">${escapeHtml(row.month)}</th><td>${row.amount ? yen(row.amount) : "-"}</td><td>${yen(row.total)}</td></tr>
+  `).join("");
+  const currentMonthRow = `
+    <tr class="savings-current-month"><th scope="row">${escapeHtml(localMonthKey())} 設定</th><td>${history.monthlyAmount ? yen(history.monthlyAmount) : "-"}</td><td>${yen(history.total)}<small>月内のため未計上</small></td></tr>
+  `;
   return `
     <article class="savings-plan">
       <header class="savings-plan-heading">
@@ -650,21 +673,36 @@ function savingsPlanHtml(plan, result = null) {
       </header>
       <div class="savings-metrics">
         <div><span>現在評価額</span><strong>${yen(Number(plan.currentValue) || 0)}</strong></div>
-        <div><span>今月の積立</span><strong>${currentMonthly ? yen(currentMonthly) : "なし"}</strong></div>
-        <div><span>${state.savingsHorizonMonths / 12}年後の積立元本</span><strong>${yen(result?.totalContributions ?? (Number(plan.currentValue) || 0))}</strong></div>
-        <div><span>${state.savingsHorizonMonths / 12}年後の参考評価額</span><strong>${result && !result.historyUnavailable ? yen(result.forecastTotal) : "-"}</strong><small>${result && !result.historyUnavailable ? `10〜90% ${yen(result.forecastLow)}〜${yen(result.forecastHigh)}` : "過去実績を確認中"}</small></div>
+        <div><span>今月の積立設定</span><strong>${history.monthlyAmount ? yen(history.monthlyAmount) : "なし"}</strong></div>
+        <div><span>前月までの累計積立</span><strong>${yen(history.total)}</strong></div>
+        <div><span>継続設定</span><strong>${plan.recurring ? "継続中" : "停止中"}</strong><small>証券会社への注文は行いません</small></div>
       </div>
       <section class="savings-chart-section">
-        <div class="savings-chart-heading"><h4>積立元本・参考評価額の推移</h4><span>${state.savingsHorizonMonths / 12}年</span></div>
-        ${result && !result.historyUnavailable
-          ? '<div class="performance-chart-wrap savings-chart-wrap"><canvas data-savings-chart="' + escapeAttr(plan.id) + '" aria-label="積立元本と過去実績ベース予測のグラフ"></canvas><div class="chart-tooltip" data-savings-tooltip hidden></div></div><div class="performance-legend"><span><i class="legend-principal"></i>積立元本</span><span><i class="legend-forecast"></i>参考評価額中央値</span><span><i class="legend-band"></i>10〜90%参考幅</span></div>'
-          : ""}
-        <p class="savings-history-note">${historyNote} 分配金の再投資や税は個別計算していない参考値で、将来を保証しません。</p>
+        <div class="savings-chart-heading"><h4>積立記録グラフ</h4><span>${escapeHtml(historySummary)}</span></div>
+        <div class="savings-chart-tabs" role="group" aria-label="積立グラフの種類">
+          <button type="button" aria-pressed="${chartMode === "principal"}" class="${chartMode === "principal" ? "active" : ""}" data-savings-chart-mode="principal" data-savings-plan="${escapeAttr(plan.id)}">積立額累計</button>
+          <button type="button" aria-pressed="${chartMode === "nav"}" class="${chartMode === "nav" ? "active" : ""}" data-savings-chart-mode="nav" data-savings-plan="${escapeAttr(plan.id)}">基準価額</button>
+        </div>
+        <div class="performance-chart-wrap savings-chart-wrap"><canvas data-savings-chart="${escapeAttr(plan.id)}" aria-label="${chartMode === "nav" ? "ファンド基準価額の実績" : "月別積立元本の実績"}"></canvas><div class="chart-tooltip" data-savings-tooltip hidden></div></div>
+        <p class="savings-history-note">${chartMode === "nav" ? escapeHtml(historyNote) : "登録した積立額を月別に展開しています。継続中は未入力月に直近の金額を反映し、当月分と将来分は累計に含めません。"} ${series?.error && chartMode !== "nav" ? `基準価額: ${escapeHtml(series.error)}` : ""} 証券会社の約定データには接続していません。</p>
+        ${series?.error ? `<button type="button" class="secondary savings-retry" data-savings-refresh="${escapeAttr(plan.id)}" ${series.loading ? "disabled" : ""}>基準価額を再取得</button>` : ""}
+        <details class="savings-month-history" open>
+          <summary>月別の積立額と累計</summary>
+          <div class="savings-month-table-wrap"><table><thead><tr><th>対象月</th><th>積立額</th><th>累計</th></tr></thead><tbody>${monthlyRows || '<tr><td colspan="3">積立設定を追加してください。</td></tr>'}${currentMonthRow}</tbody></table></div>
+        </details>
       </section>
       <form class="savings-plan-form" data-savings-form="${escapeAttr(plan.id)}">
+        <details class="savings-product-edit">
+          <summary>商品情報を編集</summary>
+          <div class="savings-product-fields">
+            <label><span>口座</span><select name="provider">${providerOptions}</select></label>
+            <label><span>商品名</span><input name="name" maxlength="100" required value="${escapeAttr(plan.name)}"></label>
+            <label><span>ファンドコード</span><input name="symbol" maxlength="14" required pattern="[A-Za-z0-9]{4,14}" autocapitalize="characters" value="${escapeAttr(plan.symbol)}"></label>
+          </div>
+        </details>
         <label class="savings-current-value"><span>現在の評価額</span><input name="currentValue" type="number" min="0" step="1" inputmode="numeric" value="${Number(plan.currentValue) || 0}"></label>
-        <div class="savings-schedule-head"><h4>月別の積立額</h4><label class="checkbox-line"><input name="recurring" type="checkbox" ${plan.recurring ? "checked" : ""}><span>継続</span></label></div>
-        <p>継続中は直近の設定額を翌月以降に適用します。特定月の設定があればそちらを優先します。</p>
+        <div class="savings-schedule-head"><h4>月ごとの積立設定</h4><label class="checkbox-line"><input name="recurring" type="checkbox" ${plan.recurring ? "checked" : ""}><span>継続</span></label></div>
+        <p>継続中は直近の設定額を翌月以降に反映します。特定月の設定があれば、その月から金額が切り替わります。</p>
         <div class="savings-schedule-list">${(plan.schedule || []).map((item) => savingsScheduleRow(item)).join("")}</div>
         <div class="savings-plan-actions"><button type="button" class="secondary" data-savings-add-month>月を追加</button><button type="submit">積立設定を保存</button><span data-savings-status role="status"></span></div>
       </form>
@@ -677,7 +715,7 @@ function savingsScheduleRow(item = {}) {
 }
 
 async function fetchSavingsSeries(symbol) {
-  state.savingsSeries[symbol] = { ...(state.savingsSeries[symbol] || {}), loading: true };
+  state.savingsSeries[symbol] = { ...(state.savingsSeries[symbol] || {}), loading: true, error: "" };
   try {
     const data = await request(`/api/price-series?market=fund&daily=1&symbol=${encodeURIComponent(symbol)}`);
     state.savingsSeries[symbol] = { series: data.series || [], loaded: true, fetchedAt: Date.now() };
@@ -703,10 +741,18 @@ async function saveSavingsPlan(form) {
   const button = form.querySelector('[type="submit"]');
   if (button) button.disabled = true;
   try {
+    const symbol = String(formData.get("symbol") || "").trim().toUpperCase();
+    if (!/^[A-Z0-9]{4,14}$/.test(symbol)) {
+      if (status) status.textContent = "ファンドコードを確認してください。";
+      return;
+    }
     const payload = await request("/api/savings-plans", {
       method: "POST",
       body: JSON.stringify({ plan: {
         ...original,
+        provider: formData.get("provider"),
+        name: String(formData.get("name") || "").trim(),
+        symbol,
         currentValue: Number(formData.get("currentValue")) || 0,
         recurring: formData.has("recurring"),
         schedule,
@@ -715,6 +761,11 @@ async function saveSavingsPlan(form) {
     state.savingsPlans = payload.plans || [];
     renderSavings();
     toast("積立設定を保存しました。");
+    if (!state.savingsSeries[symbol]?.series?.length) {
+      void fetchSavingsSeries(symbol).then(() => {
+        if (state.view === "savings") renderSavings();
+      });
+    }
   } catch (error) {
     if (status) status.textContent = error.message || "保存できませんでした";
   } finally {
@@ -975,6 +1026,7 @@ function setView(view) {
     renderCandidateList();
     renderSectorEvidence();
     renderDiscoveryJob();
+    if (state.ideaView === "surge") void loadSurgeForecast();
   }
   void safeLoad("画面データ", () => ensureViewData(nextView));
 }
@@ -1005,6 +1057,153 @@ function renderIdeaTabs() {
   });
   els.ideaPanels.forEach((panel) => {
     panel.hidden = panel.dataset.ideaPanel !== state.ideaView;
+  });
+}
+
+async function loadSurgeForecast() {
+  if (state.surgeForecastLoading) return;
+  state.surgeForecastLoading = true;
+  try {
+    applySurgeForecastPayload(await request("/api/surge-forecast"));
+  } catch (error) {
+    if (els.surgeForecastStatus) els.surgeForecastStatus.textContent = error.message || "予測結果を読み込めませんでした。";
+  } finally {
+    state.surgeForecastLoading = false;
+  }
+}
+
+function applySurgeForecastPayload(payload = {}) {
+  const previousGeneratedAt = state.surgeForecast?.generatedAt || "";
+  state.surgeForecast = payload;
+  state.surgeForecastJob = payload.job || null;
+  renderSurgeForecast();
+  if (state.surgeForecastJob?.running) void pollSurgeForecastJob();
+  return previousGeneratedAt !== (payload.generatedAt || "");
+}
+
+async function pollSurgeForecastJob() {
+  if (state.surgeForecastPolling) return;
+  state.surgeForecastPolling = true;
+  try {
+    for (let attempt = 0; attempt < 720 && state.surgeForecastJob?.running; attempt += 1) {
+      await sleep(5000);
+      try {
+        applySurgeForecastPayload(await request("/api/surge-forecast"));
+      } catch (error) {
+        if (els.surgeForecastStatus) els.surgeForecastStatus.textContent = `進捗確認を再試行中: ${error.message || "通信エラー"}`;
+      }
+    }
+  } finally {
+    state.surgeForecastPolling = false;
+  }
+}
+
+async function runSurgeForecastNow() {
+  if (els.surgeForecastRun) els.surgeForecastRun.disabled = true;
+  if (els.surgeForecastStatus) els.surgeForecastStatus.textContent = "検索範囲全体の予測を開始しています...";
+  try {
+    applySurgeForecastPayload(await request("/api/surge-forecast/run", { method: "POST" }));
+  } catch (error) {
+    if (els.surgeForecastStatus) els.surgeForecastStatus.textContent = error.message || "予測を開始できませんでした。";
+  } finally {
+    if (els.surgeForecastRun) els.surgeForecastRun.disabled = Boolean(state.surgeForecastJob?.running);
+  }
+}
+
+function renderSurgeForecast() {
+  const cache = state.surgeForecast || {};
+  const job = state.surgeForecastJob || {};
+  if (els.surgeForecastStatus) {
+    if (job.running) {
+      const progress = job.total ? ` ${Number(job.checked || 0).toLocaleString("ja-JP")}/${Number(job.total).toLocaleString("ja-JP")}銘柄` : "";
+      els.surgeForecastStatus.textContent = `${job.phase || "予測中"}${progress}。価格取得 ${Number(job.priced || 0).toLocaleString("ja-JP")}件 / 予測作成 ${Number(job.modeled || 0).toLocaleString("ja-JP")}件`;
+    } else if (job.error) {
+      els.surgeForecastStatus.textContent = `更新失敗: ${job.error}${cache.generatedAt ? `。表示中は${new Date(cache.generatedAt).toLocaleString("ja-JP")}の保存結果` : ""}`;
+    } else if (cache.generatedAt) {
+      els.surgeForecastStatus.textContent = `最終更新 ${new Date(cache.generatedAt).toLocaleString("ja-JP")}。日本株 ${Number(cache.jpUniverseCount || 0).toLocaleString("ja-JP")}件・米国株 ${Number(cache.usUniverseCount || 0).toLocaleString("ja-JP")}件を走査`;
+    } else {
+      els.surgeForecastStatus.textContent = "結果はまだありません。毎朝5:00に自動実行します。初回は「今すぐ更新」から開始できます。";
+    }
+  }
+  if (els.surgeForecastRun) els.surgeForecastRun.disabled = Boolean(job.running);
+  if (els.surgeForecastSummary) {
+    const metrics = cache.generatedAt ? [
+      ["走査対象", `${Number(cache.universeCount || 0).toLocaleString("ja-JP")}銘柄`],
+      ["価格取得", `${Number(cache.pricedCount || 0).toLocaleString("ja-JP")}銘柄`],
+      ["3年分から試算", `${Number(cache.modelledCount || 0).toLocaleString("ja-JP")}銘柄`],
+      ["予測期間", "3週間"],
+    ] : [];
+    els.surgeForecastSummary.hidden = !metrics.length;
+    els.surgeForecastSummary.innerHTML = metrics.map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join("");
+  }
+  if (!els.surgeForecastList) return;
+  const generatedAt = cache.generatedAt || "";
+  if (els.surgeForecastList.dataset.generatedAt === generatedAt) return;
+  els.surgeForecastList.dataset.generatedAt = generatedAt;
+  const results = Array.isArray(cache.results) ? cache.results.slice(0, 15) : [];
+  els.surgeForecastList.classList.toggle("empty-state", !results.length);
+  if (!results.length) {
+    els.surgeForecastList.innerHTML = `<p>${job.running ? "予測を計算しています。完了すると上位15銘柄とグラフが表示されます。" : "条件を満たす予測結果はまだありません。毎朝5:00に自動更新します。"}</p>`;
+    return;
+  }
+  els.surgeForecastList.innerHTML = results.map(surgeForecastCardHtml).join("");
+  state.surgeChartStates = [];
+  requestAnimationFrame(() => renderSurgeForecastCharts(results));
+}
+
+function surgeForecastCardHtml(item, index) {
+  const currency = item.currency === "USD" ? "USD" : "JPY";
+  const percent = (value) => Number.isFinite(Number(value)) ? `${Number(value).toFixed(1)}%` : "-";
+  const market = item.market || (String(item.symbol || "").endsWith(".T") ? "日本株" : "米国株");
+  return `
+    <article class="surge-forecast-card">
+      <header class="surge-forecast-card-head">
+        <div><span class="surge-rank">${index + 1}</span><div><h5>${escapeHtml(item.name || item.symbol)}</h5><a href="${escapeAttr(item.market === "米国株" ? `https://finance.yahoo.com/quote/${encodeURIComponent(item.symbol || "")}` : `https://finance.yahoo.co.jp/quote/${encodeURIComponent(item.symbol || "")}`)}" target="_blank" rel="noreferrer">${escapeHtml(item.symbol || "")}</a><span class="surge-market">${escapeHtml(market)} / ${escapeHtml(item.sector || "その他")}</span></div></div>
+        <strong class="surge-probability">${percent(item.surgeProbabilityPct)}<small>+10%到達参考確率</small></strong>
+      </header>
+      <div class="surge-forecast-metrics">
+        <div><span>現在値</span><strong>${escapeHtml(moneyByCurrency(Number(item.currentPrice), currency))}</strong></div>
+        <div><span>3週後の中央値</span><strong>${escapeHtml(moneyByCurrency(Number(item.terminalMedian), currency))} <small>${percent(item.medianReturnPct)}</small></strong></div>
+        <div><span>3週後の参考幅</span><strong>${escapeHtml(moneyByCurrency(Number(item.terminalLow), currency))}〜${escapeHtml(moneyByCurrency(Number(item.terminalHigh), currency))}</strong></div>
+        <div><span>10%超下落の参考確率</span><strong>${percent(item.downsideProbabilityPct)}</strong></div>
+      </div>
+      <div class="surge-chart-frame">
+        <canvas data-surge-chart-index="${index}" aria-label="${escapeAttr(item.name || item.symbol)} 過去12週と今後3週間の参考予測グラフ"></canvas>
+        <div class="chart-tooltip" data-surge-tooltip-index="${index}" hidden></div>
+      </div>
+      <p class="surge-chart-note">緑: 過去12週 / オレンジ点線: 予測中央値 / 薄色帯: 予測の10〜90%幅。グラフに触れると日付と価格を確認できます。</p>
+    </article>`;
+}
+
+function renderSurgeForecastCharts(results = []) {
+  const canvases = els.surgeForecastList?.querySelectorAll("[data-surge-chart-index]") || [];
+  canvases.forEach((canvas) => {
+    const index = Number(canvas.dataset.surgeChartIndex);
+    const item = results[index];
+    if (!item) return;
+    const chartState = { points: [], plot: null, hoverIndex: null };
+    const tooltip = els.surgeForecastList.querySelector(`[data-surge-tooltip-index="${index}"]`);
+    const options = {
+      startDate: item.actual?.[0]?.date || item.today,
+      today: item.today,
+      endDate: item.endDate,
+      currency: item.currency === "USD" ? "USD" : "JPY",
+      chartState,
+      tooltip,
+    };
+    state.surgeChartStates[index] = { canvas, tooltip, chartState, item, options };
+    drawDatedLineChart(canvas, item.actual || [], item.forecast || [], options);
+    canvas.addEventListener("pointermove", (event) => updateDatedLineChartHover(event, canvas, chartState, tooltip));
+    canvas.addEventListener("pointerleave", (event) => clearDatedLineChartHover(event, canvas, chartState, tooltip));
+    canvas.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "touch") updateDatedLineChartHover(event, canvas, chartState, tooltip);
+    });
+  });
+}
+
+function redrawSurgeForecastCharts() {
+  state.surgeChartStates.forEach(({ canvas, chartState, item, options }) => {
+    drawDatedLineChart(canvas, item.actual || [], item.forecast || [], { ...options, chartState });
   });
 }
 
@@ -3647,7 +3846,7 @@ function hideChartTooltip() {
 }
 
 function chartPointTooltipHtml(point, formatter) {
-  const label = point.kind === "forecast" ? "参考予測中央値" : point.kind === "principal" ? "積立元本" : "実績";
+  const label = point.label || (point.kind === "forecast" ? "参考予測中央値" : point.kind === "principal" ? "積立元本" : "実績");
   const range = Number.isFinite(point.low) && Number.isFinite(point.high)
     ? `<small>参考幅 ${escapeHtml(formatter(point.low))}〜${escapeHtml(formatter(point.high))}</small>`
     : "";
@@ -5644,7 +5843,7 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
   if (!values.length) {
     context.fillStyle = "#667277";
     context.font = "13px system-ui";
-    context.fillText("損益・価格データがありません", 18, 32);
+    context.fillText(options.emptyLabel || "損益・価格データがありません", 18, 32);
     if (tooltip) tooltip.hidden = true;
     return;
   }
@@ -5662,8 +5861,8 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
   const formatter = new Intl.NumberFormat(options.currency === "USD" ? "en-US" : "ja-JP", {
     style: "currency",
     currency: options.currency || "JPY",
-    notation: "compact",
-    maximumFractionDigits: 1,
+    ...(options.compactCurrency === false ? {} : { notation: "compact" }),
+    maximumFractionDigits: options.compactCurrency === false ? 0 : 1,
   });
   context.font = "11px system-ui";
   context.textAlign = "right";
@@ -5693,17 +5892,19 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
     context.fillStyle = "rgba(189, 105, 39, 0.14)";
     context.fill();
   }
-  const todayX = x(options.today);
-  context.strokeStyle = "#155c9a";
-  context.setLineDash([3, 4]);
-  context.beginPath();
-  context.moveTo(todayX, pad.top);
-  context.lineTo(todayX, height - pad.bottom);
-  context.stroke();
-  context.setLineDash([]);
-  context.fillStyle = "#155c9a";
-  context.textAlign = "center";
-  context.fillText("今日", todayX, pad.top + 11);
+  if (!options.hideTodayMarker) {
+    const todayX = x(options.today);
+    context.strokeStyle = "#155c9a";
+    context.setLineDash([3, 4]);
+    context.beginPath();
+    context.moveTo(todayX, pad.top);
+    context.lineTo(todayX, height - pad.bottom);
+    context.stroke();
+    context.setLineDash([]);
+    context.fillStyle = "#155c9a";
+    context.textAlign = "center";
+    context.fillText("今日", todayX, pad.top + 11);
+  }
 
   const drawLine = (points, color, dashed) => {
     context.strokeStyle = color;
@@ -5740,7 +5941,7 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
 
   const actualHoverPoints = actualPoints
     .filter((point) => Number.isFinite(point.value))
-    .map((point) => ({ kind: "actual", date: point.date, value: point.value }));
+    .map((point) => ({ kind: "actual", label: options.actualLabel || "実績", date: point.date, value: point.value }));
   const forecastHoverPoints = forecastPoints
     .filter((point) => point.date > options.today && Number.isFinite(point.value))
     .map((point) => ({ kind: "forecast", date: point.date, value: point.value, low: point.low, high: point.high, principal: point.principal }));
@@ -5795,8 +5996,8 @@ function updateDatedLineChartHover(event, canvas, chartState, tooltip) {
     const formatter = new Intl.NumberFormat(chartState.options.currency === "USD" ? "en-US" : "ja-JP", {
       style: "currency",
       currency: chartState.options.currency || "JPY",
-      notation: "compact",
-      maximumFractionDigits: 1,
+      ...(chartState.options.compactCurrency === false ? {} : { notation: "compact" }),
+      maximumFractionDigits: chartState.options.compactCurrency === false ? 0 : 1,
     });
     showChartPointTooltip(canvas, tooltip, nearest, (value) => formatter.format(value));
   }
@@ -7734,7 +7935,6 @@ els.viewButtons.forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.viewTarget));
 });
 
-els.savingsHorizon?.addEventListener("change", renderSavings);
 els.savingsCreateForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!els.savingsCreateForm.reportValidity()) return;
@@ -7779,6 +7979,22 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
 });
 
 els.savingsPlans?.addEventListener("click", async (event) => {
+  const chartTab = event.target.closest("[data-savings-chart-mode]");
+  if (chartTab) {
+    savingsChartModes.set(chartTab.dataset.savingsPlan, chartTab.dataset.savingsChartMode);
+    renderSavings();
+    return;
+  }
+  const refreshButton = event.target.closest("[data-savings-refresh]");
+  if (refreshButton) {
+    const plan = state.savingsPlans.find((item) => item.id === refreshButton.dataset.savingsRefresh);
+    if (plan) {
+      refreshButton.disabled = true;
+      await fetchSavingsSeries(plan.symbol);
+      renderSavings();
+    }
+    return;
+  }
   const addButton = event.target.closest("[data-savings-add-month]");
   if (addButton) {
     const list = addButton.closest(".savings-plan-form")?.querySelector(".savings-schedule-list");
@@ -7818,6 +8034,7 @@ els.ideaTabButtons.forEach((button) => {
   button.addEventListener("click", () => {
     state.ideaView = button.dataset.ideaTab || "candidates";
     renderIdeaTabs();
+    if (state.ideaView === "surge") void loadSurgeForecast();
   });
   button.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -7828,9 +8045,11 @@ els.ideaTabButtons.forEach((button) => {
     const nextButton = els.ideaTabButtons[nextIndex];
     state.ideaView = nextButton.dataset.ideaTab || "candidates";
     renderIdeaTabs();
+    if (state.ideaView === "surge") void loadSurgeForecast();
     nextButton.focus();
   });
 });
+els.surgeForecastRun?.addEventListener("click", runSurgeForecastNow);
 
 els.settingsTabButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -7904,6 +8123,8 @@ window.addEventListener("resize", () => {
     renderPerformance();
   } else if (state.view === "savings") {
     renderSavings();
+  } else if (state.view === "ideas" && state.ideaView === "surge") {
+    redrawSurgeForecastCharts();
   }
 });
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzip, inflateRawSync } from "node:zlib";
 import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "./refresh-control.mjs";
+import { buildThreeWeekSurgeForecast } from "./surge-forecast.mjs";
 
 const runPriceRefresh = createSingleFlight();
 const priceRefreshAttempts = new Map();
@@ -29,6 +30,7 @@ const EXIT_STATE_PATH = path.join(__dirname, "data", "exit-state.json");
 const SHAREHOLDER_CACHE_PATH = path.join(__dirname, "data", "shareholder-cache.json");
 const FINANCIAL_CACHE_PATH = path.join(__dirname, "data", "financial-cache.json");
 const PRIME_UNIVERSE_PATH = path.join(__dirname, "data", "prime-universe.json");
+const SURGE_FORECAST_PATH = path.join(__dirname, "data", "surge-forecast.json");
 const NOTIFICATION_LOG_PATH = path.join(__dirname, "data", "notification-log.json");
 const EXCLUDED_CANDIDATES_PATH = path.join(__dirname, "data", "excluded-candidates.json");
 const TDNET_DISCLOSURE_CACHE_PATH = path.join(__dirname, "data", "tdnet-disclosure-cache.json");
@@ -484,8 +486,11 @@ let secCompanyTickerCache = null;
 let analysisJob = null;
 let usAnalysisJob = null;
 let discoveryJob = null;
+let surgeForecastJob = null;
+let surgeForecastScheduledDate = "";
 let hourlyRefreshTimer = null;
 let priceRefreshTimer = null;
+let surgeForecastTimer = null;
 
 const discoveryUniverse = [
   { symbol: "9433.T", name: "KDDI", market: "東証", sector: "通信", notes: "通信、金融、株主還元" },
@@ -795,6 +800,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`Stock Signal is running at http://${HOST}:${PORT}`);
   scheduleHourlyRefresh();
+  scheduleDailySurgeForecast();
 });
 
 async function handleApi(req, res, url) {
@@ -943,6 +949,19 @@ async function handleApi(req, res, url) {
     });
   }
 
+  if (url.pathname === "/api/surge-forecast" && req.method === "GET") {
+    return json(res, 200, { ...(await readSurgeForecastCache()), job: surgeForecastJobSnapshot() });
+  }
+
+  if (url.pathname === "/api/surge-forecast/run" && req.method === "POST") {
+    const job = startSurgeForecastJob("manual");
+    return json(res, 202, {
+      ...(await readSurgeForecastCache()),
+      job,
+      message: job.running ? "検索範囲全体の3週間予測を開始しました。" : "予測処理はすでに実行中です。",
+    });
+  }
+
   if (url.pathname === "/api/price-series" && req.method === "GET") {
     const market = String(url.searchParams.get("market") || "").toLowerCase();
     const daily = url.searchParams.get("daily") === "1";
@@ -958,7 +977,9 @@ async function handleApi(req, res, url) {
     if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000) {
       return json(res, 200, cached.payload);
     }
-    const price = await fetchPriceHistory(symbol, { timeout: 9000 });
+    const price = market === "fund"
+      ? await fetchFundPriceHistory(symbol, { timeout: 4500 })
+      : await fetchPriceHistory(symbol, { timeout: 9000 });
     if (!price.series?.length) return json(res, 404, { error: "基準価額の履歴を取得できません。ファンドコードを確認してください。" });
     const payload = {
       symbol,
@@ -3521,6 +3542,159 @@ function discoveryJobSnapshot() {
 
 function isStaleDiscoverySearchCandidatesError(error = "") {
   return /searchCandidates is not defined/.test(String(error || ""));
+}
+
+function startSurgeForecastJob(reason = "manual") {
+  if (surgeForecastJob?.running) return surgeForecastJobSnapshot();
+  const job = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    running: true,
+    reason,
+    phase: "検索範囲を準備中",
+    checked: 0,
+    total: 0,
+    priced: 0,
+    modeled: 0,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    generatedAt: "",
+    error: "",
+  };
+  surgeForecastJob = job;
+  void runThreeWeekSurgeScan(job)
+    .then((result) => {
+      updateSurgeForecastJob(job, { running: false, phase: "完了", modeled: result.modelledCount, generatedAt: result.generatedAt });
+    })
+    .catch((error) => {
+      updateSurgeForecastJob(job, { running: false, phase: "失敗", error: error.message || "予測スキャンに失敗しました" });
+    });
+  return surgeForecastJobSnapshot();
+}
+
+async function runThreeWeekSurgeScan(job) {
+  const [stocks, usStocks, excludedCandidates, primeUniverse, discoveryCache] = await Promise.all([
+    readWatchlist(),
+    readUsWatchlist(),
+    readExcludedCandidates(),
+    readPrimeUniverse(),
+    readDiscoveryCache(),
+  ]);
+  updateSurgeForecastJob(job, { phase: "最新の検索結果を追加中" });
+  const search = await discoverySearchResults(60).catch(() => []);
+  const existing = new Set([...stocks, ...usStocks].map((stock) => normalizeDiscoverySymbol(stock.symbol, stock)).filter(Boolean));
+  const excluded = new Set(excludedCandidates.map((candidate) => candidate.symbol));
+  const searchCandidates = extractDiscoveryCandidates(search, existing, excluded);
+  const officialUniverse = [...primeUniverse, ...discoveryUniverse, ...usDiscoveryUniverse];
+  const candidates = uniqueBy([
+    ...reconcileSearchCandidateNames(searchCandidates, officialUniverse),
+    ...primeUniverse,
+    ...discoveryUniverse,
+    ...usDiscoveryUniverse,
+    ...(discoveryCache.suggestions || []),
+  ].map(normalizeDiscoveryCandidateName), (candidate) => candidate.symbol)
+    .filter((candidate) => candidate.symbol && !existing.has(candidate.symbol) && !excluded.has(candidate.symbol))
+    .filter(hasCleanDiscoveryCandidateName)
+    .filter((candidate) => !isDiscoveryAvoidedBusiness(candidate));
+  const today = jstDate(new Date().toISOString());
+  const jpCount = candidates.filter((candidate) => !isUsDiscoveryCandidate(candidate)).length;
+  const usCount = candidates.length - jpCount;
+  updateSurgeForecastJob(job, {
+    phase: "全検索範囲の3年価格を確認中",
+    checked: 0,
+    total: candidates.length,
+    priced: 0,
+    modeled: 0,
+  });
+
+  let checked = 0;
+  let priced = 0;
+  let modeled = 0;
+  const forecasts = await mapLimit(candidates, 8, async (candidate) => {
+    const price = await fetchPriceHistory(candidate.symbol, { timeout: 9000 }).catch(() => emptyPrice());
+    if (Number(price.current) > 0 && price.series?.length) priced += 1;
+    const forecast = buildThreeWeekSurgeForecast({
+      symbol: candidate.symbol,
+      series: price.series || [],
+      current: price.current,
+      today,
+      pathCount: 1000,
+      thresholdPct: 10,
+    });
+    if (forecast) modeled += 1;
+    checked += 1;
+    if (checked === candidates.length || checked % 25 === 0) {
+      updateSurgeForecastJob(job, { checked, priced, modeled, phase: "全検索範囲の3年価格を確認中" });
+    }
+    return forecast ? {
+      symbol: candidate.symbol,
+      name: candidate.name || candidate.symbol,
+      market: isUsDiscoveryCandidate(candidate) ? "米国株" : "日本株",
+      currency: discoveryCurrency(candidate),
+      sector: candidate.sector || "その他",
+      ...forecast,
+    } : null;
+  });
+  const ranked = forecasts.filter(Boolean).sort((a, b) => (
+    b.surgeProbabilityPct - a.surgeProbabilityPct
+      || b.medianReturnPct - a.medianReturnPct
+      || a.downsideProbabilityPct - b.downsideProbabilityPct
+      || a.symbol.localeCompare(b.symbol)
+  ));
+  const result = {
+    generatedAt: new Date().toISOString(),
+    asOfDate: today,
+    universeCount: candidates.length,
+    jpUniverseCount: jpCount,
+    usUniverseCount: usCount,
+    pricedCount: priced,
+    modelledCount: modeled,
+    searchResultCount: search.length,
+    thresholdPct: 10,
+    horizonWeeks: 3,
+    historyWeeks: 156,
+    pathCount: 1000,
+    method: "直近3年の週次変動を3週間単位で再標本化。1,000経路の+10%到達率で順位付け。",
+    results: ranked.slice(0, 15),
+  };
+  await saveSurgeForecastCache(result);
+  return result;
+}
+
+function updateSurgeForecastJob(job, patch = {}) {
+  if (!job || surgeForecastJob?.id !== job.id) return;
+  Object.assign(job, patch, { updatedAt: new Date().toISOString() });
+}
+
+function surgeForecastJobSnapshot() {
+  return surgeForecastJob ? { ...surgeForecastJob } : {
+    running: false,
+    reason: "",
+    phase: "待機中",
+    checked: 0,
+    total: 0,
+    priced: 0,
+    modeled: 0,
+    startedAt: "",
+    updatedAt: "",
+    generatedAt: "",
+    error: "",
+  };
+}
+
+function scheduleDailySurgeForecast() {
+  if (surgeForecastTimer) clearInterval(surgeForecastTimer);
+  const tick = async () => {
+    const parts = zonedParts(new Date(), "Asia/Tokyo");
+    if (!parts || parts.hour < 5 || parts.hour > 23 || surgeForecastJob?.running) return;
+    const today = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+    if (surgeForecastScheduledDate === today) return;
+    surgeForecastScheduledDate = today;
+    const cached = await readSurgeForecastCache();
+    if (jstDate(cached.generatedAt) === today) return;
+    startSurgeForecastJob("daily");
+  };
+  setTimeout(() => { void tick(); }, 12000);
+  surgeForecastTimer = setInterval(() => { void tick(); }, 60 * 1000);
 }
 
 function scheduleHourlyRefresh() {
@@ -7774,6 +7948,12 @@ async function fetchPriceHistory(symbol, options = {}) {
     timeout: Math.min(timeout, 9000),
   }).catch(() => null);
   return enrichPriceDividendForecast(metrics, dividendSnapshot);
+}
+
+async function fetchFundPriceHistory(symbol, options = {}) {
+  const direct = await fetchPriceHistory(symbol, options);
+  if (direct.series?.length) return direct;
+  return fetchPriceHistory(`${symbol}.T`, options);
 }
 
 function combineBtcJpySeries(btcSeries = [], fxSeries = []) {
@@ -12094,6 +12274,52 @@ async function readDiscoveryCache() {
   } catch {
     return { generatedAt: "", suggestions: [], evidence: [], sourceSummary: null, message: "" };
   }
+}
+
+async function readSurgeForecastCache() {
+  try {
+    const cached = JSON.parse(await readFile(SURGE_FORECAST_PATH, "utf8"));
+    return {
+      generatedAt: String(cached.generatedAt || ""),
+      asOfDate: String(cached.asOfDate || ""),
+      universeCount: Number(cached.universeCount) || 0,
+      jpUniverseCount: Number(cached.jpUniverseCount) || 0,
+      usUniverseCount: Number(cached.usUniverseCount) || 0,
+      pricedCount: Number(cached.pricedCount) || 0,
+      modelledCount: Number(cached.modelledCount) || 0,
+      searchResultCount: Number(cached.searchResultCount) || 0,
+      thresholdPct: Number(cached.thresholdPct) || 10,
+      horizonWeeks: Number(cached.horizonWeeks) || 3,
+      historyWeeks: Number(cached.historyWeeks) || 156,
+      pathCount: Number(cached.pathCount) || 1000,
+      method: String(cached.method || ""),
+      results: Array.isArray(cached.results) ? cached.results.slice(0, 15) : [],
+    };
+  } catch {
+    return {
+      generatedAt: "",
+      asOfDate: "",
+      universeCount: 0,
+      jpUniverseCount: 0,
+      usUniverseCount: 0,
+      pricedCount: 0,
+      modelledCount: 0,
+      searchResultCount: 0,
+      thresholdPct: 10,
+      horizonWeeks: 3,
+      historyWeeks: 156,
+      pathCount: 1000,
+      method: "",
+      results: [],
+    };
+  }
+}
+
+async function saveSurgeForecastCache(result) {
+  await mkdir(path.dirname(SURGE_FORECAST_PATH), { recursive: true });
+  const temporary = `${SURGE_FORECAST_PATH}.tmp`;
+  await writeFile(temporary, JSON.stringify(result, null, 2));
+  await rename(temporary, SURGE_FORECAST_PATH);
 }
 
 async function discoveryCacheForCurrentSettings() {

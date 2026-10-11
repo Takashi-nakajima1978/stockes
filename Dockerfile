@@ -2,7 +2,7 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-COPY package.json server.mjs refresh-control.mjs ./
+COPY package.json server.mjs refresh-control.mjs surge-forecast.mjs ./
 COPY public ./public
 COPY data ./data
 
