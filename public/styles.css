@@ -3515,6 +3515,14 @@ tr:hover .drag-handle,
   border-top-style: dashed;
 }
 
+.performance-legend .legend-band {
+  width: 18px;
+  height: 9px;
+  border: 0;
+  border-radius: 2px;
+  background: rgba(189, 105, 39, 0.18);
+}
+
 .performance-legend .legend-today {
   width: 0;
   height: 14px;

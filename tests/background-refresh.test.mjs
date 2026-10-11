@@ -2101,10 +2101,17 @@ test("crypto refresh fetches EUR/JPY independently and keeps BTC position in yen
   assert.equal(result.eurJpy.pair, "EUR/JPY");
 });
 
-test("portfolio P/L timeline uses an exact one-year window and compounds historical return with dividends", () => {
+test("portfolio P/L timeline resamples weekly returns, shows a range, and adds forecast dividends", () => {
   const annualizedReturn = loadFunction(appSource, "performanceAnnualizedReturn", {});
   const timeline = loadFunction(appSource, "portfolioPerformanceTimeline", {
-    performanceAnnualizedReturn: annualizedReturn,
+    weeklyPriceGrid: loadFunction(appSource, "weeklyPriceGrid", {}),
+    calendarYearOffset: loadFunction(appSource, "calendarYearOffset", {}),
+    weeklyReturnStatistics: loadFunction(appSource, "weeklyReturnStatistics", {}),
+    bootstrapForecast: loadFunction(appSource, "bootstrapForecast", {
+      seededForecastRandom: loadFunction(appSource, "seededForecastRandom", {}),
+      forecastQuantile: loadFunction(appSource, "forecastQuantile", {}),
+    }),
+    forecastMonthDates: loadFunction(appSource, "forecastMonthDates", {}),
     positionLots: (stock) => stock.positions || [],
     saleLots: (stock) => stock.sales || [],
     positionLotState: (lots, sales) => ({
@@ -2133,26 +2140,67 @@ test("portfolio P/L timeline uses an exact one-year window and compounds histori
       dividendPerShareAnnual: 4,
       dividendEvents: [{ date: "2026-03-01", amount: 2 }],
       series: [
-        { date: "2025-10-10", close: 100 },
-        { date: "2026-02-02", close: 105 },
-        { date: "2026-10-09", close: 120 },
+        { date: "2025-10-11", close: 100 },
+        ...Array.from({ length: 53 }, (_, index) => ({
+          date: new Date(Date.UTC(2025, 9, 12 + (index * 7))).toISOString().slice(0, 10),
+          close: 100 + ((20 * index) / 52) + (index % 2 ? 1 : -1),
+        })),
       ],
     },
   };
-  assert.ok(annualizedReturn(analysis.price.series, "2026-10-11") > 0.19);
+  assert.ok(annualizedReturn(analysis.price.series, "2026-10-11") > 0.18);
   const result = timeline([stock], { "TEST.T": analysis }, now);
   assert.equal(result.startDate, "2025-10-11");
   assert.equal(result.today, "2026-10-11");
   assert.equal(result.endDate, "2027-10-11");
   assert.equal(result.currentTotal, 170);
-  assert.ok(result.forecastTotal > 448 && result.forecastTotal < 455);
+  assert.equal(result.forecast[0].value, result.currentTotal);
+  assert.equal(result.forecast[0].low, result.currentTotal);
+  assert.equal(result.forecast[0].high, result.currentTotal);
+  assert.ok(Number.isFinite(result.forecastTotal));
+  assert.ok(result.forecastLow < result.forecastTotal);
+  assert.ok(result.forecastTotal < result.forecastHigh);
+  assert.ok(result.annualizedVolatilityPct > 0);
+  assert.equal(result.forecast.at(-1).pathCount, 1000);
   assert.equal(result.annualDividend, 40);
   assert.equal(result.rateUnavailableCount, 0);
   assert.equal(result.actual.at(-1).value, 170);
   assert.equal(result.actual[0].value, 0);
 });
 
-test("discovery cards retain compact price history and watchlist/candidate cards expose one-year charts", () => {
+test("forecast bands are repeatable and candidates do not show watchlist price charts", () => {
+  const forecast = loadFunction(appSource, "bootstrapForecast", {
+    seededForecastRandom: loadFunction(appSource, "seededForecastRandom", {}),
+    forecastQuantile: loadFunction(appSource, "forecastQuantile", {}),
+  });
+  const returns = Array.from({ length: 52 }, (_, index) => [((index % 5) - 2) * 0.006 + 0.002]);
+  const dates = loadFunction(appSource, "forecastMonthDates", {})("2026-01-01");
+  const first = forecast(
+    returns,
+    [100],
+    0,
+    0,
+    dates,
+    "repeatable-test",
+  );
+  const second = forecast(
+    returns,
+    [100],
+    0,
+    0,
+    dates,
+    "repeatable-test",
+  );
+  assert.deepEqual(first, second);
+  assert.ok(first.at(-1).low < first.at(-1).value);
+  assert.ok(first.at(-1).value < first.at(-1).high);
+  assert.equal(first.at(-1).pathCount, 1000);
+  const yearOffset = loadFunction(appSource, "calendarYearOffset", {});
+  assert.equal(yearOffset("2024-02-29", 1), "2025-02-28");
+  assert.equal(yearOffset("2025-02-28", -1), "2024-02-28");
+});
+
+test("discovery cards retain compact price history while watchlists and P/L show one-year forecast charts", () => {
   assert.match(indexSource, /data-view-target="performance"/);
   assert.match(indexSource, /過去1年から今後1年まで/);
   assert.match(indexSource, /data-performance-market="jp"/);
@@ -2160,7 +2208,9 @@ test("discovery cards retain compact price history and watchlist/candidate cards
   assert.match(appSource, /function stockForecastChartHtml\(/);
   assert.match(appSource, /stockForecastChartHtml\(stock\.symbol, "jp"\)/);
   assert.match(appSource, /stockForecastChartHtml\(stock\.symbol, "us"\)/);
-  assert.match(appSource, /stockForecastChartHtml\(item\.symbol, target\)/);
+  assert.doesNotMatch(appSource, /stockForecastChartHtml\(item\.symbol, target\)/);
+  assert.match(appSource, /10〜90%参考幅/);
+  assert.match(indexSource, /参考幅（10〜90%）/);
   assert.match(serverSource, /function compactPerformanceSeries\(/);
   assert.match(serverSource, /url\.pathname === "\/api\/price-series"/);
 });

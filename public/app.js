@@ -1258,9 +1258,18 @@ function renderPerformance() {
   if (els.performanceCurrentNote) els.performanceCurrentNote.textContent = `${timeline.stockCount}銘柄・売却済み損益と受取配当を含む`;
   if (els.performanceForecast) els.performanceForecast.textContent = moneyByCurrency(timeline.forecastTotal, currency);
   if (els.performanceForecastNote) {
-    els.performanceForecastNote.textContent = timeline.rateUnavailableCount
-      ? `${timeline.rateUnavailableCount}銘柄は価格履歴不足のため株価変動を加算せず`
-      : "保有株の過去1年騰落率を複利で反映・保証なし";
+    if (Number.isFinite(timeline.forecastLow) && Number.isFinite(timeline.forecastHigh)) {
+      const range = `${moneyByCurrency(timeline.forecastLow, currency)}〜${moneyByCurrency(timeline.forecastHigh, currency)}`;
+      const volatility = Number.isFinite(timeline.annualizedVolatilityPct)
+        ? ` / 年率変動率 ${timeline.annualizedVolatilityPct.toFixed(1)}%`
+        : "";
+      const excluded = timeline.rateUnavailableCount ? ` / 履歴不足 ${timeline.rateUnavailableCount}銘柄は価格変動対象外` : "";
+      els.performanceForecastNote.textContent = `10〜90%参考幅 ${range}${volatility}${excluded}`;
+    } else {
+      els.performanceForecastNote.textContent = timeline.stockCount
+        ? `価格履歴不足のため変動幅を試算できません${timeline.rateUnavailableCount ? `（対象外 ${timeline.rateUnavailableCount}銘柄）` : ""}`
+        : "保有データがありません";
+    }
   }
   if (els.performanceDividend) els.performanceDividend.textContent = moneyByCurrency(timeline.annualDividend, currency);
   if (els.performanceUpdatedAt) {
@@ -4805,20 +4814,144 @@ function performanceAnnualizedReturn(series = [], asOfDate = "") {
   return ((Number(latest.close) / Number(baseline.close)) ** (365 / elapsedDays)) - 1;
 }
 
+function weeklyPriceGrid(series = [], asOfDate = "", currentPrice = null) {
+  const asOfMs = new Date(`${asOfDate}T00:00:00Z`).getTime();
+  if (!Number.isFinite(asOfMs)) return { dates: [], prices: [] };
+  const points = (series || [])
+    .filter((point) => point?.date && point.date <= asOfDate && Number(point.close) > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const dates = [];
+  const prices = [];
+  let index = 0;
+  let latest = null;
+  for (let week = 0; week <= 52; week += 1) {
+    const time = asOfMs - ((52 - week) * 7 * 86400000);
+    const date = new Date(time).toISOString().slice(0, 10);
+    dates.push(date);
+    while (index < points.length && points[index].date <= date) {
+      latest = points[index];
+      index += 1;
+    }
+    const ageDays = latest ? (time - new Date(`${latest.date}T00:00:00Z`).getTime()) / 86400000 : Infinity;
+    prices.push(ageDays <= 10 ? Number(latest.close) : null);
+  }
+  if (Number.isFinite(Number(currentPrice)) && Number(currentPrice) > 0) prices[52] = Number(currentPrice);
+  return { dates, prices };
+}
+
+function calendarYearOffset(date = "", years = 0) {
+  const source = new Date(`${date}T00:00:00Z`);
+  if (!Number.isFinite(source.getTime())) return "";
+  const year = source.getUTCFullYear() + years;
+  const month = source.getUTCMonth();
+  const day = Math.min(source.getUTCDate(), new Date(Date.UTC(year, month + 1, 0)).getUTCDate());
+  return new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10);
+}
+
+function weeklyReturnStatistics(returns = []) {
+  const values = returns.filter(Number.isFinite);
+  if (values.length < 26) return null;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / Math.max(1, values.length - 1);
+  const logReturn = values.reduce((sum, value) => sum + value, 0) * (52 / values.length);
+  return {
+    observations: values.length,
+    annualizedReturnPct: (Math.exp(logReturn) - 1) * 100,
+    annualizedVolatilityPct: Math.sqrt(variance * 52) * 100,
+  };
+}
+
+function seededForecastRandom(seed = "") {
+  let state = 2166136261;
+  for (const character of String(seed)) {
+    state = Math.imul(state ^ character.charCodeAt(0), 16777619);
+  }
+  if (!state) state = 1;
+  return () => {
+    state = (state + 0x6D2B79F5) | 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function forecastQuantile(values = [], quantile = 0.5) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const position = (sorted.length - 1) * quantile;
+  const lower = Math.floor(position);
+  const fraction = position - lower;
+  return sorted[lower] + ((sorted[Math.min(lower + 1, sorted.length - 1)] - sorted[lower]) * fraction);
+}
+
+function forecastMonthDates(today = "") {
+  const todayMs = new Date(`${today}T00:00:00Z`).getTime();
+  if (!Number.isFinite(todayMs)) return [];
+  const dates = [];
+  const day = new Date(todayMs).getUTCDate();
+  for (let month = 0; month <= 12; month += 1) {
+    const date = new Date(todayMs);
+    date.setUTCDate(1);
+    date.setUTCMonth(date.getUTCMonth() + month);
+    const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+    date.setUTCDate(Math.min(day, lastDay));
+    dates.push(month === 0 ? today : date.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+function bootstrapForecast(returnVectors = [], currentValues = [], baselineValue = 0, annualDividend = 0, dates = [], seed = "") {
+  const rows = returnVectors.filter((row) => Array.isArray(row)
+    && row.length === currentValues.length && row.every(Number.isFinite));
+  if (rows.length < 26 || !currentValues.length || dates.length !== 13) return [];
+  const random = seededForecastRandom(seed);
+  const samples = dates.map(() => []);
+  const pathCount = 1000;
+  const blockWeeks = 4;
+  const blockStarts = rows.length - blockWeeks + 1;
+  const dateTimes = dates.map((date) => new Date(`${date}T00:00:00Z`).getTime());
+
+  // Resampling the same four-week blocks for every holding retains short-term clustering and co-movement.
+  for (let path = 0; path < pathCount; path += 1) {
+    const multipliers = currentValues.map(() => 1);
+    let week = 0;
+    let blockStart = 0;
+    for (let month = 0; month <= 12; month += 1) {
+      const targetWeek = Math.round((month * 52) / 12);
+      while (week < targetWeek) {
+        if (week % blockWeeks === 0) blockStart = Math.floor(random() * blockStarts);
+        const returns = rows[blockStart + (week % blockWeeks)];
+        for (let holding = 0; holding < multipliers.length; holding += 1) {
+          multipliers[holding] *= Math.exp(returns[holding]);
+        }
+        week += 1;
+      }
+      const marketValue = currentValues.reduce((sum, amount, holding) => sum + (amount * multipliers[holding]), 0);
+      const years = Math.max(0, dateTimes[month] - dateTimes[0]) / (365 * 86400000);
+      samples[month].push(baselineValue + marketValue + (annualDividend * years));
+    }
+  }
+
+  return dates.map((date, index) => ({
+    date,
+    low: forecastQuantile(samples[index], 0.1),
+    value: forecastQuantile(samples[index], 0.5),
+    high: forecastQuantile(samples[index], 0.9),
+    pathCount,
+  }));
+}
+
 function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new Date()) {
   const now = new Date(nowValue);
   const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const today = new Date(todayMs).toISOString().slice(0, 10);
-  const start = new Date(todayMs);
-  start.setUTCFullYear(start.getUTCFullYear() - 1);
-  const startDate = start.toISOString().slice(0, 10);
-  const end = new Date(todayMs);
-  end.setUTCFullYear(end.getUTCFullYear() + 1);
-  const endDate = end.toISOString().slice(0, 10);
+  const startDate = calendarYearOffset(today, -1);
+  const endDate = calendarYearOffset(today, 1);
   const entries = stocks.map((stock) => ({ stock, analysis: analyses[stock.symbol], price: analyses[stock.symbol]?.price || {} }))
     .filter(({ stock }) => positionLots(stock).length || saleLots(stock).length);
   const actualDates = [];
-  for (let time = start.getTime(); time < todayMs; time += 7 * 86400000) {
+  for (let time = new Date(`${startDate}T00:00:00Z`).getTime(); time < todayMs; time += 7 * 86400000) {
     actualDates.push(new Date(time).toISOString().slice(0, 10));
   }
   actualDates.push(today);
@@ -4855,7 +4988,6 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
   let currentTotal = 0;
   let currentIncomplete = false;
   let annualDividend = 0;
-  let rateUnavailableCount = 0;
   const forecastStocks = [];
   for (const { stock, price } of entries) {
     const currentPrice = Number(price.current) > 0
@@ -4868,29 +5000,57 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
     const annualPerShare = annualDividendPerShare(price) || 0;
     const dividend = annualPerShare * quantity;
     annualDividend += dividend;
-    const rate = quantity > 0 ? performanceAnnualizedReturn(price.series || [], today) : 0;
-    if (quantity > 0 && rate === null) rateUnavailableCount += 1;
-    forecastStocks.push({ currentPrice, quantity, rate: rate ?? 0, dividend });
+    const grid = quantity > 0 && currentPrice > 0
+      ? weeklyPriceGrid(price.series || [], today, currentPrice)
+      : null;
+    forecastStocks.push({ currentPrice, quantity, dividend, weeklyPrices: grid?.prices || [] });
   }
-  const forecast = [];
-  for (let month = 0; month <= 12; month += 1) {
-    const pointDate = new Date(todayMs);
-    const day = pointDate.getUTCDate();
-    pointDate.setUTCDate(1);
-    pointDate.setUTCMonth(pointDate.getUTCMonth() + month);
-    const lastDay = new Date(Date.UTC(pointDate.getUTCFullYear(), pointDate.getUTCMonth() + 1, 0)).getUTCDate();
-    pointDate.setUTCDate(Math.min(day, lastDay));
-    const date = month === 12 ? endDate : pointDate.toISOString().slice(0, 10);
-    const years = (new Date(`${date}T00:00:00Z`).getTime() - todayMs) / (365 * 86400000);
-    let value = currentTotal;
-    for (const item of forecastStocks) {
-      if (item.quantity > 0 && item.currentPrice) {
-        value += (item.currentPrice * ((1 + item.rate) ** years) - item.currentPrice) * item.quantity;
+  const activeStocks = forecastStocks.filter((item) => item.quantity > 0 && item.currentPrice > 0);
+  const eligibleStocks = activeStocks.filter((item) => item.weeklyPrices.filter(Number.isFinite).length >= 45);
+  const returnVectors = [];
+  const portfolioReturns = [];
+  for (let week = 1; week <= 52; week += 1) {
+    const vector = [];
+    let previousValue = 0;
+    let currentValue = 0;
+    for (const item of eligibleStocks) {
+      const previousPrice = item.weeklyPrices[week - 1];
+      const weekPrice = item.weeklyPrices[week];
+      if (!(previousPrice > 0) || !(weekPrice > 0)) {
+        vector.length = 0;
+        break;
       }
-      value += item.dividend * years;
+      vector.push(Math.log(weekPrice / previousPrice));
+      previousValue += previousPrice * item.quantity;
+      currentValue += weekPrice * item.quantity;
     }
-    forecast.push({ date, value: currentIncomplete ? null : value });
+    if (vector.length === eligibleStocks.length && vector.length) {
+      returnVectors.push(vector);
+      portfolioReturns.push(Math.log(currentValue / previousValue));
+    }
   }
+  const modelReady = eligibleStocks.length > 0 && returnVectors.length >= 26;
+  const modeledValues = modelReady ? eligibleStocks.map((item) => item.currentPrice * item.quantity) : [];
+  const modeledMarketValue = modeledValues.reduce((sum, value) => sum + value, 0);
+  const stats = modelReady ? weeklyReturnStatistics(portfolioReturns) : null;
+  const rateUnavailableCount = activeStocks.length - (modelReady ? eligibleStocks.length : 0);
+  const forecast = currentIncomplete
+    ? []
+    : activeStocks.length
+      ? modelReady
+        ? bootstrapForecast(
+          returnVectors,
+          modeledValues,
+          currentTotal - modeledMarketValue,
+          annualDividend,
+          forecastMonthDates(today),
+          `portfolio:${stocks.map((stock) => stock.symbol).sort().join(",")}:${today}`,
+        )
+        : []
+      : entries.length
+        ? forecastMonthDates(today).map((date) => ({ date, value: currentTotal, low: currentTotal, high: currentTotal, pathCount: 0 }))
+        : [];
+  const forecastEnd = forecast.at(-1);
 
   return {
     startDate,
@@ -4899,9 +5059,13 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
     actual,
     forecast,
     currentTotal: currentIncomplete ? null : currentTotal,
-    forecastTotal: currentIncomplete ? null : forecast.at(-1)?.value ?? null,
+    forecastTotal: currentIncomplete ? null : forecastEnd?.value ?? null,
+    forecastLow: currentIncomplete ? null : forecastEnd?.low ?? null,
+    forecastHigh: currentIncomplete ? null : forecastEnd?.high ?? null,
     annualDividend,
     rateUnavailableCount,
+    annualizedReturnPct: stats?.annualizedReturnPct ?? null,
+    annualizedVolatilityPct: stats?.annualizedVolatilityPct ?? null,
     stockCount: entries.length,
   };
 }
@@ -4910,7 +5074,7 @@ function stockForecastChartHtml(symbol, market = "jp") {
   const title = `${market === "us" ? "米国株" : "日本株"} ${symbol}の株価推移`;
   return `
     <section class="stock-forecast" data-stock-forecast data-forecast-symbol="${escapeAttr(symbol)}" data-forecast-market="${market}">
-      <div class="stock-forecast-heading"><strong>株価推移・1年後参考予測</strong><span>配当込み損益とは別</span></div>
+      <div class="stock-forecast-heading"><strong>株価推移・1年後の変動幅</strong><span>中央値 / 10〜90%参考幅・配当別</span></div>
       <div class="stock-forecast-chart-wrap"><canvas data-stock-forecast-chart role="img" aria-label="${escapeAttr(title)}"></canvas></div>
       <p class="stock-forecast-note" data-forecast-note>価格履歴を読み込み中</p>
     </section>
@@ -4989,33 +5153,23 @@ async function loadStockForecastChart(canvas) {
   const now = new Date();
   const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const today = new Date(todayMs).toISOString().slice(0, 10);
-  const start = new Date(todayMs);
-  start.setUTCFullYear(start.getUTCFullYear() - 1);
-  const startDate = start.toISOString().slice(0, 10);
-  const end = new Date(todayMs);
-  end.setUTCFullYear(end.getUTCFullYear() + 1);
-  const endDate = end.toISOString().slice(0, 10);
+  const startDate = calendarYearOffset(today, -1);
+  const endDate = calendarYearOffset(today, 1);
   const actual = series
     .filter((point) => point.date >= startDate && point.date <= today && Number(point.close) > 0)
     .map((point) => ({ date: point.date, value: Number(point.close) }));
   if (current > 0 && actual.at(-1)?.date !== today) actual.push({ date: today, value: current });
-  const rate = performanceAnnualizedReturn(series, today);
-  const forecast = [];
-  if (current > 0 && rate !== null) {
-    for (let month = 0; month <= 12; month += 1) {
-      const date = new Date(todayMs);
-      const day = date.getUTCDate();
-      date.setUTCDate(1);
-      date.setUTCMonth(date.getUTCMonth() + month);
-      const finalDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
-      date.setUTCDate(Math.min(day, finalDay));
-      const dateKey = month === 12 ? endDate : date.toISOString().slice(0, 10);
-      forecast.push({
-        date: dateKey,
-        value: current * ((1 + rate) ** ((month / 12))),
-      });
-    }
+  const grid = weeklyPriceGrid(series, today, current);
+  const weeklyReturns = [];
+  for (let week = 1; week < grid.prices.length; week += 1) {
+    const previous = grid.prices[week - 1];
+    const next = grid.prices[week];
+    if (previous > 0 && next > 0) weeklyReturns.push([Math.log(next / previous)]);
   }
+  const stats = weeklyReturnStatistics(weeklyReturns.map((row) => row[0]));
+  const forecast = current > 0 && stats
+    ? bootstrapForecast(weeklyReturns, [current], 0, 0, forecastMonthDates(today), `${market}:${symbol}:${today}`)
+    : [];
   drawDatedLineChart(canvas, actual, forecast, {
     currency,
     startDate,
@@ -5024,9 +5178,10 @@ async function loadStockForecastChart(canvas) {
     includeZero: false,
   });
   if (note) {
-    note.textContent = rate === null
-      ? "過去1年分の履歴が足りないため、将来予測は表示していません。"
-      : `過去約1年 ${rate >= 0 ? "+" : ""}${(rate * 100).toFixed(1)}% / 1年後 ${moneyByCurrency(forecast.at(-1)?.value, currency)}（同じ騰落率が続く仮定）`;
+    const yearEnd = forecast.at(-1);
+    note.textContent = !stats || !yearEnd
+      ? "過去1年の価格履歴が不足しているため、変動幅を試算できません。"
+      : `過去1年 ${stats.annualizedReturnPct >= 0 ? "+" : ""}${stats.annualizedReturnPct.toFixed(1)}% / 年率変動率 ${stats.annualizedVolatilityPct.toFixed(1)}% / 1年後参考幅 ${moneyByCurrency(yearEnd.low, currency)}〜${moneyByCurrency(yearEnd.high, currency)}（週次変動の4週ブロック再抽出・1,000経路）`;
   }
 }
 
@@ -5051,7 +5206,10 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
     && point.date >= options.startDate && point.date <= options.endDate);
   const actualPoints = inRange(actual);
   const forecastPoints = inRange(forecast);
-  const values = [...actualPoints, ...forecastPoints].map((point) => point.value);
+  const values = [
+    ...actualPoints.map((point) => point.value),
+    ...forecastPoints.flatMap((point) => [point.low, point.value, point.high]),
+  ].filter(Number.isFinite);
   if (options.includeZero) values.push(0);
   if (!values.length) {
     context.fillStyle = "#667277";
@@ -5088,6 +5246,20 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
     context.stroke();
     context.fillStyle = "#667277";
     context.fillText(formatter.format(value), pad.left - 8, py + 4);
+  }
+  const bandPoints = forecastPoints.filter((point) => Number.isFinite(point.low) && Number.isFinite(point.high));
+  if (bandPoints.length > 1) {
+    context.beginPath();
+    bandPoints.forEach((point, index) => {
+      const px = x(point.date);
+      const py = y(point.high);
+      if (index === 0) context.moveTo(px, py);
+      else context.lineTo(px, py);
+    });
+    [...bandPoints].reverse().forEach((point) => context.lineTo(x(point.date), y(point.low)));
+    context.closePath();
+    context.fillStyle = "rgba(189, 105, 39, 0.14)";
+    context.fill();
   }
   const todayX = x(options.today);
   context.strokeStyle = "#155c9a";
@@ -5892,7 +6064,6 @@ function suggestionItem(item, index) {
       ${processHtml(process)}
       <div class="suggestion-points">${reasons}${risks}</div>
       <div class="suggestion-evidence ${evidence ? "" : "muted"}"><strong>確認元</strong>${evidence || "<span>業績材料は未確認</span>"}</div>
-      ${stockForecastChartHtml(item.symbol, target)}
     </article>
   `;
 }

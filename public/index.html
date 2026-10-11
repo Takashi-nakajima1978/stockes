@@ -241,9 +241,9 @@
             <small id="performanceCurrentNote">保有・売却済みを含む</small>
           </article>
           <article class="profit-card">
-            <span>1年後の参考値</span>
+            <span>1年後の中央値（参考）</span>
             <strong id="performanceForecast">-</strong>
-            <small id="performanceForecastNote">過去の値動きと予想配当による試算</small>
+            <small id="performanceForecastNote">過去1年の週次変動を再抽出した参考試算</small>
           </article>
           <article class="profit-card">
             <span>今後1年の配当見込み</span>
@@ -262,10 +262,11 @@
           </div>
           <div class="performance-legend" aria-label="グラフの凡例">
             <span><i class="legend-actual"></i>過去の実績</span>
-            <span><i class="legend-forecast"></i>今後1年の参考予測</span>
+            <span><i class="legend-forecast"></i>今後1年の中央値</span>
+            <span><i class="legend-band"></i>参考幅（10〜90%）</span>
             <span><i class="legend-today"></i>今日</span>
           </div>
-          <p class="performance-assumption">予測線は、保有銘柄ごとに過去約1年の騰落率が続くと仮定し、今後1年の予想配当を加えた参考値です。価格履歴が足りない銘柄は株価変動を加算せず、将来の利益を保証するものではありません。</p>
+          <p class="performance-assumption">過去1年の週次リターンを4週単位で再抽出した1,000経路の中央値と10〜90%幅です。損益推移では保有銘柄の同じ週の値動きをまとめ、銘柄間の連動も反映します。予想配当は各経路に加算します。過去の変動を使った参考試算で、上昇確率や将来の利益を示すものではありません。履歴不足の銘柄は価格変動の試算対象外です。</p>
           <p id="performanceEmpty" class="empty-state" hidden></p>
         </section>
       </section>
