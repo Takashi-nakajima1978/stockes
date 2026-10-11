@@ -7371,7 +7371,9 @@ function dailyForecastSeries(series = [], asOfDate = new Date().toISOString().sl
   const points = (series || [])
     .filter((point) => point?.date && point.date <= asOfDate && Number.isFinite(Number(point.close)) && Number(point.close) > 0)
     .sort((a, b) => a.date.localeCompare(b.date));
-  const threshold = new Date(new Date(`${asOfDate}T00:00:00Z`).getTime() - (365 * 86400000)).toISOString().slice(0, 10);
+  const thresholdDate = new Date(`${asOfDate}T00:00:00Z`);
+  thresholdDate.setUTCFullYear(thresholdDate.getUTCFullYear() - 3);
+  const threshold = thresholdDate.toISOString().slice(0, 10);
   const baseline = points.filter((point) => point.date <= threshold).at(-1);
   const recent = points.filter((point) => point.date > threshold);
   return [...(baseline ? [baseline] : []), ...recent].map(({ date, close }) => ({ date, close }));

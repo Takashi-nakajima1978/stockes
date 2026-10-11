@@ -4823,52 +4823,41 @@ function calendarYearOffset(date = "", years = 0) {
   return new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10);
 }
 
-function dailyReturnHistory(seriesByHolding = [], startDate = "", asOfDate = "") {
-  if (!seriesByHolding.length || !startDate || !asOfDate) return { observations: [], returns: [] };
-  const maps = seriesByHolding.map(({ series = [], currentPrice = null }) => {
-    const prices = new Map();
-    for (const point of series) {
-      const close = Number(point?.close);
-      if (point?.date && point.date <= asOfDate && close > 0) prices.set(point.date, close);
+function weeklyPriceGrid(series = [], asOfDate = "", currentPrice = null, weeks = 156) {
+  const asOfMs = new Date(`${asOfDate}T00:00:00Z`).getTime();
+  if (!Number.isFinite(asOfMs)) return { dates: [], prices: [] };
+  const points = (series || [])
+    .filter((point) => point?.date && point.date <= asOfDate && Number(point.close) > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const dates = [];
+  const prices = [];
+  let index = 0;
+  let latest = null;
+  for (let week = 0; week <= weeks; week += 1) {
+    const time = asOfMs - ((weeks - week) * 7 * 86400000);
+    const date = new Date(time).toISOString().slice(0, 10);
+    dates.push(date);
+    while (index < points.length && points[index].date <= date) {
+      latest = points[index];
+      index += 1;
     }
-    if (Number(currentPrice) > 0) prices.set(asOfDate, Number(currentPrice));
-    return prices;
-  });
-  const commonDates = [...maps[0].keys()]
-    .filter((date) => date <= asOfDate && maps.every((prices) => prices.has(date)))
-    .sort();
-  const firstInRange = commonDates.findIndex((date) => date >= startDate);
-  if (firstInRange < 0) return { observations: [], returns: [] };
-  const dates = commonDates.slice(Math.max(0, firstInRange - 1));
-  const observations = [];
-  for (let index = 1; index < dates.length; index += 1) {
-    const previousDate = dates[index - 1];
-    const date = dates[index];
-    const elapsedDays = (new Date(`${date}T00:00:00Z`) - new Date(`${previousDate}T00:00:00Z`)) / 86400000;
-    if (date < startDate || elapsedDays > 5) continue;
-    const previousPrices = maps.map((prices) => prices.get(previousDate));
-    const currentPrices = maps.map((prices) => prices.get(date));
-    if (previousPrices.some((price) => !(price > 0)) || currentPrices.some((price) => !(price > 0))) continue;
-    observations.push({
-      date,
-      returns: currentPrices.map((price, holding) => Math.log(price / previousPrices[holding])),
-      previousPrices,
-      currentPrices,
-    });
+    const ageDays = latest ? (time - new Date(`${latest.date}T00:00:00Z`).getTime()) / 86400000 : Infinity;
+    prices.push(ageDays <= 10 ? Number(latest.close) : null);
   }
-  return { observations, returns: observations.map((item) => item.returns) };
+  if (Number.isFinite(Number(currentPrice)) && Number(currentPrice) > 0) prices[weeks] = Number(currentPrice);
+  return { dates, prices };
 }
 
-function dailyReturnStatistics(returns = []) {
+function weeklyReturnStatistics(returns = []) {
   const values = returns.filter(Number.isFinite);
   if (values.length < 100) return null;
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
   const variance = values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / Math.max(1, values.length - 1);
-  const logReturn = values.reduce((sum, value) => sum + value, 0) * (252 / values.length);
+  const logReturn = values.reduce((sum, value) => sum + value, 0) * (52 / values.length);
   return {
     observations: values.length,
     annualizedReturnPct: (Math.exp(logReturn) - 1) * 100,
-    annualizedVolatilityPct: Math.sqrt(variance * 252) * 100,
+    annualizedVolatilityPct: Math.sqrt(variance * 52) * 100,
   };
 }
 
@@ -4896,16 +4885,23 @@ function forecastQuantile(values = [], quantile = 0.5) {
   return sorted[lower] + ((sorted[Math.min(lower + 1, sorted.length - 1)] - sorted[lower]) * fraction);
 }
 
-function forecastBusinessDates(today = "", endDate = "") {
+function forecastWeeklyDates(today = "", endDate = "") {
   const todayMs = new Date(`${today}T00:00:00Z`).getTime();
   const endMs = new Date(`${endDate}T00:00:00Z`).getTime();
   if (!Number.isFinite(todayMs) || !Number.isFinite(endMs) || endMs < todayMs) return [];
+  const totalDays = (endMs - todayMs) / 86400000;
+  return Array.from({ length: 53 }, (_, week) => new Date(todayMs + (totalDays * week / 52)).toISOString().slice(0, 10));
+}
+
+function businessDates(startDate = "", endDate = "") {
+  const startMs = new Date(`${startDate}T00:00:00Z`).getTime();
+  const endMs = new Date(`${endDate}T00:00:00Z`).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return [];
   const dates = [];
-  for (let time = todayMs; time <= endMs; time += 86400000) {
+  for (let time = startMs; time <= endMs; time += 86400000) {
     const day = new Date(time).getUTCDay();
-    if (time === todayMs || (day !== 0 && day !== 6)) dates.push(new Date(time).toISOString().slice(0, 10));
+    if (time === startMs || time === endMs || (day !== 0 && day !== 6)) dates.push(new Date(time).toISOString().slice(0, 10));
   }
-  if (dates.at(-1) !== endDate) dates.push(endDate);
   return dates;
 }
 
@@ -4916,28 +4912,25 @@ function bootstrapForecast(returnVectors = [], currentValues = [], baselineValue
   const random = seededForecastRandom(seed);
   const samples = dates.map(() => []);
   const pathCount = 1000;
-  const blockDays = 5;
-  const blockStarts = rows.length - blockDays + 1;
+  const blockWeeks = 4;
+  const blockStarts = rows.length - blockWeeks + 1;
   const dateTimes = dates.map((date) => new Date(`${date}T00:00:00Z`).getTime());
   const paths = [];
 
-  // Shared five-session blocks retain short-term clustering and co-movement across holdings.
+  // Shared four-week blocks retain short-term clustering and co-movement across holdings.
   for (let path = 0; path < pathCount; path += 1) {
     const multipliers = currentValues.map(() => 1);
     const pathValues = [];
     let blockStart = 0;
-    let session = 0;
+    let week = 0;
     for (let day = 0; day < dates.length; day += 1) {
       if (day > 0) {
-        const weekday = new Date(dateTimes[day]).getUTCDay();
-        if (weekday !== 0 && weekday !== 6) {
-          if (session % blockDays === 0) blockStart = Math.floor(random() * blockStarts);
-          const returns = rows[blockStart + (session % blockDays)];
-          for (let holding = 0; holding < multipliers.length; holding += 1) {
-            multipliers[holding] *= Math.exp(returns[holding]);
-          }
-          session += 1;
+        if (week % blockWeeks === 0) blockStart = Math.floor(random() * blockStarts);
+        const returns = rows[blockStart + (week % blockWeeks)];
+        for (let holding = 0; holding < multipliers.length; holding += 1) {
+          multipliers[holding] *= Math.exp(returns[holding]);
         }
+        week += 1;
       }
       const marketValue = currentValues.reduce((sum, amount, holding) => sum + (amount * multipliers[holding]), 0);
       const years = Math.max(0, dateTimes[day] - dateTimes[0]) / (365 * 86400000);
@@ -4975,7 +4968,7 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
   const endDate = calendarYearOffset(today, 1);
   const entries = stocks.map((stock) => ({ stock, analysis: analyses[stock.symbol], price: analyses[stock.symbol]?.price || {} }))
     .filter(({ stock }) => positionLots(stock).length || saleLots(stock).length);
-  const actualDates = forecastBusinessDates(startDate, today);
+  const actualDates = businessDates(startDate, today);
 
   const actual = actualDates.map((date) => {
     let total = 0;
@@ -5021,27 +5014,39 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
     const annualPerShare = annualDividendPerShare(price) || 0;
     const dividend = annualPerShare * quantity;
     annualDividend += dividend;
-    forecastStocks.push({ currentPrice, quantity, dividend, series: price.series || [] });
+    const grid = quantity > 0 && currentPrice > 0
+      ? weeklyPriceGrid(price.series || [], today, currentPrice)
+      : null;
+    forecastStocks.push({ currentPrice, quantity, dividend, weeklyPrices: grid?.prices || [] });
   }
   const activeStocks = forecastStocks.filter((item) => item.quantity > 0 && item.currentPrice > 0);
-  const eligibleStocks = activeStocks.filter((item) => dailyReturnHistory(
-    [{ series: item.series, currentPrice: item.currentPrice }], startDate, today,
-  ).returns.length >= 120);
-  const history = dailyReturnHistory(
-    eligibleStocks.map((item) => ({ series: item.series, currentPrice: item.currentPrice })),
-    startDate,
-    today,
-  );
-  const returnVectors = history.returns;
-  const portfolioReturns = history.observations.map((observation) => {
-    const previousValue = observation.previousPrices.reduce((sum, price, index) => sum + (price * eligibleStocks[index].quantity), 0);
-    const currentValue = observation.currentPrices.reduce((sum, price, index) => sum + (price * eligibleStocks[index].quantity), 0);
-    return Math.log(currentValue / previousValue);
-  });
+  const eligibleStocks = activeStocks.filter((item) => item.weeklyPrices.filter(Number.isFinite).length >= 100);
+  const returnVectors = [];
+  const portfolioReturns = [];
+  for (let week = 1; week <= 156; week += 1) {
+    const vector = [];
+    let previousValue = 0;
+    let currentValue = 0;
+    for (const item of eligibleStocks) {
+      const previousPrice = item.weeklyPrices[week - 1];
+      const weekPrice = item.weeklyPrices[week];
+      if (!(previousPrice > 0) || !(weekPrice > 0)) {
+        vector.length = 0;
+        break;
+      }
+      vector.push(Math.log(weekPrice / previousPrice));
+      previousValue += previousPrice * item.quantity;
+      currentValue += weekPrice * item.quantity;
+    }
+    if (vector.length === eligibleStocks.length && vector.length) {
+      returnVectors.push(vector);
+      portfolioReturns.push(Math.log(currentValue / previousValue));
+    }
+  }
   const modelReady = eligibleStocks.length > 0 && returnVectors.length >= 100;
   const modeledValues = modelReady ? eligibleStocks.map((item) => item.currentPrice * item.quantity) : [];
   const modeledMarketValue = modeledValues.reduce((sum, value) => sum + value, 0);
-  const stats = modelReady ? dailyReturnStatistics(portfolioReturns) : null;
+  const stats = modelReady ? weeklyReturnStatistics(portfolioReturns) : null;
   const rateUnavailableCount = activeStocks.length - (modelReady ? eligibleStocks.length : 0);
   const forecast = currentIncomplete
     ? []
@@ -5052,12 +5057,12 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
           modeledValues,
           currentTotal - modeledMarketValue,
           annualDividend,
-          forecastBusinessDates(today, endDate),
+          forecastWeeklyDates(today, endDate),
           `portfolio:${stocks.map((stock) => stock.symbol).sort().join(",")}:${today}`,
         )
         : []
       : entries.length
-        ? forecastBusinessDates(today, endDate).map((date) => ({ date, value: currentTotal, low: currentTotal, high: currentTotal, pathCount: 0 }))
+        ? forecastWeeklyDates(today, endDate).map((date) => ({ date, value: currentTotal, low: currentTotal, high: currentTotal, pathCount: 0 }))
         : [];
   const forecastEnd = forecast.at(-1);
 
@@ -5168,11 +5173,16 @@ async function loadStockForecastChart(canvas) {
     .filter((point) => point.date >= startDate && point.date <= today && Number(point.close) > 0)
     .map((point) => ({ date: point.date, value: Number(point.close) }));
   if (current > 0 && actual.at(-1)?.date !== today) actual.push({ date: today, value: current });
-  const history = dailyReturnHistory([{ series, currentPrice: current }], startDate, today);
-  const dailyReturns = history.returns;
-  const stats = dailyReturnStatistics(dailyReturns.map((row) => row[0]));
+  const grid = weeklyPriceGrid(series, today, current);
+  const weeklyReturns = [];
+  for (let week = 1; week < grid.prices.length; week += 1) {
+    const previous = grid.prices[week - 1];
+    const next = grid.prices[week];
+    if (previous > 0 && next > 0) weeklyReturns.push([Math.log(next / previous)]);
+  }
+  const stats = weeklyReturnStatistics(weeklyReturns.map((row) => row[0]));
   const forecast = current > 0 && stats
-    ? bootstrapForecast(dailyReturns, [current], 0, 0, forecastBusinessDates(today, endDate), `${market}:${symbol}:${today}`)
+    ? bootstrapForecast(weeklyReturns, [current], 0, 0, forecastWeeklyDates(today, endDate), `${market}:${symbol}:${today}`)
     : [];
   drawDatedLineChart(canvas, actual, forecast, {
     currency,
@@ -5185,7 +5195,7 @@ async function loadStockForecastChart(canvas) {
     const yearEnd = forecast.at(-1);
     note.textContent = !stats || !yearEnd
       ? "過去1年の価格履歴が不足しているため、変動幅を試算できません。"
-      : `過去1年 ${stats.annualizedReturnPct >= 0 ? "+" : ""}${stats.annualizedReturnPct.toFixed(1)}% / 年率変動率 ${stats.annualizedVolatilityPct.toFixed(1)}% / 1年後参考幅 ${moneyByCurrency(yearEnd.low, currency)}〜${moneyByCurrency(yearEnd.high, currency)}（日次変動を5営業日単位で再抽出・1,000経路）`;
+      : `過去3年データ・年率換算騰落率 ${stats.annualizedReturnPct >= 0 ? "+" : ""}${stats.annualizedReturnPct.toFixed(1)}% / 年率変動率 ${stats.annualizedVolatilityPct.toFixed(1)}% / 1年後参考幅 ${moneyByCurrency(yearEnd.low, currency)}〜${moneyByCurrency(yearEnd.high, currency)}（週次変動を4週単位で再抽出・1,000経路）`;
   }
 }
 
