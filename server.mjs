@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzip, inflateRawSync } from "node:zlib";
 import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "./refresh-control.mjs";
-import { buildThreeWeekSurgeForecast } from "./surge-forecast.mjs";
+import { buildThreeMonthSurgeForecast, SURGE_FORECAST_HORIZON_WEEKS } from "./surge-forecast.mjs";
 
 const runPriceRefresh = createSingleFlight();
 const priceRefreshAttempts = new Map();
@@ -950,7 +950,11 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/surge-forecast" && req.method === "GET") {
-    return json(res, 200, { ...(await readSurgeForecastCache()), job: surgeForecastJobSnapshot() });
+    const cached = await readSurgeForecastCache();
+    if (cached.generatedAt && cached.horizonWeeks !== SURGE_FORECAST_HORIZON_WEEKS && !surgeForecastJob) {
+      startSurgeForecastJob("horizon-update");
+    }
+    return json(res, 200, { ...cached, job: surgeForecastJobSnapshot() });
   }
 
   if (url.pathname === "/api/surge-forecast/run" && req.method === "POST") {
@@ -958,7 +962,7 @@ async function handleApi(req, res, url) {
     return json(res, 202, {
       ...(await readSurgeForecastCache()),
       job,
-      message: job.running ? "検索範囲全体の3週間予測を開始しました。" : "予測処理はすでに実行中です。",
+      message: job.running ? "検索範囲全体の3ヵ月予測を開始しました。" : "予測処理はすでに実行中です。",
     });
   }
 
@@ -3568,7 +3572,7 @@ function startSurgeForecastJob(reason = "manual") {
     error: "",
   };
   surgeForecastJob = job;
-  void runThreeWeekSurgeScan(job)
+  void runThreeMonthSurgeScan(job)
     .then((result) => {
       updateSurgeForecastJob(job, { running: false, phase: "完了", modeled: result.modelledCount, generatedAt: result.generatedAt });
     })
@@ -3578,7 +3582,7 @@ function startSurgeForecastJob(reason = "manual") {
   return surgeForecastJobSnapshot();
 }
 
-async function runThreeWeekSurgeScan(job) {
+async function runThreeMonthSurgeScan(job) {
   const [stocks, usStocks, excludedCandidates, primeUniverse, discoveryCache] = await Promise.all([
     readWatchlist(),
     readUsWatchlist(),
@@ -3619,7 +3623,7 @@ async function runThreeWeekSurgeScan(job) {
   const forecasts = await mapLimit(candidates, 8, async (candidate) => {
     const price = await fetchPriceHistory(candidate.symbol, { timeout: 9000 }).catch(() => emptyPrice());
     if (Number(price.current) > 0 && price.series?.length) priced += 1;
-    const forecast = buildThreeWeekSurgeForecast({
+    const forecast = buildThreeMonthSurgeForecast({
       symbol: candidate.symbol,
       series: price.series || [],
       current: price.current,
@@ -3657,10 +3661,10 @@ async function runThreeWeekSurgeScan(job) {
     modelledCount: modeled,
     searchResultCount: search.length,
     thresholdPct: 10,
-    horizonWeeks: 3,
+    horizonWeeks: SURGE_FORECAST_HORIZON_WEEKS,
     historyWeeks: 156,
     pathCount: 1000,
-    method: "直近3年の週次変動を3週間単位で再標本化。1,000経路の+10%到達率で順位付け。",
+    method: "直近3年の週次変動を13週間単位で再標本化。1,000経路の3ヵ月以内+10%到達率で順位付け。",
     results: ranked.slice(0, 15),
   };
   await saveSurgeForecastCache(result);
@@ -3697,7 +3701,7 @@ function scheduleDailySurgeForecast() {
     if (surgeForecastScheduledDate === today) return;
     surgeForecastScheduledDate = today;
     const cached = await readSurgeForecastCache();
-    if (jstDate(cached.generatedAt) === today) return;
+    if (jstDate(cached.generatedAt) === today && cached.horizonWeeks === SURGE_FORECAST_HORIZON_WEEKS) return;
     startSurgeForecastJob("daily");
   };
   setTimeout(() => { void tick(); }, 12000);
@@ -12367,7 +12371,7 @@ async function readSurgeForecastCache() {
       modelledCount: Number(cached.modelledCount) || 0,
       searchResultCount: Number(cached.searchResultCount) || 0,
       thresholdPct: Number(cached.thresholdPct) || 10,
-      horizonWeeks: Number(cached.horizonWeeks) || 3,
+      horizonWeeks: Number(cached.horizonWeeks) || 0,
       historyWeeks: Number(cached.historyWeeks) || 156,
       pathCount: Number(cached.pathCount) || 1000,
       method: String(cached.method || ""),
@@ -12384,7 +12388,7 @@ async function readSurgeForecastCache() {
       modelledCount: 0,
       searchResultCount: 0,
       thresholdPct: 10,
-      horizonWeeks: 3,
+      horizonWeeks: 0,
       historyWeeks: 156,
       pathCount: 1000,
       method: "",

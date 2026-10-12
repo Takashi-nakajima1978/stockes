@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildThreeWeekSurgeForecast } from "../surge-forecast.mjs";
+import { buildThreeMonthSurgeForecast, SURGE_FORECAST_HORIZON_WEEKS } from "../surge-forecast.mjs";
 
 const dayMs = 86400000;
 const weekMs = 7 * dayMs;
@@ -18,25 +18,26 @@ function sampleHistory(weeks = 156) {
   return { today, current: series.at(-1).close, series };
 }
 
-test("three-week surge forecast samples 3-year weekly history and builds a dated range", () => {
+test("three-month surge forecast samples 3-year weekly history and builds a dated range", () => {
   const input = sampleHistory();
-  const first = buildThreeWeekSurgeForecast({ symbol: "7203.T", ...input, pathCount: 1000 });
-  const second = buildThreeWeekSurgeForecast({ symbol: "7203.T", ...input, pathCount: 1000 });
+  const first = buildThreeMonthSurgeForecast({ symbol: "7203.T", ...input, pathCount: 1000 });
+  const second = buildThreeMonthSurgeForecast({ symbol: "7203.T", ...input, pathCount: 1000 });
 
   assert.ok(first);
   assert.deepEqual(first, second);
   assert.equal(first.observedWeeks, 156);
   assert.equal(first.actual.length, 13);
-  assert.equal(first.forecast.length, 4);
+  assert.equal(SURGE_FORECAST_HORIZON_WEEKS, 13);
+  assert.equal(first.forecast.length, 14);
   assert.equal(first.forecast[0].date, input.today);
-  assert.equal(first.forecast.at(-1).date, "2026-11-01");
+  assert.equal(first.forecast.at(-1).date, "2027-01-10");
   assert.ok(first.surgeProbabilityPct >= 0 && first.surgeProbabilityPct <= 100);
   assert.ok(first.downsideProbabilityPct >= 0 && first.downsideProbabilityPct <= 100);
   assert.ok(first.terminalLow <= first.terminalMedian && first.terminalMedian <= first.terminalHigh);
   assert.ok(first.forecast.slice(1).every((point) => point.low <= point.value && point.value <= point.high));
 });
 
-test("three-week surge forecast excludes symbols without enough contiguous history", () => {
+test("three-month surge forecast excludes symbols without enough contiguous history", () => {
   const input = sampleHistory(90);
-  assert.equal(buildThreeWeekSurgeForecast({ symbol: "SHORT", ...input }), null);
+  assert.equal(buildThreeMonthSurgeForecast({ symbol: "SHORT", ...input }), null);
 });

@@ -583,7 +583,7 @@
             <button type="button" role="tab" id="ideaTabPe" aria-selected="false" aria-controls="ideaPanelPe" data-idea-tab="pe" tabindex="-1">PEが買いそう</button>
             <button type="button" role="tab" id="ideaTabSuccess" aria-selected="false" aria-controls="ideaPanelSuccess" data-idea-tab="success" tabindex="-1">紹介後の結果</button>
             <button type="button" role="tab" id="ideaTabSector" aria-selected="false" aria-controls="ideaPanelSector" data-idea-tab="sector" tabindex="-1">業種Evidence</button>
-            <button type="button" role="tab" id="ideaTabSurge" aria-selected="false" aria-controls="ideaPanelSurge" data-idea-tab="surge" tabindex="-1">3週間上昇予測</button>
+            <button type="button" role="tab" id="ideaTabSurge" aria-selected="false" aria-controls="ideaPanelSurge" data-idea-tab="surge" tabindex="-1">3ヵ月上昇予測</button>
           </div>
           <div id="ideaPanelStocks" role="tabpanel" aria-labelledby="ideaTabStocks" data-idea-panel="candidates">
             <div id="candidatePerformance" class="candidate-performance"></div>
@@ -629,8 +629,8 @@
           <div id="ideaPanelSurge" role="tabpanel" aria-labelledby="ideaTabSurge" data-idea-panel="surge" hidden>
             <div class="surge-forecast-toolbar">
               <div>
-                <h4>3週間上昇予測 上位15銘柄</h4>
-                <p>候補検索対象の日本株・米国株から、管理銘柄と「出さない」銘柄を除いて毎日5:00に走査。直近3年の週次変動を1,000通り試算し、3週間以内に+10%へ到達する参考確率順に表示します。</p>
+                <h4>3ヵ月上昇予測 上位15銘柄</h4>
+                <p>候補検索対象の日本株・米国株から、管理銘柄と「出さない」銘柄を除いて毎日5:00に走査。直近3年の週次変動から13週間の値動きを1,000通り試算し、3ヵ月以内に+10%へ到達する参考確率順に表示します。</p>
                 <small id="surgeForecastStatus" aria-live="polite">予測データを読み込み中...</small>
               </div>
               <button id="surgeForecastRun" type="button" class="secondary">今すぐ更新</button>

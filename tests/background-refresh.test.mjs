@@ -2135,7 +2135,7 @@ test("discovery separates PE candidates, stock candidates, and sector evidence i
   assert.match(indexSource, /data-idea-tab="success"[^>]*>紹介後の結果/);
   assert.match(indexSource, /id="underperformingCandidateList"/);
   assert.match(indexSource, /data-idea-tab="sector"[^>]*>業種Evidence/);
-  assert.match(indexSource, /data-idea-tab="surge"[^>]*>3週間上昇予測/);
+  assert.match(indexSource, /data-idea-tab="surge"[^>]*>3ヵ月上昇予測/);
   assert.match(indexSource, /id="surgeForecastList"/);
   assert.match(indexSource, /id="peCandidateList"/);
   assert.match(serverSource, /scheduleDailySurgeForecast\(\)/);

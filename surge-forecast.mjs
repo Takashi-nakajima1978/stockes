@@ -1,6 +1,6 @@
 const WEEK_MS = 7 * 86400000;
-const HISTORY_WEEKS = 156;
-const FORECAST_WEEKS = 3;
+export const SURGE_FORECAST_HISTORY_WEEKS = 156;
+export const SURGE_FORECAST_HORIZON_WEEKS = 13;
 
 function seededRandom(seed = "") {
   let state = 2166136261;
@@ -27,7 +27,7 @@ function dateKey(time) {
   return new Date(time).toISOString().slice(0, 10);
 }
 
-function weeklyPrices(series, today, current, weeks = HISTORY_WEEKS) {
+function weeklyPrices(series, today, current, weeks = SURGE_FORECAST_HISTORY_WEEKS) {
   const asOfMs = new Date(`${today}T00:00:00Z`).getTime();
   if (!Number.isFinite(asOfMs)) return { dates: [], prices: [] };
   const points = (series || [])
@@ -49,15 +49,15 @@ function weeklyPrices(series, today, current, weeks = HISTORY_WEEKS) {
   return { dates, prices };
 }
 
-export function buildThreeWeekSurgeForecast({ symbol = "", series = [], current = null, today = "", pathCount = 1000, thresholdPct = 10 } = {}) {
+export function buildThreeMonthSurgeForecast({ symbol = "", series = [], current = null, today = "", pathCount = 1000, thresholdPct = 10 } = {}) {
   const grid = weeklyPrices(series, today, current);
   const prices = grid.prices;
   const currentPrice = Number(current) > 0 ? Number(current) : prices.at(-1);
-  if (!(currentPrice > 0) || prices.length !== HISTORY_WEEKS + 1) return null;
+  if (!(currentPrice > 0) || prices.length !== SURGE_FORECAST_HISTORY_WEEKS + 1) return null;
 
   const blocks = [];
-  for (let start = 0; start <= prices.length - FORECAST_WEEKS - 1; start += 1) {
-    const window = prices.slice(start, start + FORECAST_WEEKS + 1);
+  for (let start = 0; start <= prices.length - SURGE_FORECAST_HORIZON_WEEKS - 1; start += 1) {
+    const window = prices.slice(start, start + SURGE_FORECAST_HORIZON_WEEKS + 1);
     if (window.every((value) => Number.isFinite(value) && value > 0)) {
       blocks.push(window.slice(1).map((value, index) => Math.log(value / window[index])));
     }
@@ -66,34 +66,28 @@ export function buildThreeWeekSurgeForecast({ symbol = "", series = [], current 
   if (observedWeeks < 100 || blocks.length < 52) return null;
 
   const count = Math.max(200, Math.min(5000, Math.floor(Number(pathCount) || 1000)));
-  const random = seededRandom(`${symbol}:${today}:three-week-surge`);
-  const samples = Array.from({ length: FORECAST_WEEKS }, () => []);
-  const paths = [];
+  const random = seededRandom(`${symbol}:${today}:three-month-surge`);
+  const samples = Array.from({ length: SURGE_FORECAST_HORIZON_WEEKS }, () => []);
   let reachedThreshold = 0;
   let endedBelow = 0;
   for (let pathIndex = 0; pathIndex < count; pathIndex += 1) {
     const block = blocks[Math.floor(random() * blocks.length)];
     let value = currentPrice;
     let reached = false;
-    const path = [];
-    for (let week = 0; week < FORECAST_WEEKS; week += 1) {
+    for (let week = 0; week < SURGE_FORECAST_HORIZON_WEEKS; week += 1) {
       value *= Math.exp(block[week]);
-      path.push(value);
       samples[week].push(value);
       if (value >= currentPrice * (1 + thresholdPct / 100)) reached = true;
     }
-    paths.push(path);
     if (reached) reachedThreshold += 1;
     if (value <= currentPrice * 0.9) endedBelow += 1;
   }
 
-  const terminalMedian = quantile(samples.at(-1), 0.5);
-  const representative = paths.reduce((best, path) => (
-    Math.abs(path.at(-1) - terminalMedian) < Math.abs(best.at(-1) - terminalMedian) ? path : best
-  ), paths[0]);
-  const future = Array.from({ length: FORECAST_WEEKS }, (_, index) => ({
+  const medianValues = samples.map((sample) => quantile(sample, 0.5));
+  const terminalMedian = medianValues.at(-1);
+  const future = Array.from({ length: SURGE_FORECAST_HORIZON_WEEKS }, (_, index) => ({
     date: dateKey(new Date(`${today}T00:00:00Z`).getTime() + ((index + 1) * WEEK_MS)),
-    value: representative[index],
+    value: medianValues[index],
     low: quantile(samples[index], 0.1),
     high: quantile(samples[index], 0.9),
     pathCount: count,

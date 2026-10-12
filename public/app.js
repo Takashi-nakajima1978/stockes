@@ -1136,12 +1136,16 @@ async function runSurgeForecastNow() {
 function renderSurgeForecast() {
   const cache = state.surgeForecast || {};
   const job = state.surgeForecastJob || {};
+  const hasCurrentHorizon = Boolean(cache.generatedAt) && Number(cache.horizonWeeks) === 13;
   if (els.surgeForecastStatus) {
     if (job.running) {
       const progress = job.total ? ` ${Number(job.checked || 0).toLocaleString("ja-JP")}/${Number(job.total).toLocaleString("ja-JP")}銘柄` : "";
       els.surgeForecastStatus.textContent = `${job.phase || "予測中"}${progress}。価格取得 ${Number(job.priced || 0).toLocaleString("ja-JP")}件 / 予測作成 ${Number(job.modeled || 0).toLocaleString("ja-JP")}件`;
     } else if (job.error) {
-      els.surgeForecastStatus.textContent = `更新失敗: ${job.error}${cache.generatedAt ? `。表示中は${new Date(cache.generatedAt).toLocaleString("ja-JP")}の保存結果` : ""}`;
+      const fallback = hasCurrentHorizon ? `。表示中は${new Date(cache.generatedAt).toLocaleString("ja-JP")}の保存結果` : "。3ヵ月予測はまだありません";
+      els.surgeForecastStatus.textContent = `更新失敗: ${job.error}${fallback}`;
+    } else if (cache.generatedAt && !hasCurrentHorizon) {
+      els.surgeForecastStatus.textContent = "予測期間の変更後の結果を準備しています。";
     } else if (cache.generatedAt) {
       els.surgeForecastStatus.textContent = `最終更新 ${new Date(cache.generatedAt).toLocaleString("ja-JP")}。日本株 ${Number(cache.jpUniverseCount || 0).toLocaleString("ja-JP")}件・米国株 ${Number(cache.usUniverseCount || 0).toLocaleString("ja-JP")}件を走査`;
     } else {
@@ -1150,11 +1154,11 @@ function renderSurgeForecast() {
   }
   if (els.surgeForecastRun) els.surgeForecastRun.disabled = Boolean(job.running);
   if (els.surgeForecastSummary) {
-    const metrics = cache.generatedAt ? [
+    const metrics = hasCurrentHorizon ? [
       ["走査対象", `${Number(cache.universeCount || 0).toLocaleString("ja-JP")}銘柄`],
       ["価格取得", `${Number(cache.pricedCount || 0).toLocaleString("ja-JP")}銘柄`],
       ["3年分から試算", `${Number(cache.modelledCount || 0).toLocaleString("ja-JP")}銘柄`],
-      ["予測期間", "3週間"],
+      ["予測期間", "3ヵ月"],
     ] : [];
     els.surgeForecastSummary.hidden = !metrics.length;
     els.surgeForecastSummary.innerHTML = metrics.map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join("");
@@ -1163,7 +1167,7 @@ function renderSurgeForecast() {
   const generatedAt = cache.generatedAt || "";
   if (els.surgeForecastList.dataset.generatedAt === generatedAt) return;
   els.surgeForecastList.dataset.generatedAt = generatedAt;
-  const results = Array.isArray(cache.results) ? cache.results.slice(0, 15) : [];
+  const results = hasCurrentHorizon && Array.isArray(cache.results) ? cache.results.slice(0, 15) : [];
   els.surgeForecastList.classList.toggle("empty-state", !results.length);
   if (!results.length) {
     els.surgeForecastList.innerHTML = `<p>${job.running ? "予測を計算しています。完了すると上位15銘柄とグラフが表示されます。" : "条件を満たす予測結果はまだありません。毎朝5:00に自動更新します。"}</p>`;
@@ -1186,12 +1190,12 @@ function surgeForecastCardHtml(item, index) {
       </header>
       <div class="surge-forecast-metrics">
         <div><span>現在値</span><strong>${escapeHtml(moneyByCurrency(Number(item.currentPrice), currency))}</strong></div>
-        <div><span>3週後の中央値</span><strong>${escapeHtml(moneyByCurrency(Number(item.terminalMedian), currency))} <small>${percent(item.medianReturnPct)}</small></strong></div>
-        <div><span>3週後の参考幅</span><strong>${escapeHtml(moneyByCurrency(Number(item.terminalLow), currency))}〜${escapeHtml(moneyByCurrency(Number(item.terminalHigh), currency))}</strong></div>
+        <div><span>3ヵ月後の中央値</span><strong>${escapeHtml(moneyByCurrency(Number(item.terminalMedian), currency))} <small>${percent(item.medianReturnPct)}</small></strong></div>
+        <div><span>3ヵ月後の参考幅</span><strong>${escapeHtml(moneyByCurrency(Number(item.terminalLow), currency))}〜${escapeHtml(moneyByCurrency(Number(item.terminalHigh), currency))}</strong></div>
         <div><span>10%超下落の参考確率</span><strong>${percent(item.downsideProbabilityPct)}</strong></div>
       </div>
       <div class="surge-chart-frame">
-        <canvas data-surge-chart-index="${index}" aria-label="${escapeAttr(item.name || item.symbol)} 過去12週と今後3週間の参考予測グラフ"></canvas>
+        <canvas data-surge-chart-index="${index}" aria-label="${escapeAttr(item.name || item.symbol)} 過去12週と今後3ヵ月の参考予測グラフ"></canvas>
         <div class="chart-tooltip" data-surge-tooltip-index="${index}" hidden></div>
       </div>
       <p class="surge-chart-note">緑: 過去12週 / オレンジ点線: 予測中央値 / 薄色帯: 予測の10〜90%幅。グラフに触れると日付と価格を確認できます。</p>
