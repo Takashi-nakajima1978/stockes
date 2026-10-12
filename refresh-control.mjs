@@ -1,11 +1,13 @@
 export function createSingleFlight() {
   const pending = new Map();
-  return function run(key, task) {
+  const run = function run(key, task) {
     if (pending.has(key)) return pending.get(key);
     const promise = Promise.resolve().then(task).finally(() => pending.delete(key));
     pending.set(key, promise);
     return promise;
   };
+  Object.defineProperty(run, "pendingCount", { get: () => pending.size });
+  return run;
 }
 
 // Long-running research must not replace a more recently fetched price.

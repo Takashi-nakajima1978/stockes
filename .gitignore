@@ -14,6 +14,12 @@ data/us-analysis-cache.json
 data/crypto-analysis-cache.json
 data/crypto-holding.json
 data/savings-plans.json
+data/candidate-history.json
+data/backup-config.json
+data/backup-status.json
+data/backups/
+data/*.tmp
+data/.restore-journal.json
 data/discovery-cache.json
 data/surge-forecast.json
 data/exit-state.json

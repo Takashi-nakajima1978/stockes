@@ -7,6 +7,9 @@ import vm from "node:vm";
 import { gzip, gunzipSync } from "node:zlib";
 import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "../refresh-control.mjs";
 import { buildSavingsContributionHistory, buildSavingsValuationHistory, scheduledContribution } from "../public/savings-calculation.mjs";
+import { createDataStore } from "../data-store.mjs";
+import { responseRepresentation } from "../response-cache.mjs";
+import { splitLearningHistory, returnEvidence, hasProfitableEvidence, afterCostReturn } from "../investment-evidence.mjs";
 
 const serverSource = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
@@ -21,7 +24,7 @@ function loadFunction(source, name, globals) {
   const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
   assert.notEqual(start, -1);
   const end = source.indexOf("\n}", start) + 2;
-  return vm.runInNewContext(`${source.slice(start, end)}; ${name}`, globals);
+  return vm.runInNewContext(`${source.slice(start, end)}; ${name}`, { splitLearningHistory, returnEvidence, hasProfitableEvidence, afterCostReturn, ...globals });
 }
 
 function loadFunctionBlock(source, name, endName, globals = {}) {
@@ -594,6 +597,8 @@ test("large static application assets are gzip-compressed and cache-aware", asyn
     path,
     existsSync: () => true,
     readFile: async () => content,
+    staticResponses: { load: (_name, _files, build) => build() },
+    responseRepresentation,
     mime: { ".js": "application/javascript; charset=utf-8" },
     PUBLIC_DIR: "/public",
     gzip,
@@ -694,6 +699,7 @@ test("candidate outcomes keep tracking after 20 sessions until the 10 percent ta
   let saved;
   let fetched = 0;
   const update = loadFunction(serverSource, "updateCandidateHistoryOutcomes", {
+    mapLimit: loadFunction(serverSource, "mapLimit", {}),
     CANDIDATE_SUCCESS_THRESHOLD_PCT: 10,
     CANDIDATE_LEARNING_HORIZON_DAYS: 20,
     readCandidateHistory: async () => ({ items: [item, winnerNowDown] }),
@@ -756,7 +762,49 @@ test("candidate learning and success tab use the same 10 percent threshold", () 
   assert.match(indexSource, /id="underperformingCandidateList"/);
   assert.match(appSource, /underperformingCandidates: \[\]/);
   assert.match(appSource, /function renderSuccessfulCandidateList/);
-  assert.match(appSource, /<strong>\+10%到達率<\/strong>/);
+  assert.match(appSource, /<strong>追跡全期間の\+10%到達率<\/strong>/);
+});
+
+test("fixed-horizon learning records costs and retains the original outcome window", () => {
+  const evaluate = loadFunction(serverSource, "evaluateCandidateOutcome", { CANDIDATE_LEARNING_HORIZON_DAYS: 20, CANDIDATE_SUCCESS_THRESHOLD_PCT: 10 });
+  const series = Array.from({ length: 20 }, (_, i) => ({ date: `2026-02-${String(i + 1).padStart(2, "0")}`, close: 101, high: 111, low: 90 }));
+  const item = { generatedAt: "2026-01-31", entryPrice: 100, roundTripFeePct: 2, capitalGainTaxPct: 20 };
+  const result = evaluate(item, series);
+  assert.equal(result.learningOutcome, "hit");
+  assert.equal(result.learningHorizonReturnPct, 1);
+  assert.equal(result.learningHorizonNetReturnPct, -1);
+  assert.equal(result.learningHorizonEndDate, "2026-02-20");
+  const next = evaluate(result, [...series, { date: "2026-03-01", close: 140, high: 145, low: 130 }]);
+  assert.equal(next.learningHorizonNetReturnPct, -1);
+  assert.equal(next.learningHorizonEndDate, "2026-02-20");
+});
+
+test("surge ranking rejects net losing paths and does not rank volatile hit frequency first", async () => {
+  const candidates = ["SAFE", "VOLATILE", "LOSING"].map((symbol) => ({ symbol, name: symbol }));
+  const forecasts = {
+    SAFE: { netExpectedReturnPct: 5, netMedianReturnPct: 3, riskRewardScore: 2.5, surgeProbabilityPct: 40 },
+    VOLATILE: { netExpectedReturnPct: 8, netMedianReturnPct: 1, riskRewardScore: 0.2, surgeProbabilityPct: 90 },
+    LOSING: { netExpectedReturnPct: -2, netMedianReturnPct: -3, riskRewardScore: -0.1, surgeProbabilityPct: 95 },
+  };
+  let saved;
+  const run = loadFunction(serverSource, "runThreeMonthSurgeScan", {
+    readWatchlist: async () => [], readUsWatchlist: async () => [], readExcludedCandidates: async () => [],
+    readPrimeUniverse: async () => candidates, readDiscoveryCache: async () => ({}), readSettings: async () => ({}),
+    discoverySearchResults: async () => [], extractDiscoveryCandidates: () => [], reconcileSearchCandidateNames: () => [],
+    discoveryUniverse: [], usDiscoveryUniverse: [], uniqueBy: (items) => items, normalizeDiscoveryCandidateName: (item) => item,
+    normalizeDiscoverySymbol: (symbol) => symbol, hasCleanDiscoveryCandidateName: () => true, isDiscoveryAvoidedBusiness: () => false,
+    isUsDiscoveryCandidate: () => true, jstDate: () => "2026-10-12", updateSurgeForecastJob: () => {},
+    mapLimit: loadFunction(serverSource, "mapLimit", {}), fetchPriceHistory: async () => ({ current: 100, series: [{}] }),
+    candidateCostAssumptions: () => ({ roundTripFeePct: 1, capitalGainTaxPct: 20 }), discoveryCurrency: () => "USD",
+    buildThreeMonthSurgeForecast: ({ symbol, roundTripFeePct }) => { assert.equal(roundTripFeePct, 1); return forecasts[symbol]; },
+    SURGE_FORECAST_HORIZON_WEEKS: 13, SURGE_FORECAST_VERSION: 2,
+    saveSurgeForecastCache: async (result) => { saved = result; },
+  });
+  await run({});
+  assert.deepEqual(Array.from(saved.results, (item) => item.symbol), ["SAFE", "VOLATILE"]);
+  assert.equal(saved.eligibleCount, 2);
+  assert.equal(saved.modelledCount, 3);
+  assert.equal(saved.modelVersion, 2);
 });
 
 test("candidate learning extracts price, dividend, technical, evidence, and PE signals", () => {
@@ -822,7 +870,8 @@ test("candidate learning uses a chronological holdout and counts each symbol onc
   const history = { items: Array.from({ length: 10 }, (_, index) => ({
     id: `stock-${index}`,
     symbol: `S${index}.T`,
-    generatedAt: `2026-09-${String(index + 1).padStart(2, "0")}`,
+    generatedAt: new Date(Date.UTC(2025, 0, 1 + index * 40)).toISOString(),
+    learningHorizonEndDate: new Date(Date.UTC(2025, 0, 29 + index * 40)).toISOString().slice(0, 10),
     outcome: index < 5 ? "miss" : "hit",
     maxReturnPct: index < 5 ? 3 : 12,
     latestReturnPct: index < 5 ? -8 : 4,
@@ -957,8 +1006,8 @@ test("candidate outcome learning adjusts scores conservatively without compoundi
     hitRate: 0.5,
     learningBaseline: { evaluated: 24, hitRate: 0.5, avgReturnPct: 0 },
     validationBaseline: { evaluated: 16, hitRate: 0.5, avgReturnPct: 0 },
-    bySignal: { "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5 } },
-    bySignalValidation: { "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5 } },
+    bySignal: { "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5, netEvaluated: 16, avgNetReturnPct: 4 } },
+    bySignalValidation: { "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5, netEvaluated: 16, avgNetReturnPct: 4 } },
   };
   const candidate = { businessValueScore: 60, score: 60, price: {}, learningSignals: ["buyline:deep"] };
   const first = apply(candidate, performance);
@@ -989,6 +1038,14 @@ test("candidate outcome learning adjusts scores conservatively without compoundi
     bySignalValidation: {},
   });
   assert.equal(withoutHoldout.businessValueScore, 60, "no out-of-sample confirmation means no learning adjustment");
+  const losingAfterCosts = apply(candidate, { ...performance,
+    bySignalValidation: { "buyline:deep": { ...performance.bySignalValidation["buyline:deep"], avgNetReturnPct: -1 } },
+  });
+  assert.equal(losingAfterCosts.businessValueScore, 60, "high hit rates cannot promote net losing conditions");
+  const unknownCosts = apply(candidate, { ...performance,
+    bySignalValidation: { "buyline:deep": { ...performance.bySignalValidation["buyline:deep"], netEvaluated: 0 } },
+  });
+  assert.equal(unknownCosts.businessValueScore, 60, "legacy samples without fees cannot establish net profitability");
 });
 
 test("AI learning proposals are bounded, sample-gated, and must agree with measured outcomes", () => {
@@ -1006,12 +1063,12 @@ test("AI learning proposals are bounded, sample-gated, and must agree with measu
     learningBaseline: { hitRate: 0.5, avgReturnPct: 0 },
     validationBaseline: { evaluated: 16, hitRate: 0.5, avgReturnPct: 0 },
     bySignal: {
-      "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5 },
+      "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5, netEvaluated: 16, avgNetReturnPct: 4 },
       "short:weak": { evaluated: 16, hitRate: 0.25, avgReturnPct: -5 },
       "long:strong": { evaluated: 7, hitRate: 0.9, avgReturnPct: 9 },
     },
     bySignalValidation: {
-      "buyline:deep": { evaluated: 8, hitRate: 0.75, avgReturnPct: 5 },
+      "buyline:deep": { evaluated: 8, hitRate: 0.75, avgReturnPct: 5, netEvaluated: 8, avgNetReturnPct: 4 },
       "short:weak": { evaluated: 8, hitRate: 0.25, avgReturnPct: -5 },
       "long:strong": { evaluated: 8, hitRate: 0.9, avgReturnPct: 9 },
     },
@@ -1085,8 +1142,8 @@ test("AI review receives aggregate history and returns only validated learning f
     lmJsonInstructions: (text) => text,
   });
   const result = await reviewAi({ learningBaseline: { hitRate: 0.5, avgReturnPct: 0 }, validationBaseline: { evaluated: 12, hitRate: 0.5, avgReturnPct: 0 }, bySignal: {
-    "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5 },
-  }, bySignalValidation: { "buyline:deep": { evaluated: 8, hitRate: 0.75, avgReturnPct: 5 } } });
+    "buyline:deep": { evaluated: 16, hitRate: 0.75, avgReturnPct: 5, netEvaluated: 16, avgNetReturnPct: 4 },
+  }, bySignalValidation: { "buyline:deep": { evaluated: 8, hitRate: 0.75, avgReturnPct: 5, netEvaluated: 8, avgNetReturnPct: 4 } } });
   assert.match(requestPrompt, /aggregate outcome data/);
   assert.equal(result.weights["buyline:deep"].adjustment, 1);
   assert.match(result.summary, /買い場条件/);
@@ -1513,7 +1570,7 @@ test("price charts show visible purchase and sale markers", () => {
   assert.match(appSource, /function drawChartTradeMarkers/);
   assert.match(appSource, /drawChart\(price\.series \|\| \[\], stock \? chartTradeMarkers\(stock\) : \[\], price, forecast\)/);
   assert.match(appSource, /renderEmbeddedPriceChart\(els\.usDetail, price\.series \|\| \[\], usd, chartTradeMarkers\(stock\), price, forecast\)/);
-  assert.match(appSource, /const forecastReview = evaluateDecisionForecast\(price\.series \|\| \[\], stock\.symbol\)/);
+  assert.match(appSource, /const forecastReview = cachedComputation\(price,[^\n]*evaluateDecisionForecast\(price\.series \|\| \[\], stock\.symbol\)/);
   assert.match(appSource, /過去2年9か月実績と今後3か月予測/);
   assert.match(appSource, /const label = marker\.type === "sell" \? "売" : "買"/);
   assert.match(indexSource, /過去2年9か月の実績と今後3か月の予測を含む価格チャート/);
@@ -2208,8 +2265,9 @@ test("concurrent cache saves produce valid JSON and preserve the newest price", 
   const dir = await mkdtemp(path.join(os.tmpdir(), "stock-refresh-test-"));
   try {
     const file = path.join(dir, "cache.json");
+    const store = createDataStore(dir);
     const save = loadFunction(serverSource, "savePriceCache", {
-      readFile, writeFile, mkdir, rename, path, cacheWrites: new Map(), preserveNewerPrices,
+      readDataJson: (file) => store.readJson(file), writeDataFile: (file, data) => store.write(file, data), mkdir, path, cacheWrites: new Map(), preserveNewerPrices,
     });
     const quick = { analyses: [{ symbol: "X", price: { current: 120, fetchedAt: "2026-09-10T01:05:00Z" } }] };
     const full = { analyses: [{ symbol: "X", thesis: "updated", price: { current: 100, fetchedAt: "2026-09-10T01:00:00Z" } }] };
@@ -2287,7 +2345,6 @@ test("crypto refresh fetches EUR/JPY independently and keeps BTC position in yen
 });
 
 test("portfolio P/L timeline resamples three years of weekly returns and adds forecast dividends", () => {
-  const annualizedReturn = loadFunction(appSource, "performanceAnnualizedReturn", {});
   const timeline = loadFunction(appSource, "portfolioPerformanceTimeline", {
     weeklyPriceGrid: loadFunction(appSource, "weeklyPriceGrid", {}),
     calendarYearOffset: loadFunction(appSource, "calendarYearOffset", {}),
@@ -2338,7 +2395,6 @@ test("portfolio P/L timeline resamples three years of weekly returns and adds fo
       series: dailySeries,
     },
   };
-  assert.ok(annualizedReturn(analysis.price.series, "2026-10-11") > 0.18);
   const result = timeline([stock], { "TEST.T": analysis }, now);
   assert.equal(result.startDate, "2025-10-11");
   assert.equal(result.today, "2026-10-11");

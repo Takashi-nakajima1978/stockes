@@ -1,4 +1,25 @@
 import { buildSavingsContributionHistory, buildSavingsValuationHistory } from "./savings-calculation.mjs";
+import { initializeBackupSettings } from "./backup-settings.mjs";
+
+const yenFormats = [0, 1].map((maximumFractionDigits) => new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY", maximumFractionDigits }));
+const dollarFormats = [0, 2].map((maximumFractionDigits) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits }));
+const compactDollarFormat = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 });
+const computationCache = new WeakMap();
+
+function forecastDateKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function cachedComputation(owner, key, calculate) {
+  if (!owner || typeof owner !== "object") return calculate();
+  let entries = computationCache.get(owner);
+  if (!entries) { entries = new Map(); computationCache.set(owner, entries); }
+  if (!entries.has(key)) {
+    if (entries.size >= 6) entries.delete(entries.keys().next().value);
+    entries.set(key, calculate());
+  }
+  return entries.get(key);
+}
 
 const MANAGED_STOCK_LIMIT = 50;
 const VIEW_KEYS = new Set(["analysis", "performance", "stocks", "us", "crypto", "ideas", "savings", "settings"]);
@@ -47,6 +68,7 @@ const state = {
   discoveryGeneratedAt: "",
   diagnostics: null,
   settings: null,
+  settingsDirty: false,
   selected: null,
   usSelected: null,
   view: preferredView(),
@@ -293,6 +315,13 @@ const els = {
   forecastReview: document.getElementById("forecastReview"),
 };
 
+initializeBackupSettings({ request, toast });
+const navigationMedia = window.matchMedia("(max-width: 720px)");
+const navigationDrawer = document.getElementById("mobileMenu");
+const syncNavigationDrawer = () => { if (navigationDrawer) navigationDrawer.open = !navigationMedia.matches; };
+syncNavigationDrawer();
+navigationMedia.addEventListener("change", syncNavigationDrawer);
+
 async function request(path, options = {}) {
   const response = await fetch(path, {
     signal: !options.method || options.method === "GET" ? AbortSignal.timeout(20000) : undefined,
@@ -308,20 +337,12 @@ async function request(path, options = {}) {
 
 function yen(value) {
   if (!Number.isFinite(value)) return "-";
-  return new Intl.NumberFormat("ja-JP", {
-    style: "currency",
-    currency: "JPY",
-    maximumFractionDigits: value >= 1000 ? 0 : 1,
-  }).format(value);
+  return yenFormats[value >= 1000 ? 0 : 1].format(value);
 }
 
 function usd(value) {
   if (!Number.isFinite(value)) return "-";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: Math.abs(value) >= 1000 ? 0 : 2,
-  }).format(value);
+  return dollarFormats[Math.abs(value) >= 1000 ? 0 : 1].format(value);
 }
 
 function moneyByCurrency(value, currency = "JPY") {
@@ -330,12 +351,7 @@ function moneyByCurrency(value, currency = "JPY") {
 
 function compactUsd(value) {
   if (!Number.isFinite(value)) return "-";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(value);
+  return compactDollarFormat.format(value);
 }
 
 function largeYen(value) {
@@ -417,7 +433,7 @@ async function loadStatus() {
     applyMarketStatus(status.markets);
     setStatus(els.settingsSearchStatus, search.ok, searchStatusText(search));
     setStatus(els.settingsLmStatus, status.lmStudio.ok, status.lmStudio.ok ? "接続中" : "未接続");
-    if (status.settings) applySettings(status.settings);
+    if (status.settings && !state.settingsDirty) applySettings(status.settings);
   } catch {
     setStatus(els.googleStatus, false, "未接続");
     setStatus(els.lmStatus, false, "未接続");
@@ -1136,7 +1152,7 @@ async function runSurgeForecastNow() {
 function renderSurgeForecast() {
   const cache = state.surgeForecast || {};
   const job = state.surgeForecastJob || {};
-  const hasCurrentHorizon = Boolean(cache.generatedAt) && Number(cache.horizonWeeks) === 13;
+  const hasCurrentHorizon = Boolean(cache.generatedAt) && Number(cache.horizonWeeks) === 13 && Number(cache.modelVersion) === 2;
   if (els.surgeForecastStatus) {
     if (job.running) {
       const progress = job.total ? ` ${Number(job.checked || 0).toLocaleString("ja-JP")}/${Number(job.total).toLocaleString("ja-JP")}銘柄` : "";
@@ -1145,7 +1161,7 @@ function renderSurgeForecast() {
       const fallback = hasCurrentHorizon ? `。表示中は${new Date(cache.generatedAt).toLocaleString("ja-JP")}の保存結果` : "。3ヵ月予測はまだありません";
       els.surgeForecastStatus.textContent = `更新失敗: ${job.error}${fallback}`;
     } else if (cache.generatedAt && !hasCurrentHorizon) {
-      els.surgeForecastStatus.textContent = "予測期間の変更後の結果を準備しています。";
+      els.surgeForecastStatus.textContent = "税・費用と下落幅を反映した再計算が必要です。「今すぐ更新」または次の朝5:00に更新します。";
     } else if (cache.generatedAt) {
       els.surgeForecastStatus.textContent = `最終更新 ${new Date(cache.generatedAt).toLocaleString("ja-JP")}。日本株 ${Number(cache.jpUniverseCount || 0).toLocaleString("ja-JP")}件・米国株 ${Number(cache.usUniverseCount || 0).toLocaleString("ja-JP")}件を走査`;
     } else {
@@ -1158,7 +1174,7 @@ function renderSurgeForecast() {
       ["走査対象", `${Number(cache.universeCount || 0).toLocaleString("ja-JP")}銘柄`],
       ["価格取得", `${Number(cache.pricedCount || 0).toLocaleString("ja-JP")}銘柄`],
       ["3年分から試算", `${Number(cache.modelledCount || 0).toLocaleString("ja-JP")}銘柄`],
-      ["予測期間", "3ヵ月"],
+      ["税・費用後もプラス", `${Number(cache.eligibleCount || 0).toLocaleString("ja-JP")}銘柄`],
     ] : [];
     els.surgeForecastSummary.hidden = !metrics.length;
     els.surgeForecastSummary.innerHTML = metrics.map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join("");
@@ -1180,25 +1196,27 @@ function renderSurgeForecast() {
 
 function surgeForecastCardHtml(item, index) {
   const currency = item.currency === "USD" ? "USD" : "JPY";
-  const percent = (value) => Number.isFinite(Number(value)) ? `${Number(value).toFixed(1)}%` : "-";
+  const percent = (value) => Number.isFinite(value) ? `${value.toFixed(1)}%` : "-";
   const market = item.market || (String(item.symbol || "").endsWith(".T") ? "日本株" : "米国株");
   return `
     <article class="surge-forecast-card">
       <header class="surge-forecast-card-head">
         <div><span class="surge-rank">${index + 1}</span><div><h5>${escapeHtml(item.name || item.symbol)}</h5><a href="${escapeAttr(item.market === "米国株" ? `https://finance.yahoo.com/quote/${encodeURIComponent(item.symbol || "")}` : `https://finance.yahoo.co.jp/quote/${encodeURIComponent(item.symbol || "")}`)}" target="_blank" rel="noreferrer">${escapeHtml(item.symbol || "")}</a><span class="surge-market">${escapeHtml(market)} / ${escapeHtml(item.sector || "その他")}</span></div></div>
-        <strong class="surge-probability">${percent(item.surgeProbabilityPct)}<small>+10%到達参考確率</small></strong>
+        <strong class="surge-probability">${percent(item.netExpectedReturnPct)}<small>3ヵ月後の平均損益・税費用後</small></strong>
       </header>
       <div class="surge-forecast-metrics">
         <div><span>現在値</span><strong>${escapeHtml(moneyByCurrency(Number(item.currentPrice), currency))}</strong></div>
         <div><span>3ヵ月後の中央値</span><strong>${escapeHtml(moneyByCurrency(Number(item.terminalMedian), currency))} <small>${percent(item.medianReturnPct)}</small></strong></div>
         <div><span>3ヵ月後の参考幅</span><strong>${escapeHtml(moneyByCurrency(Number(item.terminalLow), currency))}〜${escapeHtml(moneyByCurrency(Number(item.terminalHigh), currency))}</strong></div>
-        <div><span>10%超下落の参考確率</span><strong>${percent(item.downsideProbabilityPct)}</strong></div>
+        <div><span>3ヵ月後に損失となった割合・税費用後</span><strong>${percent(item.netLossProbabilityPct)}</strong></div>
+        <div><span>週次値で+10%到達 / -10%下落</span><strong>${percent(item.surgeProbabilityPct)} / ${percent(item.drawdownProbabilityPct)}</strong></div>
+        <div><span>悪かった10%の平均損益・税費用後</span><strong class="${item.netTailReturnPct < 0 ? "negative" : ""}">${percent(item.netTailReturnPct)}</strong></div>
       </div>
       <div class="surge-chart-frame">
         <canvas data-surge-chart-index="${index}" aria-label="${escapeAttr(item.name || item.symbol)} 過去12週と今後3ヵ月の参考予測グラフ"></canvas>
         <div class="chart-tooltip" data-surge-tooltip-index="${index}" hidden></div>
       </div>
-      <p class="surge-chart-note">緑: 過去12週 / オレンジ点線: 予測中央値 / 薄色帯: 予測の10〜90%幅。グラフに触れると日付と価格を確認できます。</p>
+      <p class="surge-chart-note">価格日 ${escapeHtml(item.quoteDate || "未取得")} / 過去の${Number(item.pathCount || 0)}区間を再現（期間の重複あり）。${escapeHtml(item.costAccount || "設定口座")}・${Number(item.costQuantity || (currency === "USD" ? 1 : 100))}株、往復手数料 ${percent(item.roundTripFeePct)}・利益への税率 ${percent(item.capitalGainTaxPct)}で概算。配当・為替変動・売買時の価格差は含みません。</p>
     </article>`;
 }
 
@@ -1241,6 +1259,8 @@ function renderSettingsTabs() {
   els.settingsPanels.forEach((panel) => {
     panel.hidden = panel.dataset.settingsPanel !== state.settingsTab;
   });
+  const submit = els.settingsForm.querySelector(':scope > button[type="submit"]');
+  if (submit) submit.hidden = state.settingsTab === "backup";
 }
 
 function renderNavigation() {
@@ -1655,7 +1675,7 @@ function renderPerformance() {
   const stocks = isUs ? state.usStocks : state.stocks;
   const analyses = isUs ? state.usAnalyses : state.analyses;
   const currency = isUs ? "USD" : "JPY";
-  const timeline = portfolioPerformanceTimeline(stocks, analyses);
+  const timeline = cachedComputation(analyses, `portfolio:${forecastDateKey()}:${JSON.stringify(stocks)}`, () => portfolioPerformanceTimeline(stocks, analyses));
   els.performanceTabs.forEach((button) => {
     const active = button.dataset.performanceMarket === state.performanceMarket;
     button.classList.toggle("active", active);
@@ -1788,8 +1808,8 @@ function renderUsDetail() {
   const fundamentals = analysis?.fundamentals || {};
   const ai = analysis?.ai || null;
   const price = analysis?.price || {};
-  const forecastReview = evaluateDecisionForecast(price.series || [], stock.symbol);
-  const forecast = decisionChartForecast(price.series || [], price, stock.symbol, new Date(), forecastReview);
+  const forecastReview = cachedComputation(price, `review:${stock.symbol}:${forecastDateKey()}`, () => evaluateDecisionForecast(price.series || [], stock.symbol));
+  const forecast = cachedComputation(price, `forecast:${stock.symbol}:${forecastDateKey()}`, () => decisionChartForecast(price.series || [], price, stock.symbol, new Date(), forecastReview));
   if (els.usSelectedSymbol) els.usSelectedSymbol.innerHTML = symbolLinkHtml(stock.symbol, "us");
   const good = (ai?.good || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const risks = (ai?.risks || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
@@ -2699,8 +2719,8 @@ function renderSelection() {
   els.selectedSymbol.innerHTML = stock ? symbolLinkHtml(stock.symbol, "jp") : "未選択";
 
   const price = analysis?.price || {};
-  const forecastReview = stock ? evaluateDecisionForecast(price.series || [], stock.symbol) : null;
-  const forecast = stock ? decisionChartForecast(price.series || [], price, stock.symbol, new Date(), forecastReview) : [];
+  const forecastReview = stock ? cachedComputation(price, `review:${stock.symbol}:${forecastDateKey()}`, () => evaluateDecisionForecast(price.series || [], stock.symbol)) : null;
+  const forecast = stock ? cachedComputation(price, `forecast:${stock.symbol}:${forecastDateKey()}`, () => decisionChartForecast(price.series || [], price, stock.symbol, new Date(), forecastReview)) : [];
   drawChart(price.series || [], stock ? chartTradeMarkers(stock) : [], price, forecast);
   renderChartTiming(price);
   renderForecastReview(els.forecastReview, forecastReview);
@@ -2836,7 +2856,7 @@ function renderForecastReview(node, review = null) {
     ? `次回補正: 中心 ${review.biasPct >= 0 ? "+" : ""}${review.biasPct.toFixed(1)}pt・幅 ×${review.rangeMultiplier.toFixed(2)}`
     : "標本不足のため補正なし（非重複検証5回以上で反映）";
   node.hidden = false;
-  node.textContent = `AI予測の過去検証: ${tested} / ${direction} / ${error} / ${coverage}。${correction}`;
+  node.textContent = `統計予測の過去検証: ${tested} / ${direction} / ${error} / ${coverage}。${correction}`;
 }
 
 function decisionChartForecast(series = [], price = {}, symbol = "", nowValue = new Date(), validation = null) {
@@ -3913,6 +3933,8 @@ function showChartPointTooltip(canvas, tooltip, point, formatter) {
 }
 
 function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarkers = [], price = {}, forecast = []) {
+  root?.chartResizeObserver?.disconnect();
+  if (root?.chartResizeListener) window.removeEventListener("resize", root.chartResizeListener);
   const canvas = root?.querySelector("[data-us-price-chart]");
   const tooltip = root?.querySelector("[data-us-chart-tooltip]");
   const timingNode = root?.querySelector("[data-us-chart-timing]");
@@ -3939,7 +3961,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
     const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString().slice(0, 10);
     const startDate = forecast.length ? calendarMonthOffset(today, -33) : "";
     const endDate = forecast.length ? calendarMonthOffset(today, 3) : "";
-    const fullSeries = cleanChartSeries(series);
+    const fullSeries = cachedComputation(series, `clean:${series.length}:${series.at(-1)?.close}`, () => cleanChartSeries(series));
     const cleanSeries = fullSeries
       .filter((point) => !forecast.length || (point.date >= startDate && point.date <= today));
     const current = Number(price.current) > 0 ? Number(price.current) : Number(cleanSeries.at(-1)?.close);
@@ -4144,6 +4166,10 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
     }
     const nearest = nearestChartHoverPoint(state.points, px, state.futureStartX);
     if (!nearest) return;
+    if (state.hoverIndex === nearest.index) {
+      positionEmbeddedTooltip(canvas, tooltip, nearest, formatter);
+      return;
+    }
     state.hoverIndex = nearest.index;
     draw();
   };
@@ -4161,8 +4187,10 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
   if ("ResizeObserver" in window) {
     const observer = new ResizeObserver(() => requestAnimationFrame(draw));
     observer.observe(frame);
+    root.chartResizeObserver = observer;
   } else {
     window.addEventListener("resize", draw, { passive: true });
+    root.chartResizeListener = draw;
   }
 }
 
@@ -5246,12 +5274,6 @@ function yahooSymbolUrl(symbol = "", target = "jp") {
   return `https://finance.yahoo.co.jp/quote/${encodeURIComponent(yahooSymbol)}`;
 }
 
-function trendLabel(value) {
-  if (value === "UP") return "上向き";
-  if (value === "DOWN") return "下向き";
-  if (value === "SIDEWAYS") return "横ばい";
-  return "-";
-}
 
 function signedPct(value) {
   if (!Number.isFinite(value)) return "-";
@@ -5544,20 +5566,6 @@ function dividendMarket(context = {}) {
   return "US";
 }
 
-function performanceAnnualizedReturn(series = [], asOfDate = "") {
-  const points = series
-    .filter((point) => point?.date && Number.isFinite(Number(point.close)) && Number(point.close) > 0 && point.date <= asOfDate)
-    .sort((a, b) => a.date.localeCompare(b.date));
-  const latest = points.at(-1);
-  if (!latest) return null;
-  const asOf = new Date(`${asOfDate}T00:00:00Z`).getTime();
-  const target = asOf - (365 * 86400000);
-  const baseline = points.filter((point) => new Date(`${point.date}T00:00:00Z`).getTime() <= target).at(-1);
-  if (!baseline) return null;
-  const elapsedDays = (new Date(`${latest.date}T00:00:00Z`).getTime() - new Date(`${baseline.date}T00:00:00Z`).getTime()) / 86400000;
-  if (elapsedDays < 300) return null;
-  return ((Number(latest.close) / Number(baseline.close)) ** (365 / elapsedDays)) - 1;
-}
 
 function calendarYearOffset(date = "", years = 0) {
   const source = new Date(`${date}T00:00:00Z`);
@@ -5629,8 +5637,8 @@ function seededForecastRandom(seed = "") {
   };
 }
 
-function forecastQuantile(values = [], quantile = 0.5) {
-  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+function forecastQuantile(values = [], quantile = 0.5, presorted = false) {
+  const sorted = presorted ? values : values.filter(Number.isFinite).sort((a, b) => a - b);
   if (!sorted.length) return null;
   const position = (sorted.length - 1) * quantile;
   const lower = Math.floor(position);
@@ -5694,7 +5702,8 @@ function bootstrapForecast(returnVectors = [], currentValues = [], baselineValue
     paths.push(pathValues);
   }
 
-  const terminalMedian = forecastQuantile(samples.at(-1), 0.5);
+  samples.forEach((sample) => sample.sort((a, b) => a - b));
+  const terminalMedian = forecastQuantile(samples.at(-1), 0.5, true);
   let representativePath = 0;
   let nearestDistance = Infinity;
   paths.forEach((path, index) => {
@@ -5706,9 +5715,9 @@ function bootstrapForecast(returnVectors = [], currentValues = [], baselineValue
   });
   return dates.map((date, index) => ({
     date,
-    low: forecastQuantile(samples[index], 0.1),
+    low: forecastQuantile(samples[index], 0.1, true),
     value: paths[representativePath][index],
-    high: forecastQuantile(samples[index], 0.9),
+    high: forecastQuantile(samples[index], 0.9, true),
     pathCount,
   }));
 }
@@ -6387,7 +6396,7 @@ function renderCandidateList() {
   state.suggestions = sanitizeDiscoverySuggestions(state.suggestions);
   renderExcludedCandidates();
   renderCandidatePerformance();
-  renderSuccessfulCandidateList();
+  if (state.ideaView === "success") renderSuccessfulCandidateList();
   if (els.candidateSavedAt) {
     els.candidateSavedAt.textContent = state.discoveryGeneratedAt
       ? `前回検索 ${new Date(state.discoveryGeneratedAt).toLocaleString("ja-JP")}`
@@ -6459,9 +6468,11 @@ function renderCandidateList() {
   }
   const nisaMode = state.sourceSummary?.discoveryMode === "nisa";
   const { peItems, stockItems } = splitDiscoveryCandidates(state.suggestions, nisaMode);
-  els.candidateList.classList.toggle("empty-state", !stockItems.length);
-  els.candidateList.innerHTML = candidateReportsHtml(stockItems);
-  if (els.peCandidateList) {
+  if (state.ideaView === "candidates") {
+    els.candidateList.classList.toggle("empty-state", !stockItems.length);
+    els.candidateList.innerHTML = candidateReportsHtml(stockItems);
+  }
+  if (els.peCandidateList && state.ideaView === "pe") {
     els.peCandidateList.classList.toggle("empty-state", nisaMode || !peItems.length);
     els.peCandidateList.innerHTML = nisaMode
       ? '<p class="report-empty">NISA向き候補の検索ではPE候補を扱いません。通常の「候補を検索」を実行してください。</p>'
@@ -6607,16 +6618,16 @@ function renderCandidatePerformance() {
   const learning = state.sourceSummary?.candidateLearning || {};
   if (els.candidateLearningSummary) {
     const aiCount = Number(learning.analyzedSignals || Object.keys(performance.aiWeights || {}).length);
-    const evaluated = Number(learning.evaluatedSymbols || performance.learningBaseline?.evaluated || performance.evaluated || 0);
+    const evaluated = Number(learning.evaluatedSymbols || performance.learningBaseline?.evaluated || 0);
     const validationCount = Number(learning.validationSymbols || performance.validationBaseline?.evaluated || 0);
     const horizon = Number(learning.horizonTradingDays || performance.learningValidation?.horizonTradingDays || 20);
     const summary = learning.summary || performance.aiLearningSummary || (performance.total
-      ? "過去の勝ち負けと条件別実績を候補スコアに反映します。"
+      ? "条件別に期末損益を検証します。費用情報や後続期間の記録が不足する条件は加点しません。"
       : "紹介後の結果が蓄積されると、勝ち負けの条件を候補スコアに反映します。");
     const method = learning.method || performance.aiLearningStatus;
     const status = !performance.total
       ? "判定履歴待ち"
-      : method === "waiting"
+      : method === "waiting" || evaluated < 8 || validationCount < 10
       ? `検証データ蓄積中（${horizon}営業日評価、学習${evaluated}・後続検証${validationCount}銘柄）`
       : method === "applied"
       ? `AI分析を${aiCount}条件に反映（${horizon}営業日評価、学習${evaluated}・後続検証${validationCount}銘柄）`
@@ -6644,9 +6655,10 @@ function renderCandidatePerformance() {
   els.candidatePerformance.innerHTML = `
     <span><strong>保存候補</strong>${performance.total}件</span>
     <span><strong>判定済み</strong>${performance.evaluated || 0}件</span>
-    <span><strong>+10%到達率</strong>${hitRate}</span>
-    <span><strong>平均</strong>${avg}</span>
-    <span><strong>PE系</strong>${peRate}</span>
+    <span><strong>追跡全期間の+10%到達率</strong>${hitRate}</span>
+    <span><strong>最新終値の平均騰落率</strong>${avg}</span>
+    <span><strong>PE・全期間到達率</strong>${peRate}</span>
+    ${performance.fixedHorizon?.evaluated ? `<span><strong>20営業日後・平均騰落率</strong>${signedPct(performance.fixedHorizon.avgReturnPct)}（${performance.fixedHorizon.evaluated}銘柄）</span><span><strong>20営業日後・損失割合</strong>${performance.fixedHorizon.lossRatePct.toFixed(1)}%</span><span><strong>税費用後の平均損益</strong>${Number.isFinite(performance.fixedHorizon.avgNetReturnPct) ? signedPct(performance.fixedHorizon.avgNetReturnPct) : "費用記録待ち"}（${performance.fixedHorizon.netEvaluated}銘柄）</span>` : ""}
     ${forecast.evaluated ? `<span><strong>予測照合</strong>${forecastSummary}</span>` : ""}
   `;
 }
@@ -6895,6 +6907,7 @@ function earlySignalHtml(signal) {
 }
 
 function upsideOutlookHtml(outlook = null) {
+  const percent = (value) => Number.isFinite(value) ? `${value > 0 ? "+" : ""}${value.toFixed(1)}%` : "未算出";
   if (!outlook || typeof outlook !== "object") {
     return `
       <section class="upside-outlook unavailable" aria-label="上昇見込みの参考実績">
@@ -6905,9 +6918,8 @@ function upsideOutlookHtml(outlook = null) {
     `;
   }
   const conditionTags = (outlook.conditions || []).map((condition) => {
-    const direction = condition.deltaPct > 0 ? "良" : condition.deltaPct < 0 ? "注意" : "中立";
-    const className = condition.deltaPct > 0 ? "positive" : condition.deltaPct < 0 ? "risk" : "neutral";
-    return `<span class="${className}">${escapeHtml(condition.label)}: ${condition.ratePct}% (${condition.evaluated}件・${direction})</span>`;
+    const comparison = Number.isFinite(condition.deltaPct) ? `全体比 ${condition.deltaPct > 0 ? "+" : ""}${condition.deltaPct}pt` : "比較待ち";
+    return `<span class="neutral">${escapeHtml(condition.label)}: 到達 ${condition.ratePct}% (${condition.evaluated}件・${comparison})</span>`;
   }).join("");
   if (outlook.status !== "reference") {
     const overall = Number.isFinite(outlook.baselineRatePct) ? `全体基準 ${outlook.baselineRatePct}%` : "全体基準 未算出";
@@ -6926,10 +6938,13 @@ function upsideOutlookHtml(outlook = null) {
       <div class="upside-outlook-metrics">
         <span><strong>日足高値で+${outlook.targetPct}%到達</strong>${outlook.hitRatePct}% (${outlook.hitCount}/${outlook.peerCount})<small>参考幅 95%: ${outlook.intervalLowPct}〜${outlook.intervalHighPct}%</small></span>
         <span class="risk"><strong>一時 -${outlook.downsideThresholdPct}%以上下落</strong>${outlook.downsideRatePct}% (${outlook.downsideCount}/${outlook.peerCount})</span>
+        <span><strong>20営業日後の平均 / 中央値</strong>${percent(outlook.avgReturnPct)} / ${percent(outlook.medianReturnPct)}<small>税・費用・配当を除く</small></span>
+        <span class="risk"><strong>20営業日後に損失 / 悪かった10%の平均</strong>${Number.isFinite(outlook.lossRatePct) ? outlook.lossRatePct.toFixed(1) + "%" : "未算出"} / ${percent(outlook.tailReturnPct)}</span>
+        <span><strong>税費用後の平均損益</strong>${percent(outlook.avgNetReturnPct)}<small>紹介時に費用を記録した${outlook.netEvaluated || 0}銘柄</small></span>
         <span><strong>全体基準</strong>${outlook.baselineRatePct}% (${outlook.validationSamples}銘柄)</span>
       </div>
       ${conditionTags ? `<div class="upside-outlook-conditions">${conditionTags}</div>` : ""}
-      <small>同じ市場の候補を銘柄ごとに分けた後続期間の実績です。到達判定は20営業日以内の日足高値。将来の確率や利益を保証するものではありません。</small>
+      <small>同じ市場の類似銘柄の過去実績です。+10%到達は途中高値で、そこで売れた実績ではありません。市場環境や期間が重なるため、件数・参考幅だけで将来の確率は確定できません。</small>
     </section>
   `;
 }
@@ -6945,8 +6960,8 @@ function incomeSeasonalityBadge(signal = null) {
 
 function technicalExperienceBadge(price = {}) {
   const parts = [];
-  if (price.goldenCross || price.maCrossSignal?.score >= 6) parts.push("GC");
-  else if (price.deadCross || price.maCrossSignal?.score < 0) parts.push("DC注意");
+  if (price.goldenCross || price.maCrossSignal?.score >= 6) parts.push("短期線が長期線を上抜け");
+  else if (price.deadCross || price.maCrossSignal?.score < 0) parts.push("短期線が長期線を下回る");
   if (price.closeStrength?.score >= 4) parts.push(price.closeStrength.label || "大引け強い");
   else if (price.closeStrength?.score < 0) parts.push("大引け弱い");
   return escapeHtml(parts.length ? parts.join(" / ") : "-");
@@ -7165,7 +7180,8 @@ function processStageClass(status = "") {
 function attachSuggestionButtons() {
   const candidateButtons = (selector) => [els.candidateList, els.peCandidateList]
     .filter(Boolean)
-    .flatMap((container) => [...container.querySelectorAll(selector)]);
+    .flatMap((container) => [...container.querySelectorAll(selector)])
+    .filter((button) => !button.closest("[data-idea-panel]")?.hidden);
   candidateButtons("[data-add-suggestion]").forEach((button) => {
     button.addEventListener("click", async () => {
       const suggestion = state.suggestions.find((item) => item.symbol === button.dataset.addSuggestion);
@@ -7739,26 +7755,8 @@ function finiteOrZero(value) {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
-function finiteNumber(value) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? number : null;
-}
 
-function positiveInput(input) {
-  return input ? finiteNumber(input.value) : null;
-}
 
-function nonNegativeInput(input) {
-  if (!input) return null;
-  const number = Number(input.value);
-  return Number.isFinite(number) && number >= 0 ? number : null;
-}
-
-function roundDisplayPrice(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return null;
-  return Math.round(number * 10) / 10;
-}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -7888,6 +7886,10 @@ function readNewUsStockLot() {
   return purchasePrice && quantity ? [{ purchaseDate, purchasePrice, quantity }] : [];
 }
 
+els.settingsForm.addEventListener("input", (event) => {
+  if (!event.target.closest("#backupSettings")) state.settingsDirty = true;
+});
+
 els.settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -7943,6 +7945,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
       }),
     });
     applySettings(payload.settings);
+    state.settingsDirty = false;
     if (payload.discoveryReset) {
       state.suggestions = sanitizeDiscoverySuggestions(payload.discovery?.suggestions || []);
       state.sourceSummary = payload.discovery?.sourceSummary || null;
@@ -7962,7 +7965,8 @@ els.settingsForm.addEventListener("submit", async (event) => {
       setStatus(els.lmStatus, payload.status.lmStudio.ok, payload.status.lmStudio.ok ? payload.status.lmStudio.model || "接続中" : "未接続");
       setStatus(els.settingsLmStatus, payload.status.lmStudio.ok, payload.status.lmStudio.ok ? "接続中" : "未接続");
     }
-    applyMarketStatus(payload.status?.markets);
+    if (payload.status?.markets) applyMarketStatus(payload.status.markets);
+    if (!payload.status) void loadStatus();
     toast(payload.discoveryReset ? "設定を保存しました。候補条件が変わったので探し直してください。" : "設定を保存しました。");
   } catch (error) {
     toast(error.message);
@@ -7974,7 +7978,10 @@ els.settingsUnitBudgetUnlimited?.addEventListener("change", () => {
 });
 
 els.viewButtons.forEach((button) => {
-  button.addEventListener("click", () => setView(button.dataset.viewTarget));
+  button.addEventListener("click", () => {
+    setView(button.dataset.viewTarget);
+    if (navigationMedia.matches && navigationDrawer) navigationDrawer.open = false;
+  });
 });
 
 els.savingsCreateForm?.addEventListener("submit", async (event) => {

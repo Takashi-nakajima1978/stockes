@@ -20,6 +20,8 @@
         </div>
       </div>
 
+      <details id="mobileMenu" class="navigation-drawer" open>
+        <summary>メニュー</summary>
       <nav class="side-nav" aria-label="画面切り替え">
         <button type="button" data-view-target="analysis" class="active">損益を見る</button>
         <button type="button" data-view-target="performance">損益推移</button>
@@ -57,6 +59,7 @@
         </div>
         <progress id="stockProgress" value="0" max="50"></progress>
       </div>
+      </details>
     </aside>
 
     <main class="workspace">
@@ -629,13 +632,13 @@
           <div id="ideaPanelSurge" role="tabpanel" aria-labelledby="ideaTabSurge" data-idea-panel="surge" hidden>
             <div class="surge-forecast-toolbar">
               <div>
-                <h4>3ヵ月上昇予測 上位15銘柄</h4>
-                <p>候補検索対象の日本株・米国株から、管理銘柄と「出さない」銘柄を除いて毎日5:00に走査。直近3年の週次変動から13週間の値動きを1,000通り試算し、3ヵ月以内に+10%へ到達する参考確率順に表示します。</p>
+                <h4>3ヵ月上昇予測 最大15銘柄</h4>
+                <p>毎朝5:00更新。直近3年の13週区間を再現し、税・費用後の平均と中央値がプラスの候補を選出。平均利益と悪かった10%の平均損失の比で並べます。</p>
                 <small id="surgeForecastStatus" aria-live="polite">予測データを読み込み中...</small>
               </div>
               <button id="surgeForecastRun" type="button" class="secondary">今すぐ更新</button>
             </div>
-            <p class="surge-forecast-disclaimer">統計的な参考予測です。将来の株価や利益を保証するものではなく、ニュース・決算など突発材料は反映しません。上昇確率だけで売買を判断せず、予測幅と下落確率も確認してください。</p>
+            <p class="surge-forecast-disclaimer">過去の値動きを当てはめた参考試算です。将来の勝率としての検証はまだできていません。価格グラフは税・費用控除前、損益は設定口座の税・手数料を概算した値です。</p>
             <div id="surgeForecastSummary" class="surge-forecast-summary" hidden></div>
             <div id="surgeForecastList" class="surge-forecast-list empty-state">
               <p>まだ予測結果がありません。毎朝5:00に自動更新します。</p>
@@ -686,6 +689,7 @@
             <button type="button" data-settings-tab="trading">売買/口座</button>
             <button type="button" data-settings-tab="monitoring">監視</button>
             <button type="button" data-settings-tab="notifications">Teams</button>
+            <button type="button" data-settings-tab="backup">バックアップ</button>
           </div>
 
           <div class="settings-tab-panel" data-settings-panel="search">
@@ -1011,8 +1015,58 @@
             </div>
           </div>
 
+          <div class="settings-tab-panel" data-settings-panel="backup" id="backupSettings" hidden>
+            <section class="backup-section">
+              <div class="backup-heading"><h3>全データ</h3><span id="backupInventory">確認中</span></div>
+              <div class="backup-actions">
+                <button type="button" data-backup-action="download">一括ダウンロード</button>
+                <button type="button" class="secondary" data-backup-action="select">ファイルから復元</button>
+                <input id="backupFile" type="file" accept=".gz,.json,application/gzip,application/json" hidden>
+              </div>
+              <p class="backup-note">保有・売却明細、配当、積立、設定、学習履歴、保存済み分析を含みます。接続キーも含まれるため、バックアップファイルは大切に保管してください。</p>
+              <p id="backupLocalStatus" role="status" aria-live="polite"></p>
+              <a id="backupRecovery" hidden>復元前のデータをダウンロード</a>
+            </section>
+            <section class="backup-section">
+              <div class="backup-heading"><h3>Google Drive</h3><span id="driveConnectionStatus">未接続</span></div>
+              <div class="backup-fields">
+                <label class="checkbox-line"><input type="checkbox" data-drive-field="enabled"><span>日次バックアップ</span></label>
+                <label><span>毎日の時刻（日本時間）</span><input type="time" data-drive-field="time" value="04:00" required></label>
+                <label><span>保存先フォルダ名</span><input data-drive-field="folderName" value="Stock Signal Backups" maxlength="100"></label>
+              </div>
+              <div class="backup-actions">
+                <button type="button" data-backup-action="save">日次設定を保存</button>
+                <button type="button" class="secondary" data-backup-action="upload">今すぐ保存</button>
+                <button type="button" class="secondary" data-backup-action="test">接続を確認</button>
+              </div>
+              <p id="driveBackupStatus" role="status" aria-live="polite"></p>
+              <p id="driveBackupDetail"></p>
+              <a id="driveBackupFile" target="_blank" rel="noreferrer" hidden>最後のバックアップを開く</a>
+              <details class="backup-connection">
+                <summary>Googleへの接続設定</summary>
+                <div class="backup-fields">
+                  <label><span>OAuth クライアントID</span><input data-drive-field="clientId" autocomplete="off"></label>
+                  <label><span>クライアントシークレット</span><input data-drive-field="clientSecret" type="password" autocomplete="off" placeholder="変更時だけ入力"></label>
+                  <label class="backup-full-width"><span>コールバックURL</span><input data-drive-field="redirectUri" type="url" autocomplete="off"></label>
+                  <label><span>保存先フォルダID（空欄で自動作成）</span><input data-drive-field="folderId" autocomplete="off"></label>
+                  <label><span>リフレッシュトークン（取得済みの場合）</span><input data-drive-field="refreshToken" type="password" autocomplete="off"></label>
+                </div>
+                <div class="backup-actions"><button type="button" data-backup-action="connect">Googleに接続</button><button type="button" class="secondary" data-backup-action="disconnect">接続を解除</button></div>
+                <p class="backup-note">初回はGoogleの認証が必要です。認証画面はlocalhostまたはHTTPSで開きます。接続後は、アプリ起動中に毎日自動で保存します。</p>
+                <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Google Cloudの認証情報</a>
+              </details>
+            </section>
+          </div>
+
           <button type="submit">設定を保存</button>
         </form>
+        <dialog id="backupRestoreDialog" class="backup-restore-dialog">
+          <h3>バックアップから復元</h3>
+          <p id="backupRestoreSummary"></p>
+          <p>現在のデータを入れ替えます。復元前のデータは自動で退避します。</p>
+          <p id="backupRestoreStatus" role="status"></p>
+          <div class="backup-actions"><button id="backupRestoreConfirm" type="button">このデータに復元</button><button id="backupRestoreCancel" type="button" class="secondary">キャンセル</button></div>
+        </dialog>
       </section>
     </main>
   </div>

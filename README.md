@@ -61,6 +61,25 @@ docker compose up --build
 
 DockerからMac上のLM Studioへつなぐため、composeでは `http://host.docker.internal:1234/v1` を使います。起動後、Docker Desktopには `local-stock-signal` が表示されます。
 
+## バックアップと復元
+
+設定の「バックアップ」で、全データを1つの `.json.gz` ファイルにダウンロードできます。日本株・米国株・BTCの保有と売却明細、配当、積立設定、候補の学習履歴、分析・価格・財務キャッシュ、各接続設定を含みます。環境変数から読み込んだ検索・AI等の設定も書き出すので、別のインストールに同じ設定を復元できます。アプリのソース、Dockerのポート設定、バックアップ自身は含みません。
+
+復元はファイル選択、内容確認、復元の順です。破損・チェックサム不一致・不正なファイル名は入れ替え前に拒否します。現在のデータは `data/backups/before-restore-*.json.gz` に退避し、設定画面から再ダウンロードできます。復元中に再起動された場合は、起動時に未完了の変更を戻します。バックアップにはAPIキー等が含まれるため、公開しないでください。
+
+### Google Driveの日次保存
+
+1. Google CloudでDrive APIを有効にし、OAuth同意画面とOAuthクライアントを作成します。Webアプリのクライアントでは、認証画面に表示されるコールバックURLを認可済みリダイレクトURIに登録します。Google OAuthのテスト公開はリフレッシュトークンが期限切れになることがあるため、継続利用時は公開状態を確認してください。
+2. 設定の「バックアップ」→「Googleへの接続設定」にクライアントIDとシークレットを入力し、「Googleに接続」で認証します。コールバックは同じアプリの `/api/backup/drive/callback` です。初回認証はlocalhostまたはHTTPSから行います。LANのHTTPアドレスで運用している場合は、初回のみDockerホストからlocalhostで開くか、SSHポート転送でlocalhostに接続してください。
+3. 初期保存先はアプリが作成する「Stock Signal Backups」です。権限は `drive.file` で、アプリが作成・認可されたファイルのみを操作します。既存フォルダIDを指定する場合は、そのフォルダへのアクセス権が必要です。
+4. 「日次バックアップ」をオンにして保存します。初期時刻は毎日04:00（日本時間）で、時刻は変更できます。アプリ停止中には実行されず、指定時刻後に起動した場合は当日分を実行します。失敗時は30分後に再試行し、設定画面に結果を表示します。「今すぐ保存」でも同じ仕組みを試せます。同じ日の再実行は同日のファイルを更新します。
+
+Driveの認証情報は `data/backup-config.json`、結果は `data/backup-status.json` に保存され、GitとDockerビルド対象から除外されます。Dockerの `./data:/app/data` ボリュームを維持してください。Codex側のGoogle Drive接続とは独立した設定なので、Dockerだけでも日次実行を継続できます。
+
+Googleの仕様: [オフラインアクセスとOAuth](https://developers.google.com/identity/protocols/oauth2/web-server)、[Driveアップロード](https://developers.google.com/workspace/drive/api/guides/manage-uploads)。
+
 ## 注意
+
+全体点検の変更内容と実測結果は [REVIEW.md](REVIEW.md) に記録しています。
 
 このアプリは投資判断の補助ツールです。利益を保証するものではありません。「買いたい価格」の評価は、過去3年の値動きに対してその価格が高すぎないか、下落リスクを取りすぎていないかを確認するための目安です。検索エンジンが未接続の場合はWeb材料を読めないため、価格データ中心の暫定判定になります。

@@ -1,19 +1,32 @@
 import http from "node:http";
-import { readFile, writeFile, mkdir, rename, stat } from "node:fs/promises";
+import { readFile, mkdir, stat } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzip, inflateRawSync } from "node:zlib";
 import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "./refresh-control.mjs";
-import { buildThreeMonthSurgeForecast, SURGE_FORECAST_HORIZON_WEEKS } from "./surge-forecast.mjs";
+import { buildThreeMonthSurgeForecast, SURGE_FORECAST_HORIZON_WEEKS, SURGE_FORECAST_VERSION } from "./surge-forecast.mjs";
+import { splitLearningHistory, returnEvidence, hasProfitableEvidence, afterCostReturn } from "./investment-evidence.mjs";
+import { createDataStore, createSerialQueue } from "./data-store.mjs";
+import { createVersionedLoader, createCachedJsonSender, responseRepresentation } from "./response-cache.mjs";
+import { createBackupManager, MAX_BACKUP_BYTES } from "./backup.mjs";
 
 const runPriceRefresh = createSingleFlight();
+const runHistoryFetch = createSingleFlight();
 const priceRefreshAttempts = new Map();
 const cacheWrites = new Map();
 const performanceSeriesCache = new Map();
 const PRICE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const dataStore = createDataStore(path.join(__dirname, "data"));
+const readDataJson = (file) => dataStore.readJson(file);
+const writeDataFile = (file, contents) => dataStore.write(file, contents);
+const cachedResponses = createVersionedLoader();
+const staticResponses = createVersionedLoader();
+const sendCachedJson = createCachedJsonSender();
+const serializeDataEdit = createSerialQueue();
+const serializeCandidateHistory = createSerialQueue();
 loadLocalEnv(path.join(__dirname, ".env"));
 const PORT = Number(process.env.PORT || 5173);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -491,6 +504,8 @@ let surgeForecastScheduledDate = "";
 let hourlyRefreshTimer = null;
 let priceRefreshTimer = null;
 let surgeForecastTimer = null;
+let activeApiRequests = 0;
+const backupManager = createBackupManager({ store: dataStore, effectiveSettings: readSettings });
 
 const discoveryUniverse = [
   { symbol: "9433.T", name: "KDDI", market: "東証", sector: "通信", notes: "通信、金融、株主還元" },
@@ -787,23 +802,98 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/favicon.ico") {
       return await serveFile(res, path.join(PUBLIC_DIR, "stock-signal-logo.svg"), { cacheControl: "public, max-age=86400" });
     }
-    if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
+    if (url.pathname.startsWith("/api/")) {
+      if (backupManager.restoring) return json(res, 503, { error: "データを復元中です。しばらくお待ちください。" });
+      activeApiRequests += 1;
+      try {
+        if (["GET", "HEAD"].includes(req.method)) return await handleApi(req, res, url);
+        if (req.headers.origin) {
+          let originHost = "";
+          try { originHost = new URL(req.headers.origin).host; } catch {}
+          if (originHost !== req.headers.host) return json(res, 403, { error: "アプリと同じアドレスから操作してください。" });
+        }
+        const editsData = /^\/api\/(?:settings|stocks|us-stocks|crypto|savings-plans|excluded-candidates|backup\/drive\/settings)(?:\/|$)/.test(url.pathname);
+        return await (editsData ? serializeDataEdit(() => handleApi(req, res, url)) : handleApi(req, res, url));
+      } finally { activeApiRequests -= 1; }
+    }
     const cacheControl = url.searchParams.has("v")
       ? "public, max-age=31536000, immutable"
       : "no-cache";
     return await serveFile(res, path.join(PUBLIC_DIR, sanitizePath(url.pathname)), { cacheControl });
   } catch (error) {
-    json(res, 500, { error: error.message || "Internal server error" });
+    json(res, error.statusCode || 500, { error: error.message || "Internal server error" });
   }
 });
 
+await backupManager.initialize();
 server.listen(PORT, HOST, () => {
   console.log(`Stock Signal is running at http://${HOST}:${PORT}`);
-  scheduleHourlyRefresh();
-  scheduleDailySurgeForecast();
+  if (process.env.NODE_ENV !== "test") {
+    scheduleHourlyRefresh();
+    scheduleDailySurgeForecast();
+    backupManager.startSchedule();
+  }
 });
 
+async function handleBackupApi(req, res, url) {
+  if (url.pathname === "/api/backup/status" && req.method === "GET") return json(res, 200, await backupManager.status());
+  if (url.pathname === "/api/backup/download" && req.method === "GET") {
+    return sendBackupFile(res, await backupManager.download(), `stock-signal-${new Date().toISOString().replace(/[:.]/g, "-")}.json.gz`);
+  }
+  if (url.pathname === "/api/backup/preview" && req.method === "POST") {
+    return json(res, 200, await backupManager.preview(await readRequestBytes(req, MAX_BACKUP_BYTES)));
+  }
+  if (url.pathname === "/api/backup/restore" && req.method === "POST") {
+    const body = await readJson(req);
+    if (body.confirm !== true) return json(res, 400, { error: "復元するデータを確認してください。" });
+    if (activeApiRequests > 1 || runPriceRefresh.pendingCount || [analysisJob, usAnalysisJob, discoveryJob, surgeForecastJob].some((job) => job?.running)) {
+      return json(res, 409, { error: "更新・分析処理が実行中です。完了後に復元してください。" });
+    }
+    const result = await backupManager.restore(body.token);
+    cachedResponses.clear();
+    performanceSeriesCache.clear();
+    primeUniverseCache = null;
+    lmModelCache = { configuredUrl: "", url: "", model: "" };
+    lmStudioStatusCache = null;
+    analysisJob = usAnalysisJob = discoveryJob = surgeForecastJob = null;
+    surgeForecastScheduledDate = "";
+    priceRefreshAttempts.clear();
+    return json(res, 200, result);
+  }
+  if (url.pathname === "/api/backup/recovery" && req.method === "GET") {
+    const name = String(url.searchParams.get("name") || "");
+    return sendBackupFile(res, await backupManager.recovery(name), name);
+  }
+  if (url.pathname === "/api/backup/drive/settings" && req.method === "PATCH") return json(res, 200, await backupManager.configure(await readJson(req)));
+  if (url.pathname === "/api/backup/drive/auth" && req.method === "POST") {
+    const origin = req.headers.origin || `http://${req.headers.host}`;
+    const auth = await backupManager.beginAuth(origin);
+    res.setHeader("set-cookie", `stock_signal_drive_state=${auth.state}; Path=/api/backup/drive; HttpOnly; SameSite=Lax; Max-Age=600${origin.startsWith("https:") ? "; Secure" : ""}`);
+    return json(res, 200, { url: auth.url });
+  }
+  if (url.pathname === "/api/backup/drive/callback" && req.method === "GET") {
+    const cookieState = String(req.headers.cookie || "").match(/(?:^|;\s*)stock_signal_drive_state=([a-f0-9]+)/)?.[1] || "";
+    await backupManager.completeAuth({ state: url.searchParams.get("state"), code: url.searchParams.get("code"), cookieState });
+    res.setHeader("set-cookie", "stock_signal_drive_state=; Path=/api/backup/drive; HttpOnly; SameSite=Lax; Max-Age=0");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" });
+    return res.end('<!doctype html><html lang="ja"><meta charset="utf-8"><title>Google Drive接続</title><body><h1>Google Driveに接続しました</h1><p>設定画面に戻れます。</p><a href="/">Stock Signalに戻る</a><script>if(window.opener){window.opener.postMessage({type:"stock-signal-drive-connected"},location.origin);window.close();}else{location.replace("/");}</script></body></html>');
+  }
+  if (url.pathname === "/api/backup/drive/test" && req.method === "POST") return json(res, 200, await backupManager.testDrive());
+  if (url.pathname === "/api/backup/drive/disconnect" && req.method === "POST") return json(res, 200, await backupManager.disconnect());
+  if (url.pathname === "/api/backup/drive/run" && req.method === "POST") {
+    void backupManager.upload("manual").catch((error) => console.error("Google Driveバックアップ:", error.message));
+    return json(res, 202, await backupManager.status());
+  }
+  return json(res, 404, { error: "バックアップ操作が見つかりません。" });
+}
+
+function sendBackupFile(res, bytes, name) {
+  res.writeHead(200, { "content-type": "application/gzip", "content-disposition": `attachment; filename="${name}"`, "content-length": bytes.length, "cache-control": "no-store" });
+  res.end(bytes);
+}
+
 async function handleApi(req, res, url) {
+  if (url.pathname.startsWith("/api/backup/")) return handleBackupApi(req, res, url);
   if (url.pathname === "/api/cache-versions" && req.method === "GET") {
     return json(res, 200, { versions: await analysisCacheVersions() });
   }
@@ -826,7 +916,6 @@ async function handleApi(req, res, url) {
     lmModelCache = { configuredUrl: "", url: "", model: "" };
     return json(res, 200, {
       settings: publicSettings(settings),
-      status: await status(),
       discoveryReset,
       discovery,
     });
@@ -862,24 +951,26 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/analysis" && req.method === "GET") {
-    const [cached, settings, cacheVersion] = await Promise.all([
-      readAnalysisCache(),
-      readSettings(),
-      cacheFileVersion(ANALYSIS_CACHE_PATH),
-    ]);
-    const withFinancials = await attachFinancialsToAnalyses(cached.analyses);
-    const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(withFinancials, settings));
-    return json(res, 200, { ...cached, analyses, cacheVersion });
+    const payload = await cachedResponses.load("jp-analysis", [ANALYSIS_CACHE_PATH, WATCHLIST_PATH, SETTINGS_PATH, FINANCIAL_CACHE_PATH, SHAREHOLDER_CACHE_PATH, EXIT_STATE_PATH], async () => {
+      const [cached, settings, cacheVersion] = await Promise.all([
+        readAnalysisCache(), readSettings(), cacheFileVersion(ANALYSIS_CACHE_PATH),
+      ]);
+      const withFinancials = await attachFinancialsToAnalyses(cached.analyses);
+      const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(withFinancials, settings, { persist: false }));
+      return { ...cached, analyses, cacheVersion };
+    });
+    return sendCachedJson(res, 200, payload);
   }
 
   if (url.pathname === "/api/us-analysis" && req.method === "GET") {
-    const [cached, settings, cacheVersion] = await Promise.all([
-      readUsAnalysisCache(),
-      readSettings(),
-      cacheFileVersion(US_ANALYSIS_CACHE_PATH),
-    ]);
-    const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(cached.analyses, settings, { currency: "USD" }));
-    return json(res, 200, { ...cached, analyses, summary: usPortfolioSummary(analyses), cacheVersion });
+    const payload = await cachedResponses.load("us-analysis", [US_ANALYSIS_CACHE_PATH, US_WATCHLIST_PATH, SETTINGS_PATH, SHAREHOLDER_CACHE_PATH, EXIT_STATE_PATH], async () => {
+      const [cached, settings, cacheVersion] = await Promise.all([
+        readUsAnalysisCache(), readSettings(), cacheFileVersion(US_ANALYSIS_CACHE_PATH),
+      ]);
+      const analyses = await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(cached.analyses, settings, { currency: "USD", persist: false }));
+      return { ...cached, analyses, summary: usPortfolioSummary(analyses), cacheVersion };
+    });
+    return sendCachedJson(res, 200, payload);
   }
 
   if (url.pathname === "/api/crypto-analyze" && req.method === "POST") {
@@ -1226,7 +1317,7 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/savings-plans" && req.method === "POST") {
     const body = await readJson(req);
-    const plan = normalizeSavingsPlan(body.plan || body);
+    const plan = normalizeSavingsPlan({ ...(body.plan || body), updatedAt: new Date().toISOString() });
     if (!plan.name || !plan.symbol) return json(res, 400, { error: "商品名とファンドコードを入力してください。" });
     const plans = await readSavingsPlans();
     const index = plans.findIndex((item) => item.id === plan.id);
@@ -3583,12 +3674,13 @@ function startSurgeForecastJob(reason = "manual") {
 }
 
 async function runThreeMonthSurgeScan(job) {
-  const [stocks, usStocks, excludedCandidates, primeUniverse, discoveryCache] = await Promise.all([
+  const [stocks, usStocks, excludedCandidates, primeUniverse, discoveryCache, settings] = await Promise.all([
     readWatchlist(),
     readUsWatchlist(),
     readExcludedCandidates(),
     readPrimeUniverse(),
     readDiscoveryCache(),
+    readSettings(),
   ]);
   updateSurgeForecastJob(job, { phase: "最新の検索結果を追加中" });
   const search = await discoverySearchResults(60).catch(() => []);
@@ -3628,8 +3720,8 @@ async function runThreeMonthSurgeScan(job) {
       series: price.series || [],
       current: price.current,
       today,
-      pathCount: 1000,
       thresholdPct: 10,
+      ...candidateCostAssumptions(candidate, price.current, settings),
     });
     if (forecast) modeled += 1;
     checked += 1;
@@ -3642,13 +3734,14 @@ async function runThreeMonthSurgeScan(job) {
       market: isUsDiscoveryCandidate(candidate) ? "米国株" : "日本株",
       currency: discoveryCurrency(candidate),
       sector: candidate.sector || "その他",
+      ...candidateCostAssumptions(candidate, price.current, settings),
       ...forecast,
     } : null;
   });
-  const ranked = forecasts.filter(Boolean).sort((a, b) => (
-    b.surgeProbabilityPct - a.surgeProbabilityPct
-      || b.medianReturnPct - a.medianReturnPct
-      || a.downsideProbabilityPct - b.downsideProbabilityPct
+  const ranked = forecasts.filter((item) => item && item.netExpectedReturnPct > 0 && item.netMedianReturnPct > 0).sort((a, b) => (
+    b.riskRewardScore - a.riskRewardScore
+      || b.surgeProbabilityPct - a.surgeProbabilityPct
+      || a.netLossProbabilityPct - b.netLossProbabilityPct
       || a.symbol.localeCompare(b.symbol)
   ));
   const result = {
@@ -3659,12 +3752,13 @@ async function runThreeMonthSurgeScan(job) {
     usUniverseCount: usCount,
     pricedCount: priced,
     modelledCount: modeled,
+    eligibleCount: ranked.length,
+    modelVersion: SURGE_FORECAST_VERSION,
     searchResultCount: search.length,
     thresholdPct: 10,
     horizonWeeks: SURGE_FORECAST_HORIZON_WEEKS,
     historyWeeks: 156,
-    pathCount: 1000,
-    method: "直近3年の週次変動を13週間単位で再標本化。1,000経路の3ヵ月以内+10%到達率で順位付け。",
+    method: "直近3年の全13週区間を再現。税・往復手数料控除後の平均と中央値が正の銘柄を、平均損益÷下位10%の平均損失で順位付け。",
     results: ranked.slice(0, 15),
   };
   await saveSurgeForecastCache(result);
@@ -3696,12 +3790,12 @@ function scheduleDailySurgeForecast() {
   if (surgeForecastTimer) clearInterval(surgeForecastTimer);
   const tick = async () => {
     const parts = zonedParts(new Date(), "Asia/Tokyo");
-    if (!parts || parts.hour < 5 || parts.hour > 23 || surgeForecastJob?.running) return;
+    if (!parts || parts.hour < 5 || parts.hour > 23 || surgeForecastJob?.running || backupManager.restoring) return;
     const today = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
     if (surgeForecastScheduledDate === today) return;
     surgeForecastScheduledDate = today;
     const cached = await readSurgeForecastCache();
-    if (jstDate(cached.generatedAt) === today && cached.horizonWeeks === SURGE_FORECAST_HORIZON_WEEKS) return;
+    if (jstDate(cached.generatedAt) === today && cached.horizonWeeks === SURGE_FORECAST_HORIZON_WEEKS && cached.modelVersion === SURGE_FORECAST_VERSION) return;
     startSurgeForecastJob("daily");
   };
   setTimeout(() => { void tick(); }, 12000);
@@ -3712,9 +3806,11 @@ function scheduleHourlyRefresh() {
   if (hourlyRefreshTimer) clearInterval(hourlyRefreshTimer);
   if (priceRefreshTimer) clearInterval(priceRefreshTimer);
   const priceTick = () => {
+    if (backupManager.restoring) return;
     void runPriceRefresh("price-scheduler", runScheduledPriceRefresh).catch((error) => console.error("価格自動更新:", error.message));
   };
   const researchTick = () => {
+    if (backupManager.restoring) return;
     void runPriceRefresh("research-scheduler", runHourlyRefreshIfDue).catch((error) => console.error("分析自動更新:", error.message));
   };
   setTimeout(() => { priceTick(); researchTick(); }, 12000);
@@ -3755,6 +3851,7 @@ async function runHourlyRefreshIfDue() {
   const jpOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("JP", now);
   const usOpen = !settings.marketHoursOnlyRefresh || isMarketOpen("US", now);
   const hour = cacheHourKey(now.toISOString());
+  const checks = [];
   if (jpOpen && !analysisJob?.running && researchRefreshHours.get("JP") !== hour) {
     researchRefreshHours.set("JP", hour);
     startAnalysisJob({ websiteLimit: 8, depthLimit: 1, pagesPerSite: 1, reuseFreshPrices: true });
@@ -3765,18 +3862,19 @@ async function runHourlyRefreshIfDue() {
   }
   if (settings.tdnetDisclosureEnabled && isJpDisclosureBusinessDay(now)
     && isOlderThan(cacheHourKey(disclosureCache.generatedAt), cacheHourKey(now.toISOString()))) {
-    void checkTimelyDisclosures({ notify: true }).catch(() => {});
+    checks.push(checkTimelyDisclosures({ notify: true }));
   }
   if (settings.shareholderMonitorEnabled && (jpOpen || usOpen)
     && jstDate(shareholderCache.generatedAt) !== jstDate(now.toISOString())) {
-    void updateShareholderSnapshots({ notify: true }).catch(() => {});
+    checks.push(updateShareholderSnapshots({ notify: true }));
   }
   if (jpOpen && !discoveryJob?.running && settings.dailyDiscoveryEnabled && jstDate(cache.generatedAt) !== jstDate(now.toISOString())) {
     startDiscoveryJob({ websiteLimit: 20, fullScan: true }, "daily");
   }
   if (jpOpen) {
-    void updateCandidateHistoryOutcomes({ maxUpdates: 30 }).catch(() => {});
+    checks.push(updateCandidateHistoryOutcomes({ maxUpdates: 30 }));
   }
+  await Promise.allSettled(checks);
 }
 
 function isMarketOpen(market, value = new Date()) {
@@ -5275,7 +5373,8 @@ function applyCandidateLearning(candidate, performance = {}, { rebase = false } 
       sectorStats.evaluated / (sectorStats.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH),
       sectorValidation.evaluated / (sectorValidation.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH),
     );
-    if (Math.abs(trainDelta) >= 0.1 && Math.sign(trainDelta) === Math.sign(validationDelta)) {
+    if (Math.abs(trainDelta) >= 0.1 && Math.sign(trainDelta) === Math.sign(validationDelta)
+      && (trainDelta < 0 || (hasProfitableEvidence(sectorStats) && hasProfitableEvidence(sectorValidation)))) {
       sectorAdjustment = clamp(Math.round(trainDelta * 8 * shrink), -2, 2);
     }
     if (sectorAdjustment) reasons.push(`${candidate.sector || "その他"}の過去成績`);
@@ -5296,9 +5395,11 @@ function applyCandidateLearning(candidate, performance = {}, { rebase = false } 
       || Math.abs(trainEvidence) < 0.75
       || Math.abs(validationEvidence) < 0.75
       || Math.sign(trainEvidence) !== Math.sign(validationEvidence)) continue;
+    if (trainEvidence > 0 && (!hasProfitableEvidence(stats) || !hasProfitableEvidence(validationStats))) continue;
     const aiWeight = performance.aiWeights?.[signal];
     let change = 0;
     if (aiWeight && Number.isFinite(aiWeight.adjustment)) {
+      if (Math.sign(aiWeight.adjustment) !== Math.sign(trainEvidence)) continue;
       const validationShrink = validationStats.evaluated / (validationStats.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH);
       change = clamp(Math.round(aiWeight.adjustment * validationShrink), -MAX_CANDIDATE_SIGNAL_ADJUSTMENT, MAX_CANDIDATE_SIGNAL_ADJUSTMENT);
       aiAssisted ||= change !== 0;
@@ -5346,7 +5447,7 @@ function candidateLearningPrompt(performance = {}) {
   return [
     "株式候補の過去結果を分析し、候補スコアに使う条件別の補正を提案してください。内部思考の逐語出力は不要です。学習期間の傾向と後続期間での再現性を比較し、結論と検証可能な短い根拠を返してください。",
     `目的変数は紹介後${CANDIDATE_LEARNING_HORIZON_DAYS}営業日以内の日足高値で+${CANDIDATE_SUCCESS_THRESHOLD_PCT}%到達です。学習と後続検証は候補作成時刻で分離し、同一銘柄は一度だけ数えます。期間外の最高値は学習ラベルに使いません。`,
-    "訓練と後続検証の両方で全体基準を上回る条件だけ正、両方で下回る条件だけ負にしてください。検証で再現しない・下落リスクが大きい・標本が少ない条件は0です。相関を因果関係や利益保証と断定せず、各補正は-3から+3の整数。入力にない条件は作らないでください。",
+    "目的は費用後の資産増加です。+10%到達は途中高値であり、実現利益ではありません。正の補正には訓練・後続検証の両方で平均の税費用控除後損益が正であることも必要です。費用不明、検証で再現しない・下落リスクが大きい・標本が少ない条件は0です。両期間で全体基準を下回る条件だけ負にしてください。相関を因果関係や利益保証と断定せず、各補正は-3から+3の整数。入力にない条件は作らないでください。",
     "JSONのみで返答: {\"summary\":\"日本語で結論を1-2文\",\"weights\":[{\"signal\":\"入力signal\",\"adjustment\":-3,\"reason\":\"日本語で短い根拠\"}]}",
     JSON.stringify({
       successDefinition: `within ${CANDIDATE_LEARNING_HORIZON_DAYS} trading sessions, daily high >= +${CANDIDATE_SUCCESS_THRESHOLD_PCT}% from introduction price`,
@@ -5380,6 +5481,7 @@ function validateCandidateLearningReview(review = {}, performance = {}) {
       || Math.abs(trainingEvidence) < 0.75 || Math.abs(validationEvidence) < 0.75
       || Math.sign(trainingEvidence) !== Math.sign(validationEvidence)
       || Math.sign(proposed) !== Math.sign(trainingEvidence)) continue;
+    if (proposed > 0 && (!hasProfitableEvidence(stats) || !hasProfitableEvidence(validationStats))) continue;
     const shrink = Math.min(
       stats.evaluated / (stats.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH),
       validationStats.evaluated / (validationStats.evaluated + CANDIDATE_LEARNING_PRIOR_STRENGTH),
@@ -5469,7 +5571,7 @@ async function savePartialDiscovery({
 async function readPrimeUniverse() {
   if (primeUniverseCache) return primeUniverseCache;
   try {
-    const rows = JSON.parse(await readFile(PRIME_UNIVERSE_PATH, "utf8"));
+    const rows = await readDataJson(PRIME_UNIVERSE_PATH);
     if (Array.isArray(rows) && rows.length) {
       primeUniverseCache = rows
         .map((row) => ({
@@ -7915,6 +8017,11 @@ async function fetchPageText(url, timeout = 9000) {
 }
 
 async function fetchPriceHistory(symbol, options = {}) {
+  const key = `${symbol}:${Boolean(options.includeDividendForecast)}:${options.timeout || options.timeoutMs || PRICE_HISTORY_TIMEOUT_MS}`;
+  return runHistoryFetch(key, () => fetchPriceHistoryNow(symbol, options));
+}
+
+async function fetchPriceHistoryNow(symbol, options = {}) {
   const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
   url.searchParams.set("range", "5y");
   url.searchParams.set("interval", "1d");
@@ -10207,7 +10314,7 @@ async function attachExitPlansToAnalyses(analyses = [], settings = defaultSettin
       exitPlan: buildExitPlan(analysis, settings, bySymbol.get(analysis.symbol), { currency }),
     };
   });
-  await saveExitState(mergeExitState(state, next));
+  if (options.persist !== false) await saveExitState(mergeExitState(state, next));
   return next;
 }
 
@@ -12220,7 +12327,7 @@ function normalizeSectorEvidence(value = []) {
 
 async function readAnalysisCache() {
   try {
-    const cached = JSON.parse(await readFile(ANALYSIS_CACHE_PATH, "utf8"));
+    const cached = await readDataJson(ANALYSIS_CACHE_PATH);
     const stocks = await readWatchlist().catch(() => []);
     const bySymbol = new Map(stocks.map((stock) => [stock.symbol, stock]));
     const analyses = Array.isArray(cached.analyses)
@@ -12328,14 +12435,12 @@ async function saveAnalysisCache(result) {
 function savePriceCache(file, result, payload) {
   const previousWrite = cacheWrites.get(file) || Promise.resolve();
   const write = previousWrite.catch(() => {}).then(async () => {
-    const saved = await readFile(file, "utf8").then(JSON.parse).catch(() => ({}));
+    const saved = await readDataJson(file).catch(() => ({}));
     result.analyses = preserveNewerPrices(result.analyses || [], saved.analyses || []);
     result.generatedAt = new Date().toISOString();
     if (result.currency === "USD") result.summary = usPortfolioSummary(result.analyses);
     await mkdir(path.dirname(file), { recursive: true });
-    const temporary = `${file}.tmp`;
-    await writeFile(temporary, JSON.stringify(payload(), null, 2));
-    await rename(temporary, file);
+    await writeDataFile(file, JSON.stringify(payload(), null, 2));
   });
   cacheWrites.set(file, write);
   return write.finally(() => {
@@ -12345,7 +12450,7 @@ function savePriceCache(file, result, payload) {
 
 async function readDiscoveryCache() {
   try {
-    const cached = JSON.parse(await readFile(DISCOVERY_CACHE_PATH, "utf8"));
+    const cached = await readDataJson(DISCOVERY_CACHE_PATH);
     return {
       generatedAt: cached.generatedAt || "",
       suggestions: Array.isArray(cached.suggestions) ? cached.suggestions : [],
@@ -12360,7 +12465,7 @@ async function readDiscoveryCache() {
 
 async function readSurgeForecastCache() {
   try {
-    const cached = JSON.parse(await readFile(SURGE_FORECAST_PATH, "utf8"));
+    const cached = await readDataJson(SURGE_FORECAST_PATH);
     return {
       generatedAt: String(cached.generatedAt || ""),
       asOfDate: String(cached.asOfDate || ""),
@@ -12369,11 +12474,12 @@ async function readSurgeForecastCache() {
       usUniverseCount: Number(cached.usUniverseCount) || 0,
       pricedCount: Number(cached.pricedCount) || 0,
       modelledCount: Number(cached.modelledCount) || 0,
+      eligibleCount: Number(cached.eligibleCount) || 0,
+      modelVersion: Number(cached.modelVersion) || 0,
       searchResultCount: Number(cached.searchResultCount) || 0,
       thresholdPct: Number(cached.thresholdPct) || 10,
       horizonWeeks: Number(cached.horizonWeeks) || 0,
       historyWeeks: Number(cached.historyWeeks) || 156,
-      pathCount: Number(cached.pathCount) || 1000,
       method: String(cached.method || ""),
       results: Array.isArray(cached.results) ? cached.results.slice(0, 15) : [],
     };
@@ -12390,7 +12496,8 @@ async function readSurgeForecastCache() {
       thresholdPct: 10,
       horizonWeeks: 0,
       historyWeeks: 156,
-      pathCount: 1000,
+      eligibleCount: 0,
+      modelVersion: 0,
       method: "",
       results: [],
     };
@@ -12399,9 +12506,7 @@ async function readSurgeForecastCache() {
 
 async function saveSurgeForecastCache(result) {
   await mkdir(path.dirname(SURGE_FORECAST_PATH), { recursive: true });
-  const temporary = `${SURGE_FORECAST_PATH}.tmp`;
-  await writeFile(temporary, JSON.stringify(result, null, 2));
-  await rename(temporary, SURGE_FORECAST_PATH);
+  await writeDataFile(SURGE_FORECAST_PATH, JSON.stringify(result, null, 2));
 }
 
 async function discoveryCacheForCurrentSettings() {
@@ -12456,7 +12561,7 @@ async function saveDiscoveryCache(result) {
   const excludedCandidates = await readExcludedCandidates();
   const filtered = filterDiscoveryResultByExclusions(result, excludedCandidates);
   await mkdir(path.dirname(DISCOVERY_CACHE_PATH), { recursive: true });
-  await writeFile(DISCOVERY_CACHE_PATH, JSON.stringify({
+  await writeDataFile(DISCOVERY_CACHE_PATH, JSON.stringify({
     generatedAt: filtered.generatedAt,
     suggestions: filtered.suggestions || [],
     evidence: filtered.evidence || [],
@@ -12525,21 +12630,38 @@ function filterDiscoveryResultByExclusions(result = {}, excludedCandidates = [])
 
 async function readCandidateHistory() {
   try {
-    const cached = JSON.parse(await readFile(CANDIDATE_HISTORY_PATH, "utf8"));
-    const items = Array.isArray(cached.items) ? cached.items.map(normalizeCandidateHistoryItem).filter(Boolean) : [];
+    const cached = await readDataJson(CANDIDATE_HISTORY_PATH);
+    if (!Array.isArray(cached?.items)) throw new Error("学習履歴の形式が正しくありません。");
+    const items = cached.items.map(normalizeCandidateHistoryItem);
+    if (items.some((item) => !item)) throw new Error("学習履歴の銘柄・日時を確認してください。");
     return { items };
-  } catch {
-    return { items: [] };
+  } catch (error) {
+    if (error.code === "ENOENT") return { items: [] };
+    throw new Error(`学習履歴を読み込めません。元のデータを保全しています。${error.message}`);
   }
 }
 
 async function saveCandidateHistory(history = {}) {
-  const items = uniqueBy((history.items || []).map(normalizeCandidateHistoryItem).filter(Boolean), (item) => item.id)
-    .sort((a, b) => a.generatedAt.localeCompare(b.generatedAt) || a.symbol.localeCompare(b.symbol))
-    .slice(-2000);
-  await mkdir(path.dirname(CANDIDATE_HISTORY_PATH), { recursive: true });
-  await writeFile(CANDIDATE_HISTORY_PATH, JSON.stringify({ items }, null, 2));
-  return { items };
+  return serializeCandidateHistory(async () => {
+    const previous = await readCandidateHistory();
+    const byId = new Map(previous.items.map((item) => [item.id, item]));
+    for (const item of (history.items || []).map(normalizeCandidateHistoryItem).filter(Boolean)) {
+      const saved = byId.get(item.id);
+      if (!saved) byId.set(item.id, item);
+      else if ((Date.parse(item.evaluatedAt) || 0) > (Date.parse(saved.evaluatedAt) || 0)) {
+        const next = item.outcome === "pending" && saved.outcome !== "pending"
+          ? { ...saved, evaluatedAt: item.evaluatedAt }
+          : { ...item };
+        if (next.learningOutcome === "pending" && saved.learningOutcome !== "pending") {
+          for (const key of ["learningOutcome", "learningOutcomeReason", "learningHorizonMaxReturnPct", "learningHorizonMinReturnPct", "learningHorizonReturnPct", "learningHorizonNetReturnPct", "learningHorizonEndDate", "learningHorizonDays", "learningEvaluatedAt"]) next[key] = saved[key];
+        }
+        byId.set(item.id, next);
+      }
+    }
+    const items = [...byId.values()].sort((a, b) => a.generatedAt.localeCompare(b.generatedAt) || a.symbol.localeCompare(b.symbol)).slice(-20000);
+    await writeDataFile(CANDIDATE_HISTORY_PATH, JSON.stringify({ items }, null, 2));
+    return { items };
+  });
 }
 
 function normalizeCandidateHistoryItem(item = {}) {
@@ -12583,6 +12705,10 @@ function normalizeCandidateHistoryItem(item = {}) {
     learningHorizonMaxReturnPct: numberOrNull(item.learningHorizonMaxReturnPct),
     learningHorizonMinReturnPct: numberOrNull(item.learningHorizonMinReturnPct),
     learningHorizonReturnPct: numberOrNull(item.learningHorizonReturnPct),
+    learningHorizonEndDate: normalizeDate(item.learningHorizonEndDate),
+    learningHorizonNetReturnPct: numberOrNull(item.learningHorizonNetReturnPct),
+    roundTripFeePct: numberOrNull(item.roundTripFeePct),
+    capitalGainTaxPct: numberOrNull(item.capitalGainTaxPct),
     learningHorizonDays: nullableNonNegativeNumber(item.learningHorizonDays) || 0,
     forecastHitRatePct: numberOrNull(item.forecastHitRatePct),
     forecastDownsideRatePct: numberOrNull(item.forecastDownsideRatePct),
@@ -12638,20 +12764,11 @@ function candidateLearningFeatureSnapshot(candidate = {}) {
 
 function candidateForecastValidationCohort(history = {}, currency = "") {
   const market = String(currency || "").toUpperCase();
-  const latestBySymbol = new Map();
-  for (const item of Array.isArray(history.items) ? history.items : []) {
-    if (!item?.symbol || !["hit", "miss"].includes(item.learningOutcome)
-      || !Number.isFinite(item.learningHorizonReturnPct)) continue;
+  const items = (Array.isArray(history.items) ? history.items : []).filter((item) => {
     const itemCurrency = String(item.currency || (/\.T$/.test(item.symbol) ? "JPY" : "USD")).toUpperCase();
-    if (market && itemCurrency !== market) continue;
-    const previous = latestBySymbol.get(item.symbol);
-    if (!previous || String(item.generatedAt).localeCompare(String(previous.generatedAt)) > 0) {
-      latestBySymbol.set(item.symbol, item);
-    }
-  }
-  const ordered = [...latestBySymbol.values()].sort((a, b) =>
-    String(a.generatedAt).localeCompare(String(b.generatedAt)) || String(a.symbol).localeCompare(String(b.symbol)));
-  return ordered.slice(Math.floor(ordered.length * 0.7));
+    return !market || itemCurrency === market;
+  });
+  return splitLearningHistory(items).validation;
 }
 
 function wilsonInterval(successes, total) {
@@ -12668,14 +12785,15 @@ function wilsonInterval(successes, total) {
 }
 
 function candidateUpsideOutlook(candidate = {}, validation = []) {
+  validation = validation.filter((item) => item.symbol !== candidate.symbol);
+  const peerFeatures = validation.map((item) => ({ item, signals: new Set(candidateLearningSignals(item)) }));
   const validationSamples = validation.length;
   const baselineHits = validation.filter((item) => item.learningOutcome === "hit").length;
   const baselineRate = validationSamples ? baselineHits / validationSamples : null;
   const baselineRatePct = Number.isFinite(baselineRate) ? Math.round(baselineRate * 100) : null;
   const signals = new Set(candidateLearningSignals(candidate));
   const peers = signals.size
-    ? validation.map((item) => {
-      const peerSignals = new Set(candidateLearningSignals(item));
+    ? peerFeatures.map(({ item, signals: peerSignals }) => {
       const shared = [...signals].filter((signal) => peerSignals.has(signal)).length;
       const union = new Set([...signals, ...peerSignals]).size;
       return { item, shared, similarity: union ? shared / union : 0 };
@@ -12688,7 +12806,7 @@ function candidateUpsideOutlook(candidate = {}, validation = []) {
   const enoughBaseline = validationSamples >= MIN_CANDIDATE_FORECAST_BASELINE_SAMPLES;
   const enoughPeers = peers.length >= MIN_CANDIDATE_FORECAST_PEER_SAMPLES;
   const conditions = [...signals].map((signal) => {
-    const matched = validation.filter((item) => candidateLearningSignals(item).includes(signal));
+    const matched = peerFeatures.filter((peer) => peer.signals.has(signal)).map((peer) => peer.item);
     if (matched.length < MIN_CANDIDATE_FORECAST_PEER_SAMPLES) return null;
     const ratePct = Math.round((matched.filter((item) => item.learningOutcome === "hit").length / matched.length) * 100);
     return {
@@ -12717,6 +12835,7 @@ function candidateUpsideOutlook(candidate = {}, validation = []) {
   const downsideEvents = peers.filter(({ item }) => Number(item.learningHorizonMinReturnPct) <= -5).length;
   const interval = wilsonInterval(hits, peers.length);
   return {
+    ...returnEvidence(peers.map((peer) => peer.item)),
     status: "reference",
     targetPct: CANDIDATE_SUCCESS_THRESHOLD_PCT,
     horizonTradingDays: CANDIDATE_LEARNING_HORIZON_DAYS,
@@ -12753,6 +12872,7 @@ function enrichCandidateOutlooks(discovery = {}, history = {}) {
 async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
   if (!suggestions.length) return;
   const history = await readCandidateHistory();
+  const settings = await readSettings();
   const byId = new Map(history.items.map((item) => [item.id, item]));
   suggestions.forEach((candidate, index) => {
     const current = nullablePositiveNumber(candidate.price?.current);
@@ -12769,6 +12889,7 @@ async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
       score: candidate.score,
       businessValueScore: candidate.businessValueScore,
       entryPrice: current,
+      ...candidateCostAssumptions(candidate, current, settings),
       buyTarget: candidate.buyPlan?.maxBuyPrice,
       sellTarget: candidate.sellPlan?.targetPrice,
       stopLine: candidate.sellPlan?.stopPrice,
@@ -12789,6 +12910,19 @@ async function recordCandidateSnapshots(suggestions = [], discovery = {}) {
   await saveCandidateHistory({ items: [...byId.values()] });
 }
 
+function candidateCostAssumptions(candidate = {}, current = 0, settings = {}) {
+  const currency = discoveryCurrency(candidate);
+  const quantity = currency === "USD" ? US_DISCOVERY_UNIT_SIZE : 100;
+  const accountType = settings.defaultJpAccountType;
+  const cost = estimateRoundTripCost(100, settings, { currency, accountType });
+  return {
+    roundTripFeePct: current > 0 ? cost.fee / (current * quantity) * 100 : null,
+    capitalGainTaxPct: cost.tax,
+    costQuantity: quantity,
+    costAccount: accountTypeLabel(currency === "USD" ? "revolut_us" : accountType),
+  };
+}
+
 async function updateCandidateHistoryOutcomes({ maxUpdates = 50 } = {}) {
   const history = await readCandidateHistory();
   const pending = history.items
@@ -12797,10 +12931,15 @@ async function updateCandidateHistoryOutcomes({ maxUpdates = 50 } = {}) {
     .slice(0, maxUpdates);
   if (!pending.length) return history;
   const updated = new Map(history.items.map((item) => [item.id, item]));
+  const bySymbol = new Map();
   for (const item of pending) {
-    const price = await fetchPriceHistory(item.symbol).catch(() => emptyPrice());
-    updated.set(item.id, evaluateCandidateOutcome(item, price.series || []));
+    if (!bySymbol.has(item.symbol)) bySymbol.set(item.symbol, []);
+    bySymbol.get(item.symbol).push(item);
   }
+  await mapLimit([...bySymbol], 4, async ([symbol, items]) => {
+    const price = await fetchPriceHistory(symbol).catch(() => emptyPrice());
+    for (const item of items) updated.set(item.id, evaluateCandidateOutcome(item, price.series || []));
+  });
   return saveCandidateHistory({ items: [...updated.values()] });
 }
 
@@ -12874,6 +13013,10 @@ function evaluateCandidateOutcome(item, series = []) {
     learningHorizonMaxReturnPct,
     learningHorizonMinReturnPct,
     learningHorizonReturnPct,
+    learningHorizonEndDate: item.learningHorizonEndDate || (horizonPoints.length >= CANDIDATE_LEARNING_HORIZON_DAYS ? horizonPoints.at(-1).date : ""),
+    learningHorizonNetReturnPct: Number.isFinite(learningHorizonReturnPct) && Number.isFinite(item.roundTripFeePct) && Number.isFinite(item.capitalGainTaxPct)
+      ? afterCostReturn(learningHorizonReturnPct, item.roundTripFeePct, item.capitalGainTaxPct)
+      : null,
     learningHorizonDays,
     learningEvaluatedAt,
     outcome,
@@ -12903,24 +13046,15 @@ function candidatePerformanceSummary(history = {}) {
     stats.hitRate = stats.evaluated ? stats.hits / stats.evaluated : null;
     stats.avgReturnPct = stats.evaluated ? stats.avgReturnPct / stats.evaluated : null;
   }
-  const latestBySymbol = new Map();
-  for (const item of items.filter((candidate) =>
-    ["hit", "miss"].includes(candidate.learningOutcome)
-    && Number.isFinite(candidate.learningHorizonReturnPct))) {
-    const previous = latestBySymbol.get(item.symbol);
-    if (!previous || String(item.generatedAt).localeCompare(String(previous.generatedAt)) > 0) {
-      latestBySymbol.set(item.symbol, item);
-    }
-  }
-  const learningItems = [...latestBySymbol.values()].sort((a, b) =>
-    String(a.generatedAt).localeCompare(String(b.generatedAt)) || String(a.symbol).localeCompare(String(b.symbol)));
-  const trainingCount = Math.floor(learningItems.length * 0.7);
-  const trainingItems = learningItems.slice(0, trainingCount);
-  const validationItems = learningItems.slice(trainingCount);
+  const split = splitLearningHistory(items);
+  const learningItems = split.ordered;
+  const trainingItems = split.training;
+  const validationItems = split.validation;
   const summarizeLearningCohort = (cohort) => {
     const evaluated = cohort.length;
     const hits = cohort.filter((item) => item.learningOutcome === "hit").length;
     return {
+      ...returnEvidence(cohort),
       evaluated,
       hits,
       hitRate: evaluated ? hits / evaluated : null,
@@ -12946,17 +13080,22 @@ function candidatePerformanceSummary(history = {}) {
     }
     const result = {};
     for (const { signal, item } of signalByUniqueSymbol.values()) {
-      result[signal] ||= { evaluated: 0, hits: 0, avgReturnPct: 0, negativeCount: 0, avgAdversePct: 0 };
+      result[signal] ||= { evaluated: 0, hits: 0, avgReturnPct: 0, negativeCount: 0, avgAdversePct: 0, netEvaluated: 0, avgNetReturnPct: 0 };
       const stats = result[signal];
       stats.evaluated += 1;
       if (item.learningOutcome === "hit") stats.hits += 1;
       stats.avgReturnPct += Number(item.learningHorizonReturnPct || 0);
+      if (Number.isFinite(item.learningHorizonNetReturnPct)) {
+        stats.netEvaluated += 1;
+        stats.avgNetReturnPct += item.learningHorizonNetReturnPct;
+      }
       stats.avgAdversePct += Number(item.learningHorizonMinReturnPct || 0);
       if (Number(item.learningHorizonReturnPct || 0) < 0) stats.negativeCount += 1;
     }
     for (const stats of Object.values(result)) {
       stats.hitRate = stats.evaluated ? stats.hits / stats.evaluated : null;
       stats.avgReturnPct = stats.evaluated ? stats.avgReturnPct / stats.evaluated : null;
+      stats.avgNetReturnPct = stats.netEvaluated ? stats.avgNetReturnPct / stats.netEvaluated : null;
       stats.avgAdversePct = stats.evaluated ? stats.avgAdversePct / stats.evaluated : null;
       stats.negativeRate = stats.evaluated ? stats.negativeCount / stats.evaluated : null;
       delete stats.negativeCount;
@@ -12969,17 +13108,24 @@ function candidatePerformanceSummary(history = {}) {
     const result = {};
     for (const item of cohort) {
       const key = item.sector || "その他";
-      result[key] ||= { evaluated: 0, hits: 0 };
+      result[key] ||= { evaluated: 0, hits: 0, netEvaluated: 0, avgNetReturnPct: 0 };
       result[key].evaluated += 1;
+      if (Number.isFinite(item.learningHorizonNetReturnPct)) {
+        result[key].netEvaluated += 1;
+        result[key].avgNetReturnPct += item.learningHorizonNetReturnPct;
+      }
       if (item.learningOutcome === "hit") result[key].hits += 1;
     }
-    for (const stats of Object.values(result)) stats.hitRate = stats.evaluated ? stats.hits / stats.evaluated : null;
+    for (const stats of Object.values(result)) {
+      stats.hitRate = stats.evaluated ? stats.hits / stats.evaluated : null;
+      stats.avgNetReturnPct = stats.netEvaluated ? stats.avgNetReturnPct / stats.netEvaluated : null;
+    }
     return result;
   };
   const bySectorLearning = summarizeSectors(trainingItems);
   const bySectorLearningValidation = summarizeSectors(validationItems);
   const peLikeItems = evaluatedItems.filter((item) => Number(item.peMatchScore || 0) >= 60);
-  const forecastItems = items.filter((item) => Number.isFinite(item.forecastHitRatePct)
+  const forecastItems = learningItems.filter((item) => Number.isFinite(item.forecastHitRatePct)
     && ["hit", "miss"].includes(item.learningOutcome)
     && Number.isFinite(item.learningHorizonReturnPct));
   const downsideForecastItems = forecastItems.filter((item) => Number.isFinite(item.forecastDownsideRatePct)
@@ -13027,9 +13173,12 @@ function candidatePerformanceSummary(history = {}) {
     learningBaseline,
     validationBaseline,
     forecastValidation,
+    fixedHorizon: { ...returnEvidence(learningItems), hitRate: learningItems.length ? learningItems.filter((item) => item.learningOutcome === "hit").length / learningItems.length : null },
     learningValidation: {
       horizonTradingDays: CANDIDATE_LEARNING_HORIZON_DAYS,
-      method: "chronological-70-30",
+      method: "purged-chronological-70-30",
+      cutoff: split.cutoff,
+      purgedSymbols: split.purged,
       evaluatedDistinctSymbols: learningItems.length,
       trainingSymbols: trainingItems.length,
       validationSymbols: validationItems.length,
@@ -13064,7 +13213,7 @@ function underperformingCandidateHistoryCount(history = {}) {
 
 async function readExcludedCandidates() {
   try {
-    const rows = JSON.parse(await readFile(EXCLUDED_CANDIDATES_PATH, "utf8"));
+    const rows = await readDataJson(EXCLUDED_CANDIDATES_PATH);
     if (!Array.isArray(rows)) return [];
     return rows
       .map(normalizeExcludedCandidate)
@@ -13079,7 +13228,7 @@ async function saveExcludedCandidates(candidates = []) {
   const rows = uniqueBy(candidates.map(normalizeExcludedCandidate).filter((candidate) => candidate.symbol), (candidate) => candidate.symbol)
     .sort((a, b) => a.name.localeCompare(b.name, "ja") || a.symbol.localeCompare(b.symbol));
   await mkdir(path.dirname(EXCLUDED_CANDIDATES_PATH), { recursive: true });
-  await writeFile(EXCLUDED_CANDIDATES_PATH, JSON.stringify(rows, null, 2));
+  await writeDataFile(EXCLUDED_CANDIDATES_PATH, JSON.stringify(rows, null, 2));
   return rows;
 }
 
@@ -13543,7 +13692,7 @@ function escapeHtmlForGraph(value = "") {
 
 async function readNotificationLog() {
   try {
-    const cached = JSON.parse(await readFile(NOTIFICATION_LOG_PATH, "utf8"));
+    const cached = await readDataJson(NOTIFICATION_LOG_PATH);
     return { items: Array.isArray(cached.items) ? cached.items : [] };
   } catch {
     return { items: [] };
@@ -13552,12 +13701,12 @@ async function readNotificationLog() {
 
 async function saveNotificationLog(log) {
   await mkdir(path.dirname(NOTIFICATION_LOG_PATH), { recursive: true });
-  await writeFile(NOTIFICATION_LOG_PATH, JSON.stringify({ items: log.items || [] }, null, 2));
+  await writeDataFile(NOTIFICATION_LOG_PATH, JSON.stringify({ items: log.items || [] }, null, 2));
 }
 
 async function readDisclosureCache() {
   try {
-    const cached = JSON.parse(await readFile(TDNET_DISCLOSURE_CACHE_PATH, "utf8"));
+    const cached = await readDataJson(TDNET_DISCLOSURE_CACHE_PATH);
     return {
       generatedAt: cached.generatedAt || "",
       enabled: cached.enabled !== false,
@@ -13626,7 +13775,7 @@ function normalizeCachedDisclosures(items = []) {
 
 async function saveDisclosureCache(result) {
   await mkdir(path.dirname(TDNET_DISCLOSURE_CACHE_PATH), { recursive: true });
-  await writeFile(TDNET_DISCLOSURE_CACHE_PATH, JSON.stringify({
+  await writeDataFile(TDNET_DISCLOSURE_CACHE_PATH, JSON.stringify({
     generatedAt: result.generatedAt || new Date().toISOString(),
     enabled: result.enabled !== false,
     source: result.source || "TDnet適時開示情報閲覧サービス",
@@ -13646,7 +13795,7 @@ async function saveDisclosureCache(result) {
 
 async function readExitState() {
   try {
-    const state = JSON.parse(await readFile(EXIT_STATE_PATH, "utf8"));
+    const state = await readDataJson(EXIT_STATE_PATH);
     return {
       updatedAt: state.updatedAt || "",
       items: Array.isArray(state.items) ? state.items.map(normalizeExitStateItem).filter(Boolean) : [],
@@ -13658,7 +13807,7 @@ async function readExitState() {
 
 async function saveExitState(state) {
   await mkdir(path.dirname(EXIT_STATE_PATH), { recursive: true });
-  await writeFile(EXIT_STATE_PATH, JSON.stringify({
+  await writeDataFile(EXIT_STATE_PATH, JSON.stringify({
     updatedAt: state.updatedAt || new Date().toISOString(),
     items: (state.items || []).map(normalizeExitStateItem).filter(Boolean),
   }, null, 2));
@@ -13682,7 +13831,7 @@ function normalizeExitStateItem(item = {}) {
 
 async function readShareholderCache() {
   try {
-    const cached = JSON.parse(await readFile(SHAREHOLDER_CACHE_PATH, "utf8"));
+    const cached = await readDataJson(SHAREHOLDER_CACHE_PATH);
     return normalizeShareholderCache(cached);
   } catch {
     return normalizeShareholderCache({});
@@ -13692,7 +13841,7 @@ async function readShareholderCache() {
 async function saveShareholderCache(cache) {
   const normalized = normalizeShareholderCache(cache);
   await mkdir(path.dirname(SHAREHOLDER_CACHE_PATH), { recursive: true });
-  await writeFile(SHAREHOLDER_CACHE_PATH, JSON.stringify(normalized, null, 2));
+  await writeDataFile(SHAREHOLDER_CACHE_PATH, JSON.stringify(normalized, null, 2));
   return normalized;
 }
 
@@ -14090,7 +14239,7 @@ function formatPercentValue(value) {
 
 async function readFinancialCache() {
   try {
-    const cached = JSON.parse(await readFile(FINANCIAL_CACHE_PATH, "utf8"));
+    const cached = await readDataJson(FINANCIAL_CACHE_PATH);
     return {
       generatedAt: cached.generatedAt || "",
       enabled: cached.enabled !== false,
@@ -14116,7 +14265,7 @@ async function saveFinancialCache(result = {}) {
     message: String(result.message || ""),
   };
   await mkdir(path.dirname(FINANCIAL_CACHE_PATH), { recursive: true });
-  await writeFile(FINANCIAL_CACHE_PATH, JSON.stringify(normalized, null, 2));
+  await writeDataFile(FINANCIAL_CACHE_PATH, JSON.stringify(normalized, null, 2));
   return normalized;
 }
 
@@ -15307,17 +15456,19 @@ function xbrlFactScore(contextRef = "", periodHint = "") {
 
 async function readSettings() {
   try {
-    const stored = JSON.parse(await readFile(SETTINGS_PATH, "utf8"));
+    const stored = await readDataJson(SETTINGS_PATH);
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) throw new Error("設定のデータ形式が正しくありません。");
     return normalizeSettings({ ...defaultSettings, ...stored });
-  } catch {
-    return normalizeSettings(defaultSettings);
+  } catch (error) {
+    if (error.code === "ENOENT") return normalizeSettings(defaultSettings);
+    throw new Error(`設定ファイルを読み込めません。元の設定を保全しています。${error.message}`);
   }
 }
 
 async function saveSettings(settings) {
   const normalized = normalizeSettings(settings);
   await mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
-  await writeFile(SETTINGS_PATH, JSON.stringify(normalized, null, 2));
+  await writeDataFile(SETTINGS_PATH, JSON.stringify(normalized, null, 2));
   return normalized;
 }
 
@@ -15550,19 +15701,17 @@ async function readWatchlist() {
   }
 
   try {
-    const stocks = JSON.parse(await readFile(WATCHLIST_PATH, "utf8"));
-    if (Array.isArray(stocks) && stocks.length) return stocks.slice(0, MAX_MANAGED_STOCKS).map(normalizeStock);
-  } catch {
-    // Recreate the local list when the file is unreadable or partially written.
+    const stocks = await readDataJson(WATCHLIST_PATH);
+    if (Array.isArray(stocks)) return stocks.slice(0, MAX_MANAGED_STOCKS).map(normalizeStock);
+  } catch (error) {
+    throw new Error(`日本株の保存データを読み込めません。元のデータを保全しています。${error.message}`);
   }
-
-  await saveWatchlist(defaultWatchlist);
-  return defaultWatchlist.map(normalizeStock);
+  throw new Error("日本株の保存データの形式が正しくありません。バックアップから復元できます。");
 }
 
 async function saveWatchlist(stocks) {
   await mkdir(path.dirname(WATCHLIST_PATH), { recursive: true });
-  await writeFile(WATCHLIST_PATH, JSON.stringify(stocks.slice(0, MAX_MANAGED_STOCKS).map(normalizeStock), null, 2));
+  await writeDataFile(WATCHLIST_PATH, JSON.stringify(stocks.slice(0, MAX_MANAGED_STOCKS).map(normalizeStock), null, 2));
 }
 
 async function readUsWatchlist() {
@@ -15572,19 +15721,17 @@ async function readUsWatchlist() {
   }
 
   try {
-    const stocks = JSON.parse(await readFile(US_WATCHLIST_PATH, "utf8"));
-    if (Array.isArray(stocks) && stocks.length) return stocks.slice(0, MAX_US_STOCKS).map(normalizeUsStock);
-  } catch {
-    // Recreate the local list when the file is unreadable or partially written.
+    const stocks = await readDataJson(US_WATCHLIST_PATH);
+    if (Array.isArray(stocks)) return stocks.slice(0, MAX_US_STOCKS).map(normalizeUsStock);
+  } catch (error) {
+    throw new Error(`米国株の保存データを読み込めません。元のデータを保全しています。${error.message}`);
   }
-
-  await saveUsWatchlist(defaultUsWatchlist);
-  return defaultUsWatchlist.map(normalizeUsStock);
+  throw new Error("米国株の保存データの形式が正しくありません。バックアップから復元できます。");
 }
 
 async function saveUsWatchlist(stocks) {
   await mkdir(path.dirname(US_WATCHLIST_PATH), { recursive: true });
-  await writeFile(US_WATCHLIST_PATH, JSON.stringify(stocks.slice(0, MAX_US_STOCKS).map(normalizeUsStock), null, 2));
+  await writeDataFile(US_WATCHLIST_PATH, JSON.stringify(stocks.slice(0, MAX_US_STOCKS).map(normalizeUsStock), null, 2));
 }
 
 async function readCryptoHolding() {
@@ -15593,34 +15740,36 @@ async function readCryptoHolding() {
     return normalizeCryptoHolding(defaultCryptoHolding);
   }
   try {
-    const holding = JSON.parse(await readFile(CRYPTO_HOLDING_PATH, "utf8"));
+    const holding = await readDataJson(CRYPTO_HOLDING_PATH);
+    if (!holding || typeof holding !== "object" || Array.isArray(holding)) throw new Error("BTCのデータ形式が正しくありません。");
     return normalizeCryptoHolding(holding);
-  } catch {
-    await saveCryptoHolding(defaultCryptoHolding);
-    return normalizeCryptoHolding(defaultCryptoHolding);
+  } catch (error) {
+    throw new Error(`BTCの保存データを読み込めません。元のデータを保全しています。${error.message}`);
   }
 }
 
 async function saveCryptoHolding(holding) {
   const normalized = normalizeCryptoHolding(holding);
   await mkdir(path.dirname(CRYPTO_HOLDING_PATH), { recursive: true });
-  await writeFile(CRYPTO_HOLDING_PATH, JSON.stringify(normalized, null, 2));
+  await writeDataFile(CRYPTO_HOLDING_PATH, JSON.stringify(normalized, null, 2));
   return normalized;
 }
 
 async function readSavingsPlans() {
   try {
-    const plans = JSON.parse(await readFile(SAVINGS_PLANS_PATH, "utf8"));
-    return Array.isArray(plans) ? plans.slice(0, 50).map(normalizeSavingsPlan) : [];
-  } catch {
-    return [];
+    const plans = await readDataJson(SAVINGS_PLANS_PATH);
+    if (!Array.isArray(plans)) throw new Error("積立データの形式が正しくありません。");
+    return plans.slice(0, 50).map(normalizeSavingsPlan);
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw new Error(`積立データを読み込めません。元のデータを保全しています。${error.message}`);
   }
 }
 
 async function saveSavingsPlans(plans) {
   const normalized = plans.slice(0, 50).map(normalizeSavingsPlan);
   await mkdir(path.dirname(SAVINGS_PLANS_PATH), { recursive: true });
-  await writeFile(SAVINGS_PLANS_PATH, JSON.stringify(normalized, null, 2));
+  await writeDataFile(SAVINGS_PLANS_PATH, JSON.stringify(normalized, null, 2));
   return normalized;
 }
 
@@ -15650,7 +15799,7 @@ function normalizeSavingsPlan(plan = {}) {
     currentValue: Math.max(0, Math.min(1000000000, Number(plan.currentValue) || 0)),
     recurring: Boolean(plan.recurring),
     schedule,
-    updatedAt: new Date().toISOString(),
+    updatedAt: plan.updatedAt || new Date().toISOString(),
   };
 }
 
@@ -15665,7 +15814,7 @@ function normalizeFundCode(value = "") {
 
 async function readUsAnalysisCache() {
   try {
-    const cached = JSON.parse(await readFile(US_ANALYSIS_CACHE_PATH, "utf8"));
+    const cached = await readDataJson(US_ANALYSIS_CACHE_PATH);
     const stocks = await readUsWatchlist().catch(() => []);
     const bySymbol = new Map(stocks.map((stock) => [stock.symbol, stock]));
     const analyses = Array.isArray(cached.analyses)
@@ -15740,7 +15889,7 @@ function normalizeUsAnalyses(value = []) {
 
 async function readCryptoAnalysisCache() {
   try {
-    const cached = JSON.parse(await readFile(CRYPTO_ANALYSIS_CACHE_PATH, "utf8"));
+    const cached = await readDataJson(CRYPTO_ANALYSIS_CACHE_PATH);
     return {
       generatedAt: cached.generatedAt || "",
       asset: "BTC",
@@ -15786,7 +15935,7 @@ async function readCryptoAnalysisCache() {
 
 async function saveCryptoAnalysisCache(result) {
   await mkdir(path.dirname(CRYPTO_ANALYSIS_CACHE_PATH), { recursive: true });
-  await writeFile(CRYPTO_ANALYSIS_CACHE_PATH, JSON.stringify({
+  await writeDataFile(CRYPTO_ANALYSIS_CACHE_PATH, JSON.stringify({
     generatedAt: result.generatedAt,
     asset: "BTC",
     name: "Bitcoin",
@@ -15813,7 +15962,8 @@ async function serveFile(res, filePath, { cacheControl = "no-store" } = {}) {
   if (!normalized.startsWith(PUBLIC_DIR)) return json(res, 403, { error: "Forbidden" });
   if (!existsSync(normalized)) return json(res, 404, { error: "Not found" });
   const extension = path.extname(normalized) || ".html";
-  const content = await readFile(normalized);
+  const representation = await staticResponses.load(normalized, [normalized], async () => responseRepresentation(await readFile(normalized)));
+  const content = representation.body;
   const contentType = mime[extension] || "application/octet-stream";
   const headers = {
     "content-type": contentType,
@@ -15821,16 +15971,10 @@ async function serveFile(res, filePath, { cacheControl = "no-store" } = {}) {
     vary: "Accept-Encoding",
   };
   if (res.shouldGzip && content.byteLength >= 1024 && /^(?:text\/|application\/(?:javascript|json)|image\/svg\+xml)/i.test(contentType)) {
-    gzip(content, (error, compressed) => {
-      if (res.destroyed) return;
-      if (error) {
-        res.writeHead(200, headers);
-        res.end(content);
-        return;
-      }
-      res.writeHead(200, { ...headers, "content-encoding": "gzip" });
-      res.end(compressed);
-    });
+    const compressed = await representation.gzip();
+    if (res.destroyed) return;
+    res.writeHead(200, { ...headers, "content-encoding": "gzip", "content-length": compressed.length });
+    res.end(compressed);
     return;
   }
   res.writeHead(200, headers);
@@ -15844,9 +15988,26 @@ function sanitizePath(input) {
 }
 
 async function readJson(req) {
-  let raw = "";
-  for await (const chunk of req) raw += chunk;
-  return raw ? JSON.parse(raw) : {};
+  const raw = await readRequestBytes(req, 4 * 1024 * 1024);
+  try {
+    const value = raw.length ? JSON.parse(raw.toString("utf8")) : {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid object");
+    return value;
+  }
+  catch { throw Object.assign(new Error("送信データの形式が正しくありません。"), { statusCode: 400 }); }
+}
+
+async function readRequestBytes(req, limit) {
+  if (Number(req.headers?.["content-length"]) > limit) throw Object.assign(new Error("ファイルが大きすぎます。"), { statusCode: 413 });
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of req) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    length += bytes.length;
+    if (length > limit) throw Object.assign(new Error("ファイルが大きすぎます。"), { statusCode: 413 });
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks);
 }
 
 function json(res, statusCode, payload) {
@@ -16070,9 +16231,6 @@ function repairJson(value = "") {
     .trim();
 }
 
-function extractFirstJsonObject(value) {
-  return extractJsonObjects(value)[0] || "";
-}
 
 function extractJsonObjects(value) {
   const objects = [];
@@ -16507,20 +16665,6 @@ function annualizedReturn(series) {
   return ((current / first) ** (1 / years) - 1) * 100;
 }
 
-function annualizedTrendSlope(series) {
-  if (series.length < 40) return null;
-  const points = series
-    .map((point, index) => ({ x: index, y: Math.log(point.close) }))
-    .filter((point) => Number.isFinite(point.y));
-  if (points.length < 40) return null;
-  const meanX = average(points.map((point) => point.x));
-  const meanY = average(points.map((point) => point.y));
-  const numerator = points.reduce((sum, point) => sum + ((point.x - meanX) * (point.y - meanY)), 0);
-  const denominator = points.reduce((sum, point) => sum + ((point.x - meanX) ** 2), 0);
-  if (!denominator) return null;
-  const dailySlope = numerator / denominator;
-  return (Math.exp(dailySlope * 252) - 1) * 100;
-}
 
 function trendRegression(series) {
   if (series.length < 40) return { slope: null, currentPrice: null };
