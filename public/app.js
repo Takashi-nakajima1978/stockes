@@ -112,6 +112,9 @@ const performanceChartState = {
   hoverIndex: null,
 };
 const savingsChartStates = new Map();
+const savingsSeriesRequests = new Map();
+let savingsSyncRunning = false;
+let savingsRenderedMonth = "";
 const instrumentForecastCache = new Map();
 const reorderState = {
   symbol: "",
@@ -583,17 +586,17 @@ async function loadSavingsPlans() {
   const monthField = els.savingsCreateForm?.elements.namedItem("startMonth");
   if (monthField && !monthField.value) monthField.value = localMonthKey();
   renderSavings();
-  const plans = state.savingsPlans.slice(0, 30);
+  const plans = savingsSeriesPlans(state.savingsPlans);
   for (let index = 0; index < plans.length; index += 4) {
     await Promise.allSettled(plans.slice(index, index + 4).map(async (plan) => {
       const fromDate = savingsPlanStartDate(plan);
       const cached = state.savingsSeries[plan.symbol];
-      if (cached?.loaded && cached.fromDate <= fromDate && !cached.error) return;
+      if (savingsSeriesIsFresh(cached, fromDate)) return;
       await fetchSavingsSeries(plan.symbol, fromDate);
     }));
-    if (state.view === "savings" && !document.activeElement?.closest(".savings-plan-form")) renderSavings();
+    if (state.view === "savings" && !hasPendingSavingsEdit()) renderSavings();
   }
-  if (state.view === "savings" && !document.activeElement?.closest(".savings-plan-form")) renderSavings();
+  if (state.view === "savings" && !hasPendingSavingsEdit()) renderSavings();
 }
 
 function localMonthKey(date = new Date()) {
@@ -610,6 +613,7 @@ function savingsProviderName(provider) {
 
 function renderSavings() {
   if (!els.savingsPlans) return;
+  savingsRenderedMonth = localMonthKey();
   if (!state.savingsPlans.length) {
     els.savingsPlans.innerHTML = '<p class="empty-state">運用商品を登録すると、月別の積立履歴を表示します。</p>';
     return;
@@ -668,7 +672,7 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
   const firstMonth = history.rows[0]?.month || "";
   const latestMonth = history.rows.at(-1)?.month || "";
   const historySummary = history.rows.length
-    ? `${firstMonth}〜${latestMonth}・${history.rows.length}か月 / 前月まで ${yen(history.total)}`
+    ? `積立 ${firstMonth}〜${latestMonth}・${history.rows.length}か月 / 前月まで ${yen(history.total)}`
     : "前月までの積立履歴はありません";
   const valuationDifference = valuation.latestValue === null ? null : valuation.latestValue - valuation.totalPrincipal;
   const valuationSummary = valuationDifference === null ? "" : `
@@ -698,7 +702,7 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
   return `
     <article class="savings-plan">
       <header class="savings-plan-heading">
-        <div><span>${escapeHtml(savingsProviderName(plan.provider))} ・ ${escapeHtml(plan.symbol)}</span><h3>${escapeHtml(plan.name)}</h3></div>
+        <div><span>${escapeHtml(savingsProviderName(plan.provider))} ・ <a href="https://finance.yahoo.co.jp/quote/${encodeURIComponent(plan.symbol)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeAttr(plan.name)}をYahoo!ファイナンスで見る">${escapeHtml(plan.symbol)}</a></span><h3>${escapeHtml(plan.name)}</h3></div>
         <button type="button" class="secondary savings-delete" data-savings-delete="${escapeAttr(plan.id)}" aria-label="${escapeAttr(plan.name)}を削除">削除</button>
       </header>
       <div class="savings-metrics">
@@ -709,6 +713,7 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
       </div>
       <section class="savings-chart-section">
         <div class="savings-chart-heading"><h4>積立記録グラフ</h4><span>${escapeHtml(historySummary)}</span></div>
+        <p class="savings-history-note">${plan.recurring ? `継続中・月が変わると前月分を追加。次回 ${escapeHtml(calendarMonthOffset(`${localMonthKey()}-01`, 1).slice(0, 7))}に${escapeHtml(localMonthKey())}分 ${yen(history.monthlyAmount)}を計上します。` : "継続停止中・登録した月の積立額だけを計上します。"} 基準価額は表示中に自動更新します。</p>
         <div class="savings-chart-legend" aria-label="グラフの凡例">
           <span><i class="savings-legend-value"></i>基準価額換算の参考評価額</span>
           <span><i class="savings-legend-principal"></i>累計積立元本</span>
@@ -741,6 +746,13 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
   `;
 }
 
+function redrawSavingsCharts() {
+  els.savingsPlans?.querySelectorAll("[data-savings-chart]").forEach((canvas) => {
+    const chartState = savingsChartStates.get(canvas.dataset.savingsChart);
+    if (chartState?.options) drawDatedLineChart(canvas, chartState.actual, chartState.forecast, chartState.options);
+  });
+}
+
 function savingsScheduleRow(item = {}) {
   return `<div class="savings-schedule-row"><label><span>対象月</span><input name="scheduleMonth" type="month" value="${escapeAttr(item.month || localMonthKey())}" required></label><label><span>積立額</span><input name="scheduleAmount" type="number" min="1" step="1" inputmode="numeric" value="${Number(item.amount) || ""}" required></label><button type="button" class="icon savings-remove-month" data-savings-remove-month aria-label="この月を削除">×</button></div>`;
 }
@@ -750,16 +762,60 @@ function savingsPlanStartDate(plan) {
   return firstMonth ? `${firstMonth}-01` : calendarMonthOffset(localDateKey(), -36);
 }
 
+function savingsSeriesPlans(plans = []) {
+  const bySymbol = new Map();
+  for (const plan of plans) {
+    const previous = bySymbol.get(plan.symbol);
+    if (!previous || savingsPlanStartDate(plan) < savingsPlanStartDate(previous)) bySymbol.set(plan.symbol, plan);
+  }
+  return [...bySymbol.values()];
+}
+
 async function fetchSavingsSeries(symbol, fromDate = "") {
   const cached = state.savingsSeries[symbol];
-  if (cached?.loaded && cached.fromDate <= fromDate && !cached.error) return;
+  if (savingsSeriesIsFresh(cached, fromDate)) return;
+  const key = `${symbol}:${fromDate}`;
+  if (savingsSeriesRequests.has(key)) return savingsSeriesRequests.get(key);
   state.savingsSeries[symbol] = { ...(state.savingsSeries[symbol] || {}), loading: true, error: "" };
+  const task = (async () => {
+    try {
+      const data = await request(`/api/price-series?market=fund&daily=1&from=${encodeURIComponent(fromDate)}&symbol=${encodeURIComponent(symbol)}`);
+      state.savingsSeries[symbol] = { series: data.series || [], loaded: true, fromDate, fetchedAt: Date.now(), attemptedAt: Date.now() };
+    } catch (error) {
+      state.savingsSeries[symbol] = { ...cached, loading: false, loaded: true, attemptedAt: Date.now(), error: error.message || "価格履歴を取得できません" };
+    } finally { savingsSeriesRequests.delete(key); }
+  })();
+  savingsSeriesRequests.set(key, task);
+  return task;
+}
+
+function savingsSeriesIsFresh(cached, fromDate = "", nowValue = new Date()) {
+  const now = new Date(nowValue);
+  const age = now.getTime() - Number(cached?.fetchedAt || 0);
+  return Boolean(cached?.loaded && !cached.error && cached.fromDate <= fromDate && age >= 0 && age < 30 * 60 * 1000
+    && localDateKey(new Date(cached.fetchedAt)) === localDateKey(now));
+}
+
+function hasPendingSavingsEdit() {
+  return Boolean(document.activeElement?.closest(".savings-plan-form") || els.savingsPlans?.querySelector('[data-savings-form][data-dirty="true"]'));
+}
+
+async function syncSavingsView() {
+  if (state.view !== "savings" || document.hidden || savingsSyncRunning || !loadedDataSections.has("savings") || hasPendingSavingsEdit()) return;
+  const now = Date.now();
+  const stale = savingsSeriesPlans(state.savingsPlans).filter((plan) => {
+    const cached = state.savingsSeries[plan.symbol];
+    return !savingsSeriesIsFresh(cached, savingsPlanStartDate(plan))
+      && (!cached?.error || now - Number(cached.attemptedAt || 0) >= 30 * 60 * 1000);
+  });
+  if (!stale.length && savingsRenderedMonth === localMonthKey()) return;
+  savingsSyncRunning = true;
   try {
-    const data = await request(`/api/price-series?market=fund&daily=1&from=${encodeURIComponent(fromDate)}&symbol=${encodeURIComponent(symbol)}`);
-    state.savingsSeries[symbol] = { series: data.series || [], loaded: true, fromDate, fetchedAt: Date.now() };
-  } catch (error) {
-    state.savingsSeries[symbol] = { series: [], loaded: true, fromDate, error: error.message || "価格履歴を取得できません" };
-  }
+    for (let index = 0; index < stale.length; index += 4) {
+      await Promise.allSettled(stale.slice(index, index + 4).map((plan) => fetchSavingsSeries(plan.symbol, savingsPlanStartDate(plan))));
+    }
+    if (state.view === "savings" && !hasPendingSavingsEdit()) renderSavings();
+  } finally { savingsSyncRunning = false; }
 }
 
 async function saveSavingsPlan(form) {
@@ -821,6 +877,7 @@ async function syncBackgroundPrices() {
     const payload = await request("/api/cache-versions");
     const versions = payload.versions || {};
     const refreshes = [];
+    if (state.view === "savings") refreshes.push(syncSavingsView());
     if (loadedDataSections.has("jp") && versions.jp && versions.jp !== state.cacheVersions.jp) refreshes.push(loadAnalysisCache(true));
     if (loadedDataSections.has("us") && versions.us && versions.us !== state.cacheVersions.us) refreshes.push(loadUsAnalysisCache(true));
     if (loadedDataSections.has("crypto") && versions.crypto && versions.crypto !== state.cacheVersions.crypto) refreshes.push(loadCrypto(true));
@@ -5972,13 +6029,15 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
   drawLine(actualPoints, "#0b6b58", false);
   drawLine(inRange(options.principalSeries || []), "#47758a", false, Boolean(options.principalStepped));
   drawLine(forecastPoints, "#bd6927", true);
-  const tickDates = [startMs, startMs + (endMs - startMs) * 0.25, startMs + (endMs - startMs) * 0.5, startMs + (endMs - startMs) * 0.75, endMs];
-  if (todayMs > startMs && todayMs < endMs) tickDates[2] = todayMs;
+  const tickCount = plotWidth < 200 ? 2 : plotWidth < 360 ? 3 : 5;
+  const tickDates = Array.from({ length: tickCount }, (_, index) => startMs + (endMs - startMs) * index / (tickCount - 1));
+  if (tickCount >= 3 && todayMs > startMs && todayMs < endMs) tickDates[Math.floor(tickCount / 2)] = todayMs;
   context.fillStyle = "#667277";
   context.textAlign = "center";
-  tickDates.forEach((time) => {
+  tickDates.forEach((time, index) => {
     const date = new Date(time);
     const label = `${date.getUTCFullYear()}/${date.getUTCMonth() + 1}`;
+    context.textAlign = index === 0 ? "left" : index === tickDates.length - 1 ? "right" : "center";
     context.fillText(label, pad.left + ((time - startMs) / (endMs - startMs)) * plotWidth, height - 8);
   });
 
@@ -8028,6 +8087,13 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
   }
 });
 
+for (const eventName of ["input", "change"]) {
+  els.savingsPlans?.addEventListener(eventName, (event) => {
+    const form = event.target.closest("[data-savings-form]");
+    if (form) form.dataset.dirty = "true";
+  });
+}
+
 els.savingsPlans?.addEventListener("click", async (event) => {
   const refreshButton = event.target.closest("[data-savings-refresh]");
   if (refreshButton) {
@@ -8041,12 +8107,16 @@ els.savingsPlans?.addEventListener("click", async (event) => {
   }
   const addButton = event.target.closest("[data-savings-add-month]");
   if (addButton) {
-    const list = addButton.closest(".savings-plan-form")?.querySelector(".savings-schedule-list");
+    const form = addButton.closest(".savings-plan-form");
+    if (form) form.dataset.dirty = "true";
+    const list = form?.querySelector(".savings-schedule-list");
     list?.insertAdjacentHTML("beforeend", savingsScheduleRow({ month: localMonthKey(), amount: "" }));
     return;
   }
   const removeButton = event.target.closest("[data-savings-remove-month]");
   if (removeButton) {
+    const form = removeButton.closest(".savings-plan-form");
+    if (form) form.dataset.dirty = "true";
     removeButton.closest(".savings-schedule-row")?.remove();
     return;
   }
@@ -8166,7 +8236,8 @@ window.addEventListener("resize", () => {
   } else if (state.view === "performance") {
     renderPerformance();
   } else if (state.view === "savings") {
-    renderSavings();
+    if (hasPendingSavingsEdit()) redrawSavingsCharts();
+    else renderSavings();
   } else if (state.view === "ideas" && state.ideaView === "surge") {
     redrawSurgeForecastCharts();
   }

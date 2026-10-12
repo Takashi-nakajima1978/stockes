@@ -2531,6 +2531,78 @@ test("savings history carries March contributions through September and leaves O
   assert.equal(history.total, 35000);
   assert.equal(history.monthlyAmount, 100000);
   assert.equal(buildSavingsContributionHistory(plan, "2026-02").total, 0);
+  const november = buildSavingsContributionHistory(plan, "2026-10", "2026-11");
+  assert.equal(november.rows.length, 8);
+  assert.equal(november.total, 135000);
+  assert.equal(november.rows[7].amount, 100000);
+  assert.equal(buildSavingsContributionHistory(plan, "2026-11", "2026-12").total, 235000);
+});
+
+test("savings NAV caches expire after thirty minutes or when the calendar day changes", () => {
+  const fresh = loadFunction(appSource, "savingsSeriesIsFresh", { localDateKey: loadFunction(appSource, "localDateKey", {}) });
+  const now = new Date(2026, 9, 12, 18, 30);
+  const cached = { loaded: true, fromDate: "2026-03-01", fetchedAt: now.getTime() - 60_000 };
+  assert.equal(fresh(cached, "2026-03-01", now), true);
+  assert.equal(fresh(cached, "2026-02-01", now), false);
+  assert.equal(fresh({ ...cached, fetchedAt: now.getTime() - 30 * 60_000 }, "2026-03-01", now), false);
+  assert.equal(fresh({ ...cached, error: "unavailable" }, "2026-03-01", now), false);
+  assert.equal(fresh({ ...cached, fetchedAt: new Date(2026, 9, 31, 23, 59).getTime() }, "2026-03-01", new Date(2026, 10, 1, 0, 1)), false);
+});
+
+test("the same fund in multiple accounts shares the earliest history request", () => {
+  const group = loadFunction(appSource, "savingsSeriesPlans", { savingsPlanStartDate: (plan) => plan.from });
+  const result = group([
+    { symbol: "A", provider: "rakuten", from: "2026-03-01" },
+    { symbol: "A", provider: "sbi", from: "2025-04-01" },
+    { symbol: "B", provider: "ideco", from: "2026-01-01" },
+  ]);
+  assert.equal(result.length, 2);
+  assert.equal(result[0].from, "2025-04-01");
+  assert.equal(result[1].symbol, "B");
+});
+
+test("savings NAV refreshes share in-flight work and preserve quotes if a later fetch fails", async () => {
+  const state = { savingsSeries: {} };
+  const requests = new Map();
+  let calls = 0;
+  let resolve;
+  const fetchSeries = loadFunction(appSource, "fetchSavingsSeries", {
+    state, savingsSeriesRequests: requests, savingsSeriesIsFresh: () => false,
+    request: () => { calls++; return new Promise((done) => { resolve = done; }); },
+  });
+  const first = fetchSeries("9I31223A", "2026-03-01");
+  const second = fetchSeries("9I31223A", "2026-03-01");
+  resolve({ series: [{ date: "2026-10-05", close: 20000 }] });
+  await Promise.all([first, second]);
+  assert.equal(calls, 1);
+  assert.equal(requests.size, 0);
+  const failed = loadFunction(appSource, "fetchSavingsSeries", {
+    state, savingsSeriesRequests: requests, savingsSeriesIsFresh: () => false,
+    request: async () => { throw new Error("unavailable"); },
+  });
+  await failed("9I31223A", "2026-03-01");
+  assert.equal(state.savingsSeries["9I31223A"].series[0].close, 20000);
+  assert.equal(state.savingsSeries["9I31223A"].error, "unavailable");
+  assert.equal(state.savingsSeries["9I31223A"].loading, false);
+});
+
+test("savings background extension pauses while a form has unsaved edits", async () => {
+  let renders = 0;
+  let editing = true;
+  let month = "2026-11";
+  const globals = {
+    state: { view: "savings", savingsPlans: [] }, document: { hidden: false }, savingsSyncRunning: false,
+    savingsRenderedMonth: "2026-10", loadedDataSections: new Set(["savings"]),
+    hasPendingSavingsEdit: () => editing, localMonthKey: () => month,
+    savingsSeriesPlans: (plans) => plans,
+    renderSavings: () => { renders++; globals.savingsRenderedMonth = month; },
+  };
+  const sync = loadFunction(appSource, "syncSavingsView", globals);
+  await sync();
+  assert.equal(renders, 0);
+  editing = false;
+  await sync();
+  assert.equal(renders, 1);
 });
 
 test("savings valuation compares NAV-based value with stepped monthly contributions", () => {

@@ -3897,6 +3897,7 @@ tr:hover .drag-handle,
 
 .savings-plan {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   min-width: 0;
   padding: 18px;
@@ -3914,6 +3915,21 @@ tr:hover .drag-handle,
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.savings-plan-heading a {
+  color: #1e6499;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.savings-chart-heading {
+  flex-wrap: wrap;
+}
+
+.savings-chart-heading > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .savings-plan-heading h3 {
@@ -3962,6 +3978,7 @@ tr:hover .drag-handle,
 
 .savings-chart-section {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
 }
@@ -4055,6 +4072,7 @@ tr:hover .drag-handle,
 }
 
 .savings-month-history {
+  min-width: 0;
   border-top: 1px solid var(--line);
   padding-top: 10px;
 }
@@ -4069,6 +4087,7 @@ tr:hover .drag-handle,
 
 .savings-month-table-wrap table {
   width: 100%;
+  min-width: 0;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -4220,7 +4239,7 @@ tr:hover .drag-handle,
   }
 
   .savings-schedule-row {
-    grid-template-columns: minmax(110px, 1fr) minmax(120px, 1fr) 36px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 36px;
     gap: 7px;
   }
 
@@ -4231,6 +4250,12 @@ tr:hover .drag-handle,
   .savings-chart-wrap {
     height: 270px;
     padding: 8px 4px 0;
+  }
+
+  .savings-month-table-wrap th,
+  .savings-month-table-wrap td {
+    padding-right: 6px;
+    padding-left: 6px;
   }
 
 }
