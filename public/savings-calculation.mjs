@@ -14,6 +14,80 @@ export function savingsAccountType(plan = {}) {
   return ["nisa-tsumitate", "nisa-growth", "taxable"].includes(plan.accountType) ? plan.accountType : "unspecified";
 }
 
+function validNisaDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+export function collectNisaStockPurchases(stocks = []) {
+  const byDate = new Map();
+  let undatedCount = 0;
+  for (const stock of stocks) {
+    const lots = stock.positions?.length ? stock.positions : [stock];
+    for (const lot of lots) {
+      if ((lot.accountType || stock.accountType) !== "nisa") continue;
+      const amount = Number(lot.purchasePrice) * Number(lot.quantity);
+      if (!(Number(lot.purchasePrice) > 0 && Number(lot.quantity) > 0 && Number.isFinite(amount))) continue;
+      if (!validNisaDate(lot.purchaseDate)) { undatedCount += 1; continue; }
+      if (lot.purchaseDate < "2024-01-01") continue;
+      byDate.set(lot.purchaseDate, (byDate.get(lot.purchaseDate) || 0) + amount);
+    }
+  }
+  return { purchases: [...byDate].map(([date, amount]) => ({ date, amount })), undatedCount };
+}
+
+export function savingsNisaAllowance(plans = [], context = {}, today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())) {
+  const year = Number(today.slice(0, 4));
+  const currentMonth = today.slice(0, 7);
+  const growthLimit = Number.isFinite(Number(context.growthAnnualLimit)) && context.growthAnnualLimit !== null
+    ? Math.max(0, Math.min(2400000, Number(context.growthAnnualLimit))) : 2400000;
+  const years = new Map();
+  for (const targetYear of [year, year + 1]) {
+    const buckets = new Map([["nisa-tsumitate", 1200000], ["nisa-growth", growthLimit]].map(([type, limit]) => [type, {
+      limit, planned: 0, used: 0, stockPlanned: 0, stockUsed: 0, providers: new Set(), months: Array(12).fill(0),
+    }]));
+    const perPlan = new Map();
+    for (const plan of plans) {
+      const bucket = buckets.get(savingsAccountType(plan));
+      if (!bucket) continue;
+      let planned = 0;
+      const included = plan.currentMonthIncluded && plan.currentValueDate?.slice(0, 7) === currentMonth && plan.currentValueDate <= today;
+      for (let index = 0; index < 12; index += 1) {
+        const month = `${targetYear}-${String(index + 1).padStart(2, "0")}`;
+        const amount = scheduledContribution(plan.schedule, month, Boolean(plan.recurring));
+        planned += amount;
+        bucket.months[index] += amount;
+        if (month < currentMonth || (month === currentMonth && included)) bucket.used += amount;
+      }
+      perPlan.set(plan.id, planned);
+      bucket.planned += planned;
+      if (planned > 0) bucket.providers.add(plan.provider);
+    }
+    const growth = buckets.get("nisa-growth");
+    for (const purchase of context.purchases || []) {
+      if (!validNisaDate(purchase.date) || Number(purchase.date.slice(0, 4)) !== targetYear || !(Number(purchase.amount) > 0) || !Number.isFinite(Number(purchase.amount))) continue;
+      const amount = Number(purchase.amount);
+      growth.planned += amount;
+      growth.stockPlanned += amount;
+      growth.months[Number(purchase.date.slice(5, 7)) - 1] += amount;
+      if (purchase.date <= today) { growth.used += amount; growth.stockUsed += amount; }
+    }
+    for (const bucket of buckets.values()) {
+      bucket.pending = bucket.planned - bucket.used;
+      bucket.remainingNow = Math.max(0, bucket.limit - bucket.used);
+      bucket.remaining = Math.max(0, bucket.limit - bucket.planned);
+      bucket.excess = Math.max(0, bucket.planned - bucket.limit);
+      let cumulative = 0;
+      const firstExcess = bucket.months.findIndex((amount) => { cumulative += amount; return cumulative > bucket.limit; });
+      bucket.firstExcessMonth = firstExcess >= 0 ? `${targetYear}-${String(firstExcess + 1).padStart(2, "0")}` : "";
+    }
+    const providers = new Set([...buckets.values()].flatMap((bucket) => [...bucket.providers]));
+    years.set(targetYear, { buckets, perPlan, providerConflict: providers.size > 1 });
+  }
+  return { year, years, stockDataAvailable: context.available === true, undatedCount: context.undatedCount || 0 };
+}
+
 export function buildSavingsTaxComparison(valuation = {}, plan = {}) {
   const accountType = savingsAccountType(plan);
   const complete = !(valuation.unpricedMonths?.length);

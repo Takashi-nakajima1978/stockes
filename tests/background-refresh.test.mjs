@@ -2593,7 +2593,7 @@ test("savings background extension pauses while a form has unsaved edits", async
   const globals = {
     state: { view: "savings", savingsPlans: [] }, document: { hidden: false }, savingsSyncRunning: false,
     savingsRenderedMonth: "2026-10", loadedDataSections: new Set(["savings"]),
-    hasPendingSavingsEdit: () => editing, localMonthKey: () => month,
+    hasPendingSavingsEdit: () => editing, localMonthKey: () => month, loadSavingsNisaContext: async () => {},
     savingsSeriesPlans: (plans) => plans,
     renderSavings: () => { renders++; globals.savingsRenderedMonth = month; },
   };

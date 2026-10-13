@@ -4146,6 +4146,56 @@ button.savings-order-button:disabled {
   border-bottom: 1px solid var(--line);
 }
 
+.savings-nisa-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.savings-nisa-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.savings-nisa-metrics > div {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+}
+
+.savings-nisa-metrics span,
+.savings-nisa-metrics small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.savings-nisa-metrics strong {
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.savings-nisa-metrics .loss {
+  color: #b33e43;
+}
+
+.savings-nisa-next {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .savings-nisa-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .savings-tax-saving {
   display: flex;
   flex-wrap: wrap;

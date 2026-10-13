@@ -10,7 +10,7 @@ import { splitLearningHistory, returnEvidence, hasProfitableEvidence, afterCostR
 import { createDataStore, createSerialQueue } from "./data-store.mjs";
 import { createVersionedLoader, createCachedJsonSender, responseRepresentation } from "./response-cache.mjs";
 import { createBackupManager, MAX_BACKUP_BYTES } from "./backup.mjs";
-import { savingsAccountType } from "./public/savings-calculation.mjs";
+import { savingsAccountType, collectNisaStockPurchases } from "./public/savings-calculation.mjs";
 
 const runPriceRefresh = createSingleFlight();
 const runHistoryFetch = createSingleFlight();
@@ -948,7 +948,11 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/savings-plans" && req.method === "GET") {
-    return json(res, 200, { plans: await readSavingsPlans() });
+    return json(res, 200, { plans: await readSavingsPlans(), nisaContext: await readSavingsNisaContext() });
+  }
+
+  if (url.pathname === "/api/savings-nisa-context" && req.method === "GET") {
+    return json(res, 200, { nisaContext: await readSavingsNisaContext() });
   }
 
   if (url.pathname === "/api/analysis" && req.method === "GET") {
@@ -15777,6 +15781,16 @@ async function readSavingsPlans() {
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw new Error(`積立データを読み込めません。元のデータを保全しています。${error.message}`);
+  }
+}
+
+async function readSavingsNisaContext() {
+  try {
+    const stocks = existsSync(WATCHLIST_PATH) ? await readWatchlist() : [];
+    const settings = await readSettings();
+    return { available: true, ...collectNisaStockPurchases(stocks), growthAnnualLimit: settings.nisaAnnualLimitYen };
+  } catch {
+    return { available: false, purchases: [], undatedCount: 0, growthAnnualLimit: NISA_GROWTH_ANNUAL_LIMIT_YEN };
   }
 }
 

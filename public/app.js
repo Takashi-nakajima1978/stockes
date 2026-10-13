@@ -1,4 +1,4 @@
-import { buildSavingsContributionHistory, buildSavingsValuationHistory, buildSavingsTaxComparison, savingsAccountType } from "./savings-calculation.mjs";
+import { buildSavingsContributionHistory, buildSavingsValuationHistory, buildSavingsTaxComparison, savingsAccountType, savingsNisaAllowance } from "./savings-calculation.mjs";
 import { initializeBackupSettings } from "./backup-settings.mjs";
 
 const yenFormats = [0, 1].map((maximumFractionDigits) => new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY", maximumFractionDigits }));
@@ -48,6 +48,7 @@ const state = {
   cryptoAnalysis: null,
   savingsPlans: [],
   savingsSeries: {},
+  savingsNisaContext: { available: false },
   suggestions: [],
   successfulCandidates: [],
   underperformingCandidates: [],
@@ -116,6 +117,7 @@ const savingsSeriesRequests = new Map();
 let savingsSyncRunning = false;
 let savingsRenderedMonth = "";
 let savingsOrderSaving = false;
+let savingsNisaContextCheckedAt = 0;
 const instrumentForecastCache = new Map();
 const reorderState = {
   symbol: "",
@@ -587,6 +589,8 @@ async function loadCrypto(background = false) {
 async function loadSavingsPlans() {
   const payload = await request("/api/savings-plans");
   state.savingsPlans = Array.isArray(payload.plans) ? payload.plans : [];
+  state.savingsNisaContext = payload.nisaContext || { available: false };
+  savingsNisaContextCheckedAt = Date.now();
   const monthField = els.savingsCreateForm?.elements.namedItem("startMonth");
   if (monthField && !monthField.value) monthField.value = localMonthKey();
   const dateField = els.savingsCreateForm?.elements.namedItem("currentValueDate");
@@ -629,6 +633,63 @@ function savingsAccountOptions(plan) {
     .map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""} ${plan.provider === "ideco" ? value !== "ideco" ? "disabled" : "" : value === "ideco" ? "disabled" : ""}>${label}</option>`).join("");
 }
 
+function savingsNisaPlanHtml(plan, allowance, draft = false) {
+  const type = savingsAccountType(plan);
+  if (!type.startsWith("nisa-")) return "";
+  const year = allowance.year;
+  const current = allowance.years.get(year);
+  const next = allowance.years.get(year + 1);
+  const bucket = current.buckets.get(type);
+  const future = next.buckets.get(type);
+  return `<section class="savings-nisa-section" aria-label="NISA年間枠の確認">
+    <div class="savings-chart-heading"><h4>${draft ? "保存前のNISA枠確認" : "NISA積立の年間枠"}</h4><span>${year}年・${escapeHtml(savingsAccountName(type))}</span></div>
+    <div class="savings-nisa-metrics">
+      <div><span>今年 この商品の設定額</span><strong>${yen(current.perPlan.get(plan.id) || 0)}</strong></div>
+      <div><span>今年 同じ枠の合計</span><strong class="${bucket.excess > 0 ? "loss" : ""}">${yen(bucket.planned)}</strong><small>上限 ${yen(bucket.limit)}${type === "nisa-growth" && bucket.limit !== 2400000 ? "（設定値・制度上は240万円）" : ""}</small></div>
+      <div><span>年末予定後の残り枠${!allowance.stockDataAvailable || allowance.undatedCount ? "（参考）" : ""}</span><strong>${yen(bucket.remaining)}</strong><small>計上済み後の残り ${yen(bucket.remainingNow)}</small></div>
+    </div>
+    <p class="savings-history-note">登録上の計上額 ${yen(bucket.used)} ＋ 年内の予定 ${yen(bucket.pending)}。${bucket.stockPlanned > 0 ? `日本株のNISA買付 ${yen(bucket.stockPlanned)}を含みます。` : ""} 同じ枠の全商品・口座を合算しています。</p>
+    ${bucket.excess > 0 ? `<p class="savings-balance-error" role="status">${year}年の設定は ${yen(bucket.excess)}超過（${escapeHtml(bucket.firstExcessMonth)}から）。超過分をNISAで買い付けることはできません。設定額を見直してください。</p>` : ""}
+    <p class="savings-nisa-next">来年 ${year + 1}年：合計 ${yen(future.planned)} / 上限 ${yen(future.limit)} / 残り ${yen(future.remaining)}</p>
+    ${future.excess > 0 ? `<p class="savings-balance-error" role="status">来年は ${yen(future.excess)}超過予定（${escapeHtml(future.firstExcessMonth)}から）。継続設定と金額変更の予定を含んでいます。</p>` : ""}
+    <p class="savings-history-note">${bucket.stockPlanned > 0 ? "日本株買付を除いた枠" : "年間枠"}を12か月均等に使うなら、全積立合計で月 ${yen(Math.floor(Math.max(0, bucket.limit - bucket.stockPlanned) / 12))}が目安。月別設定・継続を使った年額で、証券会社の約定実績ではありません。売却しても同年の年間枠は戻しません。</p>
+    ${!allowance.stockDataAvailable ? '<p class="savings-balance-error">日本株のNISA買付を取得できないため、残り枠は積立だけの参考額です。</p>' : ""}
+    ${allowance.undatedCount ? `<p class="savings-balance-error">購入日が未登録の日本株NISA明細 ${allowance.undatedCount}件は計算から除外しています。残り枠は参考額です。</p>` : ""}
+    ${current.providerConflict || next.providerConflict ? '<p class="savings-balance-error">同じ年のNISA設定が楽天・SBIに分かれています。NISAは年ごとに1つの金融機関で利用するため、口座区分をご確認ください。</p>' : ""}
+    <p class="savings-history-note">登録されていない買付・商品のNISA適格性・生涯保有限度額は未確認。残り枠は証券会社でも確認してください。<a href="https://www.fsa.go.jp/policy/nisa2/know/index.html" target="_blank" rel="noopener noreferrer">金融庁・NISA</a></p>
+  </section>`;
+}
+
+function updateSavingsNisaPreview(form) {
+  const preview = form?.querySelector("[data-savings-nisa-preview]");
+  if (!preview) return;
+  const data = new FormData(form);
+  const original = state.savingsPlans.find((plan) => plan.id === form.dataset.savingsForm);
+  const plan = {
+    ...original, id: original?.id || "savings-draft", provider: data.get("provider"), accountType: data.get("accountType"),
+    recurring: data.has("recurring"), currentMonthIncluded: data.has("currentMonthIncluded"), currentValueDate: String(data.get("currentValueDate") || ""),
+    schedule: original ? [...form.querySelectorAll(".savings-schedule-row")].map((row) => ({ month: row.querySelector('[name="scheduleMonth"]')?.value, amount: Number(row.querySelector('[name="scheduleAmount"]')?.value) })) : [{ month: data.get("startMonth"), amount: Number(data.get("amount")) }],
+  };
+  preview.hidden = !savingsAccountType(plan).startsWith("nisa-");
+  preview.innerHTML = preview.hidden ? "" : savingsNisaPlanHtml(plan, savingsNisaAllowance([...state.savingsPlans.filter((item) => item.id !== plan.id), plan], state.savingsNisaContext), true);
+}
+
+async function loadSavingsNisaContext(force = false) {
+  if (!force && Date.now() - savingsNisaContextCheckedAt < 5 * 60 * 1000) return;
+  savingsNisaContextCheckedAt = Date.now();
+  try {
+    const payload = await request("/api/savings-nisa-context");
+    state.savingsNisaContext = payload.nisaContext || { available: false };
+  } catch { state.savingsNisaContext = { available: false }; }
+  savingsNisaContextCheckedAt = Date.now();
+  const allowance = savingsNisaAllowance(state.savingsPlans, state.savingsNisaContext);
+  els.savingsPlans?.querySelectorAll("[data-savings-nisa]").forEach((element) => {
+    const plan = state.savingsPlans.find((item) => item.id === element.dataset.savingsNisa);
+    if (plan) element.innerHTML = savingsNisaPlanHtml(plan, allowance);
+  });
+  for (const form of [els.savingsCreateForm, ...(els.savingsPlans?.querySelectorAll('[data-savings-form][data-nisa-preview="true"]') || [])]) updateSavingsNisaPreview(form);
+}
+
 function savingsTaxComparisonHtml(comparison) {
   const { accountType } = comparison;
   const isNisa = accountType.startsWith("nisa-");
@@ -647,7 +708,7 @@ function savingsTaxComparisonHtml(comparison) {
         <div class="${accountType === "taxable" ? "selected" : ""}"><h5>課税口座${accountType === "taxable" ? "（登録口座）" : ""}</h5><span>税引後の${totalKnown ? "利益" : "増加額（仮定）"}</span><strong class="${signClass}">${amount(comparison.taxableGain)}</strong><small>${signedPct(comparison.taxableGainPct)} / 税金目安 ${yen(comparison.tax)}</small>${totalKnown ? `<small>売却後の受取目安 ${yen(comparison.taxableProceeds)}</small>` : ""}</div>
       </div>` : `<p class="savings-history-note">${comparison.available ? "基準価額が不足している積立月があるため、税引後の比較は未算出です。" : "基準価額の取得後に増加額と税引後の差を表示します。"}</p>`}
     <p class="savings-history-note">${!comparison.available ? "評価履歴の取得後に比較します。" : totalKnown ? "同じ商品を同じ元本で保有し、全額売却した場合の参考値。" : "開始前の投資元本が不明なため、期間の増加額を利益と仮定した比較です。実際の売却税額・受取額は未算出です。"} NISAは対象商品・枠内で購入した場合の仮定です。課税口座はプラスの利益に20.315%を適用。保有中に毎月引かれる税金ではありません。分配金・損益通算・手数料は未反映です。</p>
-    <details class="savings-tax-notes"><summary>税制の前提と出典</summary><p class="savings-history-note">NISA対象商品と残り枠は未確認。成人の年間枠はつみたて120万円・成長240万円、保有限度額は合計1,800万円（成長は内数1,200万円）。この比較は全額が非課税対象と仮定し、超過分を自動で振り分けません。口座区分は記録のみで、既存保有をNISAに移し替えるものではありません。損失時の損益通算・繰越控除の差は含みません。増加率は比較元本に対する比率で、年率ではありません。</p><p class="savings-history-note"><a href="https://www.fsa.go.jp/policy/nisa2/know/index.html" target="_blank" rel="noopener noreferrer">金融庁・NISA</a> / <a href="https://www.nta.go.jp/taxes/shiraberu/taxanswer/shotoku/1463.htm" target="_blank" rel="noopener noreferrer">国税庁・売却益の税率</a>${isIdeco ? ' / <a href="https://www.ideco-koushiki.jp/guide/good.html" target="_blank" rel="noopener noreferrer">iDeCo公式・税制</a>' : ""}</p></details>
+    <details class="savings-tax-notes"><summary>税制の前提と出典</summary><p class="savings-history-note">NISA対象商品・未登録の買付・生涯枠は未確認。成人の年間枠はつみたて120万円・成長240万円、保有限度額は合計1,800万円（成長は内数1,200万円）。この比較は全額が非課税対象と仮定し、超過分を自動で振り分けません。口座区分は記録のみで、既存保有をNISAに移し替えるものではありません。損失時の損益通算・繰越控除の差は含みません。増加率は比較元本に対する比率で、年率ではありません。</p><p class="savings-history-note"><a href="https://www.fsa.go.jp/policy/nisa2/know/index.html" target="_blank" rel="noopener noreferrer">金融庁・NISA</a> / <a href="https://www.nta.go.jp/taxes/shiraberu/taxanswer/shotoku/1463.htm" target="_blank" rel="noopener noreferrer">国税庁・売却益の税率</a>${isIdeco ? ' / <a href="https://www.ideco-koushiki.jp/guide/good.html" target="_blank" rel="noopener noreferrer">iDeCo公式・税制</a>' : ""}</p></details>
   </section>`;
 }
 
@@ -661,12 +722,13 @@ function renderSavings() {
   }
   const currentMonth = localMonthKey();
   const completedThrough = calendarMonthOffset(`${currentMonth}-01`, -1).slice(0, 7);
+  const nisaAllowance = savingsNisaAllowance(state.savingsPlans, state.savingsNisaContext);
   const views = new Map(state.savingsPlans.map((plan) => {
     const valueDate = plan.currentValueDate || localDateKey();
     const includeCurrent = plan.currentMonthIncluded && valueDate.slice(0, 7) === currentMonth;
     const history = buildSavingsContributionHistory(plan, includeCurrent ? currentMonth : completedThrough, currentMonth);
     const series = state.savingsSeries[plan.symbol]?.series || [];
-    return [plan.id, { history, valuation: buildSavingsValuationHistory(history, series, { ...plan, currentValueDate: valueDate, today: localDateKey() }) }];
+    return [plan.id, { history, nisaAllowance, valuation: buildSavingsValuationHistory(history, series, { ...plan, currentValueDate: valueDate, today: localDateKey() }) }];
   }));
   els.savingsPlans.innerHTML = state.savingsPlans.map((plan) => savingsPlanHtml(plan, views.get(plan.id))).join("");
   els.savingsPlans.querySelectorAll("[data-savings-form]").forEach(updateSavingsBalanceInputs);
@@ -720,6 +782,7 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
     : "前月までの積立履歴はありません";
   const principalKnown = Number.isFinite(valuation.openingPrincipal);
   const comparison = buildSavingsTaxComparison(valuation, plan);
+  const nisaAllowance = view.nisaAllowance || savingsNisaAllowance(state.savingsPlans, state.savingsNisaContext);
   const valueLabel = valuation.status === "contributions" ? "登録積立分の参考評価額" : "全保有の参考評価額";
   const valuationDifference = comparison.available ? comparison.grossGain : null;
   const gainLabel = comparison.basis === "total" ? "総損益（税引前）" : "期間の運用増減";
@@ -762,6 +825,8 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
       </div>
       ${Number.isFinite(valuation.totalPnl) ? `<p class="savings-value-difference">総損益の内訳：${yen(valuation.latestValue)} − 元本 ${yen(valuation.totalPrincipal)} ＝ <strong class="${valuation.totalPnl >= 0 ? "gain" : "loss"}">${valuation.totalPnl > 0 ? "+" : ""}${yen(valuation.totalPnl)}</strong><span>${valuation.principalAnchor ? `元本は${escapeHtml(valuation.principalAnchor.date)}の証券会社表示 ${yen(valuation.principalAnchor.amount)}を優先` : `開始前 ${yen(valuation.openingPrincipal)} ＋ 登録積立 ${yen(valuation.contributionPrincipal)}`}</span></p>` : ""}
       ${Number.isFinite(valuation.principalDifference) && Math.abs(valuation.principalDifference) >= 1 ? `<p class="savings-balance-error" role="status">元本の照合差 ${valuation.principalDifference > 0 ? "+" : ""}${yen(valuation.principalDifference)}。基準日の元本と「開始前の入力元本＋積立」が一致しません。開始月・月別金額・開始前元本の基準日をご確認ください。月別記録は変更していません。</p>` : ""}
+      <div data-savings-nisa="${escapeAttr(plan.id)}" ${comparison.accountType.startsWith("nisa-") ? "" : "hidden"}>${savingsNisaPlanHtml(plan, nisaAllowance)}</div>
+      ${nisaAllowance.years.get(nisaAllowance.year).buckets.get(comparison.accountType)?.excess > 0 ? '<p class="savings-balance-error">年間設定が枠を超えるため、以下のNISA比較は全額非課税を仮定した参考値です。超過分に非課税が適用されるものではありません。</p>' : ""}
       ${savingsTaxComparisonHtml(comparison)}
       <section class="savings-chart-section">
         <div class="savings-chart-heading"><h4>積立記録グラフ</h4><span>${escapeHtml(historySummary)}</span></div>
@@ -791,6 +856,7 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
           </div>
         </details>
         <div class="savings-account-field"><label><span>口座区分</span><select name="accountType">${savingsAccountOptions(plan)}</select></label></div>
+        <div data-savings-nisa-preview hidden></div>
         <div class="savings-balance-fields">
           <label><span>現在の評価額</span><input name="currentValue" type="number" min="0" step="1" inputmode="numeric" value="${Number(plan.currentValue) || 0}"></label>
           <label><span>基準日の取得元本・拠出金（任意）</span><input name="currentPrincipal" type="number" min="0" step="1" inputmode="numeric" placeholder="証券会社の元本表示" value="${Number.isFinite(plan.currentPrincipal) ? plan.currentPrincipal : ""}"></label>
@@ -950,7 +1016,9 @@ async function moveSavingsPlan(id, direction) {
 }
 
 async function syncSavingsView() {
-  if (state.view !== "savings" || document.hidden || savingsSyncRunning || !loadedDataSections.has("savings") || hasPendingSavingsEdit()) return;
+  if (state.view !== "savings" || document.hidden || savingsSyncRunning || !loadedDataSections.has("savings")) return;
+  await loadSavingsNisaContext();
+  if (hasPendingSavingsEdit()) return;
   const now = Date.now();
   const stale = savingsSeriesPlans(state.savingsPlans).filter((plan) => {
     const cached = state.savingsSeries[plan.symbol];
@@ -1111,7 +1179,7 @@ function ensureViewData(view) {
   }
   if (view === "crypto") return ensureDataSection("crypto", () => loadCrypto());
   if (view === "ideas") return ensureDataSection("ideas", () => loadDiscoveryCache());
-  if (view === "savings") return ensureDataSection("savings", () => loadSavingsPlans());
+  if (view === "savings") return loadedDataSections.has("savings") ? loadSavingsNisaContext(true) : ensureDataSection("savings", () => loadSavingsPlans());
   return Promise.resolve();
 }
 
@@ -8251,6 +8319,7 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
     form.elements.namedItem("startMonth").value = localMonthKey();
     form.elements.namedItem("currentValueDate").value = localDateKey();
     updateSavingsBalanceInputs(form);
+    updateSavingsNisaPreview(form);
     if (status) status.textContent = "登録しました。基準価額を取得中です。";
     renderSavings();
     const savedPlan = state.savingsPlans.find((item) => item.symbol === symbol);
@@ -8267,6 +8336,12 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
 
 els.savingsCreateForm?.addEventListener("change", () => updateSavingsBalanceInputs(els.savingsCreateForm));
 
+for (const eventName of ["input", "change"]) {
+  els.savingsCreateForm?.addEventListener(eventName, (event) => {
+    if (/^(?:accountType|provider|startMonth|amount|recurring|currentMonthIncluded|currentValueDate)$/.test(event.target.name)) updateSavingsNisaPreview(els.savingsCreateForm);
+  });
+}
+
 els.savingsOrderList?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-savings-move]");
   if (!button || button.disabled) return;
@@ -8280,6 +8355,10 @@ for (const eventName of ["input", "change"]) {
       form.dataset.dirty = "true";
       updateSavingsBalanceInputs(form);
       syncSavingsStartMonth(form, event.target);
+      if (/^(?:accountType|provider|startMonth|recurring|currentMonthIncluded|currentValueDate|scheduleMonth|scheduleAmount)$/.test(event.target.name)) {
+        form.dataset.nisaPreview = "true";
+        updateSavingsNisaPreview(form);
+      }
     }
   });
 }
@@ -8301,6 +8380,7 @@ els.savingsPlans?.addEventListener("click", async (event) => {
     if (form) form.dataset.dirty = "true";
     const list = form?.querySelector(".savings-schedule-list");
     list?.insertAdjacentHTML("beforeend", savingsScheduleRow({ month: localMonthKey(), amount: "" }));
+    if (form) { form.dataset.nisaPreview = "true"; updateSavingsNisaPreview(form); }
     return;
   }
   const removeButton = event.target.closest("[data-savings-remove-month]");
@@ -8310,6 +8390,7 @@ els.savingsPlans?.addEventListener("click", async (event) => {
     removeButton.closest(".savings-schedule-row")?.remove();
     const first = form?.querySelector('.savings-schedule-row [name="scheduleMonth"]');
     if (first) syncSavingsStartMonth(form, first);
+    if (form) { form.dataset.nisaPreview = "true"; updateSavingsNisaPreview(form); }
     return;
   }
   const deleteButton = event.target.closest("[data-savings-delete]");
