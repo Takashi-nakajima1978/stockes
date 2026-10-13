@@ -3813,6 +3813,7 @@ tr:hover .drag-handle,
 
 .savings-create-fields label,
 .savings-schedule-row label,
+.savings-balance-fields label,
 .savings-product-fields label {
   display: grid;
   gap: 6px;
@@ -3823,7 +3824,9 @@ tr:hover .drag-handle,
 }
 
 .savings-note,
-.savings-history-note {
+.savings-history-note,
+.savings-balance-note,
+.savings-balance-error {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
@@ -3858,9 +3861,21 @@ tr:hover .drag-handle,
   margin-top: 12px;
 }
 
+.savings-balance-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.savings-balance-error {
+  color: #b33e43;
+}
+
 .savings-create-fields input,
 .savings-create-fields select,
 .savings-schedule-row input,
+.savings-balance-fields input,
+.savings-balance-fields select,
 .savings-product-fields input,
 .savings-product-fields select {
   width: 100%;
@@ -4137,16 +4152,6 @@ tr:hover .drag-handle,
   display: grid;
 }
 
-.savings-current-value {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(160px, 260px);
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
 .savings-schedule-row {
   display: grid;
   grid-template-columns: minmax(120px, 1fr) minmax(140px, 1fr) 38px;
@@ -4226,6 +4231,7 @@ tr:hover .drag-handle,
 
   .savings-create-fields,
   .savings-metrics,
+  .savings-balance-fields,
   .savings-product-fields {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -4243,10 +4249,6 @@ tr:hover .drag-handle,
     gap: 7px;
   }
 
-  .savings-current-value {
-    grid-template-columns: minmax(0, 1fr) minmax(140px, 1fr);
-  }
-
   .savings-chart-wrap {
     height: 270px;
     padding: 8px 4px 0;
@@ -4258,6 +4260,20 @@ tr:hover .drag-handle,
     padding-left: 6px;
   }
 
+}
+
+@media (max-width: 360px) {
+  .savings-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .savings-metrics > div {
+    border-right: 0;
+  }
+
+  .savings-metrics > div + div {
+    border-top: 1px solid var(--line);
+  }
 }
 
 #backupSettings {

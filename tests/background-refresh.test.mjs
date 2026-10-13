@@ -2691,6 +2691,9 @@ test("savings screen tracks actual monthly contributions and supports editing th
       ? String(value).trim().toUpperCase()
       : "",
     cleanText: (value) => String(value || "").trim(),
+    nullableNonNegativeNumber: loadFunction(serverSource, "nullableNonNegativeNumber", {}),
+    normalizeDate: loadFunction(serverSource, "normalizeDate", {}),
+    jstDate: loadFunction(serverSource, "jstDate", {}),
   });
   const savedPlan = normalizeSavingsPlan({
     id: "fund-1",
@@ -2698,6 +2701,11 @@ test("savings screen tracks actual monthly contributions and supports editing th
     name: "全世界株式",
     symbol: "0331418a",
     currentValue: 250000,
+    currentValueDate: "2026-10-13",
+    openingValue: 100000,
+    openingPrincipal: 80000,
+    balanceBasis: "opening",
+    currentMonthIncluded: false,
     recurring: true,
     schedule: [
       { month: "2026-10", amount: 20000 },
@@ -2707,6 +2715,16 @@ test("savings screen tracks actual monthly contributions and supports editing th
   });
   assert.equal(savedPlan.symbol, "0331418A");
   assert.equal(savedPlan.currentValue, 250000);
+  assert.equal(savedPlan.openingValue, 100000);
+  assert.equal(savedPlan.openingPrincipal, 80000);
+  assert.equal(savedPlan.currentValueDate, "2026-10-13");
+  assert.equal(savedPlan.balanceBasis, "opening");
+  assert.equal(savedPlan.currentMonthIncluded, false);
+  const legacy = normalizeSavingsPlan({ symbol: "03311065", currentValue: 2467742, updatedAt: "2026-10-12T16:00:00Z" });
+  assert.equal(legacy.currentValueDate, "2026-10-13");
+  assert.equal(legacy.openingPrincipal, null);
+  assert.equal(legacy.openingValue, null);
+  assert.equal(legacy.currentMonthIncluded, false);
   assert.equal(JSON.stringify(savedPlan.schedule), JSON.stringify([{ month: "2026-10", amount: 30000 }]));
 });
 

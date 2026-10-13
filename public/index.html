@@ -654,7 +654,7 @@
             <h2>積立管理</h2>
           </div>
         </section>
-        <p class="savings-note">月ごとの積立額、累計元本、現在評価額とファンドの基準価額を確認できます。今月分は設定額として表示し、累計には前月までを反映します。将来予測や証券会社への注文は行いません。</p>
+        <p class="savings-note">既存の保有分を含む参考評価額と月別の積立記録。開始前の元本が分かる場合は総損益も計算します。証券会社への注文は行いません。</p>
         <form id="savingsCreateForm" class="savings-create-form">
           <h3>運用商品を追加</h3>
           <div class="savings-create-fields">
@@ -662,10 +662,15 @@
             <label><span>商品名</span><input name="name" maxlength="100" required placeholder="例：全世界株式インデックス"></label>
             <label><span>商品コード（Yahoo!ファイナンス）</span><input name="symbol" maxlength="14" required placeholder="例：0331418A" autocapitalize="characters"></label>
             <label><span>現在の評価額（任意）</span><input name="currentValue" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
+            <label><span>評価額の基準日</span><input name="currentValueDate" type="date"></label>
+            <label><span>評価額の起点</span><select name="balanceBasis"><option value="current">現在額から</option><option value="opening">開始前残高</option></select></label>
+            <label><span>開始前の評価額</span><input name="openingValue" type="number" min="0" step="1" inputmode="numeric" disabled></label>
+            <label><span>開始前の投資元本（任意）</span><input name="openingPrincipal" type="number" min="0" step="1" inputmode="numeric" placeholder="不明なら空欄"></label>
             <label><span>開始月</span><input name="startMonth" type="month" required></label>
             <label><span>月の積立額</span><input name="amount" type="number" min="1" step="1" inputmode="numeric" required placeholder="例：30000"></label>
           </div>
           <div class="savings-create-actions">
+            <label class="checkbox-line"><input name="currentMonthIncluded" type="checkbox"><span>評価額に基準月の積立を含む</span></label>
             <label class="checkbox-line"><input name="recurring" type="checkbox"><span>この金額で毎月継続</span></label>
             <button type="submit">商品を登録</button>
             <span id="savingsFormStatus" role="status"></span>

@@ -1319,6 +1319,7 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const plan = normalizeSavingsPlan({ ...(body.plan || body), updatedAt: new Date().toISOString() });
     if (!plan.name || !plan.symbol) return json(res, 400, { error: "商品名とファンドコードを入力してください。" });
+    if (plan.balanceBasis === "opening" && plan.openingValue === null) return json(res, 400, { error: "開始前の評価額を入力してください。" });
     const plans = await readSavingsPlans();
     const index = plans.findIndex((item) => item.id === plan.id);
     if (index >= 0) plans[index] = plan;
@@ -15791,12 +15792,19 @@ function normalizeSavingsPlan(plan = {}) {
       return items;
     }, [])
     .sort((a, b) => a.month.localeCompare(b.month));
+  const openingValue = nullableNonNegativeNumber(plan.openingValue);
+  const openingPrincipal = nullableNonNegativeNumber(plan.openingPrincipal);
   return {
     id: /^[a-zA-Z0-9_-]{1,64}$/.test(String(plan.id || "")) ? String(plan.id) : "",
     provider,
     name: cleanText(plan.name || "").slice(0, 100),
     symbol: normalizeFundCode(plan.symbol || ""),
     currentValue: Math.max(0, Math.min(1000000000, Number(plan.currentValue) || 0)),
+    currentValueDate: normalizeDate(plan.currentValueDate) || jstDate(plan.updatedAt),
+    currentMonthIncluded: Boolean(plan.currentMonthIncluded),
+    balanceBasis: plan.balanceBasis === "opening" ? "opening" : "current",
+    openingValue: openingValue === null ? null : Math.min(1000000000, openingValue),
+    openingPrincipal: openingPrincipal === null ? null : Math.min(1000000000, openingPrincipal),
     recurring: Boolean(plan.recurring),
     schedule,
     updatedAt: plan.updatedAt || new Date().toISOString(),
