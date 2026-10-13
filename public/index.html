@@ -655,13 +655,20 @@
           </div>
         </section>
         <p class="savings-note">既存の保有分を含む参考評価額と月別の積立記録。開始前の元本が分かる場合は総損益も計算します。証券会社への注文は行いません。</p>
+        <details id="savingsOrder" class="savings-order" hidden>
+          <summary>並び替え</summary>
+          <ol id="savingsOrderList" class="savings-order-list" aria-label="積立商品の表示順"></ol>
+          <p id="savingsOrderStatus" class="savings-order-status" role="status"></p>
+        </details>
         <form id="savingsCreateForm" class="savings-create-form">
           <h3>運用商品を追加</h3>
           <div class="savings-create-fields">
             <label><span>口座</span><select name="provider"><option value="rakuten">楽天証券</option><option value="sbi">SBI証券</option><option value="ideco">MUFG iDeCo</option></select></label>
+            <label><span>口座区分</span><select name="accountType"><option value="unspecified">未設定</option><option value="nisa-tsumitate">NISA・つみたて</option><option value="nisa-growth">NISA・成長</option><option value="taxable">課税口座</option><option value="ideco" disabled>iDeCo</option></select></label>
             <label><span>商品名</span><input name="name" maxlength="100" required placeholder="例：全世界株式インデックス"></label>
             <label><span>商品コード（Yahoo!ファイナンス）</span><input name="symbol" maxlength="14" required placeholder="例：0331418A" autocapitalize="characters"></label>
             <label><span>現在の評価額（任意）</span><input name="currentValue" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
+            <label><span>基準日の取得元本・拠出金（任意）</span><input name="currentPrincipal" type="number" min="0" step="1" inputmode="numeric" placeholder="証券会社の元本表示"></label>
             <label><span>評価額の基準日</span><input name="currentValueDate" type="date"></label>
             <label><span>評価額の起点</span><select name="balanceBasis"><option value="current">現在額から</option><option value="opening">開始前残高</option></select></label>
             <label><span>開始前の評価額</span><input name="openingValue" type="number" min="0" step="1" inputmode="numeric" disabled></label>

@@ -3813,6 +3813,7 @@ tr:hover .drag-handle,
 
 .savings-create-fields label,
 .savings-schedule-row label,
+.savings-account-field label,
 .savings-balance-fields label,
 .savings-product-fields label {
   display: grid;
@@ -3867,12 +3868,17 @@ tr:hover .drag-handle,
   gap: 12px;
 }
 
+.savings-account-field {
+  max-width: 320px;
+}
+
 .savings-balance-error {
   color: #b33e43;
 }
 
 .savings-create-fields input,
 .savings-create-fields select,
+.savings-account-field select,
 .savings-schedule-row input,
 .savings-balance-fields input,
 .savings-balance-fields select,
@@ -3908,6 +3914,83 @@ tr:hover .drag-handle,
   display: grid;
   gap: 16px;
   min-width: 0;
+}
+
+.savings-order {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.savings-order > summary {
+  padding: 12px 0;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.savings-order-list {
+  max-height: 360px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overscroll-behavior: contain;
+}
+
+.savings-order-list li {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 44px 44px;
+  align-items: center;
+  gap: 6px;
+  min-height: 58px;
+  padding: 7px 0;
+  border-top: 1px solid var(--line);
+}
+
+.savings-order-rank {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.savings-order-name {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.savings-order-name strong {
+  font-size: 13px;
+}
+
+.savings-order-name small,
+.savings-order-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+button.savings-order-button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+button.savings-order-button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.savings-order-status {
+  min-height: 18px;
+  margin: 6px 0;
 }
 
 .savings-plan {
@@ -4042,12 +4125,89 @@ tr:hover .drag-handle,
   font-size: 12px;
 }
 
-.savings-value-difference strong.gain {
+.savings-value-difference strong.gain,
+.savings-metrics strong.gain,
+.savings-tax-columns strong.gain {
   color: #08794e;
 }
 
-.savings-value-difference strong.loss {
+.savings-value-difference strong.loss,
+.savings-metrics strong.loss,
+.savings-tax-columns strong.loss {
   color: #b33e43;
+}
+
+.savings-tax-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.savings-tax-saving {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.savings-tax-saving strong {
+  font-size: 18px;
+}
+
+.savings-tax-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.savings-tax-columns > div {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  border-top: 3px solid transparent;
+  overflow-wrap: anywhere;
+}
+
+.savings-tax-columns > div + div {
+  border-left: 1px solid var(--line);
+}
+
+.savings-tax-columns .selected {
+  border-top-color: #0b6b58;
+  background: #f1f9f6;
+}
+
+.savings-tax-columns h5 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.savings-tax-columns span,
+.savings-tax-columns small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.savings-tax-columns strong {
+  font-size: 18px;
+}
+
+.savings-tax-notes summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.savings-tax-notes p {
+  margin-top: 8px;
 }
 
 .savings-chart-wrap {
@@ -4263,7 +4423,8 @@ tr:hover .drag-handle,
 }
 
 @media (max-width: 360px) {
-  .savings-metrics {
+  .savings-metrics,
+  .savings-tax-columns {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -4273,6 +4434,15 @@ tr:hover .drag-handle,
 
   .savings-metrics > div + div {
     border-top: 1px solid var(--line);
+  }
+
+  .savings-tax-columns > div + div {
+    border-left: 0;
+    border-top-color: var(--line);
+  }
+
+  .savings-tax-columns > div.selected {
+    border-top-color: #0b6b58;
   }
 }
 

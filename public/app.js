@@ -1,4 +1,4 @@
-import { buildSavingsContributionHistory, buildSavingsValuationHistory } from "./savings-calculation.mjs";
+import { buildSavingsContributionHistory, buildSavingsValuationHistory, buildSavingsTaxComparison, savingsAccountType } from "./savings-calculation.mjs";
 import { initializeBackupSettings } from "./backup-settings.mjs";
 
 const yenFormats = [0, 1].map((maximumFractionDigits) => new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY", maximumFractionDigits }));
@@ -115,6 +115,7 @@ const savingsChartStates = new Map();
 const savingsSeriesRequests = new Map();
 let savingsSyncRunning = false;
 let savingsRenderedMonth = "";
+let savingsOrderSaving = false;
 const instrumentForecastCache = new Map();
 const reorderState = {
   symbol: "",
@@ -168,6 +169,9 @@ const els = {
   savingsCreateForm: document.getElementById("savingsCreateForm"),
   savingsFormStatus: document.getElementById("savingsFormStatus"),
   savingsPlans: document.getElementById("savingsPlans"),
+  savingsOrder: document.getElementById("savingsOrder"),
+  savingsOrderList: document.getElementById("savingsOrderList"),
+  savingsOrderStatus: document.getElementById("savingsOrderStatus"),
   usStockForm: document.getElementById("usStockForm"),
   usStockName: document.getElementById("usStockName"),
   usStockSymbol: document.getElementById("usStockSymbol"),
@@ -587,6 +591,7 @@ async function loadSavingsPlans() {
   if (monthField && !monthField.value) monthField.value = localMonthKey();
   const dateField = els.savingsCreateForm?.elements.namedItem("currentValueDate");
   if (dateField && !dateField.value) dateField.value = localDateKey();
+  updateSavingsBalanceInputs(els.savingsCreateForm);
   if (dateField) dateField.max = localDateKey();
   renderSavings();
   const plans = savingsSeriesPlans(state.savingsPlans);
@@ -614,8 +619,41 @@ function savingsProviderName(provider) {
   return ({ rakuten: "楽天証券", sbi: "SBI証券", ideco: "MUFG iDeCo" })[provider] || "楽天証券";
 }
 
+function savingsAccountName(type) {
+  return ({ "nisa-tsumitate": "NISA・つみたて", "nisa-growth": "NISA・成長", taxable: "課税口座", ideco: "iDeCo" })[type] || "口座区分未設定";
+}
+
+function savingsAccountOptions(plan) {
+  const selected = savingsAccountType(plan);
+  return [["unspecified", "未設定"], ["nisa-tsumitate", "NISA・つみたて"], ["nisa-growth", "NISA・成長"], ["taxable", "課税口座"], ["ideco", "iDeCo"]]
+    .map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""} ${plan.provider === "ideco" ? value !== "ideco" ? "disabled" : "" : value === "ideco" ? "disabled" : ""}>${label}</option>`).join("");
+}
+
+function savingsTaxComparisonHtml(comparison) {
+  const { accountType } = comparison;
+  const isNisa = accountType.startsWith("nisa-");
+  const isIdeco = accountType === "ideco";
+  const totalKnown = comparison.basis === "total";
+  const complete = comparison.available && comparison.complete;
+  const amount = (value) => `${value > 0 ? "+" : ""}${yen(value)}`;
+  const signClass = comparison.grossGain >= 0 ? "gain" : "loss";
+  return `<section class="savings-tax-section" aria-label="NISAと課税口座の比較">
+    <div class="savings-chart-heading"><h4>${totalKnown ? isIdeco ? "NISA・課税口座なら（参考比較）" : "NISA・課税口座の比較" : "期間増加額の税制比較（仮定）"}</h4><span>${escapeHtml(savingsAccountName(accountType))}</span></div>
+    ${isIdeco ? '<p class="savings-history-note">登録口座はiDeCoです。運用益は非課税ですが、受取時の税金は受取方法や控除額で変わります。下の比較はNISA・課税口座の仮定で、iDeCoの受取額や掛金の所得控除は含みません。</p>' : ""}
+    ${complete ? `
+      <p class="savings-tax-saving">課税口座と比べたNISAの差額（同じ運用結果） <strong>${yen(comparison.tax)}</strong></p>
+      <div class="savings-tax-columns">
+        <div class="${isNisa ? "selected" : ""}"><h5>NISA${isNisa ? "（登録口座）" : ""}</h5><span>税引後の${totalKnown ? "利益" : "増加額（仮定）"}</span><strong class="${signClass}">${amount(comparison.nisaGain)}</strong><small>${signedPct(comparison.gainPct)} / 税金 ￥0</small>${totalKnown ? `<small>売却後の受取目安 ${yen(comparison.nisaProceeds)}</small>` : ""}</div>
+        <div class="${accountType === "taxable" ? "selected" : ""}"><h5>課税口座${accountType === "taxable" ? "（登録口座）" : ""}</h5><span>税引後の${totalKnown ? "利益" : "増加額（仮定）"}</span><strong class="${signClass}">${amount(comparison.taxableGain)}</strong><small>${signedPct(comparison.taxableGainPct)} / 税金目安 ${yen(comparison.tax)}</small>${totalKnown ? `<small>売却後の受取目安 ${yen(comparison.taxableProceeds)}</small>` : ""}</div>
+      </div>` : `<p class="savings-history-note">${comparison.available ? "基準価額が不足している積立月があるため、税引後の比較は未算出です。" : "基準価額の取得後に増加額と税引後の差を表示します。"}</p>`}
+    <p class="savings-history-note">${!comparison.available ? "評価履歴の取得後に比較します。" : totalKnown ? "同じ商品を同じ元本で保有し、全額売却した場合の参考値。" : "開始前の投資元本が不明なため、期間の増加額を利益と仮定した比較です。実際の売却税額・受取額は未算出です。"} NISAは対象商品・枠内で購入した場合の仮定です。課税口座はプラスの利益に20.315%を適用。保有中に毎月引かれる税金ではありません。分配金・損益通算・手数料は未反映です。</p>
+    <details class="savings-tax-notes"><summary>税制の前提と出典</summary><p class="savings-history-note">NISA対象商品と残り枠は未確認。成人の年間枠はつみたて120万円・成長240万円、保有限度額は合計1,800万円（成長は内数1,200万円）。この比較は全額が非課税対象と仮定し、超過分を自動で振り分けません。口座区分は記録のみで、既存保有をNISAに移し替えるものではありません。損失時の損益通算・繰越控除の差は含みません。増加率は比較元本に対する比率で、年率ではありません。</p><p class="savings-history-note"><a href="https://www.fsa.go.jp/policy/nisa2/know/index.html" target="_blank" rel="noopener noreferrer">金融庁・NISA</a> / <a href="https://www.nta.go.jp/taxes/shiraberu/taxanswer/shotoku/1463.htm" target="_blank" rel="noopener noreferrer">国税庁・売却益の税率</a>${isIdeco ? ' / <a href="https://www.ideco-koushiki.jp/guide/good.html" target="_blank" rel="noopener noreferrer">iDeCo公式・税制</a>' : ""}</p></details>
+  </section>`;
+}
+
 function renderSavings() {
   if (!els.savingsPlans) return;
+  renderSavingsOrder();
   savingsRenderedMonth = localMonthKey();
   if (!state.savingsPlans.length) {
     els.savingsPlans.innerHTML = '<p class="empty-state">運用商品を登録すると、月別の積立履歴を表示します。</p>';
@@ -631,6 +669,7 @@ function renderSavings() {
     return [plan.id, { history, valuation: buildSavingsValuationHistory(history, series, { ...plan, currentValueDate: valueDate, today: localDateKey() }) }];
   }));
   els.savingsPlans.innerHTML = state.savingsPlans.map((plan) => savingsPlanHtml(plan, views.get(plan.id))).join("");
+  els.savingsPlans.querySelectorAll("[data-savings-form]").forEach(updateSavingsBalanceInputs);
   els.savingsPlans.querySelectorAll("[data-savings-chart]").forEach((canvas) => {
     const plan = state.savingsPlans.find((item) => item.id === canvas.dataset.savingsChart);
     const view = plan && views.get(plan.id);
@@ -677,21 +716,24 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
   const firstMonth = history.rows[0]?.month || "";
   const latestMonth = history.rows.at(-1)?.month || "";
   const historySummary = history.rows.length
-    ? `積立 ${firstMonth}〜${latestMonth}・${history.rows.length}か月 / 前月まで ${yen(history.total)}`
+    ? `積立 ${firstMonth}〜${latestMonth}・${history.rows.length}か月 / ${latestMonth === localMonthKey() ? "当月まで" : "前月まで"} ${yen(history.total)}`
     : "前月までの積立履歴はありません";
   const principalKnown = Number.isFinite(valuation.openingPrincipal);
+  const comparison = buildSavingsTaxComparison(valuation, plan);
   const valueLabel = valuation.status === "contributions" ? "登録積立分の参考評価額" : "全保有の参考評価額";
-  const valuationDifference = principalKnown ? valuation.totalPnl : valuation.periodChange;
+  const valuationDifference = comparison.available ? comparison.grossGain : null;
+  const gainLabel = comparison.basis === "total" ? "総損益（税引前）" : "期間の運用増減";
+  const gainRateLabel = comparison.basis === "total" ? "元本比" : "開始残高＋積立比";
   const valuationSummary = !Number.isFinite(valuationDifference) ? "" : `
     <p class="savings-value-difference">
       ${valueLabel} ${yen(valuation.latestValue)} <span>／ ${escapeHtml(valuation.comparisonLabel || "累計積立元本")} ${yen(valuation.comparisonValue)}</span>
-      <span>／ ${principalKnown ? "総損益" : "期間の運用増減"} <strong class="${valuationDifference >= 0 ? "gain" : "loss"}">${valuationDifference > 0 ? "+" : ""}${yen(valuationDifference)}</strong></span>
+      <span>／ ${gainLabel} <strong class="${valuationDifference >= 0 ? "gain" : "loss"}">${valuationDifference > 0 ? "+" : ""}${yen(valuationDifference)}</strong>（${signedPct(comparison.gainPct)}）</span>
       ${valuation.unpricedMonths?.length ? "<small>取得できた月分のみ</small>" : ""}
     </p>`;
   const historyNote = series?.error
     ? `基準価額を取得できません: ${series.error}`
     : series?.series?.length
-      ? `週次の公表基準価額 ${formatDate(series.series[0].date)}〜${formatDate(series.series.at(-1).date)}を使用。月内の最初の観測値で口数換算した参考評価額です。`
+      ? `週次の公表基準価額 ${formatDate(valuation.rows[0]?.date || series.series[0].date)}〜${formatDate(valuation.rows.at(-1)?.date || series.series.at(-1).date)}を使用。月内の最初の観測値で口数換算した参考評価額です。`
       : series?.loading
         ? "基準価額を取得しています。"
         : "ファンドコードから基準価額の履歴を取得します。";
@@ -707,17 +749,20 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
     <tr class="savings-current-month"><th scope="row">${escapeHtml(localMonthKey())} 設定</th><td>${history.monthlyAmount ? yen(history.monthlyAmount) : "-"}</td><td>${yen(history.total)}<small>月内のため未計上</small></td></tr>
   `;
   return `
-    <article class="savings-plan">
+    <article class="savings-plan" data-savings-plan="${escapeAttr(plan.id)}">
       <header class="savings-plan-heading">
-        <div><span>${escapeHtml(savingsProviderName(plan.provider))} ・ <a href="https://finance.yahoo.co.jp/quote/${encodeURIComponent(plan.symbol)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeAttr(plan.name)}をYahoo!ファイナンスで見る">${escapeHtml(plan.symbol)}</a></span><h3>${escapeHtml(plan.name)}</h3></div>
+        <div><span>${escapeHtml(savingsProviderName(plan.provider))} ・ ${escapeHtml(savingsAccountName(comparison.accountType))} ・ <a href="https://finance.yahoo.co.jp/quote/${encodeURIComponent(plan.symbol)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeAttr(plan.name)}をYahoo!ファイナンスで見る">${escapeHtml(plan.symbol)}</a></span><h3>${escapeHtml(plan.name)}</h3></div>
         <button type="button" class="secondary savings-delete" data-savings-delete="${escapeAttr(plan.id)}" aria-label="${escapeAttr(plan.name)}を削除">削除</button>
       </header>
       <div class="savings-metrics">
-        <div><span>入力評価額</span><strong>${Number(plan.currentValue) > 0 ? yen(Number(plan.currentValue)) : "未入力"}</strong><small>${escapeHtml(plan.currentValueDate || localDateKey())}時点</small></div>
+        <div><span>${valueLabel}</span><strong>${Number.isFinite(valuation.latestValue) ? yen(valuation.latestValue) : "未算出"}</strong><small>${valuation.rows.at(-1)?.date ? `基準価額 ${escapeHtml(valuation.rows.at(-1).date)}` : "基準価額の取得待ち"}</small></div>
+        <div><span>${gainLabel}</span><strong class="${valuationDifference >= 0 ? "gain" : "loss"}">${Number.isFinite(valuationDifference) ? `${valuationDifference > 0 ? "+" : ""}${yen(valuationDifference)}` : "未算出"}</strong><small>${gainRateLabel} ${signedPct(comparison.gainPct)}${comparison.available && !comparison.complete ? "・取得月分のみ" : ""}</small></div>
         <div><span>今月の積立設定</span><strong>${history.monthlyAmount ? yen(history.monthlyAmount) : "なし"}</strong></div>
         <div><span>${latestMonth === localMonthKey() ? "当月分を含む累計積立" : "前月までの累計積立"}</span><strong>${yen(history.total)}</strong></div>
-        <div><span>継続設定</span><strong>${plan.recurring ? "継続中" : "停止中"}</strong><small>証券会社への注文は行いません</small></div>
       </div>
+      ${Number.isFinite(valuation.totalPnl) ? `<p class="savings-value-difference">総損益の内訳：${yen(valuation.latestValue)} − 元本 ${yen(valuation.totalPrincipal)} ＝ <strong class="${valuation.totalPnl >= 0 ? "gain" : "loss"}">${valuation.totalPnl > 0 ? "+" : ""}${yen(valuation.totalPnl)}</strong><span>${valuation.principalAnchor ? `元本は${escapeHtml(valuation.principalAnchor.date)}の証券会社表示 ${yen(valuation.principalAnchor.amount)}を優先` : `開始前 ${yen(valuation.openingPrincipal)} ＋ 登録積立 ${yen(valuation.contributionPrincipal)}`}</span></p>` : ""}
+      ${Number.isFinite(valuation.principalDifference) && Math.abs(valuation.principalDifference) >= 1 ? `<p class="savings-balance-error" role="status">元本の照合差 ${valuation.principalDifference > 0 ? "+" : ""}${yen(valuation.principalDifference)}。基準日の元本と「開始前の入力元本＋積立」が一致しません。開始月・月別金額・開始前元本の基準日をご確認ください。月別記録は変更していません。</p>` : ""}
+      ${savingsTaxComparisonHtml(comparison)}
       <section class="savings-chart-section">
         <div class="savings-chart-heading"><h4>積立記録グラフ</h4><span>${escapeHtml(historySummary)}</span></div>
         <p class="savings-history-note">${plan.recurring ? latestMonth === localMonthKey() ? "継続中・当月の積立は反映済みです。" : `継続中・月が変わると前月分を追加。次回 ${escapeHtml(calendarMonthOffset(`${localMonthKey()}-01`, 1).slice(0, 7))}に${escapeHtml(localMonthKey())}分 ${yen(history.monthlyAmount)}を計上します。` : "継続停止中・登録した月の積立額だけを計上します。"} 基準価額は表示中に自動更新します。</p>
@@ -725,7 +770,7 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
           <span><i class="savings-legend-value"></i>${valueLabel}</span>
           <span><i class="savings-legend-principal"></i>${escapeHtml(valuation.comparisonLabel || "累計積立元本")}</span>
         </div>
-        ${Number.isFinite(valuation.openingValue) ? `<p class="savings-balance-note">開始前の評価額 ${yen(valuation.openingValue)}${valuation.status === "reconstructed" ? `（${escapeHtml(valuation.anchor.date)}の入力評価額から逆算・基準価額 ${escapeHtml(valuation.anchor.navDate)}）` : ""}。${principalKnown ? `開始前の投資元本 ${yen(valuation.openingPrincipal)}。` : "開始前の投資元本は未入力のため、過去からの総損益は未算出です。"}</p>` : ""}
+        ${Number.isFinite(valuation.openingValue) ? `<p class="savings-balance-note">開始前の評価額 ${yen(valuation.openingValue)}${valuation.status === "reconstructed" ? `（${escapeHtml(valuation.anchor.date)}の入力評価額から逆算・基準価額 ${escapeHtml(valuation.anchor.navDate)}）` : ""}。${principalKnown ? `計算に使用した開始前元本 ${yen(valuation.openingPrincipal)}${valuation.principalAnchor ? "（基準日の元本から登録積立を控除）" : ""}。元本は投入額、評価額は値動きを含む金額で、同じとは限りません。` : valuation.openingValue > 0 ? "開始前の投資元本は未入力のため、過去からの総損益は未算出です。" : "開始前の保有分なし。"} グラフの最初の点は初回月の積立後です。</p>` : ""}
         ${savingsValuationError(valuation.status) ? `<p class="savings-balance-error" role="status">${escapeHtml(savingsValuationError(valuation.status))}</p>` : ""}
         ${valuationSummary}
         <div class="performance-chart-wrap savings-chart-wrap"><canvas data-savings-chart="${escapeAttr(plan.id)}" aria-label="基準価額換算の参考評価額と累計積立元本の比較"></canvas><div class="chart-tooltip" data-savings-tooltip hidden></div></div>
@@ -745,13 +790,17 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
             <label><span>ファンドコード</span><input name="symbol" maxlength="14" required pattern="[A-Za-z0-9]{4,14}" autocapitalize="characters" value="${escapeAttr(plan.symbol)}"></label>
           </div>
         </details>
+        <div class="savings-account-field"><label><span>口座区分</span><select name="accountType">${savingsAccountOptions(plan)}</select></label></div>
         <div class="savings-balance-fields">
           <label><span>現在の評価額</span><input name="currentValue" type="number" min="0" step="1" inputmode="numeric" value="${Number(plan.currentValue) || 0}"></label>
+          <label><span>基準日の取得元本・拠出金（任意）</span><input name="currentPrincipal" type="number" min="0" step="1" inputmode="numeric" placeholder="証券会社の元本表示" value="${Number.isFinite(plan.currentPrincipal) ? plan.currentPrincipal : ""}"></label>
           <label><span>評価額の基準日</span><input name="currentValueDate" type="date" max="${escapeAttr(localDateKey())}" value="${escapeAttr(plan.currentValueDate || localDateKey())}"></label>
           <label><span>評価額の起点</span><select name="balanceBasis"><option value="current" ${plan.balanceBasis !== "opening" ? "selected" : ""}>現在額から</option><option value="opening" ${plan.balanceBasis === "opening" ? "selected" : ""}>開始前残高</option></select></label>
           <label><span>開始前の評価額</span><input name="openingValue" type="number" min="0" step="1" inputmode="numeric" value="${Number.isFinite(plan.openingValue) ? plan.openingValue : ""}" ${plan.balanceBasis === "opening" ? "required" : "disabled"}></label>
           <label><span>開始前の投資元本（任意）</span><input name="openingPrincipal" type="number" min="0" step="1" inputmode="numeric" placeholder="不明なら空欄" value="${Number.isFinite(plan.openingPrincipal) ? plan.openingPrincipal : ""}"></label>
+          <label><span>積立開始月</span><input name="startMonth" type="month" required value="${escapeAttr(plan.schedule?.[0]?.month || localMonthKey())}"></label>
         </div>
+        <p class="savings-history-note">基準日の元本を入力した場合、総損益ではこちらを優先します。評価額と元本は同じ基準日の金額です。</p>
         <label class="checkbox-line"><input name="currentMonthIncluded" type="checkbox" ${plan.currentMonthIncluded ? "checked" : ""}><span>評価額に基準月の積立を含む</span></label>
         <div class="savings-schedule-head"><h4>月ごとの積立設定</h4><label class="checkbox-line"><input name="recurring" type="checkbox" ${plan.recurring ? "checked" : ""}><span>継続</span></label></div>
         <p>継続中は直近の設定額を翌月以降に反映します。特定月の設定があれば、その月から金額が切り替わります。</p>
@@ -769,10 +818,27 @@ function savingsValuationError(status = "") {
     missing_contribution_nav: "逆算に必要な積立月の基準価額が不足しています。価格履歴を再取得してください。",
     missing_opening_value: "開始前の評価額を入力してください。",
     future_anchor_date: "評価基準日は今日以前の日付を指定してください。",
+    inconsistent_principal: "基準日の取得元本が登録積立の合計を下回ります。元本・基準日・開始月・積立額を確認してください。",
+    missing_balance: "既存保有の元本があるため、現在の評価額か開始前の評価額も入力してください。積立分だけでは全保有の損益を計算できません。",
   })[status] || "";
 }
 
+function syncSavingsStartMonth(form, target) {
+  const start = form.elements.namedItem("startMonth");
+  const first = form.querySelector('.savings-schedule-row [name="scheduleMonth"]');
+  if (!start || !first) return;
+  if (target === start) first.value = start.value;
+  else if (target === first) start.value = first.value;
+}
+
 function updateSavingsBalanceInputs(form) {
+  const account = form.elements.namedItem("accountType");
+  if (account) {
+    const isIdeco = form.elements.namedItem("provider")?.value === "ideco";
+    for (const option of account.options) option.disabled = isIdeco ? option.value !== "ideco" : option.value === "ideco";
+    if (isIdeco) account.value = "ideco";
+    else if (account.value === "ideco") account.value = "unspecified";
+  }
   const opening = form.elements.namedItem("openingValue");
   if (!opening) return;
   const direct = form.elements.namedItem("balanceBasis")?.value === "opening";
@@ -831,7 +897,56 @@ function savingsSeriesIsFresh(cached, fromDate = "", nowValue = new Date()) {
 }
 
 function hasPendingSavingsEdit() {
-  return Boolean(document.activeElement?.closest(".savings-plan-form") || els.savingsPlans?.querySelector('[data-savings-form][data-dirty="true"]'));
+  return savingsOrderSaving || Boolean(document.activeElement?.closest(".savings-plan-form") || els.savingsPlans?.querySelector('[data-savings-form][data-dirty="true"]'));
+}
+
+function renderSavingsOrder() {
+  if (!els.savingsOrder || !els.savingsOrderList) return;
+  els.savingsOrder.hidden = state.savingsPlans.length < 2;
+  els.savingsOrderList.innerHTML = state.savingsPlans.map((plan, index) => `
+    <li data-savings-order-id="${escapeAttr(plan.id)}">
+      <span class="savings-order-rank">${index + 1}</span>
+      <div class="savings-order-name"><strong>${escapeHtml(plan.name)}</strong><small>${escapeHtml(savingsProviderName(plan.provider))} ・ ${escapeHtml(plan.symbol)}</small></div>
+      <button type="button" class="icon savings-order-button" data-savings-move="up" data-savings-order-plan="${escapeAttr(plan.id)}" aria-label="${escapeAttr(plan.name)}を上へ移動" title="上へ移動" ${index === 0 || savingsOrderSaving ? "disabled" : ""}><img src="/icons/arrow-up.svg" width="18" height="18" alt="" aria-hidden="true"></button>
+      <button type="button" class="icon savings-order-button" data-savings-move="down" data-savings-order-plan="${escapeAttr(plan.id)}" aria-label="${escapeAttr(plan.name)}を下へ移動" title="下へ移動" ${index === state.savingsPlans.length - 1 || savingsOrderSaving ? "disabled" : ""}><img src="/icons/arrow-down.svg" width="18" height="18" alt="" aria-hidden="true"></button>
+    </li>`).join("");
+  els.savingsOrderList.setAttribute("aria-busy", String(savingsOrderSaving));
+}
+
+async function moveSavingsPlan(id, direction) {
+  if (savingsOrderSaving) return;
+  if (els.savingsCreateForm?.querySelector('[type="submit"]')?.disabled || els.savingsPlans?.querySelector('[type="submit"]:disabled, [data-savings-delete]:disabled')) {
+    if (els.savingsOrderStatus) els.savingsOrderStatus.textContent = "商品の保存完了後に並び替えてください。";
+    return;
+  }
+  const from = state.savingsPlans.findIndex((plan) => plan.id === id);
+  const to = from + (direction === "up" ? -1 : direction === "down" ? 1 : 0);
+  if (from < 0 || from === to || to < 0 || to >= state.savingsPlans.length) return;
+  const ids = state.savingsPlans.map((plan) => plan.id);
+  [ids[from], ids[to]] = [ids[to], ids[from]];
+  savingsOrderSaving = true;
+  if (els.savingsOrderStatus) els.savingsOrderStatus.textContent = "表示順を保存中";
+  renderSavingsOrder();
+  try {
+    const payload = await request("/api/savings-plans/reorder", { method: "POST", body: JSON.stringify({ ids }) });
+    if (!Array.isArray(payload.plans)) throw new Error("表示順を確認できませんでした。再読み込みしてください。");
+    state.savingsPlans = payload.plans;
+    // Move existing cards so unsaved fields, open sections and chart handlers survive.
+    const cards = new Map([...els.savingsPlans.querySelectorAll("[data-savings-plan]")].map((card) => [card.dataset.savingsPlan, card]));
+    for (const plan of state.savingsPlans) {
+      const card = cards.get(plan.id);
+      if (card) els.savingsPlans.append(card);
+    }
+    if (els.savingsOrderStatus) els.savingsOrderStatus.textContent = "表示順を保存しました。";
+  } catch (error) {
+    if (els.savingsOrderStatus) els.savingsOrderStatus.textContent = error.message || "表示順を保存できませんでした。";
+  } finally {
+    savingsOrderSaving = false;
+    renderSavingsOrder();
+    const row = [...els.savingsOrderList.querySelectorAll("[data-savings-order-id]")].find((item) => item.dataset.savingsOrderId === id);
+    const sameDirection = row?.querySelector(`[data-savings-move="${direction}"]`);
+    (sameDirection && !sameDirection.disabled ? sameDirection : row?.querySelector("button:not(:disabled)"))?.focus({ preventScroll: true });
+  }
 }
 
 async function syncSavingsView() {
@@ -853,6 +968,11 @@ async function syncSavingsView() {
 }
 
 async function saveSavingsPlan(form) {
+  if (savingsOrderSaving) {
+    const status = form.querySelector("[data-savings-status]");
+    if (status) status.textContent = "表示順の保存完了後に保存してください。";
+    return;
+  }
   const id = form.dataset.savingsForm || "";
   const original = state.savingsPlans.find((plan) => plan.id === id);
   const formData = new FormData(form);
@@ -863,6 +983,10 @@ async function saveSavingsPlan(form) {
   const status = form.querySelector("[data-savings-status]");
   if (!schedule.length) {
     if (status) status.textContent = "月と金額を1件以上入力してください。";
+    return;
+  }
+  if (schedule.slice(1).some((item) => item.month <= schedule[0].month)) {
+    if (status) status.textContent = "積立開始月は、その後の金額変更月より前にしてください。";
     return;
   }
   if (status) status.textContent = "保存中";
@@ -879,9 +1003,11 @@ async function saveSavingsPlan(form) {
       body: JSON.stringify({ plan: {
         ...original,
         provider: formData.get("provider"),
+        accountType: formData.get("accountType"),
         name: String(formData.get("name") || "").trim(),
         symbol,
         currentValue: Number(formData.get("currentValue")) || 0,
+        currentPrincipal: formData.get("currentPrincipal") === "" ? null : Number(formData.get("currentPrincipal")),
         currentValueDate: String(formData.get("currentValueDate") || ""),
         currentMonthIncluded: formData.has("currentMonthIncluded"),
         balanceBasis: formData.get("balanceBasis"),
@@ -8084,6 +8210,10 @@ els.viewButtons.forEach((button) => {
 
 els.savingsCreateForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (savingsOrderSaving) {
+    if (els.savingsFormStatus) els.savingsFormStatus.textContent = "表示順の保存完了後に登録してください。";
+    return;
+  }
   if (!els.savingsCreateForm.reportValidity()) return;
   const form = els.savingsCreateForm;
   const formData = new FormData(form);
@@ -8102,9 +8232,11 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify({ plan: {
         provider: formData.get("provider"),
+        accountType: formData.get("accountType"),
         name: String(formData.get("name") || "").trim(),
         symbol,
         currentValue: Number(formData.get("currentValue")) || 0,
+        currentPrincipal: formData.get("currentPrincipal") === "" ? null : Number(formData.get("currentPrincipal")),
         currentValueDate: String(formData.get("currentValueDate") || localDateKey()),
         currentMonthIncluded: formData.has("currentMonthIncluded"),
         balanceBasis: formData.get("balanceBasis"),
@@ -8135,12 +8267,19 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
 
 els.savingsCreateForm?.addEventListener("change", () => updateSavingsBalanceInputs(els.savingsCreateForm));
 
+els.savingsOrderList?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-savings-move]");
+  if (!button || button.disabled) return;
+  await moveSavingsPlan(button.dataset.savingsOrderPlan, button.dataset.savingsMove);
+});
+
 for (const eventName of ["input", "change"]) {
   els.savingsPlans?.addEventListener(eventName, (event) => {
     const form = event.target.closest("[data-savings-form]");
     if (form) {
       form.dataset.dirty = "true";
       updateSavingsBalanceInputs(form);
+      syncSavingsStartMonth(form, event.target);
     }
   });
 }
@@ -8169,10 +8308,16 @@ els.savingsPlans?.addEventListener("click", async (event) => {
     const form = removeButton.closest(".savings-plan-form");
     if (form) form.dataset.dirty = "true";
     removeButton.closest(".savings-schedule-row")?.remove();
+    const first = form?.querySelector('.savings-schedule-row [name="scheduleMonth"]');
+    if (first) syncSavingsStartMonth(form, first);
     return;
   }
   const deleteButton = event.target.closest("[data-savings-delete]");
   if (deleteButton) {
+    if (savingsOrderSaving) {
+      toast("表示順の保存完了後に削除してください。");
+      return;
+    }
     const id = deleteButton.dataset.savingsDelete;
     deleteButton.disabled = true;
     try {

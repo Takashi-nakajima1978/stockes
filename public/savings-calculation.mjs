@@ -9,6 +9,43 @@ export function scheduledContribution(schedule = [], month = "", recurring = fal
   return prior ? Number(prior.amount) : 0;
 }
 
+export function savingsAccountType(plan = {}) {
+  if (plan.provider === "ideco") return "ideco";
+  return ["nisa-tsumitate", "nisa-growth", "taxable"].includes(plan.accountType) ? plan.accountType : "unspecified";
+}
+
+export function buildSavingsTaxComparison(valuation = {}, plan = {}) {
+  const accountType = savingsAccountType(plan);
+  const complete = !(valuation.unpricedMonths?.length);
+  const contributionOnly = valuation.openingValue === 0 && Number.isFinite(valuation.contributionPrincipal);
+  const totalKnown = complete && (Number.isFinite(valuation.totalPnl) || contributionOnly);
+  const grossGain = totalKnown
+    ? Number.isFinite(valuation.totalPnl) ? valuation.totalPnl : valuation.latestValue - valuation.contributionPrincipal
+    : valuation.periodChange;
+  const baseAmount = totalKnown ? valuation.totalPrincipal : valuation.openingValue + valuation.contributionPrincipal;
+  if (!Number.isFinite(valuation.latestValue) || !Number.isFinite(grossGain) || !Number.isFinite(baseAmount)) {
+    return { available: false, accountType };
+  }
+  // A missing acquisition cost permits a period-only comparison, never an actual redemption tax.
+  const tax = complete ? Math.max(0, grossGain) * 0.20315 : null;
+  const gainPct = baseAmount > 0 ? grossGain / baseAmount * 100 : null;
+  return {
+    available: true,
+    complete,
+    accountType,
+    basis: totalKnown ? "total" : "period",
+    grossGain,
+    baseAmount,
+    gainPct,
+    nisaGain: complete ? grossGain : null,
+    taxableGain: complete ? grossGain - tax : null,
+    tax,
+    taxableGainPct: complete && baseAmount > 0 ? (grossGain - tax) / baseAmount * 100 : null,
+    nisaProceeds: totalKnown ? valuation.latestValue : null,
+    taxableProceeds: totalKnown ? valuation.latestValue - tax : null,
+  };
+}
+
 export function buildSavingsContributionHistory(
   plan = {},
   throughMonth = new Date().toISOString().slice(0, 7),
@@ -63,13 +100,14 @@ export function buildSavingsValuationHistory(contributionHistory = {}, navSeries
   for (const quote of quotes) if (!quoteByMonth.has(quote.date.slice(0, 7))) quoteByMonth.set(quote.date.slice(0, 7), quote);
   const anchorDate = plan.currentValueDate || quotes.at(-1)?.date || "";
   const anchored = plan.balanceBasis !== "opening" && Number(plan.currentValue) > 0;
-  const anchorQuote = anchored ? quotes.filter((quote) => quote.date <= anchorDate).at(-1) : null;
+  const snapshotPrincipalKnown = plan.currentPrincipal !== null && plan.currentPrincipal !== undefined && plan.currentPrincipal !== "" && Number.isFinite(Number(plan.currentPrincipal)) && Number(plan.currentPrincipal) >= 0;
+  const anchorQuote = anchored || snapshotPrincipalKnown ? quotes.filter((quote) => quote.date <= anchorDate).at(-1) : null;
   const contributions = (Array.isArray(contributionHistory.rows) ? contributionHistory.rows : [])
     .filter((row) => Number(row.amount) > 0)
     .map((row) => {
       let quote = quoteByMonth.get(row.month);
       // A snapshot excluding its own month's purchase must precede that contribution.
-      if (anchored && !plan.currentMonthIncluded && row.month === anchorDate.slice(0, 7) && quote?.date <= anchorDate) {
+      if ((anchored || snapshotPrincipalKnown) && !plan.currentMonthIncluded && row.month === anchorDate.slice(0, 7) && quote?.date <= anchorDate) {
         quote = quotes.find((point) => point.date > anchorDate && point.date.startsWith(`${row.month}-`));
       }
       return quote ? { date: quote.date, amount: Number(row.amount), units: Number(row.amount) / quote.close, month: row.month } : null;
@@ -81,9 +119,9 @@ export function buildSavingsValuationHistory(contributionHistory = {}, navSeries
     .map((row) => row.month);
   const empty = (status) => ({ rows: [], principalSeries: [], unpricedMonths, totalPrincipal: 0, latestValue: null, status });
   if (!quotes.length) return empty("missing_nav");
-  if (anchored && plan.today && anchorDate > plan.today) return empty("future_anchor_date");
-  if (anchored && !anchorQuote) return empty("missing_anchor_nav");
-  if (anchored && unpricedMonths.some((month) => month <= anchorDate.slice(0, 7))) return empty("missing_contribution_nav");
+  if ((anchored || snapshotPrincipalKnown) && plan.today && anchorDate > plan.today) return empty("future_anchor_date");
+  if ((anchored || snapshotPrincipalKnown) && !anchorQuote) return empty("missing_anchor_nav");
+  if ((anchored || snapshotPrincipalKnown) && unpricedMonths.some((month) => month <= anchorDate.slice(0, 7))) return empty("missing_contribution_nav");
 
   const openingSpecified = plan.openingValue !== null && plan.openingValue !== "" && Number.isFinite(Number(plan.openingValue)) && Number(plan.openingValue) >= 0;
   let openingUnits = plan.balanceBasis === "opening" && openingSpecified ? Number(plan.openingValue) / quotes[0].close : 0;
@@ -96,8 +134,12 @@ export function buildSavingsValuationHistory(contributionHistory = {}, navSeries
   }
   if (!contributions.length && !(openingUnits > 0)) return empty("no_holdings");
   const openingValue = openingUnits * quotes[0].close;
-  const principalKnown = plan.openingPrincipal !== null && plan.openingPrincipal !== "" && Number.isFinite(Number(plan.openingPrincipal)) && Number(plan.openingPrincipal) >= 0;
-  const openingPrincipal = principalKnown ? Number(plan.openingPrincipal) : 0;
+  const enteredOpeningPrincipalKnown = plan.openingPrincipal !== null && plan.openingPrincipal !== undefined && plan.openingPrincipal !== "" && Number.isFinite(Number(plan.openingPrincipal)) && Number(plan.openingPrincipal) >= 0;
+  const principalKnown = snapshotPrincipalKnown || enteredOpeningPrincipalKnown;
+  const snapshotContributions = snapshotPrincipalKnown ? contributions.filter((item) => item.date <= anchorQuote.date).reduce((sum, item) => sum + item.amount, 0) : 0;
+  const openingPrincipal = snapshotPrincipalKnown ? Number(plan.currentPrincipal) - snapshotContributions : enteredOpeningPrincipalKnown ? Number(plan.openingPrincipal) : 0;
+  if (openingPrincipal < 0) return empty("inconsistent_principal");
+  if (openingPrincipal > 0 && !anchored && plan.balanceBasis !== "opening") return empty("missing_balance");
   const comparisonBase = principalKnown ? openingPrincipal : openingValue;
   const comparisonLabel = principalKnown ? "投資元本（開始前を含む）" : openingValue > 0 ? "開始時評価額＋積立" : "累計積立元本";
 
@@ -129,6 +171,8 @@ export function buildSavingsValuationHistory(contributionHistory = {}, navSeries
     comparisonLabel,
     openingValue,
     openingPrincipal: principalKnown ? openingPrincipal : null,
+    principalAnchor: snapshotPrincipalKnown ? { date: anchorDate, amount: Number(plan.currentPrincipal), contributions: snapshotContributions } : null,
+    principalDifference: snapshotPrincipalKnown && enteredOpeningPrincipalKnown ? openingPrincipal - Number(plan.openingPrincipal) : null,
     periodChange: latest ? latest.value - openingValue - principal : null,
     totalPnl: principalKnown && latest && !unpricedMonths.length ? latest.value - openingPrincipal - principal : null,
     status: anchored ? "reconstructed" : plan.balanceBasis === "opening" ? "opening" : "contributions",

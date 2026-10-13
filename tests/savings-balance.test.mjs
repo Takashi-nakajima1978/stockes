@@ -83,3 +83,33 @@ test("zero initial principal is explicit, while an empty initial principal stays
   assert.equal(unknown.openingPrincipal, null);
   assert.equal(unknown.totalPnl, null);
 });
+
+test("a brokerage contribution total reconciles current profit without rewriting historical contributions", () => {
+  const input = { currentValue: 2467742, currentPrincipal: 2342597, openingPrincipal: 2103556, currentValueDate: "2026-10-13", today: "2026-10-13", currentMonthIncluded: false };
+  const april = buildSavingsContributionHistory({ recurring: true, schedule: [{ month: "2026-04", amount: 37800 }] }, "2026-09");
+  const prices = Array.from({ length: 7 }, (_, i) => ({ date: `2026-${String(i + 4).padStart(2, "0")}-05`, close: 10000 + i * 100 }));
+  const result = buildSavingsValuationHistory(april, prices, input);
+  assert.equal(april.rows.length, 6);
+  near(april.total, 226800);
+  near(result.latestValue, 2467742);
+  near(result.totalPrincipal, 2342597);
+  near(result.totalPnl, 125145);
+  near(result.openingPrincipal, 2115797);
+  near(result.principalDifference, 12241);
+  assert.equal(input.openingPrincipal, 2103556);
+  assert.equal(april.rows[0].month, "2026-04");
+  const later = buildSavingsValuationHistory(buildSavingsContributionHistory({ recurring: true, schedule: [{ month: "2026-04", amount: 37800 }] }, "2026-10"), [...prices, { date: "2026-10-20", close: 11000 }], { ...input, today: "2026-11-01" });
+  near(later.totalPrincipal, 2342597 + 37800);
+  near(later.rows.find((row) => row.date === "2026-10-05").value, 2467742);
+  near(later.principalDifference, 12241);
+});
+
+test("a snapshot principal cannot invent negative initial cost or work without required NAV quotes", () => {
+  assert.equal(buildSavingsValuationHistory(history, series, { currentPrincipal: 1000, currentValue: 100000 }).status, "inconsistent_principal");
+  assert.equal(buildSavingsValuationHistory(history, series, { currentPrincipal: 100000, currentValueDate: "2026-02-01" }).status, "missing_anchor_nav");
+  assert.equal(buildSavingsValuationHistory(history, series, { currentPrincipal: 100000, currentValueDate: "2026-12-01", today: "2026-06-01" }).status, "future_anchor_date");
+  const incomplete = buildSavingsValuationHistory(history, series.filter((point) => !point.date.startsWith("2026-04")), { currentPrincipal: 100000 });
+  assert.equal(incomplete.status, "missing_contribution_nav");
+  assert.equal(buildSavingsValuationHistory(history, series, { currentPrincipal: 100000 }).status, "missing_balance");
+  assert.equal(buildSavingsValuationHistory(history, series, { openingPrincipal: 100000 }).status, "missing_balance");
+});

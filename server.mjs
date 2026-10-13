@@ -10,6 +10,7 @@ import { splitLearningHistory, returnEvidence, hasProfitableEvidence, afterCostR
 import { createDataStore, createSerialQueue } from "./data-store.mjs";
 import { createVersionedLoader, createCachedJsonSender, responseRepresentation } from "./response-cache.mjs";
 import { createBackupManager, MAX_BACKUP_BYTES } from "./backup.mjs";
+import { savingsAccountType } from "./public/savings-calculation.mjs";
 
 const runPriceRefresh = createSingleFlight();
 const runHistoryFetch = createSingleFlight();
@@ -1313,6 +1314,18 @@ async function handleApi(req, res, url) {
       sales: body.sales,
     });
     return json(res, 200, { holding, analysis: await readCryptoAnalysisCache() });
+  }
+
+  if (url.pathname === "/api/savings-plans/reorder" && req.method === "POST") {
+    const body = await readJson(req);
+    const plans = await readSavingsPlans();
+    const ids = Array.isArray(body.ids) && body.ids.length <= 50
+      ? body.ids.filter((id) => typeof id === "string")
+      : [];
+    if (!ids.some((id) => plans.some((plan) => plan.id === id))) {
+      return json(res, 400, { error: "並び替える積立商品を確認してください。" });
+    }
+    return json(res, 200, { plans: await saveSavingsPlans(orderSavingsPlans(plans, ids)) });
   }
 
   if (url.pathname === "/api/savings-plans" && req.method === "POST") {
@@ -15774,6 +15787,18 @@ async function saveSavingsPlans(plans) {
   return normalized;
 }
 
+function orderSavingsPlans(plans, ids) {
+  const byId = new Map(plans.map((plan) => [plan.id, plan]));
+  const seen = new Set();
+  const ordered = [];
+  for (const id of ids) {
+    if (!byId.has(id) || seen.has(id)) continue;
+    ordered.push(byId.get(id));
+    seen.add(id);
+  }
+  return ordered.concat(plans.filter((plan) => !seen.has(plan.id)));
+}
+
 function normalizeSavingsPlan(plan = {}) {
   const provider = ["rakuten", "sbi", "ideco"].includes(String(plan.provider || ""))
     ? String(plan.provider)
@@ -15794,12 +15819,15 @@ function normalizeSavingsPlan(plan = {}) {
     .sort((a, b) => a.month.localeCompare(b.month));
   const openingValue = nullableNonNegativeNumber(plan.openingValue);
   const openingPrincipal = nullableNonNegativeNumber(plan.openingPrincipal);
+  const currentPrincipal = nullableNonNegativeNumber(plan.currentPrincipal);
   return {
     id: /^[a-zA-Z0-9_-]{1,64}$/.test(String(plan.id || "")) ? String(plan.id) : "",
     provider,
+    accountType: savingsAccountType({ provider, accountType: plan.accountType }),
     name: cleanText(plan.name || "").slice(0, 100),
     symbol: normalizeFundCode(plan.symbol || ""),
     currentValue: Math.max(0, Math.min(1000000000, Number(plan.currentValue) || 0)),
+    currentPrincipal: currentPrincipal === null ? null : Math.min(1000000000, currentPrincipal),
     currentValueDate: normalizeDate(plan.currentValueDate) || jstDate(plan.updatedAt),
     currentMonthIncluded: Boolean(plan.currentMonthIncluded),
     balanceBasis: plan.balanceBasis === "opening" ? "opening" : "current",

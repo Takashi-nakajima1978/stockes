@@ -6,7 +6,7 @@ import os from "node:os";
 import vm from "node:vm";
 import { gzip, gunzipSync } from "node:zlib";
 import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, preserveNewerPrices } from "../refresh-control.mjs";
-import { buildSavingsContributionHistory, buildSavingsValuationHistory, scheduledContribution } from "../public/savings-calculation.mjs";
+import { buildSavingsContributionHistory, buildSavingsValuationHistory, scheduledContribution, savingsAccountType } from "../public/savings-calculation.mjs";
 import { createDataStore } from "../data-store.mjs";
 import { responseRepresentation } from "../response-cache.mjs";
 import { splitLearningHistory, returnEvidence, hasProfitableEvidence, afterCostReturn } from "../investment-evidence.mjs";
@@ -24,7 +24,7 @@ function loadFunction(source, name, globals) {
   const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
   assert.notEqual(start, -1);
   const end = source.indexOf("\n}", start) + 2;
-  return vm.runInNewContext(`${source.slice(start, end)}; ${name}`, { splitLearningHistory, returnEvidence, hasProfitableEvidence, afterCostReturn, ...globals });
+  return vm.runInNewContext(`${source.slice(start, end)}; ${name}`, { splitLearningHistory, returnEvidence, hasProfitableEvidence, afterCostReturn, savingsAccountType, ...globals });
 }
 
 function loadFunctionBlock(source, name, endName, globals = {}) {
@@ -2701,6 +2701,7 @@ test("savings screen tracks actual monthly contributions and supports editing th
     name: "全世界株式",
     symbol: "0331418a",
     currentValue: 250000,
+    currentPrincipal: 200000,
     currentValueDate: "2026-10-13",
     openingValue: 100000,
     openingPrincipal: 80000,
@@ -2715,16 +2716,27 @@ test("savings screen tracks actual monthly contributions and supports editing th
   });
   assert.equal(savedPlan.symbol, "0331418A");
   assert.equal(savedPlan.currentValue, 250000);
+  assert.equal(savedPlan.currentPrincipal, 200000);
   assert.equal(savedPlan.openingValue, 100000);
   assert.equal(savedPlan.openingPrincipal, 80000);
   assert.equal(savedPlan.currentValueDate, "2026-10-13");
   assert.equal(savedPlan.balanceBasis, "opening");
   assert.equal(savedPlan.currentMonthIncluded, false);
+  assert.equal(savedPlan.accountType, "ideco");
   const legacy = normalizeSavingsPlan({ symbol: "03311065", currentValue: 2467742, updatedAt: "2026-10-12T16:00:00Z" });
   assert.equal(legacy.currentValueDate, "2026-10-13");
   assert.equal(legacy.openingPrincipal, null);
   assert.equal(legacy.openingValue, null);
   assert.equal(legacy.currentMonthIncluded, false);
+  assert.equal(legacy.currentPrincipal, null);
+  assert.equal(legacy.accountType, "unspecified");
+  for (const accountType of ["nisa-tsumitate", "nisa-growth", "taxable"]) {
+    const normalized = normalizeSavingsPlan({ ...legacy, provider: "sbi", accountType });
+    assert.equal(normalized.accountType, accountType);
+    assert.equal(normalized.currentValue, legacy.currentValue);
+  }
+  assert.equal(normalizeSavingsPlan({ provider: "ideco", accountType: "nisa-tsumitate" }).accountType, "ideco");
+  assert.equal(normalizeSavingsPlan({ provider: "rakuten", accountType: "ideco" }).accountType, "unspecified");
   assert.equal(JSON.stringify(savedPlan.schedule), JSON.stringify([{ month: "2026-10", amount: 30000 }]));
 });
 
