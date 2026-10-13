@@ -5,6 +5,8 @@ const yenFormats = [0, 1].map((maximumFractionDigits) => new Intl.NumberFormat("
 const dollarFormats = [0, 2].map((maximumFractionDigits) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits }));
 const compactDollarFormat = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 });
 const computationCache = new WeakMap();
+const forecastHistoryRequests = new Map();
+const DECISION_FORECAST_VERSION = "decision-weekly-calibrated-v1";
 
 function forecastDateKey() {
   return new Date().toISOString().slice(0, 10);
@@ -2125,12 +2127,12 @@ function renderUsDetail() {
         <h4>株価推移・3か月予測</h4>
         <span>${escapeHtml(stock.symbol)}</span>
       </div>
+      <section class="forecast-review" data-us-forecast-review aria-label="予測の信頼度" hidden></section>
       <div class="chart-frame embedded-chart">
         <canvas data-us-price-chart aria-label="${escapeAttr(stock.name)}の過去2年9か月実績と今後3か月予測"></canvas>
         <div class="chart-tooltip" data-us-chart-tooltip hidden></div>
       </div>
       <div class="chart-timing" data-us-chart-timing hidden></div>
-      <p class="forecast-review" data-us-forecast-review hidden></p>
     </section>
     <section class="decision-card">
       <div>
@@ -2171,8 +2173,8 @@ function renderUsDetail() {
     </section>
   `;
   attachUsPositionForm(stock.symbol);
+  renderForecastReview(els.usDetail.querySelector("[data-us-forecast-review]"), forecastReview, { market: "us", symbol: stock.symbol, forecast, formatter: usd });
   renderEmbeddedPriceChart(els.usDetail, price.series || [], usd, chartTradeMarkers(stock), price, forecast);
-  renderForecastReview(els.usDetail.querySelector("[data-us-forecast-review]"), forecastReview);
 }
 
 function renderCrypto() {
@@ -3011,9 +3013,9 @@ function renderSelection() {
   const price = analysis?.price || {};
   const forecastReview = stock ? cachedComputation(price, `review:${stock.symbol}:${forecastDateKey()}`, () => evaluateDecisionForecast(price.series || [], stock.symbol)) : null;
   const forecast = stock ? cachedComputation(price, `forecast:${stock.symbol}:${forecastDateKey()}`, () => decisionChartForecast(price.series || [], price, stock.symbol, new Date(), forecastReview)) : [];
+  renderForecastReview(els.forecastReview, forecastReview, { market: "jp", symbol: stock?.symbol, forecast, formatter: yen });
   drawChart(price.series || [], stock ? chartTradeMarkers(stock) : [], price, forecast);
   renderChartTiming(price);
-  renderForecastReview(els.forecastReview, forecastReview);
 
   if (!stock) {
     els.decisionDetail.innerHTML = "<p>銘柄を追加してください。</p>";
@@ -3130,23 +3132,83 @@ function evaluateDecisionForecast(series = [], symbol = "", nowValue = new Date(
   };
 }
 
-function renderForecastReview(node, review = null) {
+function forecastReliabilityText(saved) {
+  if (!saved?.evaluated) return "信頼度：蓄積中（3か月先）";
+  return `信頼度 ${Math.round(saved.confidencePct)}%（3か月先・${saved.evaluated}件${saved.evaluated < 10 ? "・少数データ" : ""}）`;
+}
+
+function forecastReliabilityHtml(review, saved, forecast, formatter, error = "") {
+  const terminal = forecast.at(-1);
+  const count = saved?.evaluated || 0;
+  const percent = (value) => Number.isFinite(value) ? `${value.toFixed(1)}%` : "未評価";
+  const reliabilityLabel = error ? "信頼度：照合できません" : saved ? forecastReliabilityText(saved) : "信頼度：照合中（3か月先）";
+  const status = error || (saved
+    ? `保存 ${saved.saved}件 / 期限待ち ${saved.pending}件${saved.nextTargetDate ? `・次回 ${formatDate(saved.nextTargetDate)}` : ""}${saved.missingActual ? ` / 実績価格待ち ${saved.missingActual}件` : ""}`
+    : "保存した予測を照合中");
+  const comparisons = saved?.comparisons || [];
+  const backtest = review?.evaluated
+    ? `過去再検証（当時の保存予測ではありません）：${review.evaluated}回 / 方向一致 ${percent(review.directionAccuracyPct)} / 騰落率の誤差中央値 ${review.medianAbsoluteErrorPct.toFixed(1)}pt / 予測幅内 ${percent(review.intervalCoveragePct)}。短い学習期間での簡易検証で、上記の信頼度には含めません。`
+    : "過去再検証：価格履歴が不足しています。";
+  return `
+    <div class="forecast-reliability-heading">
+      <div><strong>予測の信頼度</strong><span>${escapeHtml(reliabilityLabel)}</span></div>
+      <div><span>${escapeHtml(formatDate(terminal.date))} の参考予測</span><strong>${escapeHtml(formatter(terminal.value))}</strong></div>
+    </div>
+    <p>当時保存した3か月先の予測価格が、実績価格の±5%以内だった割合${count ? `（${saved.successes} / ${count}件）` : saved ? "。まだ比較できる実績がありません" : ""}。上昇する確率ではありません。</p>
+    ${count ? `<div class="forecast-reliability-metrics">
+      <span>方向一致<strong>${percent(saved.directionAccuracyPct)}</strong></span>
+      <span>平均価格誤差<strong>${percent(saved.meanAbsoluteErrorPct)}</strong></span>
+      <span>価格一定の場合の誤差<strong>${percent(saved.baselineErrorPct)}</strong></span>
+      <span>予測幅に収まった割合<strong>${percent(saved.intervalCoveragePct)}</strong></span>
+    </div>` : ""}
+    <p class="${error ? "forecast-reliability-error" : ""}">${escapeHtml(status)}</p>
+    <details><summary>比較の根拠${count ? `・${count}件` : "・過去再検証"}</summary>
+      <p>1日最初に表示した予測を保存し、同じ銘柄・同じ予測方式の、期間が重ならない予測で集計します${saved?.overlapping ? `（重複 ${saved.overlapping}件を除外）` : ""}。平均価格誤差は予測と実績の差の絶対値を実績価格で割った値です。休場日は翌取引日の終値で照合します。${count && count < 10 ? "評価件数が少ないため、割合は大きく変わります。" : ""}</p>
+      ${comparisons.length ? `<div class="forecast-comparison-scroll"><table class="forecast-comparison-table"><thead><tr><th>予測日</th><th>対象日 / 実績日</th><th>予測価格</th><th>実績価格</th><th>価格誤差</th><th>±5%以内</th></tr></thead><tbody>${comparisons.map((item) => `<tr>
+        <td>${escapeHtml(formatDate(item.issuedDate))}</td><td>${escapeHtml(formatDate(item.targetDate))}<br>${escapeHtml(formatDate(item.outcome.date))}</td>
+        <td>${escapeHtml(formatter(item.predicted))}</td><td>${escapeHtml(formatter(item.outcome.price))}</td>
+        <td>${percent(item.outcome.errorPct)}</td><td>${item.outcome.errorPct <= saved.tolerancePct ? "一致" : "外れ"}</td>
+      </tr>`).join("")}</tbody></table></div><p>直近${comparisons.length}件の比較を表示しています。</p>` : ""}
+      <p>${escapeHtml(backtest)}</p>
+    </details>
+  `;
+}
+
+function renderForecastReview(node, review = null, options = {}) {
   if (!node) return;
-  if (!review?.evaluated) {
+  const { market, symbol, forecast = [], formatter = yen } = options;
+  if (!symbol || !forecast.length) {
+    node.forecastRequestKey = "";
     node.hidden = true;
     node.textContent = "";
     return;
   }
-  const count = review.evaluated;
-  const tested = `${count}回の非重複3か月検証`;
-  const direction = Number.isFinite(review.directionAccuracyPct) ? `方向一致 ${Math.round(review.directionAccuracyPct)}%` : "方向一致 -";
-  const error = Number.isFinite(review.medianAbsoluteErrorPct) ? `誤差中央値 ${review.medianAbsoluteErrorPct.toFixed(1)}pt` : "誤差 -";
-  const coverage = Number.isFinite(review.intervalCoveragePct) ? `10〜90%予測幅の捕捉 ${Math.round(review.intervalCoveragePct)}%` : "予測幅の捕捉 -";
-  const correction = count >= 5
-    ? `次回補正: 中心 ${review.biasPct >= 0 ? "+" : ""}${review.biasPct.toFixed(1)}pt・幅 ×${review.rangeMultiplier.toFixed(2)}`
-    : "標本不足のため補正なし（非重複検証5回以上で反映）";
+  const key = `${market}:${symbol}:${forecast[0].date}`;
+  node.forecastRequestKey = key;
   node.hidden = false;
-  node.textContent = `統計予測の過去検証: ${tested} / ${direction} / ${error} / ${coverage}。${correction}`;
+  forecast.reliability ||= { text: "信頼度：照合中（3か月先）" };
+  const show = (saved, error = "") => {
+    forecast.reliability.text = error ? "信頼度：履歴を照合できません" : saved ? forecastReliabilityText(saved) : "信頼度：照合中（3か月先）";
+    if (!node.isConnected || node.forecastRequestKey !== key) return;
+    const open = node.querySelector("details")?.open;
+    node.innerHTML = forecastReliabilityHtml(review, saved, forecast, formatter, error);
+    if (open) node.querySelector("details").open = true;
+  };
+  let cached = forecastHistoryRequests.get(key);
+  if (!cached || Date.now() - cached.time > 5 * 60 * 1000) {
+    cached = { time: Date.now(), saved: null };
+    cached.promise = request("/api/forecast-history", {
+      method: "POST",
+      body: JSON.stringify({ market, symbol, version: DECISION_FORECAST_VERSION, forecast }),
+    }).then((saved) => { cached.saved = saved; return saved; });
+    if (forecastHistoryRequests.size >= 100) forecastHistoryRequests.delete(forecastHistoryRequests.keys().next().value);
+    forecastHistoryRequests.set(key, cached);
+  }
+  show(cached.saved);
+  cached.promise.then((saved) => show(saved)).catch((error) => {
+    forecastHistoryRequests.delete(key);
+    show(null, `予測履歴の保存・照合に失敗しました。${error.message}`);
+  });
 }
 
 function decisionChartForecast(series = [], price = {}, symbol = "", nowValue = new Date(), validation = null) {
@@ -4120,6 +4182,7 @@ function drawChart(series, tradeMarkers = chartState.tradeMarkers || [], price =
       value: point.value,
       low: point.low,
       high: point.high,
+      reliability: forecast.reliability,
       x: xForDate(point.date),
       y: y(point.value),
     }));
@@ -4200,6 +4263,7 @@ function chartPointTooltipHtml(point, formatter) {
     ${range}
     ${principal}
     ${comparison}
+    ${point.kind === "forecast" && point.reliability?.text ? `<small>${escapeHtml(point.reliability.text)}</small>` : ""}
   `;
 }
 
@@ -4416,6 +4480,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
         value: point.value,
         low: point.low,
         high: point.high,
+        reliability: forecast.reliability,
         x: xForDate(point.date),
         y: y(point.value),
       }));

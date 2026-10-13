@@ -1187,7 +1187,9 @@ tr:hover .drag-handle,
 }
 
 .forecast-review {
-  margin: 8px 16px 12px;
+  margin: 12px 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
@@ -1195,6 +1197,35 @@ tr:hover .drag-handle,
 
 .forecast-review[hidden] {
   display: none;
+}
+
+.forecast-reliability-heading {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  color: var(--ink);
+}
+
+.forecast-reliability-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.forecast-reliability-heading strong { font-size: 15px; }
+.forecast-reliability-heading > div:first-child > span { font-weight: 700; color: #155c9a; }
+.forecast-review p { margin: 8px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+.forecast-review details { margin-top: 8px; }
+.forecast-review summary { cursor: pointer; min-height: 32px; padding: 6px 0; }
+.forecast-reliability-error { color: #ae343d; }
+.forecast-reliability-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.forecast-reliability-metrics > span { display: grid; gap: 4px; }
+.forecast-reliability-metrics strong { font-size: 15px; color: var(--ink); }
+.forecast-comparison-scroll { max-width: 100%; overflow-x: auto; }
+.forecast-comparison-table { width: 100%; min-width: 580px; border-collapse: collapse; }
+.forecast-comparison-table th, .forecast-comparison-table td { padding: 8px; text-align: left; border-bottom: 1px solid var(--line); font-size: 12px; }
+@media (max-width: 600px) {
+  .forecast-reliability-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .timing-grid {

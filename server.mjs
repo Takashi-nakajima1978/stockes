@@ -11,6 +11,7 @@ import { createDataStore, createSerialQueue } from "./data-store.mjs";
 import { createVersionedLoader, createCachedJsonSender, responseRepresentation } from "./response-cache.mjs";
 import { createBackupManager, MAX_BACKUP_BYTES } from "./backup.mjs";
 import { savingsAccountType, collectNisaStockPurchases } from "./public/savings-calculation.mjs";
+import { createForecastHistory } from "./forecast-history.mjs";
 
 const runPriceRefresh = createSingleFlight();
 const runHistoryFetch = createSingleFlight();
@@ -21,6 +22,7 @@ const PRICE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataStore = createDataStore(path.join(__dirname, "data"));
+const forecastHistory = createForecastHistory(dataStore);
 const readDataJson = (file) => dataStore.readJson(file);
 const writeDataFile = (file, contents) => dataStore.write(file, contents);
 const cachedResponses = createVersionedLoader();
@@ -895,6 +897,14 @@ function sendBackupFile(res, bytes, name) {
 
 async function handleApi(req, res, url) {
   if (url.pathname.startsWith("/api/backup/")) return handleBackupApi(req, res, url);
+  if (url.pathname === "/api/forecast-history" && req.method === "POST") {
+    const body = await readJson(req);
+    if (!["jp", "us"].includes(body.market)) return json(res, 400, { error: "日本株または米国株を選択してください。" });
+    const cached = await readDataJson(body.market === "us" ? US_ANALYSIS_CACHE_PATH : ANALYSIS_CACHE_PATH);
+    const price = cached.analyses?.find((analysis) => analysis.symbol === body.symbol)?.price;
+    if (!price) return json(res, 404, { error: "この銘柄の保存済み価格がありません。" });
+    return json(res, 200, await forecastHistory.record(body, price));
+  }
   if (url.pathname === "/api/cache-versions" && req.method === "GET") {
     return json(res, 200, { versions: await analysisCacheVersions() });
   }

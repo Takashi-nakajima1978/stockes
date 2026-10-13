@@ -1578,7 +1578,7 @@ test("price charts show visible purchase and sale markers", () => {
   assert.match(appSource, /context\.fillText\("3か月先予測"/);
   assert.match(appSource, /function evaluateDecisionForecast\(/);
   assert.match(appSource, /function renderForecastReview\(/);
-  assert.match(appSource, /過去検証/);
+  assert.match(appSource, /過去再検証/);
 });
 
 test("all forecast charts expose date, value, and forecast interval tooltips", () => {
