@@ -2107,12 +2107,12 @@ function renderUsTable() {
           </div>
         </td>
         <td>${usd(analysis?.price?.current)}</td>
-        <td>${multipleText(fundamentals.trailingPe)}</td>
-        <td>${pct(fundamentals.revenueGrowthPct)}</td>
         <td>${averagePriceCell(position, usd)}</td>
         <td>${shareCount(position.quantity)}</td>
         <td>${positionPnlUsd(position)}</td>
         <td>${dividendCell(position, analysis?.price, usd)}</td>
+        <td>${multipleText(fundamentals.trailingPe)}</td>
+        <td>${pct(fundamentals.revenueGrowthPct)}</td>
         <td>${usStanceBadge(analysis?.ai, stock, position)}</td>
         <td><button type="button" class="icon" data-remove-us="${escapeAttr(stock.symbol)}" aria-label="${escapeAttr(stock.name)}を削除">×</button></td>
       </tr>

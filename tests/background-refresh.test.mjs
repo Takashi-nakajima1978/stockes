@@ -78,6 +78,54 @@ test("Japanese watchlist surfaces unheld stocks with a purchase or sale in the p
   assert.match(appSource, /unheldCandidates = unheld\.filter\(\(stock\) => !recentSymbols\.has\(stock\.symbol\)\)/);
 });
 
+test("US list keeps current and acquisition prices adjacent with matching headers and values", () => {
+  const tableMarkup = indexSource.match(/<table class="manage-table us-manage-table">([\s\S]*?)<\/table>/)?.[1];
+  assert.ok(tableMarkup);
+  const headers = [...tableMarkup.matchAll(/<th>(.*?)<\/th>/g)].map((match) => match[1]);
+  assert.deepEqual(headers, ["銘柄", "現在", "取得/売却", "残株数", "損益", "配当", "PER", "売上成長", "AI確認", ""]);
+  const table = { innerHTML: "", querySelectorAll: () => [] };
+  const usd = (value) => Number.isFinite(value) ? `$${value.toFixed(2)}` : "-";
+  const averagePriceCell = loadFunction(appSource, "averagePriceCell", {});
+  const state = {
+    usStocks: [{ symbol: "TEST", name: "Test Holding", market: "NASDAQ" }],
+    usSelected: "TEST",
+    usAnalyses: { TEST: { price: { current: 210.75 }, fundamentals: { trailingPe: 18.5, revenueGrowthPct: 7.4 } } },
+  };
+  const render = loadFunction(appSource, "renderUsTable", {
+    state,
+    els: { usStockTable: table },
+    positionMetrics: () => ({ purchasePrice: 217.15, averageSellPrice: 308.58, quantity: 14.464 }),
+    hasOpenPosition: () => true,
+    escapeAttr: String,
+    escapeHtml: String,
+    symbolLinkHtml: String,
+    usd,
+    averagePriceCell,
+    shareCount: (value) => `${value}株`,
+    positionPnlUsd: () => "pnl",
+    dividendCell: () => "dividend",
+    multipleText: (value) => `${value}倍`,
+    pct: (value) => `${value}%`,
+    usStanceBadge: () => "stance",
+    attachReorderEvents: () => {},
+    moveUsStock: () => {},
+    saveUsStockOrder: () => {},
+    loadUsStocks: () => {},
+  });
+  render();
+  const cells = [...table.innerHTML.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((match) => match[1]);
+  assert.equal(cells.length, headers.length);
+  assert.equal(cells[1], "$210.75");
+  assert.match(cells[2], /取得<\/em><strong>\$217\.15/);
+  assert.match(cells[2], /売却<\/em><strong>\$308\.58/);
+  assert.deepEqual(cells.slice(3, 9), ["14.464株", "pnl", "dividend", "18.5倍", "7.4%", "stance"]);
+  assert.match(table.innerHTML, /data-us-symbol="TEST"/);
+  assert.match(cells[9], /data-remove-us="TEST"/);
+  state.usStocks = [];
+  render();
+  assert.match(table.innerHTML, /colspan="10"/);
+});
+
 test("late analysis retains newer prices and new research", () => {
   const newer = { symbol: "X", price: { current: 120, fetchedAt: "2026-09-10T01:05:00Z" }, position: { pnl: 20 }, exitPlan: { price: 110 } };
   const analysis = { symbol: "X", price: { current: 100, fetchedAt: "2026-09-10T01:00:00Z" }, thesis: "new research" };

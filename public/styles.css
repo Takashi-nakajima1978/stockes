@@ -867,6 +867,11 @@ table {
   width: 44px;
 }
 
+.us-manage-table th:nth-child(3),
+.us-manage-table td:nth-child(3) {
+  width: 130px;
+}
+
 th,
 td {
   padding: 9px 10px;
