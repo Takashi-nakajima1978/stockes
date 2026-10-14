@@ -78,8 +78,10 @@ test("missing NAV data disables tax comparison and zero principal has no invente
   assert.equal(comparison.taxableGainPct, null);
 });
 
-test("iDeCo remains a separate account type instead of being silently converted to NISA", () => {
+test("iDeCo retains gross performance but has no NISA or taxable payout comparison", () => {
   const comparison = buildSavingsTaxComparison(buildSavingsValuationHistory(history, series), { provider: "ideco" });
   assert.equal(comparison.accountType, "ideco");
-  assert.ok(comparison.nisaGain > comparison.taxableGain, "only a hypothetical NISA/taxable comparison, not an iDeCo payout");
+  assert.equal(comparison.grossGain, 2000);
+  assert.equal(comparison.gainPct, 10);
+  for (const field of ["tax", "nisaGain", "taxableGain", "taxableGainPct", "nisaProceeds", "taxableProceeds"]) assert.equal(comparison[field], null);
 });

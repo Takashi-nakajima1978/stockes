@@ -101,7 +101,8 @@ export function buildSavingsTaxComparison(valuation = {}, plan = {}) {
     return { available: false, accountType };
   }
   // A missing acquisition cost permits a period-only comparison, never an actual redemption tax.
-  const tax = complete ? Math.max(0, grossGain) * 0.20315 : null;
+  const comparable = complete && accountType !== "ideco";
+  const tax = comparable ? Math.max(0, grossGain) * 0.20315 : null;
   const gainPct = baseAmount > 0 ? grossGain / baseAmount * 100 : null;
   return {
     available: true,
@@ -111,12 +112,12 @@ export function buildSavingsTaxComparison(valuation = {}, plan = {}) {
     grossGain,
     baseAmount,
     gainPct,
-    nisaGain: complete ? grossGain : null,
-    taxableGain: complete ? grossGain - tax : null,
+    nisaGain: comparable ? grossGain : null,
+    taxableGain: comparable ? grossGain - tax : null,
     tax,
-    taxableGainPct: complete && baseAmount > 0 ? (grossGain - tax) / baseAmount * 100 : null,
-    nisaProceeds: totalKnown ? valuation.latestValue : null,
-    taxableProceeds: totalKnown ? valuation.latestValue - tax : null,
+    taxableGainPct: comparable && baseAmount > 0 ? (grossGain - tax) / baseAmount * 100 : null,
+    nisaProceeds: comparable && totalKnown ? valuation.latestValue : null,
+    taxableProceeds: comparable && totalKnown ? valuation.latestValue - tax : null,
   };
 }
 

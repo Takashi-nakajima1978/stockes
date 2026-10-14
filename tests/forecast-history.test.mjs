@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { createDataStore } from "../data-store.mjs";
-import { createForecastHistory, settleForecasts, summarizeForecasts, DECISION_FORECAST_VERSION } from "../forecast-history.mjs";
+import { createForecastHistory, forecastPriceFromCache, settleForecasts, summarizeForecasts, DECISION_FORECAST_VERSION } from "../forecast-history.mjs";
+import { SAVINGS_FORECAST_VERSION } from "../savings-forecast.mjs";
 
 const input = (date = "2026-01-14", target = "2026-04-14", symbol = "9005.T", market = "jp") => ({
   symbol, market, version: DECISION_FORECAST_VERSION,
@@ -172,4 +173,44 @@ test("a failed history request is distinct from zero evaluated forecasts", () =>
 
 test("client and persisted forecast model versions agree", () => {
   assert.ok(appSource.includes(`const DECISION_FORECAST_VERSION = "${DECISION_FORECAST_VERSION}";`));
+});
+
+test("BTC/JPY and both FX forecasts use distinct cached series and independent records", async (t) => {
+  const { store, service } = await harness(t);
+  const cache = { btcJpy: price(), usdJpy: price(), eurJpy: price() };
+  for (const [market, symbol, field] of [["crypto", "BTC-JPY", "btcJpy"], ["fx", "USD-JPY", "usdJpy"], ["fx", "EUR-JPY", "eurJpy"]]) {
+    assert.equal(forecastPriceFromCache(cache, market, symbol), cache[field]);
+    await service.record(input("2026-01-14", "2026-04-14", symbol, market), cache[field]);
+  }
+  assert.equal(Object.keys((await store.readJson("forecast-history.json")).instruments).length, 3);
+  assert.equal(forecastPriceFromCache(cache, "fx", "BTC-JPY"), null);
+  await assert.rejects(service.record(input("2026-01-14", "2026-04-14", "BTC-JPY", "fx"), price()), { statusCode: 400 });
+});
+
+test("fund confidence uses only saved one-year predictions, with no mixing of three-month outcomes", async (t) => {
+  const h = await harness(t);
+  const fundInput = { ...input("2026-01-14", "2027-01-14", "03311065", "fund"), version: SAVINGS_FORECAST_VERSION };
+  const first = await h.service.record(fundInput, price());
+  assert.equal(first.confidencePct, null);
+  assert.equal(first.version, SAVINGS_FORECAST_VERSION);
+  await assert.rejects(h.service.record({ ...fundInput, version: DECISION_FORECAST_VERSION }, price()), { statusCode: 409 });
+  await assert.rejects(h.service.record({ ...fundInput, forecast: input().forecast }, price()), { statusCode: 409 });
+  h.setDate("2027-01-15T12:00:00Z");
+  const next = { ...input("2027-01-15", "2028-01-15", "03311065", "fund"), version: SAVINGS_FORECAST_VERSION };
+  const result = await h.service.record(next, price("2027-01-14", 100));
+  assert.equal(result.evaluated, 1);
+  assert.equal(result.confidencePct, 0);
+  assert.equal(result.meanAbsoluteErrorPct, 10);
+  const rendered = html(null, result, next.forecast, String, "", { savings: true, horizon: "1年先" });
+  assert.match(rendered, /1年先・1件/);
+  assert.match(rendered, /基準価額一定の場合/);
+  assert.match(rendered, /評価額そのものの的中率ではありません/);
+  assert.doesNotMatch(rendered, /3か月先/);
+});
+
+test("fund snapshots use Japan's calendar day even before UTC midnight", async (t) => {
+  const h = await harness(t);
+  h.setDate("2026-01-13T16:00:00Z");
+  const review = await h.service.record({ ...input("2026-01-14", "2027-01-14", "03311065", "fund"), version: SAVINGS_FORECAST_VERSION }, price());
+  assert.equal(review.saved, 1);
 });

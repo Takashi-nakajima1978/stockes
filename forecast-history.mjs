@@ -1,9 +1,17 @@
 import { createSerialQueue } from "./data-store.mjs";
+import { SAVINGS_FORECAST_VERSION } from "./savings-forecast.mjs";
 
 export const DECISION_FORECAST_VERSION = "decision-weekly-calibrated-v1";
 const FILE = "forecast-history.json";
 const DAY = 86400000;
 const TOLERANCE_PCT = 5;
+const INSTRUMENT_FIELDS = new Map([["crypto:BTC-JPY", "btcJpy"], ["fx:USD-JPY", "usdJpy"], ["fx:EUR-JPY", "eurJpy"]]);
+
+export function forecastPriceFromCache(cache, market, symbol) {
+  if (["jp", "us"].includes(market)) return cache.analyses?.find((analysis) => analysis.symbol === symbol)?.price;
+  const field = INSTRUMENT_FIELDS.get(`${market}:${symbol}`);
+  return field ? cache[field] : null;
+}
 const dateMs = (date) => /^\d{4}-\d{2}-\d{2}$/.test(date || "") ? Date.parse(`${date}T00:00:00Z`) : NaN;
 const validDate = (date) => Number.isFinite(dateMs(date)) && new Date(dateMs(date)).toISOString().slice(0, 10) === date;
 const positive = (value) => typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -70,26 +78,27 @@ export function summarizeForecasts(records, today, version = DECISION_FORECAST_V
 }
 
 function snapshot(input, price, now) {
-  const today = now.toISOString().slice(0, 10);
   const { market, symbol, version, forecast } = input;
-  if (!["jp", "us"].includes(market) || typeof symbol !== "string" || !/^[A-Z0-9.^=-]{1,20}$/.test(symbol)) {
+  const fund = market === "fund";
+  const today = fund ? new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(now) : now.toISOString().slice(0, 10);
+  if ((!["jp", "us", "fund"].includes(market) && !INSTRUMENT_FIELDS.has(`${market}:${symbol}`)) || typeof symbol !== "string" || !/^[A-Z0-9.^=-]{1,20}$/.test(symbol)) {
     throw failure("予測の対象銘柄が正しくありません。");
   }
-  if (version !== DECISION_FORECAST_VERSION) throw failure("予測の形式が更新されました。画面を再読み込みしてください。", 409);
-  if (!Array.isArray(forecast) || forecast.length < 2 || forecast.length > 20) throw failure("予測データが不足しています。");
+  if (version !== (fund ? SAVINGS_FORECAST_VERSION : DECISION_FORECAST_VERSION)) throw failure("予測の形式が更新されました。画面を再読み込みしてください。", 409);
+  if (!Array.isArray(forecast) || forecast.length < 2 || forecast.length > (fund ? 70 : 20)) throw failure("予測データが不足しています。");
   const first = forecast[0];
   const terminal = forecast.at(-1);
   const horizonDays = (dateMs(terminal?.date) - dateMs(today)) / DAY;
-  if (first?.date !== today || !validDate(terminal?.date) || horizonDays < 89 || horizonDays > 92
+  if (first?.date !== today || !validDate(terminal?.date) || horizonDays < (fund ? 365 : 89) || horizonDays > (fund ? 366 : 92)
       || ![first.value, terminal.value, terminal.low, terminal.high].every(positive)
       || terminal.low > terminal.value || terminal.value > terminal.high) {
-    throw failure("今日から3か月先までの予測を保存してください。", 409);
+    throw failure(`今日から${fund ? "1年" : "3か月"}先までの予測を保存してください。`, 409);
   }
   const prices = [...(price.series || [])].filter((point) => validDate(point.date) && point.date <= today && positive(point.close))
     .sort((a, b) => a.date.localeCompare(b.date));
   const latest = prices.at(-1);
   const current = positive(price.current) ? price.current : latest?.close;
-  if (!latest || dateMs(today) - dateMs(latest.date) > 7 * DAY || !positive(current)) {
+  if (!latest || dateMs(today) - dateMs(latest.date) > (fund ? 14 : 7) * DAY || !positive(current)) {
     throw failure("価格データが古いため、予測を保存できません。分析を更新してください。", 409);
   }
   if (Math.abs(first.value / current - 1) > 0.01) throw failure("現在値が更新されています。画面を再読み込みしてください。", 409);
@@ -124,7 +133,7 @@ export function createForecastHistory(store, now = () => new Date()) {
         if (!existing) { records.push(current); changed = true; }
         history.instruments[key] = records;
         if (changed) await store.write(FILE, JSON.stringify(history));
-        return summarizeForecasts(records, current.issuedDate);
+        return summarizeForecasts(records, current.issuedDate, current.version);
       });
     },
   };

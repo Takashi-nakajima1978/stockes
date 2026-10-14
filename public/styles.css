@@ -4139,6 +4139,17 @@ button.savings-order-button:disabled {
   border-color: #47758a;
 }
 
+.savings-chart-legend .savings-legend-forecast {
+  border-color: #bd6927;
+  border-top-style: dashed;
+}
+
+[data-forecast-content] {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 .savings-value-difference {
   display: flex;
   flex-wrap: wrap;
@@ -4175,6 +4186,10 @@ button.savings-order-button:disabled {
   min-width: 0;
   padding-bottom: 16px;
   border-bottom: 1px solid var(--line);
+}
+
+.savings-tax-section[hidden] {
+  display: none;
 }
 
 .savings-nisa-section {

@@ -11,13 +11,15 @@ import { createDataStore, createSerialQueue } from "./data-store.mjs";
 import { createVersionedLoader, createCachedJsonSender, responseRepresentation } from "./response-cache.mjs";
 import { createBackupManager, MAX_BACKUP_BYTES } from "./backup.mjs";
 import { savingsAccountType, collectNisaStockPurchases } from "./public/savings-calculation.mjs";
-import { createForecastHistory } from "./forecast-history.mjs";
+import { createForecastHistory, forecastPriceFromCache } from "./forecast-history.mjs";
+import { buildSavingsForecast, savingsForecastFromDate } from "./savings-forecast.mjs";
 
 const runPriceRefresh = createSingleFlight();
 const runHistoryFetch = createSingleFlight();
 const priceRefreshAttempts = new Map();
 const cacheWrites = new Map();
 const performanceSeriesCache = new Map();
+const savingsForecastCache = new Map();
 const PRICE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -897,11 +899,40 @@ function sendBackupFile(res, bytes, name) {
 
 async function handleApi(req, res, url) {
   if (url.pathname.startsWith("/api/backup/")) return handleBackupApi(req, res, url);
+  if (url.pathname === "/api/savings-forecast" && req.method === "POST") {
+    const { id } = await readJson(req);
+    const plan = (await readSavingsPlans()).find((item) => item.id === id);
+    if (!plan) return json(res, 404, { error: "積立商品が見つかりません。" });
+    const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(new Date());
+    const from = savingsForecastFromDate(plan, today);
+    const cached = [...performanceSeriesCache.entries()]
+      .filter(([key, value]) => key.startsWith(`fund:${plan.symbol}:daily:`) && key.split(":").at(-1) <= from && Date.now() - value.cachedAt < 30 * 60 * 1000)
+      .sort((a, b) => b[1].cachedAt - a[1].cachedAt)[0]?.[1];
+    if (!cached || Date.now() - cached.cachedAt >= 30 * 60 * 1000) {
+      return json(res, 409, { error: "基準価額を再取得してから予測を表示してください。" });
+    }
+    const price = cached.payload;
+    const key = JSON.stringify([today, plan, cached.cachedAt]);
+    let result = savingsForecastCache.get(key);
+    if (!result) {
+      result = buildSavingsForecast(plan, price.series, today);
+      if (savingsForecastCache.size >= 100) savingsForecastCache.delete(savingsForecastCache.keys().next().value);
+      savingsForecastCache.set(key, result);
+    }
+    if (result.error) return json(res, 200, result);
+    let reliability = null;
+    let reliabilityError = "";
+    try {
+      reliability = await forecastHistory.record({ market: "fund", symbol: plan.symbol, version: result.version, forecast: result.navForecast },
+        { ...price, current: result.navForecast[0].value });
+    } catch (error) { reliabilityError = error.message; }
+    return json(res, 200, { ...result, reliability, reliabilityError });
+  }
   if (url.pathname === "/api/forecast-history" && req.method === "POST") {
     const body = await readJson(req);
-    if (!["jp", "us"].includes(body.market)) return json(res, 400, { error: "日本株または米国株を選択してください。" });
-    const cached = await readDataJson(body.market === "us" ? US_ANALYSIS_CACHE_PATH : ANALYSIS_CACHE_PATH);
-    const price = cached.analyses?.find((analysis) => analysis.symbol === body.symbol)?.price;
+    const cachePath = new Map([["jp", ANALYSIS_CACHE_PATH], ["us", US_ANALYSIS_CACHE_PATH], ["crypto", CRYPTO_ANALYSIS_CACHE_PATH], ["fx", CRYPTO_ANALYSIS_CACHE_PATH]]).get(body.market);
+    if (!cachePath) return json(res, 400, { error: "予測の対象市場が正しくありません。" });
+    const price = forecastPriceFromCache(await readDataJson(cachePath), body.market, body.symbol);
     if (!price) return json(res, 404, { error: "この銘柄の保存済み価格がありません。" });
     return json(res, 200, await forecastHistory.record(body, price));
   }

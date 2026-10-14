@@ -3,7 +3,7 @@ FROM node:22-alpine
 WORKDIR /app
 
 COPY package.json server.mjs refresh-control.mjs surge-forecast.mjs ./
-COPY backup.mjs data-store.mjs response-cache.mjs investment-evidence.mjs forecast-history.mjs ./
+COPY backup.mjs data-store.mjs response-cache.mjs investment-evidence.mjs forecast-history.mjs savings-forecast.mjs ./
 COPY public ./public
 COPY data ./data
 

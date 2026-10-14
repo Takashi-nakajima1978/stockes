@@ -6,6 +6,7 @@ const dollarFormats = [0, 2].map((maximumFractionDigits) => new Intl.NumberForma
 const compactDollarFormat = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 });
 const computationCache = new WeakMap();
 const forecastHistoryRequests = new Map();
+const savingsForecastRequests = new Map();
 const DECISION_FORECAST_VERSION = "decision-weekly-calibrated-v1";
 
 function forecastDateKey() {
@@ -694,15 +695,14 @@ async function loadSavingsNisaContext(force = false) {
 
 function savingsTaxComparisonHtml(comparison) {
   const { accountType } = comparison;
+  if (accountType === "ideco") return "";
   const isNisa = accountType.startsWith("nisa-");
-  const isIdeco = accountType === "ideco";
   const totalKnown = comparison.basis === "total";
   const complete = comparison.available && comparison.complete;
   const amount = (value) => `${value > 0 ? "+" : ""}${yen(value)}`;
   const signClass = comparison.grossGain >= 0 ? "gain" : "loss";
   return `<section class="savings-tax-section" aria-label="NISAと課税口座の比較">
-    <div class="savings-chart-heading"><h4>${totalKnown ? isIdeco ? "NISA・課税口座なら（参考比較）" : "NISA・課税口座の比較" : "期間増加額の税制比較（仮定）"}</h4><span>${escapeHtml(savingsAccountName(accountType))}</span></div>
-    ${isIdeco ? '<p class="savings-history-note">登録口座はiDeCoです。運用益は非課税ですが、受取時の税金は受取方法や控除額で変わります。下の比較はNISA・課税口座の仮定で、iDeCoの受取額や掛金の所得控除は含みません。</p>' : ""}
+    <div class="savings-chart-heading"><h4>${totalKnown ? "NISA・課税口座の比較" : "期間増加額の税制比較（仮定）"}</h4><span>${escapeHtml(savingsAccountName(accountType))}</span></div>
     ${complete ? `
       <p class="savings-tax-saving">課税口座と比べたNISAの差額（同じ運用結果） <strong>${yen(comparison.tax)}</strong></p>
       <div class="savings-tax-columns">
@@ -710,7 +710,7 @@ function savingsTaxComparisonHtml(comparison) {
         <div class="${accountType === "taxable" ? "selected" : ""}"><h5>課税口座${accountType === "taxable" ? "（登録口座）" : ""}</h5><span>税引後の${totalKnown ? "利益" : "増加額（仮定）"}</span><strong class="${signClass}">${amount(comparison.taxableGain)}</strong><small>${signedPct(comparison.taxableGainPct)} / 税金目安 ${yen(comparison.tax)}</small>${totalKnown ? `<small>売却後の受取目安 ${yen(comparison.taxableProceeds)}</small>` : ""}</div>
       </div>` : `<p class="savings-history-note">${comparison.available ? "基準価額が不足している積立月があるため、税引後の比較は未算出です。" : "基準価額の取得後に増加額と税引後の差を表示します。"}</p>`}
     <p class="savings-history-note">${!comparison.available ? "評価履歴の取得後に比較します。" : totalKnown ? "同じ商品を同じ元本で保有し、全額売却した場合の参考値。" : "開始前の投資元本が不明なため、期間の増加額を利益と仮定した比較です。実際の売却税額・受取額は未算出です。"} NISAは対象商品・枠内で購入した場合の仮定です。課税口座はプラスの利益に20.315%を適用。保有中に毎月引かれる税金ではありません。分配金・損益通算・手数料は未反映です。</p>
-    <details class="savings-tax-notes"><summary>税制の前提と出典</summary><p class="savings-history-note">NISA対象商品・未登録の買付・生涯枠は未確認。成人の年間枠はつみたて120万円・成長240万円、保有限度額は合計1,800万円（成長は内数1,200万円）。この比較は全額が非課税対象と仮定し、超過分を自動で振り分けません。口座区分は記録のみで、既存保有をNISAに移し替えるものではありません。損失時の損益通算・繰越控除の差は含みません。増加率は比較元本に対する比率で、年率ではありません。</p><p class="savings-history-note"><a href="https://www.fsa.go.jp/policy/nisa2/know/index.html" target="_blank" rel="noopener noreferrer">金融庁・NISA</a> / <a href="https://www.nta.go.jp/taxes/shiraberu/taxanswer/shotoku/1463.htm" target="_blank" rel="noopener noreferrer">国税庁・売却益の税率</a>${isIdeco ? ' / <a href="https://www.ideco-koushiki.jp/guide/good.html" target="_blank" rel="noopener noreferrer">iDeCo公式・税制</a>' : ""}</p></details>
+    <details class="savings-tax-notes"><summary>税制の前提と出典</summary><p class="savings-history-note">NISA対象商品・未登録の買付・生涯枠は未確認。成人の年間枠はつみたて120万円・成長240万円、保有限度額は合計1,800万円（成長は内数1,200万円）。この比較は全額が非課税対象と仮定し、超過分を自動で振り分けません。口座区分は記録のみで、既存保有をNISAに移し替えるものではありません。損失時の損益通算・繰越控除の差は含みません。増加率は比較元本に対する比率で、年率ではありません。</p><p class="savings-history-note"><a href="https://www.fsa.go.jp/policy/nisa2/know/index.html" target="_blank" rel="noopener noreferrer">金融庁・NISA</a> / <a href="https://www.nta.go.jp/taxes/shiraberu/taxanswer/shotoku/1463.htm" target="_blank" rel="noopener noreferrer">国税庁・売却益の税率</a></p></details>
   </section>`;
 }
 
@@ -772,6 +772,62 @@ function renderSavings() {
       if (event.pointerType === "touch") updateDatedLineChartHover(event, canvas, chartState, tooltip);
     };
   });
+  els.savingsPlans.querySelectorAll("[data-savings-forecast]").forEach((node) => {
+    const plan = state.savingsPlans.find((item) => item.id === node.dataset.savingsForecast);
+    if (plan) void renderSavingsForecast(node, plan);
+  });
+}
+
+async function renderSavingsForecast(node, plan) {
+  const series = state.savingsSeries[plan.symbol];
+  if (!series?.series?.length || series.loading || series.error) return;
+  const key = JSON.stringify([plan, localDateKey(), series.fetchedAt]);
+  let pending = savingsForecastRequests.get(key);
+  if (!pending) {
+    pending = request("/api/savings-forecast", { method: "POST", body: JSON.stringify({ id: plan.id }) });
+    if (savingsForecastRequests.size >= 100) savingsForecastRequests.delete(savingsForecastRequests.keys().next().value);
+    savingsForecastRequests.set(key, pending);
+  }
+  try {
+    const result = await pending;
+    if (!node.isConnected) return;
+    if (result.error) {
+      node.querySelector("[data-forecast-content]").textContent = result.error;
+      return;
+    }
+    const terminal = result.forecast.at(-1);
+    const moneyChange = (value) => `${value > 0 ? "+" : ""}${yen(value)}`;
+    const flowByDate = new Map(result.cashflows.map((flow) => [flow.date, flow.amount]));
+    result.forecast.reliability = { text: result.reliabilityError ? "信頼度：履歴を照合できません" : forecastReliabilityText(result.reliability, "1年先・基準価額") };
+    node.querySelector("[data-forecast-content]").innerHTML = `
+      <div class="savings-metrics">
+        <div><span>1年後の参考評価額</span><strong>${yen(terminal.value)}</strong><small>${escapeHtml(result.endDate)}・税引前</small></div>
+        <div><span>今後の追加積立</span><strong>${yen(terminal.contributions)}</strong><small>現在評価額 ${yen(result.originValue)}</small></div>
+        <div><span>入金を除いた運用増減</span><strong class="${terminal.gain >= 0 ? "gain" : "loss"}">${moneyChange(terminal.gain)}</strong><small>予測評価額 − 現在評価額 − 追加積立</small></div>
+        <div><span>1年後の参考幅（10〜90%）</span><strong>${yen(terminal.low)}〜${yen(terminal.high)}</strong></div>
+      </div>
+      <div class="savings-chart-legend"><span><i class="savings-legend-forecast"></i>評価額の参考予測（代表シナリオ）</span><span><i class="savings-legend-principal"></i>現在評価額＋追加積立（運用なし）</span></div>
+      <div class="performance-chart-wrap savings-chart-wrap"><canvas data-savings-chart="${escapeAttr(plan.id)}:forecast" aria-label="今後1年の積立評価額予測と運用しない場合の比較"></canvas><div class="chart-tooltip" data-savings-tooltip hidden></div></div>
+      <p class="savings-history-note">基準価額 ${escapeHtml(result.sourceDate)}を起点に、過去3年以内の連続52週の値動き${result.pathCount}通りを比較。点線は1年後の基準価額が中央値に近い1経路、帯は各時点の10〜90%幅で、保証範囲ではありません。積立は月末買付の仮定（当月未計上分を含み、当日が月末なら翌日）。値動きは週次、月末も表示。分配金・税金・手数料・拠出限度による調整は未反映です。</p>
+      <section class="forecast-review" data-savings-reliability aria-label="積立予測の信頼度"></section>
+      <details class="savings-month-history"><summary>月別の予測額・積立額</summary><div class="savings-month-table-wrap"><table><thead><tr><th>対象日</th><th>追加積立</th><th>追加累計</th><th>参考評価額</th><th>運用増減</th><th>参考幅</th></tr></thead><tbody>${result.monthly.map((row) => `<tr><th>${escapeHtml(row.date)}</th><td>${yen(flowByDate.get(row.date) || 0)}</td><td>${yen(row.contributions)}</td><td>${yen(row.value)}</td><td class="${row.gain >= 0 ? "gain" : "loss"}">${moneyChange(row.gain)}</td><td>${yen(row.low)}〜${yen(row.high)}</td></tr>`).join("")}</tbody></table></div></details>`;
+    node.querySelector("[data-savings-reliability]").innerHTML = forecastReliabilityHtml(null, result.reliability, result.navForecast, yen, result.reliabilityError, { savings: true, horizon: "1年先" });
+    const canvas = node.querySelector("canvas");
+    const tooltip = node.querySelector("[data-savings-tooltip]");
+    const chartState = { actual: [], forecast: [], points: [], plot: null, hoverIndex: null };
+    savingsChartStates.set(`${plan.id}:forecast`, chartState);
+    drawDatedLineChart(canvas, [{ date: result.today, value: result.originValue }], result.forecast, {
+      startDate: result.today, today: result.today, endDate: result.endDate, currency: "JPY", compactCurrency: false,
+      principalSeries: result.baseline, principalStepped: true, principalLabel: "現在評価額＋追加積立（運用なし）",
+      forecastLabel: "評価額の参考予測（代表シナリオ）", chartState, tooltip,
+    });
+    canvas.onpointermove = (event) => updateDatedLineChartHover(event, canvas, chartState, tooltip);
+    canvas.onpointerleave = (event) => clearDatedLineChartHover(event, canvas, chartState, tooltip);
+    canvas.onpointerdown = (event) => { if (event.pointerType === "touch") updateDatedLineChartHover(event, canvas, chartState, tooltip); };
+  } catch (error) {
+    savingsForecastRequests.delete(key);
+    if (node.isConnected) node.querySelector("[data-forecast-content]").textContent = `予測を取得できません。${error.message}`;
+  }
 }
 
 function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAmount: 0 }, valuation: { rows: [], unpricedMonths: [] } }) {
@@ -828,7 +884,7 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
       ${Number.isFinite(valuation.totalPnl) ? `<p class="savings-value-difference">総損益の内訳：${yen(valuation.latestValue)} − 元本 ${yen(valuation.totalPrincipal)} ＝ <strong class="${valuation.totalPnl >= 0 ? "gain" : "loss"}">${valuation.totalPnl > 0 ? "+" : ""}${yen(valuation.totalPnl)}</strong><span>${valuation.principalAnchor ? `元本は${escapeHtml(valuation.principalAnchor.date)}の証券会社表示 ${yen(valuation.principalAnchor.amount)}を優先` : `開始前 ${yen(valuation.openingPrincipal)} ＋ 登録積立 ${yen(valuation.contributionPrincipal)}`}</span></p>` : ""}
       ${Number.isFinite(valuation.principalDifference) && Math.abs(valuation.principalDifference) >= 1 ? `<p class="savings-balance-error" role="status">元本の照合差 ${valuation.principalDifference > 0 ? "+" : ""}${yen(valuation.principalDifference)}。基準日の元本と「開始前の入力元本＋積立」が一致しません。開始月・月別金額・開始前元本の基準日をご確認ください。月別記録は変更していません。</p>` : ""}
       <div data-savings-nisa="${escapeAttr(plan.id)}" ${comparison.accountType.startsWith("nisa-") ? "" : "hidden"}>${savingsNisaPlanHtml(plan, nisaAllowance)}</div>
-      ${nisaAllowance.years.get(nisaAllowance.year).buckets.get(comparison.accountType)?.excess > 0 ? '<p class="savings-balance-error">年間設定が枠を超えるため、以下のNISA比較は全額非課税を仮定した参考値です。超過分に非課税が適用されるものではありません。</p>' : ""}
+      ${nisaAllowance.years.get(nisaAllowance.year).buckets.get(comparison.accountType)?.excess > 0 ? '<p class="savings-balance-error" data-savings-nisa-warning>年間設定が枠を超えるため、以下のNISA比較は全額非課税を仮定した参考値です。超過分に非課税が適用されるものではありません。</p>' : ""}
       ${savingsTaxComparisonHtml(comparison)}
       <section class="savings-chart-section">
         <div class="savings-chart-heading"><h4>積立記録グラフ</h4><span>${escapeHtml(historySummary)}</span></div>
@@ -847,6 +903,10 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
           <summary>月別の積立額と累計</summary>
           <div class="savings-month-table-wrap"><table><thead><tr><th>対象月</th><th>積立額</th><th>累計</th></tr></thead><tbody>${monthlyRows || '<tr><td colspan="3">積立設定を追加してください。</td></tr>'}${currentMonthRow}</tbody></table></div>
         </details>
+      </section>
+      <section class="savings-chart-section" data-savings-forecast="${escapeAttr(plan.id)}">
+        <div class="savings-chart-heading"><h4>今後1年の参考予測</h4><span>週次・月末</span></div>
+        <div data-forecast-content><p class="savings-history-note">${series?.error ? "基準価額を再取得すると予測を計算します。" : "基準価額を確認して予測を計算しています。"}</p></div>
       </section>
       <form class="savings-plan-form" data-savings-form="${escapeAttr(plan.id)}">
         <details class="savings-product-edit">
@@ -906,6 +966,9 @@ function updateSavingsBalanceInputs(form) {
     for (const option of account.options) option.disabled = isIdeco ? option.value !== "ideco" : option.value === "ideco";
     if (isIdeco) account.value = "ideco";
     else if (account.value === "ideco") account.value = "unspecified";
+    const comparison = form.closest(".savings-plan")?.querySelector(".savings-tax-section");
+    if (comparison) comparison.hidden = isIdeco;
+    form.closest(".savings-plan")?.querySelectorAll("[data-savings-nisa], [data-savings-nisa-warning]").forEach((node) => { node.hidden = !account.value.startsWith("nisa-"); });
   }
   const opening = form.elements.namedItem("openingValue");
   if (!opening) return;
@@ -927,7 +990,8 @@ function savingsScheduleRow(item = {}) {
 
 function savingsPlanStartDate(plan) {
   const firstMonth = (plan?.schedule || []).map((item) => item.month).filter(Boolean).sort()[0];
-  return firstMonth ? `${firstMonth}-01` : calendarMonthOffset(localDateKey(), -36);
+  const threeYearsAgo = calendarMonthOffset(localDateKey(), -36);
+  return firstMonth && `${firstMonth}-01` < threeYearsAgo ? `${firstMonth}-01` : threeYearsAgo;
 }
 
 function savingsSeriesPlans(plans = []) {
@@ -2235,6 +2299,7 @@ function renderCryptoDetail() {
           <h4>BTC/JPY 価格推移・3か月予測</h4>
           <span>BTC/JPY（BTC/USDを円換算）</span>
         </div>
+        <section class="forecast-review" data-instrument-forecast-review aria-label="BTC予測の信頼度" hidden></section>
         <div class="chart-frame embedded-chart">
           <canvas data-us-price-chart aria-label="Bitcoin円換算価格の過去2年9か月実績と今後3か月予測"></canvas>
           <div class="chart-tooltip" data-us-chart-tooltip hidden></div>
@@ -2251,6 +2316,7 @@ function renderCryptoDetail() {
     </details>
   `;
   attachCryptoPositionForm();
+  renderForecastReview(els.cryptoDetail.querySelector("[data-instrument-forecast-review]"), btcForecast.validation, { market: "crypto", symbol: "BTC-JPY", forecast: btcForecast, formatter: yen });
   renderEmbeddedPriceChart(els.cryptoDetail.querySelector(".crypto-chart-jpy"), btcPrice.series || [], yen, [], btcPrice, btcForecast);
 }
 
@@ -2269,8 +2335,14 @@ function renderFxDetail() {
       ${fxPairHtml("EUR/JPY", "ユーロ", eurJpyPrice, eurTiming, "eur-jpy")}
     </section>
   `;
-  renderEmbeddedPriceChart(els.fxDetail.querySelector(".fx-chart-usd-jpy"), usdJpyPrice.series || [], yen, [], usdJpyPrice, usdJpyForecast);
-  renderEmbeddedPriceChart(els.fxDetail.querySelector(".fx-chart-eur-jpy"), eurJpyPrice.series || [], yen, [], eurJpyPrice, eurJpyForecast);
+  for (const [selector, symbol, price, forecast] of [
+    [".fx-chart-usd-jpy", "USD-JPY", usdJpyPrice, usdJpyForecast],
+    [".fx-chart-eur-jpy", "EUR-JPY", eurJpyPrice, eurJpyForecast],
+  ]) {
+    const root = els.fxDetail.querySelector(selector);
+    renderForecastReview(root.querySelector("[data-instrument-forecast-review]"), forecast.validation, { market: "fx", symbol, forecast, formatter: fxRate });
+    renderEmbeddedPriceChart(root, price.series || [], fxRate, [], price, forecast);
+  }
 }
 
 function fxPairHtml(pair, currencyName, price, timing, chartClass) {
@@ -2281,6 +2353,7 @@ function fxPairHtml(pair, currencyName, price, timing, chartClass) {
           <div><h4>${pair}</h4><small>3か月先予測</small></div>
           <strong>${fxRate(price?.current)}</strong>
         </div>
+        <section class="forecast-review" data-instrument-forecast-review aria-label="${pair}予測の信頼度" hidden></section>
         <div class="chart-frame embedded-chart">
           <canvas data-us-price-chart aria-label="${pair}の過去2年9か月実績と今後3か月予測"></canvas>
           <div class="chart-tooltip" data-us-chart-tooltip hidden></div>
@@ -3132,39 +3205,41 @@ function evaluateDecisionForecast(series = [], symbol = "", nowValue = new Date(
   };
 }
 
-function forecastReliabilityText(saved) {
-  if (!saved?.evaluated) return "信頼度：蓄積中（3か月先）";
-  return `信頼度 ${Math.round(saved.confidencePct)}%（3か月先・${saved.evaluated}件${saved.evaluated < 10 ? "・少数データ" : ""}）`;
+function forecastReliabilityText(saved, horizon = "3か月先") {
+  if (!saved?.evaluated) return `信頼度：蓄積中（${horizon}）`;
+  return `信頼度 ${Math.round(saved.confidencePct)}%（${horizon}・${saved.evaluated}件${saved.evaluated < 10 ? "・少数データ" : ""}）`;
 }
 
-function forecastReliabilityHtml(review, saved, forecast, formatter, error = "") {
+function forecastReliabilityHtml(review, saved, forecast, formatter, error = "", options = {}) {
   const terminal = forecast.at(-1);
+  const horizon = options.horizon || "3か月先";
+  const unit = options.savings ? "基準価額" : "価格";
   const count = saved?.evaluated || 0;
   const percent = (value) => Number.isFinite(value) ? `${value.toFixed(1)}%` : "未評価";
-  const reliabilityLabel = error ? "信頼度：照合できません" : saved ? forecastReliabilityText(saved) : "信頼度：照合中（3か月先）";
+  const reliabilityLabel = error ? "信頼度：照合できません" : saved ? forecastReliabilityText(saved, horizon) : `信頼度：照合中（${horizon}）`;
   const status = error || (saved
     ? `保存 ${saved.saved}件 / 期限待ち ${saved.pending}件${saved.nextTargetDate ? `・次回 ${formatDate(saved.nextTargetDate)}` : ""}${saved.missingActual ? ` / 実績価格待ち ${saved.missingActual}件` : ""}`
     : "保存した予測を照合中");
   const comparisons = saved?.comparisons || [];
   const backtest = review?.evaluated
     ? `過去再検証（当時の保存予測ではありません）：${review.evaluated}回 / 方向一致 ${percent(review.directionAccuracyPct)} / 騰落率の誤差中央値 ${review.medianAbsoluteErrorPct.toFixed(1)}pt / 予測幅内 ${percent(review.intervalCoveragePct)}。短い学習期間での簡易検証で、上記の信頼度には含めません。`
-    : "過去再検証：価格履歴が不足しています。";
+    : options.savings ? "過去の値動きから作ったシナリオの数は、信頼度の比較実績件数ではありません。" : "過去再検証：価格履歴が不足しています。";
   return `
     <div class="forecast-reliability-heading">
-      <div><strong>予測の信頼度</strong><span>${escapeHtml(reliabilityLabel)}</span></div>
-      <div><span>${escapeHtml(formatDate(terminal.date))} の参考予測</span><strong>${escapeHtml(formatter(terminal.value))}</strong></div>
+      <div><strong>予測の信頼度${options.savings ? "（基準価額）" : ""}</strong><span>${escapeHtml(reliabilityLabel)}</span></div>
+      <div><span>${escapeHtml(formatDate(terminal.date))} の${options.savings ? "基準価額" : "参考"}予測</span><strong>${escapeHtml(formatter(terminal.value))}</strong></div>
     </div>
-    <p>当時保存した3か月先の予測価格が、実績価格の±5%以内だった割合${count ? `（${saved.successes} / ${count}件）` : saved ? "。まだ比較できる実績がありません" : ""}。上昇する確率ではありません。</p>
+    <p>当時保存した${horizon}の予測${unit}が、実績${unit}の±5%以内だった割合${count ? `（${saved.successes} / ${count}件）` : saved ? "。まだ比較できる実績がありません" : ""}。上昇する確率ではありません。${options.savings ? "積立額の変更に左右されない基準価額を照合し、積立評価額そのものの的中率ではありません。" : ""}AIの主観評価ではなく、保存予測と実績の数値比較です。</p>
     ${count ? `<div class="forecast-reliability-metrics">
       <span>方向一致<strong>${percent(saved.directionAccuracyPct)}</strong></span>
-      <span>平均価格誤差<strong>${percent(saved.meanAbsoluteErrorPct)}</strong></span>
-      <span>価格一定の場合の誤差<strong>${percent(saved.baselineErrorPct)}</strong></span>
+      <span>平均${unit}誤差<strong>${percent(saved.meanAbsoluteErrorPct)}</strong></span>
+      <span>${unit}一定の場合の誤差<strong>${percent(saved.baselineErrorPct)}</strong></span>
       <span>予測幅に収まった割合<strong>${percent(saved.intervalCoveragePct)}</strong></span>
     </div>` : ""}
     <p class="${error ? "forecast-reliability-error" : ""}">${escapeHtml(status)}</p>
-    <details><summary>比較の根拠${count ? `・${count}件` : "・過去再検証"}</summary>
-      <p>1日最初に表示した予測を保存し、同じ銘柄・同じ予測方式の、期間が重ならない予測で集計します${saved?.overlapping ? `（重複 ${saved.overlapping}件を除外）` : ""}。平均価格誤差は予測と実績の差の絶対値を実績価格で割った値です。休場日は翌取引日の終値で照合します。${count && count < 10 ? "評価件数が少ないため、割合は大きく変わります。" : ""}</p>
-      ${comparisons.length ? `<div class="forecast-comparison-scroll"><table class="forecast-comparison-table"><thead><tr><th>予測日</th><th>対象日 / 実績日</th><th>予測価格</th><th>実績価格</th><th>価格誤差</th><th>±5%以内</th></tr></thead><tbody>${comparisons.map((item) => `<tr>
+    <details><summary>比較の根拠${count ? `・${count}件` : options.savings ? "・保存条件" : "・過去再検証"}</summary>
+      <p>1日最初に表示した予測を保存し、同じ銘柄・同じ予測方式の、期間が重ならない予測で集計します${saved?.overlapping ? `（重複 ${saved.overlapping}件を除外）` : ""}。平均${unit}誤差は予測と実績の差の絶対値を実績${unit}で割った値です。休場日は${options.savings ? "7日以内の次の公表基準価額" : "翌取引日の終値"}で照合します。${count && count < 10 ? "評価件数が少ないため、割合は大きく変わります。" : ""}</p>
+      ${comparisons.length ? `<div class="forecast-comparison-scroll"><table class="forecast-comparison-table"><thead><tr><th>予測日</th><th>対象日 / 実績日</th><th>予測${unit}</th><th>実績${unit}</th><th>${unit}誤差</th><th>±5%以内</th></tr></thead><tbody>${comparisons.map((item) => `<tr>
         <td>${escapeHtml(formatDate(item.issuedDate))}</td><td>${escapeHtml(formatDate(item.targetDate))}<br>${escapeHtml(formatDate(item.outcome.date))}</td>
         <td>${escapeHtml(formatter(item.predicted))}</td><td>${escapeHtml(formatter(item.outcome.price))}</td>
         <td>${percent(item.outcome.errorPct)}</td><td>${item.outcome.errorPct <= saved.tolerancePct ? "一致" : "外れ"}</td>
@@ -3264,6 +3339,7 @@ function instrumentChartForecast(price = {}, symbol = "", nowValue = new Date())
   if (instrumentForecastCache.has(key)) return instrumentForecastCache.get(key);
   const validation = evaluateDecisionForecast(series, symbol, now);
   const forecast = decisionChartForecast(series, { ...price, current }, symbol, now, validation);
+  forecast.validation = validation;
   if (instrumentForecastCache.size >= 12) instrumentForecastCache.delete(instrumentForecastCache.keys().next().value);
   instrumentForecastCache.set(key, forecast);
   return forecast;
@@ -4458,12 +4534,19 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
     context.fillText(formatter(min), 8, height - pad.bottom + 4);
     if (forecast.length) {
       context.fillStyle = "#667277";
-      context.textAlign = "center";
-      [startDate, calendarMonthOffset(today, -16), today, calendarMonthOffset(today, 1), endDate].forEach((date) => {
-        const parsed = new Date(`${date}T00:00:00Z`);
-        context.fillText(`${parsed.getUTCFullYear()}/${parsed.getUTCMonth() + 1}`, xForDate(date), height - 8);
-      });
       context.textAlign = "left";
+      const labels = [startDate, calendarMonthOffset(today, -16), today, calendarMonthOffset(today, 1), endDate].map((date) => {
+        const parsed = new Date(`${date}T00:00:00Z`);
+        const text = `${parsed.getUTCFullYear()}/${parsed.getUTCMonth() + 1}`;
+        const size = context.measureText(text).width;
+        return { text, size, left: clampNumber(xForDate(date) - size / 2, pad.left, width - pad.right - size) };
+      });
+      let previousRight = -Infinity;
+      labels.forEach((label, index) => {
+        if (index !== labels.length - 1 && (label.left < previousRight + 8 || label.left + label.size > labels.at(-1).left - 8)) return;
+        context.fillText(label.text, label.left, height - 8);
+        previousRight = label.left + label.size;
+      });
     }
     const actualHoverPoints = cleanSeries.map((point, index) => ({
       kind: "actual",
@@ -6352,7 +6435,8 @@ function drawDatedLineChart(canvas, actual = [], forecast = [], options = {}) {
     }));
   const forecastHoverPoints = forecastPoints
     .filter((point) => point.date > options.today && Number.isFinite(point.value))
-    .map((point) => ({ kind: "forecast", date: point.date, value: point.value, low: point.low, high: point.high, principal: point.principal }));
+    .map((point) => ({ kind: "forecast", date: point.date, value: point.value, low: point.low, high: point.high, principal: point.principal,
+      label: options.forecastLabel, comparisonValue: comparisonByDate.get(point.date), comparisonLabel: options.principalLabel, reliability: forecast.reliability }));
   const principalHoverPoints = inRange(options.principalSeries || [])
     .filter((point) => point.date > options.today && Number.isFinite(point.value))
     .map((point) => ({ kind: "principal", date: point.date, value: point.value }));

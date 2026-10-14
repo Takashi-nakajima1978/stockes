@@ -2302,8 +2302,8 @@ test("crypto screen separates BTC from USD/JPY and EUR/JPY tabs", () => {
   assert.match(indexSource, /EUR\/JPY・円\/ユーロ/);
   assert.doesNotMatch(indexSource, /BTC\/USD|id="btcUsdPrice"|id="cryptoPnlUsd"/);
   assert.match(appSource, /function renderFxDetail\(\)/);
-  assert.match(appSource, /querySelector\("\.fx-chart-usd-jpy"\)/);
-  assert.match(appSource, /querySelector\("\.fx-chart-eur-jpy"\)/);
+  assert.match(appSource, /\["\.fx-chart-usd-jpy", "USD-JPY", usdJpyPrice, usdJpyForecast\]/);
+  assert.match(appSource, /\["\.fx-chart-eur-jpy", "EUR-JPY", eurJpyPrice, eurJpyForecast\]/);
   assert.match(appSource, /analysis\?\.timing\?\.jpy/);
   assert.match(appSource, /crypto-position-disclosure/);
   assert.match(stylesSource, /\.fx-pairs-grid[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
