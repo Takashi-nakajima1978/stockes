@@ -7,8 +7,53 @@ export function initializeBackupSettings({ request, toast }) {
   let previewToken = "";
   let busy = false;
   let polling = false;
+  const callbackPath = "/api/backup/drive/callback";
   const date = (value) => value ? new Date(value).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" }) : "まだありません";
   const size = (bytes) => `${(Number(bytes || 0) / 1024 / 1024).toFixed(1)} MB`;
+  const isLoopback = (hostname) => ["localhost", "127.0.0.1", "[::1]", "::1"].includes(hostname);
+  const isPrivateIpv4 = (hostname) => {
+    const parts = hostname.split(".").map(Number);
+    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+    return parts[0] === 10 || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) || (parts[0] === 192 && parts[1] === 168);
+  };
+
+  function explainOAuthCallback() {
+    const hint = node("driveOAuthHint");
+    hint.replaceChildren();
+    const origin = new URL(location.origin);
+    const callback = `${location.origin}${callbackPath}`;
+    if (origin.protocol === "http:" && !isLoopback(origin.hostname)) {
+      hint.append("現在はLAN内HTTPで開いているため、Google認証には使えません。");
+      if (isPrivateIpv4(origin.hostname)) {
+        const localUrl = `http://localhost:${origin.port || "80"}/`;
+        const link = document.createElement("a");
+        link.href = localUrl;
+        link.textContent = "同じ端末でlocalhostを開く";
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        hint.append("同じ端末のブラウザーなら ", link, " を開き直し、設定→バックアップから接続してください。別端末から使う場合はHTTPSが必要です。");
+      } else {
+        hint.append("同じ端末でlocalhostを開くか、HTTPSでアクセスしてください。");
+      }
+    } else {
+      hint.append("Google Cloud Consoleの認可済みリダイレクトURIに次を完全一致で登録してください: ");
+      const code = document.createElement("code");
+      code.textContent = callback;
+      hint.append(code);
+    }
+  }
+
+  function configuredCallback(value) {
+    const current = new URL(location.origin);
+    const fallback = `${location.origin}${callbackPath}`;
+    if (!value) return fallback;
+    try {
+      const saved = new URL(value);
+      const canUseLocalCallback = current.protocol === "https:" || (current.protocol === "http:" && isLoopback(current.hostname));
+      if (canUseLocalCallback && saved.origin !== current.origin && saved.pathname === callbackPath && !saved.search && !saved.hash) return fallback;
+    } catch {}
+    return value;
+  }
 
   function render(payload, applyConfig = false) {
     const { config = {}, state = {}, inventory = {} } = payload;
@@ -16,12 +61,13 @@ export function initializeBackupSettings({ request, toast }) {
       field("enabled").checked = config.enabled === true;
       field("time").value = `${String(config.hour ?? 4).padStart(2, "0")}:${String(config.minute ?? 0).padStart(2, "0")}`;
       for (const key of ["folderName", "folderId", "clientId", "redirectUri"]) field(key).value = config[key] || "";
-      if (!field("redirectUri").value) field("redirectUri").value = `${location.origin}/api/backup/drive/callback`;
+      field("redirectUri").value = configuredCallback(field("redirectUri").value);
       field("clientSecret").value = "";
       field("refreshToken").value = "";
       field("clientSecret").placeholder = config.hasClientSecret ? "保存済み。変更時だけ入力" : "Google OAuth クライアントのシークレット";
       loaded = true;
     }
+    explainOAuthCallback();
     node("backupInventory").textContent = `${Number(inventory.fileCount || 0)}ファイル / ${size(inventory.totalBytes)}`;
     node("driveConnectionStatus").textContent = config.connected ? "接続済み" : "未接続";
     node("driveBackupStatus").textContent = state.running ? "Google Driveに保存中…" : state.error ? state.error : `最終保存: ${date(state.lastSuccess)}`;

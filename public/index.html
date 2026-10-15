@@ -1065,7 +1065,8 @@
                   <label><span>リフレッシュトークン（取得済みの場合）</span><input data-drive-field="refreshToken" type="password" autocomplete="off"></label>
                 </div>
                 <div class="backup-actions"><button type="button" data-backup-action="connect">Googleに接続</button><button type="button" class="secondary" data-backup-action="disconnect">接続を解除</button></div>
-                <p class="backup-note">初回はGoogleの認証が必要です。認証画面はlocalhostまたはHTTPSで開きます。接続後は、アプリ起動中に毎日自動で保存します。</p>
+                <p id="driveOAuthHint" class="backup-note" role="note"></p>
+                <p class="backup-note">初回はGoogleの認証が必要です。接続後は、アプリ起動中に毎日自動で保存します。</p>
                 <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Google Cloudの認証情報</a>
               </details>
             </section>

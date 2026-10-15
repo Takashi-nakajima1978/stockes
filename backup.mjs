@@ -301,7 +301,7 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
       const config = await readConfig();
       if (!config.clientId) throw failure("Google OAuthのクライアントIDを保存してください。");
       const redirect = new URL(config.redirectUri || `${origin}/api/backup/drive/callback`);
-      if (redirect.origin !== origin || redirect.pathname !== "/api/backup/drive/callback" || redirect.search || redirect.hash || redirect.username || (redirect.protocol !== "https:" && !(redirect.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(redirect.hostname)))) throw failure("Google認証にはlocalhostまたはHTTPSでアプリを開き、そのアドレスのコールバックURLを設定してください。");
+      if (redirect.origin !== origin || redirect.pathname !== "/api/backup/drive/callback" || redirect.search || redirect.hash || redirect.username || (redirect.protocol !== "https:" && !(redirect.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(redirect.hostname)))) throw failure("このコールバックURLはGoogle OAuthで使用できません。同じ端末でlocalhostから開くか、HTTPSでアクセスし、Google Cloudに画面表示のコールバックURLを登録してください。");
       const state = randomBytes(24).toString("hex");
       const verifier = randomBytes(48).toString("base64url");
       for (const [key, request] of authRequests) if (request.expires < now().getTime()) authRequests.delete(key);
