@@ -247,6 +247,31 @@ test("historical buy line subtracts dividends paid since each past price", () =>
   assert.equal(timing.dividendAdjustment1y, 5);
 });
 
+test("Japan and US buy-timing boxes share next-dividend amount and inline ex-dividend reference", () => {
+  const globals = { escapeHtml: String, formatDate: String, signedPct: v => `${v}%` };
+  const renderEmbedded = loadFunction(appSource, "renderEmbeddedChartTiming", globals);
+  const yen = v => `JPY ${v}`;
+  const usd = v => `USD ${v}`;
+  const timing = { status: "確認", statusClass: "wait", summary: "", periods: [], months: [], buyLine: 100, buyLineAfterNextDividend: 98, nextDividendAmount: 2, nextDividendDateText: "次回推定配当落ち2026-12-20", dividendAdjustment1y: 3, sellLine: 110, low: { date: "2026-01-01", close: 80 }, currentGapFromBuyLine: 5 };
+  for (const formatter of [yen, usd]) {
+    const node = {};
+    renderEmbedded(node, timing, formatter);
+    assert.match(node.innerHTML, /買い場ライン<\/strong>[^<]+<small>（次回配当落ち後の参考/);
+    assert.match(node.innerHTML, /次回予想配当（税引前）/);
+    assert.ok(node.innerHTML.includes(`${formatter(2)}/株`));
+    assert.match(node.innerHTML, /次回推定配当落ち2026-12-20/);
+    assert.doesNotMatch(node.innerHTML, /<strong>次回配当落ち後の参考ライン/);
+    renderEmbedded(node, { ...timing, nextDividendAmount: null, buyLineAfterNextDividend: null }, formatter);
+    assert.match(node.innerHTML, /次回予想配当（税引前）<\/strong>未取得/);
+  }
+  const node = {};
+  const renderJapan = loadFunction(appSource, "renderChartTiming", { els: { chartTiming: node }, buyTimingFromSeries: () => timing, yen, renderEmbeddedChartTiming: renderEmbedded });
+  renderJapan({});
+  assert.ok(node.innerHTML.includes("JPY 2/株"));
+  assert.doesNotMatch(indexSource, /Macがスリープ/);
+  assert.match(indexSource, /サーバー稼働中・スリープしていない間だけ/);
+});
+
 test("browser chart uses the same ex-dividend adjustment as server buy lines", () => {
   const buyTiming = loadFunction(appSource, "buyTimingFromSeries", {
     cleanChartSeries: (series) => series,
@@ -266,6 +291,11 @@ test("browser chart uses the same ex-dividend adjustment as server buy lines", (
   assert.equal(timing.buyLine, 95);
   assert.equal(timing.buyLineAfterNextDividend, 85);
   assert.equal(timing.dividendAdjustment1y, 5);
+  assert.equal(timing.nextDividendAmount, 10);
+  for (const invalid of [null, undefined, "", NaN, Infinity, -1]) {
+    assert.equal(buyTiming(series, String, [], invalid).nextDividendAmount, null);
+  }
+  assert.equal(buyTiming(series, String, [], 0).nextDividendAmount, 0);
 });
 
 test("dividend ex-date caution overrides a new-buy action", () => {
@@ -2248,7 +2278,9 @@ test("discovery separates PE candidates, stock candidates, and sector evidence i
   assert.match(serverSource, /parts\.hour < 5/);
   assert.match(serverSource, /results: ranked\.slice\(0, 15\)/);
   assert.match(appSource, /function renderSurgeForecastCharts/);
-  assert.match(dockerfileSource, /COPY package\.json server\.mjs refresh-control\.mjs surge-forecast\.mjs \.\//);
+  assert.match(dockerfileSource, /COPY package\.json package-lock\.json \.\//);
+  assert.match(dockerfileSource, /RUN npm ci --omit=dev --ignore-scripts/);
+  assert.match(dockerfileSource, /COPY server\.mjs refresh-control\.mjs surge-forecast\.mjs edinet-financials\.mjs edinet-documents\.mjs \.\//);
   assert.match(dockerignoreSource, /data\/surge-forecast\.json/);
   assert.match(appSource, /function peCandidateReportsHtml/);
   assert.match(appSource, /candidateButtons\("\[data-add-suggestion\]"\)/);

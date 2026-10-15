@@ -125,7 +125,7 @@ export function initializeBackupSettings({ request, toast }) {
       if (file.size > 64 * 1024 * 1024) throw new Error("バックアップファイルは64 MB以下を選択してください。");
       const result = await request("/api/backup/preview", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: file });
       previewToken = result.token;
-      node("backupRestoreSummary").textContent = `${date(result.createdAt)}の保存データ。日本株 ${result.japaneseStocks}銘柄、米国株 ${result.usStocks}銘柄、積立 ${result.savingsPlans}商品、学習記録 ${result.learningRecords}件。全${result.fileCount}ファイル (${size(result.totalBytes)})。`;
+      node("backupRestoreSummary").textContent = `${date(result.createdAt)}の保存データ。日本株 ${result.japaneseStocks}銘柄、米国株 ${result.usStocks}銘柄、積立 ${result.savingsPlans}商品、候補の学習記録 ${result.learningRecords}件、保存済み予測 ${result.forecastRecords ?? 0}件（実績照合済み ${result.evaluatedForecastRecords ?? 0}件）。全${result.fileCount}ファイル (${size(result.totalBytes)})。`;
       node("backupRestoreStatus").textContent = "";
       node("backupLocalStatus").textContent = "バックアップの内容を確認しました。";
       node("backupRestoreDialog").showModal();

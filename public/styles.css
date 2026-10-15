@@ -1239,6 +1239,16 @@ tr:hover .drag-handle,
   gap: 8px;
 }
 
+.edinet-evidence {
+  min-width: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.edinet-evidence summary { cursor: pointer; margin-top: 12px; font-weight: 700; }
+.edinet-periods { overflow-x: auto; max-width: 100%; }
+.edinet-excerpts { padding-left: 20px; overflow-wrap: anywhere; }
+.edinet-excerpts p { font-size: 13px; line-height: 1.6; }
+
 .timing-grid > span {
   min-height: 48px;
   display: grid;
@@ -1255,6 +1265,14 @@ tr:hover .drag-handle,
 .timing-grid strong {
   color: var(--muted);
   font-size: 11px;
+}
+
+.timing-grid small {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
 }
 
 .timing-grid span span {

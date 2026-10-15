@@ -172,6 +172,44 @@ function googleMock() {
   return { fetchImpl, calls, failToken(value) { tokenFailure = value; }, get uploaded() { return uploaded; } };
 }
 
+test("local and Drive backups restore every learning file and forecast outcome on a fresh install", async (t) => {
+  const google = googleMock();
+  const { manager, store } = await fixture(t, { fetchImpl: google.fetchImpl });
+  const forecasts = Object.fromEntries(["jp:9005.T", "us:AAPL", "crypto:BTC-JPY", "fx:USD-JPY", "fund:03311065"].map((key, index) => [key, [
+    { issuedDate: "2026-03-01", targetDate: "2026-06-01", predicted: 120 + index, outcome: { price: 90 + index, covered: false, errorPct: 30 } },
+    { issuedDate: "2026-10-01", targetDate: "2027-01-01", predicted: 115 + index },
+  ]]));
+  const learningFiles = {
+    "candidate-history.json": { items: [{ id: "won", outcome: "hit", learningOutcome: "hit", entryPrice: 100 }, { id: "lost", outcome: "loss", learningOutcome: "loss", entryPrice: 200 }] },
+    "forecast-history.json": { instruments: forecasts },
+    "discovery-cache.json": { sourceSummary: { performance: { aiWeights: { cash_flow: 0.5 }, learningBaseline: { evaluated: 75 }, validationBaseline: { evaluated: 30 } } } },
+    "analysis-cache.json": { analyses: [{ symbol: "9005.T", forecastReview: { errorPct: 12, adjustment: -0.05 } }] },
+    "financial-cache.json": { items: [{ symbol: "9005.T", edinet: { version: 2, analysis: { revenueGrowthPct: 5 } } }] },
+    "edinet-directory.json": { days: { "2026-10-15": { documents: [{ docID: "S100TEST" }] } } },
+  };
+  for (const [name, value] of Object.entries(learningFiles)) await store.write(name, JSON.stringify(value));
+  const local = await manager.download();
+  await manager.configure({ enabled: true, clientId: "client", clientSecret: "secret", refreshToken: "refresh", hour: 4, minute: 0 });
+  await manager.upload();
+  for (const bytes of [local, google.uploaded]) {
+    const freshDir = await mkdtemp(path.join(os.tmpdir(), "stock-restore-learning-"));
+    t.after(() => rm(freshDir, { recursive: true, force: true }));
+    const freshStore = createDataStore(freshDir);
+    const fresh = createBackupManager({ store: freshStore });
+    await fresh.initialize();
+    const preview = await fresh.preview(bytes);
+    assert.equal(preview.learningRecords, 2);
+    assert.equal(preview.forecastRecords, 10);
+    assert.equal(preview.evaluatedForecastRecords, 5);
+    for (const name of Object.keys(learningFiles)) assert.ok(preview.files.includes(name));
+    await fresh.restore(preview.token);
+    for (const [name, value] of Object.entries(learningFiles)) {
+      assert.deepEqual(await freshStore.readJson(name), value, name);
+      assert.equal(await readFile(path.join(freshDir, name), "utf8"), JSON.stringify(value), name);
+    }
+  }
+});
+
 test("daily Drive uploads run once per Japan day and retry failures after 30 minutes", async (t) => {
   const google = googleMock();
   let time = new Date("2026-10-11T18:59:00Z");

@@ -10,6 +10,7 @@ data/watchlist.json
 data/us-watchlist.json
 data/analysis-cache.json
 data/financial-cache.json
+data/edinet-directory.json
 data/us-analysis-cache.json
 data/crypto-analysis-cache.json
 data/crypto-holding.json

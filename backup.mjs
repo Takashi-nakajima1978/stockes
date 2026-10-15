@@ -65,6 +65,7 @@ export function backupSummary(archive) {
     const file = archive.files.find((entry) => entry.name === name);
     return file ? JSON.parse(file.bytes.toString("utf8")) : null;
   };
+  const forecasts = Object.values(value("forecast-history.json")?.instruments || {}).flatMap(records => Array.isArray(records) ? records : []);
   return {
     createdAt: archive.createdAt,
     fileCount: archive.files.length,
@@ -73,6 +74,9 @@ export function backupSummary(archive) {
     usStocks: value("us-watchlist.json")?.length || 0,
     savingsPlans: value("savings-plans.json")?.length || 0,
     learningRecords: value("candidate-history.json")?.items?.length || 0,
+    forecastRecords: forecasts.length,
+    evaluatedForecastRecords: forecasts.filter(record => record?.outcome).length,
+    files: archive.files.map(file => file.name).sort(),
   };
 }
 

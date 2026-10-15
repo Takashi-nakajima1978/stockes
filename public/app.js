@@ -3641,12 +3641,39 @@ function financialInfoHtml(info = null, price = {}) {
         <span><strong>営業CF</strong>${largeYen(displayInfo.operatingCashFlow)}</span>
       </div>
       ${criteria ? `<div class="risk-check-grid">${criteria}</div>` : ""}
+      ${edinetEvidenceHtml(displayInfo.edinet)}
       ${insights ? `<div class="financial-insights"><strong>決算書から分かること</strong><ul>${insights}</ul></div>` : ""}
       ${displayInfo.documentTitle || displayInfo.docID ? `<p class="settings-help">確認元 ${escapeHtml(displayInfo.documentTitle || "EDINET書類")} ${escapeHtml(displayInfo.docID || "")}</p>` : ""}
       ${missing ? `<div class="entry-points financial-missing"><strong>不足材料</strong>${missing}</div>` : ""}
       ${warnings ? `<div class="entry-points">${warnings}</div>` : ""}
     </section>
   `;
+}
+
+function edinetEvidenceHtml(edinet) {
+  if (!edinet?.latestPeriod) return "";
+  const period = edinet.latestPeriod;
+  const a = edinet.analysis || {};
+  const scope = edinet.scope === "consolidated" ? "連結" : "単体";
+  const state = { verified: "期間・単位確認済み", stale: "古い決算データ・加点保留", refresh_failed: "更新失敗・最新確認前" }[edinet.status] || "未確認";
+  const rows = (edinet.periods || []).map(row => `<tr><td>${escapeHtml(row.startDate)}<br>${escapeHtml(row.endDate)}</td><td>${largeYen(row.values.netSales)}</td><td>${largeYen(row.values.operatingIncome)}</td><td>${largeYen(row.values.netIncome)}</td><td>${largeYen(row.values.operatingCashFlow)}</td><td>${largeYen(row.values.investingCashFlow)}</td><td>${escapeHtml(row.docID)}</td></tr>`).join("");
+  const excerpts = (edinet.narratives || []).map(item => `<li><strong>${escapeHtml(item.label)}</strong>（${escapeHtml(item.docID)}）<p>${escapeHtml(item.text)}</p></li>`).join("");
+  return `<section class="edinet-evidence" aria-label="EDINET決算の比較">
+    <strong>EDINET 決算比較</strong>
+    <p class="settings-help">${escapeHtml(period.startDate)}〜${escapeHtml(period.endDate)} / ${scope} / ${escapeHtml(period.accountingStandard)} / ${escapeHtml(state)}</p>
+    <div class="metric-strip financial-metrics">
+      <span><strong>売上高・前年同期比</strong>${Number.isFinite(a.revenueGrowthPct) ? signedPct(a.revenueGrowthPct) : "比較不可"}</span>
+      <span><strong>営業利益・前年同期比</strong>${Number.isFinite(a.operatingIncomeGrowthPct) ? signedPct(a.operatingIncomeGrowthPct) : "比較不可"}</span>
+      <span><strong>営業利益率</strong>${Number.isFinite(a.operatingMarginPct) ? `${a.operatingMarginPct.toFixed(1)}%` : "未取得"}</span>
+      <span><strong>営業CF＋投資CF</strong>${largeYen(a.operatingAndInvestingCashFlow)}</span>
+      <span><strong>営業CF / 純利益</strong>${Number.isFinite(a.cashConversionRatio) ? `${a.cashConversionRatio.toFixed(2)}倍` : "算出不可"}</span>
+    </div>
+    <details><summary>決算期間ごとの数値・出典</summary>
+      <div class="edinet-periods"><table class="forecast-comparison-table"><thead><tr><th>決算期間</th><th>売上高</th><th>営業利益</th><th>純利益</th><th>営業CF</th><th>投資CF</th><th>EDINET書類ID</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <p class="settings-help">金額は円。通期・中間期は別期間です。増減率は同じ長さ・連結区分・会計基準の前年期間と比較し、比較できない数値は補完しません。</p>
+      ${excerpts ? `<ul class="edinet-excerpts">${excerpts}</ul>` : ""}
+    </details>
+  </section>`;
 }
 
 function normalizedFinancialDisplayInfo(info = {}, price = {}) {
@@ -4655,8 +4682,8 @@ function renderEmbeddedChartTiming(node, timing, formatter) {
     </div>
     <p>${escapeHtml(timing.summary)}</p>
     <div class="timing-grid">
-      <span><strong>買い場ライン</strong>${formatter(timing.buyLine)}</span>
-      ${timing.buyLineAfterNextDividend ? `<span><strong>次回配当落ち後の参考ライン</strong>${formatter(timing.buyLineAfterNextDividend)}</span>` : ""}
+      <span><strong>買い場ライン</strong>${formatter(timing.buyLine)}${Number.isFinite(timing.buyLineAfterNextDividend) ? `<small>（次回配当落ち後の参考 ${formatter(timing.buyLineAfterNextDividend)}）</small>` : ""}</span>
+      <span><strong>次回予想配当（税引前）</strong>${Number.isFinite(timing.nextDividendAmount) ? `${formatter(timing.nextDividendAmount)}/株` : "未取得"}<small>${escapeHtml(timing.nextDividendDateText || "配当落ち日未確認")}</small></span>
       ${timing.dividendAdjustment1y > 0 ? `<span><strong>過去1年の配当落ち調整</strong>-${formatter(timing.dividendAdjustment1y)}</span>` : ""}
       <span><strong>売り場ライン</strong>${formatter(timing.sellLine)}</span>
       <span><strong>最安日</strong>${escapeHtml(formatDate(timing.low.date))} ${formatter(timing.low.close)}</span>
@@ -4676,32 +4703,7 @@ function renderChartTiming(price) {
     price?.dividendNextDate,
     price?.dividendNextDateSource,
   );
-  if (!timing) {
-    els.chartTiming.hidden = true;
-    els.chartTiming.innerHTML = "";
-    return;
-  }
-  els.chartTiming.hidden = false;
-  els.chartTiming.className = `chart-timing ${timing.statusClass}`;
-  const periods = timing.periods.length
-    ? timing.periods.map((period) => `<span>${escapeHtml(period.label)}</span>`).join("")
-    : timing.months.map((month) => `<span>${escapeHtml(month)}</span>`).join("");
-  els.chartTiming.innerHTML = `
-    <div>
-      <strong>1年の買い時</strong>
-      <span>${escapeHtml(timing.status)}</span>
-    </div>
-    <p>${escapeHtml(timing.summary)}</p>
-    <div class="timing-grid">
-      <span><strong>買い場ライン（配当落ち調整後）</strong>${yen(timing.buyLine)}</span>
-      ${timing.buyLineAfterNextDividend ? `<span><strong>次回配当落ち後の参考ライン</strong>${yen(timing.buyLineAfterNextDividend)}</span>` : ""}
-      ${timing.dividendAdjustment1y > 0 ? `<span><strong>過去1年の配当落ち調整</strong>-${yen(timing.dividendAdjustment1y)}</span>` : ""}
-      <span><strong>売り場ライン</strong>${yen(timing.sellLine)}</span>
-      <span><strong>最安日</strong>${escapeHtml(formatDate(timing.low.date))} ${yen(timing.low.close)}</span>
-      <span><strong>今との差</strong>${signedPct(timing.currentGapFromBuyLine)}</span>
-      <span><strong>安かった時期</strong>${periods || "<em>-</em>"}</span>
-    </div>
-  `;
+  renderEmbeddedChartTiming(els.chartTiming, timing, yen);
 }
 
 function buyTimingFromSeries(series = [], formatter = yen, dividendEvents = [], nextDividendAmount = null, nextDividendDate = "", nextDividendDateSource = "") {
@@ -4769,8 +4771,9 @@ function buyTimingFromSeries(series = [], formatter = yen, dividendEvents = [], 
   const dividendAdjustment1y = events
     .filter((event) => event.date > oneYearRaw[0].date && event.date <= latest.date)
     .reduce((sum, event) => sum + event.amount, 0);
-  const buyLineAfterNextDividend = Number(nextDividendAmount) > 0
-    ? Math.max(0.01, buyLine - Number(nextDividendAmount))
+  const expectedDividend = nextDividendAmount !== null && nextDividendAmount !== undefined && nextDividendAmount !== "" && Number.isFinite(Number(nextDividendAmount)) && Number(nextDividendAmount) >= 0 ? Number(nextDividendAmount) : null;
+  const buyLineAfterNextDividend = expectedDividend > 0
+    ? Math.max(0.01, buyLine - expectedDividend)
     : null;
   const nextDateText = nextDividendDate
     ? `次回${nextDividendDateSource === "データ取得済み予定" ? "取得予定" : "推定"}配当落ち${formatDate(nextDividendDate)}`
@@ -4780,6 +4783,8 @@ function buyTimingFromSeries(series = [], formatter = yen, dividendEvents = [], 
     buyLine,
     buyLineRaw: quantile(oneYearRaw.map((point) => point.close).sort((a, b) => a - b), 0.25),
     buyLineAfterNextDividend,
+    nextDividendAmount: expectedDividend,
+    nextDividendDateText: nextDateText,
     dividendAdjustment1y,
     deepLine,
     sellLine,
@@ -7466,6 +7471,7 @@ function peSignalHtml(signal) {
       <p>${escapeHtml(signal.summary || "")}</p>
       ${warning}
       ${financialLine}
+      ${edinetEvidenceHtml(financials.edinet)}
       ${financialInsights ? `<div class="pe-financial-insights">${financialInsights}</div>` : ""}
       <div>${financialCriteria}${criteria}${risks}</div>
       ${financialMissing ? `<div class="pe-financial-insights">${financialMissing}</div>` : ""}

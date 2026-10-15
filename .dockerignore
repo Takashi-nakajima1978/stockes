@@ -16,6 +16,7 @@ data/us-analysis-cache.json
 data/discovery-cache.json
 data/surge-forecast.json
 data/financial-cache.json
+data/edinet-directory.json
 data/shareholder-cache.json
 data/tdnet-disclosure-cache.json
 data/crypto-analysis-cache.json
