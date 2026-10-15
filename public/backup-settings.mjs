@@ -3,6 +3,7 @@ export function initializeBackupSettings({ request, toast }) {
   if (!root) return;
   const node = (id) => document.getElementById(id);
   const field = (name) => root.querySelector(`[data-drive-field="${name}"]`);
+  const nasField = (name) => root.querySelector(`[data-nas-field="${name}"]`);
   let loaded = false;
   let previewToken = "";
   let busy = false;
@@ -56,10 +57,12 @@ export function initializeBackupSettings({ request, toast }) {
   }
 
   function render(payload, applyConfig = false) {
-    const { config = {}, state = {}, inventory = {} } = payload;
+    const { config = {}, state = {}, nas = {}, inventory = {} } = payload;
     if (!loaded || applyConfig) {
       field("enabled").checked = config.enabled === true;
       field("time").value = `${String(config.hour ?? 4).padStart(2, "0")}:${String(config.minute ?? 0).padStart(2, "0")}`;
+      nasField("enabled").checked = config.nasEnabled === true;
+      nasField("time").value = `${String(config.nasHour ?? 4).padStart(2, "0")}:${String(config.nasMinute ?? 0).padStart(2, "0")}`;
       for (const key of ["folderName", "folderId", "clientId", "redirectUri"]) field(key).value = config[key] || "";
       field("redirectUri").value = configuredCallback(field("redirectUri").value);
       field("clientSecret").value = "";
@@ -72,6 +75,9 @@ export function initializeBackupSettings({ request, toast }) {
     node("driveConnectionStatus").textContent = config.connected ? "接続済み" : "未接続";
     node("driveBackupStatus").textContent = state.running ? "Google Driveに保存中…" : state.error ? state.error : `最終保存: ${date(state.lastSuccess)}`;
     node("driveBackupDetail").textContent = state.lastFileName ? `${state.lastFileName} / ${size(state.lastSize)}` : "";
+    node("nasConnectionStatus").textContent = !nas.configured ? "Docker未設定" : nas.available ? "share2接続可能" : "share2未接続";
+    node("nasBackupStatus").textContent = nas.running ? "nasneに保存中…" : nas.error || `最終保存: ${date(nas.lastSuccess)}`;
+    node("nasBackupDetail").textContent = [nas.lastFileName ? `${nas.lastFileName} / ${size(nas.lastSize)}` : "", nas.connectionError].filter(Boolean).join(" / ");
     const fileLink = node("driveBackupFile");
     fileLink.hidden = !/^https:\/\/(?:drive|docs)\.google\.com\//.test(state.lastFileUrl || "");
     if (!fileLink.hidden) fileLink.href = state.lastFileUrl;
@@ -79,7 +85,11 @@ export function initializeBackupSettings({ request, toast }) {
     recovery.hidden = !state.recoveryFile;
     if (!recovery.hidden) recovery.href = `/api/backup/recovery?name=${encodeURIComponent(state.recoveryFile)}`;
     for (const action of ["upload", "test", "disconnect"]) root.querySelector(`[data-backup-action="${action}"]`).disabled = !config.connected || state.running || busy;
-    if (state.running) void poll();
+    root.querySelector('[data-backup-action="nas-save"]').disabled = busy;
+    root.querySelector('[data-backup-action="nas-test"]').disabled = !nas.configured || nas.running || state.running || busy;
+    root.querySelector('[data-backup-action="nas-upload"]').disabled = !nas.available || nas.running || state.running || busy;
+    root.querySelector('[data-backup-action="nas-restore"]').disabled = !nas.available || nas.running || state.running || busy;
+    if (state.running || nas.running) void poll();
   }
 
   async function load(applyConfig = false) {
@@ -94,9 +104,12 @@ export function initializeBackupSettings({ request, toast }) {
         await new Promise((resolve) => setTimeout(resolve, 3000));
         const payload = await request("/api/backup/status");
         render(payload);
-        if (!payload.state?.running) return;
+        if (!payload.state?.running && !payload.nas?.running) return;
       }
-    } catch (error) { node("driveBackupStatus").textContent = error.message; }
+    } catch (error) {
+      node("driveBackupStatus").textContent = error.message;
+      node("nasBackupStatus").textContent = error.message;
+    }
     finally { polling = false; }
   }
 
@@ -107,6 +120,21 @@ export function initializeBackupSettings({ request, toast }) {
     const payload = await request("/api/backup/drive/settings", { method: "PATCH", body: JSON.stringify(config) });
     render(payload, true);
     return payload;
+  }
+
+  async function saveNas() {
+    const [hour, minute] = nasField("time").value.split(":").map(Number);
+    const payload = await request("/api/backup/nas/settings", { method: "PATCH", body: JSON.stringify({ enabled: nasField("enabled").checked, hour, minute }) });
+    render(payload, true);
+    return payload;
+  }
+
+  function showRestorePreview(result, sourceLabel) {
+    previewToken = result.token;
+    node("backupRestoreSummary").textContent = `${sourceLabel} ${date(result.createdAt)}の保存データ。日本株 ${result.japaneseStocks}銘柄、米国株 ${result.usStocks}銘柄、積立 ${result.savingsPlans}商品、候補の学習記録 ${result.learningRecords}件、保存済み予測 ${result.forecastRecords ?? 0}件（実績照合済み ${result.evaluatedForecastRecords ?? 0}件）。全${result.fileCount}ファイル (${size(result.totalBytes)})。`;
+    node("backupRestoreStatus").textContent = "";
+    node("backupLocalStatus").textContent = "バックアップの内容を確認しました。";
+    node("backupRestoreDialog").showModal();
   }
 
   async function download() {
@@ -137,6 +165,16 @@ export function initializeBackupSettings({ request, toast }) {
     try {
       if (action === "download") await download();
       else if (action === "save") { await save(); toast("バックアップ設定を保存しました。"); }
+      else if (action === "nas-save") { await saveNas(); toast("nasneの日次設定を保存しました。"); }
+      else if (action === "nas-test") {
+        const payload = await request("/api/backup/nas/test", { method: "POST" });
+        render(payload);
+        toast("nasne share2への書き込みを確認しました。");
+      } else if (action === "nas-upload") render(await request("/api/backup/nas/run", { method: "POST" }));
+      else if (action === "nas-restore") {
+        const result = await request("/api/backup/nas/preview", { method: "POST" });
+        showRestorePreview(result, `${result.sourceFileName}から、`);
+      }
       else if (action === "connect") {
         await save();
         const auth = await request("/api/backup/drive/auth", { method: "POST" });
@@ -151,7 +189,8 @@ export function initializeBackupSettings({ request, toast }) {
     } catch (error) {
       failed = true;
       popup?.close();
-      (action === "download" ? node("backupLocalStatus") : node("driveBackupStatus")).textContent = error.message;
+      const statusNode = action.startsWith("nas-") ? node("nasBackupStatus") : action === "download" ? node("backupLocalStatus") : node("driveBackupStatus");
+      statusNode.textContent = error.message;
       toast(error.message);
     } finally {
       busy = false;
@@ -170,11 +209,7 @@ export function initializeBackupSettings({ request, toast }) {
     try {
       if (file.size > 64 * 1024 * 1024) throw new Error("バックアップファイルは64 MB以下を選択してください。");
       const result = await request("/api/backup/preview", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: file });
-      previewToken = result.token;
-      node("backupRestoreSummary").textContent = `${date(result.createdAt)}の保存データ。日本株 ${result.japaneseStocks}銘柄、米国株 ${result.usStocks}銘柄、積立 ${result.savingsPlans}商品、候補の学習記録 ${result.learningRecords}件、保存済み予測 ${result.forecastRecords ?? 0}件（実績照合済み ${result.evaluatedForecastRecords ?? 0}件）。全${result.fileCount}ファイル (${size(result.totalBytes)})。`;
-      node("backupRestoreStatus").textContent = "";
-      node("backupLocalStatus").textContent = "バックアップの内容を確認しました。";
-      node("backupRestoreDialog").showModal();
+      showRestorePreview(result, "");
     } catch (error) { node("backupLocalStatus").textContent = error.message; }
     finally { busy = false; event.target.value = ""; }
   });

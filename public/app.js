@@ -261,6 +261,7 @@ const els = {
   excludedCandidateCount: document.getElementById("excludedCandidateCount"),
   excludedCandidateList: document.getElementById("excludedCandidateList"),
   sectorEvidenceList: document.getElementById("sectorEvidenceList"),
+  sectorEvidenceAnalyzeButton: document.getElementById("sectorEvidenceAnalyzeButton"),
   surgeForecastStatus: document.getElementById("surgeForecastStatus"),
   surgeForecastSummary: document.getElementById("surgeForecastSummary"),
   surgeForecastList: document.getElementById("surgeForecastList"),
@@ -5144,6 +5145,7 @@ async function analyze(options = {}) {
   if (state.running) return;
   state.running = true;
   state.jpRefreshing = true;
+  renderSectorEvidence();
   renderProfitSummary();
   els.analyzeButton.disabled = true;
   els.discoverButton.disabled = true;
@@ -5184,6 +5186,7 @@ async function analyze(options = {}) {
     const result = payload.analyses ? payload : await pollAnalysisJob();
     applyAnalysisPayload(result);
     renderCurrentDataView();
+    renderSectorEvidence();
   } catch (error) {
     toast(error.message);
     els.researchProgress.textContent = "失敗";
@@ -5195,6 +5198,7 @@ async function analyze(options = {}) {
     if (els.discoverNisaButton) els.discoverNisaButton.disabled = false;
     els.analyzeButton.textContent = originalText;
     renderProfitSummary();
+    renderSectorEvidence();
   }
 }
 
@@ -7185,9 +7189,17 @@ function renderExcludedCandidates() {
 function renderSectorEvidence() {
   if (!els.sectorEvidenceList) return;
   const groups = state.sectorEvidence || [];
+  if (els.sectorEvidenceAnalyzeButton) {
+    const hasJapaneseStocks = state.stocks.length > 0;
+    els.sectorEvidenceAnalyzeButton.disabled = state.running || !hasJapaneseStocks;
+    els.sectorEvidenceAnalyzeButton.textContent = state.running ? "分析中..." : "日本株を分析して更新";
+    els.sectorEvidenceAnalyzeButton.title = hasJapaneseStocks ? "登録済みの日本株を再分析します" : "先に日本株を登録してください";
+  }
   if (!groups.length) {
     els.sectorEvidenceList.classList.add("empty-state");
-    els.sectorEvidenceList.innerHTML = "<p>一括分析を実行すると、業種Evidenceを保存してここに表示します。</p>";
+    els.sectorEvidenceList.innerHTML = state.stocks.length
+      ? "<p>業種Evidenceがまだありません。登録済み日本株の分析後、該当する情報が見つかった場合に表示されます。</p>"
+      : "<p>日本株が未登録です。日本株を登録してから分析すると、該当する業種情報を表示します。</p>";
     return;
   }
   els.sectorEvidenceList.classList.remove("empty-state");
@@ -8622,6 +8634,7 @@ els.performanceTabs.forEach((button) => {
 });
 
 els.analyzeButton.addEventListener("click", analyze);
+els.sectorEvidenceAnalyzeButton?.addEventListener("click", () => analyze());
 els.usAnalyzeButton?.addEventListener("click", analyzeUs);
 els.cryptoAnalyzeButton?.addEventListener("click", analyzeCrypto);
 els.cryptoTabButtons.forEach((button) => {

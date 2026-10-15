@@ -625,8 +625,12 @@
             </section>
           </div>
           <div id="ideaPanelSector" role="tabpanel" aria-labelledby="ideaTabSector" data-idea-panel="sector" hidden>
+            <div class="sector-evidence-toolbar">
+              <p>候補検索ではなく、登録済みの日本株を分析したときに業種Evidenceを取得します。</p>
+              <button id="sectorEvidenceAnalyzeButton" type="button" class="secondary">日本株を分析して更新</button>
+            </div>
             <div id="sectorEvidenceList" class="sector-evidence-list empty-state">
-              <p>一括分析を実行すると、業種Evidenceを保存してここに表示します。</p>
+              <p>まだ業種Evidenceがありません。</p>
             </div>
           </div>
           <div id="ideaPanelSurge" role="tabpanel" aria-labelledby="ideaTabSurge" data-idea-panel="surge" hidden>
@@ -1030,13 +1034,30 @@
 
           <div class="settings-tab-panel" data-settings-panel="backup" id="backupSettings" hidden>
             <section class="backup-section">
+              <div class="backup-heading"><h3>nasne share2</h3><span id="nasConnectionStatus">未設定</span></div>
+              <p class="backup-note">全データと学習履歴をnasneの外付けHDDへ保存します。share2をDockerホストにマウントし、NAS用Compose設定でアプリへ接続してください。Finderで別のMacにマウントしただけでは、別マシン上のDockerからは使えません。nasneがスタンバイ中は保存できません。</p>
+              <div class="backup-fields">
+                <label class="checkbox-line"><input type="checkbox" data-nas-field="enabled"><span>日次バックアップ</span></label>
+                <label><span>毎日の時刻（日本時間）</span><input type="time" data-nas-field="time" value="04:00" required></label>
+              </div>
+              <div class="backup-actions">
+                <button type="button" data-backup-action="nas-save">日次設定を保存</button>
+                <button type="button" class="secondary" data-backup-action="nas-test">書き込みを確認</button>
+                <button type="button" class="secondary" data-backup-action="nas-upload">今すぐ保存</button>
+                <button type="button" class="secondary" data-backup-action="nas-restore">NASの最新バックアップから復元</button>
+              </div>
+              <p id="nasBackupStatus" role="status" aria-live="polite"></p>
+              <p id="nasBackupDetail" class="backup-note"></p>
+              <p class="backup-note">バックアップには保有情報やAPIキー等が含まれます。家庭内LANを外部に公開せず、nasneが起動している時間に実行してください。</p>
+            </section>
+            <section class="backup-section">
               <div class="backup-heading"><h3>全データ</h3><span id="backupInventory">確認中</span></div>
               <div class="backup-actions">
                 <button type="button" data-backup-action="download">一括ダウンロード</button>
                 <button type="button" class="secondary" data-backup-action="select">ファイルから復元</button>
                 <input id="backupFile" type="file" accept=".gz,.json,application/gzip,application/json" hidden>
               </div>
-              <p class="backup-note">保有・売却明細、配当、積立、設定、候補の勝敗・学習補正、保存済み予測と実績との照合結果、分析・価格・財務データを含みます。Google Driveにも同じ内容を保存します。接続キーも含まれるため、バックアップファイルは大切に保管してください。</p>
+              <p class="backup-note">保有・売却明細、配当、積立、設定、候補の勝敗・学習補正、保存済み予測と実績との照合結果、分析・価格・財務データを含みます。Google Driveとnasneにも同じ内容を保存します。接続キーも含まれるため、バックアップファイルは大切に保管してください。</p>
               <p id="backupLocalStatus" role="status" aria-live="polite"></p>
               <a id="backupRecovery" hidden>復元前のデータをダウンロード</a>
             </section>

@@ -1,0 +1,10 @@
+services:
+  stock-signal:
+    environment:
+      NAS_BACKUP_DIR: /nas-backups
+    volumes:
+      - type: bind
+        source: ${NAS_BACKUP_HOST_PATH:?Set NAS_BACKUP_HOST_PATH to the mounted nasne share2 directory}
+        target: /nas-backups
+        bind:
+          create_host_path: false

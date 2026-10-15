@@ -2270,6 +2270,10 @@ test("discovery separates PE candidates, stock candidates, and sector evidence i
   assert.match(indexSource, /data-idea-tab="success"[^>]*>紹介後の結果/);
   assert.match(indexSource, /id="underperformingCandidateList"/);
   assert.match(indexSource, /data-idea-tab="sector"[^>]*>業種Evidence/);
+  assert.match(indexSource, /id="sectorEvidenceAnalyzeButton"[^>]*>日本株を分析して更新/);
+  assert.match(indexSource, /候補検索ではなく、登録済みの日本株を分析したときに業種Evidenceを取得します/);
+  assert.doesNotMatch(indexSource, /一括分析を実行すると、業種Evidenceを保存してここに表示します/);
+  assert.match(appSource, /sectorEvidenceAnalyzeButton\?\.addEventListener\("click", \(\) => analyze\(\)\)/);
   assert.match(indexSource, /data-idea-tab="surge"[^>]*>3ヵ月上昇予測/);
   assert.match(indexSource, /id="surgeForecastList"/);
   assert.match(indexSource, /id="peCandidateList"/);

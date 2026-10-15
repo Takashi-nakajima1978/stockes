@@ -512,7 +512,7 @@ let hourlyRefreshTimer = null;
 let priceRefreshTimer = null;
 let surgeForecastTimer = null;
 let activeApiRequests = 0;
-const backupManager = createBackupManager({ store: dataStore, effectiveSettings: readSettings });
+const backupManager = createBackupManager({ store: dataStore, effectiveSettings: readSettings, nasDirectory: process.env.NAS_BACKUP_DIR || "" });
 
 const discoveryUniverse = [
   { symbol: "9433.T", name: "KDDI", market: "東証", sector: "通信", notes: "通信、金融、株主還元" },
@@ -819,7 +819,7 @@ const server = http.createServer(async (req, res) => {
           try { originHost = new URL(req.headers.origin).host; } catch {}
           if (originHost !== req.headers.host) return json(res, 403, { error: "アプリと同じアドレスから操作してください。" });
         }
-        const editsData = /^\/api\/(?:settings|stocks|us-stocks|crypto|savings-plans|excluded-candidates|backup\/drive\/settings)(?:\/|$)/.test(url.pathname);
+        const editsData = /^\/api\/(?:settings|stocks|us-stocks|crypto|savings-plans|excluded-candidates|backup\/(?:drive|nas)\/settings)(?:\/|$)/.test(url.pathname);
         return await (editsData ? serializeDataEdit(() => handleApi(req, res, url)) : handleApi(req, res, url));
       } finally { activeApiRequests -= 1; }
     }
@@ -889,6 +889,13 @@ async function handleBackupApi(req, res, url) {
   if (url.pathname === "/api/backup/drive/disconnect" && req.method === "POST") return json(res, 200, await backupManager.disconnect());
   if (url.pathname === "/api/backup/drive/run" && req.method === "POST") {
     void backupManager.upload("manual").catch((error) => console.error("Google Driveバックアップ:", error.message));
+    return json(res, 202, await backupManager.status());
+  }
+  if (url.pathname === "/api/backup/nas/settings" && req.method === "PATCH") return json(res, 200, await backupManager.configureNas(await readJson(req)));
+  if (url.pathname === "/api/backup/nas/test" && req.method === "POST") return json(res, 200, await backupManager.testNas());
+  if (url.pathname === "/api/backup/nas/preview" && req.method === "POST") return json(res, 200, await backupManager.previewNas());
+  if (url.pathname === "/api/backup/nas/run" && req.method === "POST") {
+    void backupManager.backupNas("manual").catch((error) => console.error("nasneバックアップ:", error.message));
     return json(res, 202, await backupManager.status());
   }
   return json(res, 404, { error: "バックアップ操作が見つかりません。" });

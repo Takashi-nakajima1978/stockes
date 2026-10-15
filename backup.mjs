@@ -1,4 +1,4 @@
-import { readdir, readFile, writeFile, mkdir, rename, rm, stat, lstat } from "node:fs/promises";
+import { readdir, readFile, writeFile, mkdir, rename, rm, stat, lstat, open as openFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { gzip, gunzip } from "node:zlib";
@@ -80,14 +80,16 @@ export function backupSummary(archive) {
   };
 }
 
-export function createBackupManager({ store, effectiveSettings = async () => ({}), fetchImpl = fetch, now = () => new Date(), renameFile = rename }) {
+export function createBackupManager({ store, effectiveSettings = async () => ({}), fetchImpl = fetch, now = () => new Date(), renameFile = rename, nasDirectory = "" }) {
   const root = store.directory;
   const backups = path.join(root, "backups");
   const previews = new Map();
   const authRequests = new Map();
   let uploadTask = null;
+  let nasTask = null;
   let restoring = false;
   let timer = null;
+  const nasRoot = String(nasDirectory || "").trim();
   const configPath = path.join(root, CONFIG);
   const statusPath = path.join(root, STATUS);
   const readOptional = async (file, fallback) => {
@@ -100,6 +102,31 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
   const readStatus = () => readOptional(statusPath, {});
   const saveConfig = (config) => store.write(configPath, JSON.stringify(config, null, 2));
   const saveStatus = (state) => store.write(statusPath, JSON.stringify(state, null, 2));
+  function getNasDirectory() {
+    if (!nasRoot) throw failure("Dockerにnasneのshare2が接続されていません。NAS用Compose設定で共有フォルダーをマウントしてください。");
+    if (!path.isAbsolute(nasRoot)) throw failure("NASのマウント先は絶対パスで指定してください。", 500);
+    return nasRoot;
+  }
+  async function requireNasDirectory() {
+    const directory = getNasDirectory();
+    let info;
+    try { info = await stat(directory); }
+    catch (error) {
+      if (error.code === "ENOENT") throw failure("nasneのshare2がマウントされていません。");
+      throw error;
+    }
+    if (!info.isDirectory()) throw failure("NASのマウント先がフォルダーではありません。");
+    return directory;
+  }
+  async function inspectNas() {
+    if (!nasRoot) return { configured: false, available: false, connectionError: "Dockerにnasneのshare2が接続されていません。" };
+    try {
+      await requireNasDirectory();
+      return { configured: true, available: true, connectionError: "" };
+    } catch (error) {
+      return { configured: true, available: false, connectionError: error.code === "ENOENT" ? "nasneのshare2がマウントされていません。" : `NASを確認できません: ${error.message}` };
+    }
+  }
   const dataFiles = async () => (await readdir(root, { withFileTypes: true }).catch((error) => {
     if (error.code === "ENOENT") return [];
     throw error;
@@ -205,9 +232,58 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
     }
   }
 
+  async function saveToNas(reason) {
+    const previous = await readStatus();
+    await saveStatus({ ...previous, nas: { ...(previous.nas || {}), lastAttempt: now().toISOString(), error: "" } });
+    let temporary = "";
+    let handle = null;
+    try {
+      const directory = await requireNasDirectory();
+      const bytes = await store.exclusive(snapshotUnlocked);
+      const date = japanDate(now());
+      const name = `stock-signal-${date}.json.gz`;
+      const target = path.join(directory, name);
+      temporary = path.join(directory, `.${name}.${randomUUID()}.tmp`);
+      handle = await openFile(temporary, "wx", 0o600);
+      await handle.writeFile(bytes);
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      await renameFile(temporary, target);
+      const state = await readStatus();
+      const result = { ...state, nas: { ...(state.nas || {}), lastSuccess: now().toISOString(), lastSuccessDate: date, lastFileName: name, lastSize: bytes.length, reason, error: "" } };
+      await saveStatus(result);
+      return result;
+    } catch (error) {
+      await handle?.close().catch(() => {});
+      if (temporary) await rm(temporary, { force: true }).catch(() => {});
+      const state = await readStatus();
+      await saveStatus({ ...state, nas: { ...(state.nas || {}), error: error.message } });
+      throw error;
+    }
+  }
+
+  async function checkNasWriteAccess() {
+    const directory = await requireNasDirectory();
+    const probe = path.join(directory, `.stock-signal-check-${randomUUID()}.tmp`);
+    try {
+      await writeFile(probe, "stock-signal NAS write check", { flag: "wx", mode: 0o600 });
+    } finally {
+      await rm(probe, { force: true }).catch(() => {});
+    }
+  }
+
+  async function latestNasBackup() {
+    const directory = await requireNasDirectory();
+    const files = (await readdir(directory)).filter((name) => /^stock-signal-\d{4}-\d{2}-\d{2}\.json\.gz$/.test(name)).sort().reverse();
+    if (!files.length) throw failure("nasneにバックアップがありません。先に「今すぐ保存」を実行してください。");
+    return { name: files[0], bytes: await readFile(path.join(directory, files[0])) };
+  }
+
   const manager = {
     get restoring() { return restoring; },
     get running() { return Boolean(uploadTask); },
+    get nasRunning() { return Boolean(nasTask); },
     async initialize() {
       await mkdir(root, { recursive: true });
       try {
@@ -218,9 +294,14 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
       }
     },
     async status() {
-      const [config, state, names] = await Promise.all([readConfig(), readStatus(), dataFiles()]);
+      const [config, state, names, nas] = await Promise.all([readConfig(), readStatus(), dataFiles(), inspectNas()]);
       const totalBytes = (await Promise.all(names.map(async (name) => (await stat(path.join(root, name))).size))).reduce((sum, size) => sum + size, 0);
-      return { config: { enabled: Boolean(config.enabled), hour: config.hour ?? 4, minute: config.minute ?? 0, folderId: config.folderId || "", folderName: config.folderName || "Stock Signal Backups", clientId: config.clientId || "", redirectUri: config.redirectUri || "", hasClientSecret: Boolean(config.clientSecret), connected: Boolean(config.refreshToken) }, state: { ...state, running: Boolean(uploadTask), restoring }, inventory: { fileCount: names.length, totalBytes } };
+      return {
+        config: { enabled: Boolean(config.enabled), hour: config.hour ?? 4, minute: config.minute ?? 0, folderId: config.folderId || "", folderName: config.folderName || "Stock Signal Backups", clientId: config.clientId || "", redirectUri: config.redirectUri || "", hasClientSecret: Boolean(config.clientSecret), connected: Boolean(config.refreshToken), nasEnabled: Boolean(config.nasEnabled), nasHour: config.nasHour ?? 4, nasMinute: config.nasMinute ?? 0 },
+        state: { ...state, running: Boolean(uploadTask), restoring },
+        nas: { ...(state.nas || {}), ...nas, running: Boolean(nasTask) },
+        inventory: { fileCount: names.length, totalBytes },
+      };
     },
     async configure(patch = {}) {
       const config = await readConfig();
@@ -243,6 +324,21 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
       await saveConfig(next);
       return manager.status();
     },
+    async configureNas(patch = {}) {
+      const config = await readConfig();
+      const next = { ...config };
+      if (patch.enabled === true && !nasRoot) throw failure("先にNAS用Compose設定でnasneのshare2をDockerへ接続してください。");
+      if (typeof patch.enabled === "boolean") next.nasEnabled = patch.enabled;
+      for (const key of ["hour", "minute"]) {
+        if (patch[key] !== undefined) {
+          const number = Number(patch[key]);
+          if (!Number.isInteger(number) || number < 0 || number > (key === "hour" ? 23 : 59)) throw failure("NASバックアップ時刻を確認してください。");
+          next[key === "hour" ? "nasHour" : "nasMinute"] = number;
+        }
+      }
+      await saveConfig(next);
+      return manager.status();
+    },
     download() { return store.exclusive(snapshotUnlocked); },
     async preview(bytes) {
       const archive = await decodeBackup(bytes);
@@ -255,7 +351,7 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
     async restore(token) {
       const preview = previews.get(token);
       if (!preview || preview.expires < now().getTime()) throw failure("復元の確認期限が切れました。ファイルを選び直してください。");
-      if (restoring || uploadTask) throw failure("バックアップ処理中です。完了後に復元してください。", 409);
+      if (restoring || uploadTask || nasTask) throw failure("バックアップ処理中です。完了後に復元してください。", 409);
       restoring = true;
       try {
         const result = await store.exclusive(async () => {
@@ -301,7 +397,7 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
       const config = await readConfig();
       if (!config.clientId) throw failure("Google OAuthのクライアントIDを保存してください。");
       const redirect = new URL(config.redirectUri || `${origin}/api/backup/drive/callback`);
-      if (redirect.origin !== origin || redirect.pathname !== "/api/backup/drive/callback" || redirect.search || redirect.hash || redirect.username || (redirect.protocol !== "https:" && !(redirect.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(redirect.hostname)))) throw failure("このコールバックURLはGoogle OAuthで使用できません。同じ端末でlocalhostから開くか、HTTPSでアクセスし、Google Cloudに画面表示のコールバックURLを登録してください。");
+      if (redirect.origin !== origin || redirect.pathname !== "/api/backup/drive/callback" || redirect.search || redirect.hash || redirect.username || (redirect.protocol !== "https:" && !(redirect.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(redirect.hostname)))) throw failure("このコールバックURLはGoogle OAuthで使用できません。localhostまたはHTTPSから接続し、Google Cloudに画面表示のコールバックURLを登録してください。");
       const state = randomBytes(24).toString("hex");
       const verifier = randomBytes(48).toString("base64url");
       for (const [key, request] of authRequests) if (request.expires < now().getTime()) authRequests.delete(key);
@@ -340,18 +436,46 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
     },
     upload(reason = "manual") {
       if (restoring) return Promise.reject(failure("復元処理中です。", 409));
+      if (nasTask) return Promise.reject(failure("NASバックアップ処理中です。完了後に実行してください。", 409));
       if (!uploadTask) uploadTask = upload(reason).finally(() => { uploadTask = null; });
       return uploadTask;
     },
-    async tick() {
-      if (restoring || uploadTask) return;
-      const config = await readConfig();
-      if (!config.enabled || !config.refreshToken) return;
-      const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Tokyo", hourCycle: "h23", hour: "2-digit", minute: "2-digit" }).formatToParts(now()).map((part) => [part.type, part.value]));
-      if (Number(parts.hour) * 60 + Number(parts.minute) < Number(config.hour ?? 4) * 60 + Number(config.minute || 0)) return;
+    async testNas() {
+      if (restoring || uploadTask || nasTask) throw failure("バックアップ処理中です。完了後に接続を確認してください。", 409);
+      await checkNasWriteAccess();
       const state = await readStatus();
-      if (state.lastSuccessDate === japanDate(now()) || (state.lastAttempt && now().getTime() - Date.parse(state.lastAttempt) < 30 * 60000)) return;
-      await manager.upload("daily");
+      await saveStatus({ ...state, nas: { ...(state.nas || {}), lastConnectionCheckAt: now().toISOString(), error: "" } });
+      return manager.status();
+    },
+    backupNas(reason = "manual") {
+      if (restoring || uploadTask) return Promise.reject(failure("別のバックアップまたは復元処理中です。完了後に実行してください。", 409));
+      if (!nasTask) nasTask = saveToNas(reason).finally(() => { nasTask = null; });
+      return nasTask;
+    },
+    async previewNas() {
+      if (restoring || uploadTask || nasTask) throw failure("バックアップ処理中です。完了後に復元してください。", 409);
+      const backup = await latestNasBackup();
+      return { ...await manager.preview(backup.bytes), sourceFileName: backup.name };
+    },
+    async tick() {
+      if (restoring || uploadTask || nasTask) return;
+      const config = await readConfig();
+      const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Tokyo", hourCycle: "h23", hour: "2-digit", minute: "2-digit" }).formatToParts(now()).map((part) => [part.type, part.value]));
+      const minuteOfDay = Number(parts.hour) * 60 + Number(parts.minute);
+      const today = japanDate(now());
+      const state = await readStatus();
+      let backupError = null;
+      const driveRetryReady = !state.lastAttempt || now().getTime() - Date.parse(state.lastAttempt) >= 30 * 60000;
+      if (config.enabled && config.refreshToken && minuteOfDay >= Number(config.hour ?? 4) * 60 + Number(config.minute || 0) && state.lastSuccessDate !== today && driveRetryReady) {
+        try { await manager.upload("daily"); } catch (error) { backupError = error; }
+      }
+      const latest = await readStatus();
+      const nasState = latest.nas || {};
+      const nasRetryReady = !nasState.lastAttempt || now().getTime() - Date.parse(nasState.lastAttempt) >= 30 * 60000;
+      if (config.nasEnabled && minuteOfDay >= Number(config.nasHour ?? 4) * 60 + Number(config.nasMinute || 0) && nasState.lastSuccessDate !== today && nasRetryReady) {
+        try { await manager.backupNas("daily"); } catch (error) { if (!backupError) backupError = error; }
+      }
+      if (backupError) throw backupError;
     },
     startSchedule() {
       manager.stopSchedule();

@@ -115,6 +115,18 @@ Driveの認証情報は `data/backup-config.json`、結果は `data/backup-statu
 
 Googleの仕様: [オフラインアクセスとOAuth](https://developers.google.com/identity/protocols/oauth2/web-server)、[Driveアップロード](https://developers.google.com/workspace/drive/api/guides/manage-uploads)。
 
+### Sony nasneのshare2へ日次保存
+
+Dockerホストにnasneの外付けHDD共有 `share2` をマウントしてから、NAS用Compose設定を追加して起動します。FinderでMacにマウントした場合は通常 `/Volumes/share2` です。Dockerが別のLinuxマシンで動いている場合は、そのマシン自身に共有をマウントし、Mac上のパスではなくLinux側のマウント先を指定してください。
+
+```sh
+NAS_BACKUP_HOST_PATH="/Volumes/share2" docker compose -f docker-compose.yml -f docker-compose.nas.yml up -d --build
+```
+
+設定の「バックアップ」→「nasne share2」で「書き込みを確認」を実行し、問題がなければ日次設定を保存します。初期時刻は毎日04:00（日本時間）です。「今すぐ保存」で動作確認でき、NAS上の最新ファイルを選んで復元することもできます。日次保存はアプリ起動中に行い、失敗した場合は30分後に再試行します。nasneがスタンバイ中は書き込めないため、設定時刻にnasneが利用可能であることを確認してください。
+
+バックアップは全データ形式の圧縮ファイル `stock-signal-YYYY-MM-DD.json.gz` で、候補の学習履歴・予測実績・各種キャッシュ・接続設定も含みます。復元は最新ファイルの検証と確認を経て実行します。接続キーを含むため、家庭内ネットワークを外部公開しないでください。Sony nasneでは通常 `share1` が内蔵HDD、`share2` が外付けHDDです。
+
 ## EDINET財務分析
 
 設定の「財務/口座」でEDINET APIキーを登録し、分析を更新すると日本株の財務資料を取得します。初回は直近400日分の書類一覧を確認するため時間がかかります。一覧をディスクに保存して共有し、当日分は30分、過去日分は24時間再利用します。同一書類の抽出済み数値も再利用し、訂正・新規書類は取り直します。

@@ -249,6 +249,54 @@ test("daily Drive uploads run once per Japan day and retry failures after 30 min
   assert.ok(google.calls.some((call) => call.method === "PATCH" && call.url.includes("/file-test")));
 });
 
+test("nasne share backups verify writes, save all learning data daily, and restore the latest archive", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "stock-nas-backup-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const share = path.join(dir, "share2");
+  await mkdir(share);
+  let now = new Date("2026-10-11T19:00:00Z");
+  let renames = 0;
+  const { manager, store } = await fixture(t, { nasDirectory: share, now: () => now, renameFile: async (...args) => { renames += 1; return rename(...args); } });
+  await manager.configureNas({ enabled: true, hour: 4, minute: 0 });
+  assert.equal((await manager.status()).nas.available, true);
+  await manager.testNas();
+  assert.deepEqual(await readdir(share), []);
+
+  await manager.tick();
+  assert.equal(renames, 1);
+  const filename = "stock-signal-2026-10-12.json.gz";
+  const archive = await decodeBackup(await readFile(path.join(share, filename)));
+  assert.equal(JSON.parse(archive.files.find((file) => file.name === "candidate-history.json").bytes).items[0].outcome, "loss");
+  assert.equal((await manager.status()).nas.lastSuccessDate, "2026-10-12");
+  await manager.tick();
+  assert.equal(renames, 1);
+
+  const preview = await manager.previewNas();
+  assert.equal(preview.sourceFileName, filename);
+  await store.write("watchlist.json", "[]");
+  await manager.restore(preview.token);
+  assert.equal((await store.readJson("watchlist.json"))[0].symbol, "9005.T");
+  now = new Date("2026-10-12T19:00:00Z");
+  await manager.tick();
+  assert.equal((await manager.status()).nas.lastSuccessDate, "2026-10-13");
+});
+
+test("nasne backup reports an unmounted share instead of writing locally", async (t) => {
+  const missingShare = path.join(os.tmpdir(), `missing-nasne-${Date.now()}`);
+  const { manager } = await fixture(t, { nasDirectory: missingShare });
+  const status = await manager.status();
+  assert.equal(status.nas.configured, true);
+  assert.equal(status.nas.available, false);
+  await assert.rejects(manager.testNas(), /nasneのshare2がマウントされていません/);
+  await assert.rejects(manager.backupNas(), /nasneのshare2がマウントされていません/);
+});
+
+test("NAS daily backup cannot be enabled until the Docker share mount is configured", async (t) => {
+  const { manager } = await fixture(t);
+  await assert.rejects(manager.configureNas({ enabled: true }), /NAS用Compose設定/);
+  assert.equal((await manager.status()).config.nasEnabled, false);
+});
+
 test("OAuth requires a matching callback, PKCE and cookie state; secrets stay on the server", async (t) => {
   const google = googleMock();
   const { manager } = await fixture(t, { fetchImpl: google.fetchImpl });
