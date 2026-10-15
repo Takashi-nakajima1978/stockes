@@ -1659,6 +1659,38 @@ test("price charts show visible purchase and sale markers", () => {
   assert.match(appSource, /過去再検証/);
 });
 
+test("embedded price charts use readable price ticks and concise BTC/FX confidence", () => {
+  const nicePriceAxis = loadFunction(appSource, "nicePriceAxis", {
+    clampNumber: (value, min, max) => Math.min(max, Math.max(min, value)),
+  });
+  const axis = nicePriceAxis([8_744_468, 13_007_887, 18_833_820]);
+  assert.equal(axis.min, 7_500_000);
+  assert.equal(axis.max, 20_000_000);
+  assert.deepEqual(Array.from(axis.ticks), [7_500_000, 10_000_000, 12_500_000, 15_000_000, 17_500_000, 20_000_000]);
+  assert.deepEqual(Array.from(nicePriceAxis([150, 150]).ticks), [140, 145, 150, 155, 160]);
+
+  const reliabilityHtml = loadFunction(appSource, "forecastReliabilityHtml", {
+    escapeHtml: (value) => String(value),
+    formatDate: (value) => value,
+    forecastReliabilityText: () => "信頼度：蓄積中（3か月先）",
+  });
+  const compact = reliabilityHtml(null, { evaluated: 0, saved: 0, pending: 0, comparisons: [] }, [{ date: "2027-01-15", value: 13_616_303 }], String, "", { compact: true });
+  assert.match(compact, /予測信頼度/);
+  assert.match(compact, /蓄積中（3か月先）/);
+  assert.doesNotMatch(compact, /予測信頼度.*信頼度：/s);
+  assert.match(compact, /信頼度の根拠・比較/);
+  assert.doesNotMatch(compact, /13,616,303|2027-01-15/);
+  assert.match(appSource, /formatter: yen, compact: true/);
+  assert.match(appSource, /formatter: fxRate, compact: true/);
+
+  const embeddedChartStart = appSource.indexOf("function renderEmbeddedPriceChart(");
+  const embeddedChartEnd = appSource.indexOf("\nfunction ", embeddedChartStart + 1);
+  const embeddedChartSource = appSource.slice(embeddedChartStart, embeddedChartEnd);
+  assert.match(embeddedChartSource, /axis\.ticks\.forEach/);
+  assert.doesNotMatch(embeddedChartSource, /過去2年9か月＋3か月予測/);
+  assert.doesNotMatch(embeddedChartSource, /context\.fillText\(formatter\(max\)/);
+});
+
 test("all forecast charts expose date, value, and forecast interval tooltips", () => {
   const tooltipHtml = loadFunction(appSource, "chartPointTooltipHtml", {
     escapeHtml: (value) => String(value),

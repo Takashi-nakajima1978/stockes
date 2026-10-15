@@ -1204,6 +1204,17 @@ tr:hover .drag-handle,
   display: none;
 }
 
+.forecast-review-compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 6px 16px;
+  padding: 0;
+  border-bottom: 0;
+}
+
 .forecast-reliability-heading {
   display: flex;
   justify-content: space-between;
@@ -1219,9 +1230,15 @@ tr:hover .drag-handle,
 
 .forecast-reliability-heading strong { font-size: 15px; }
 .forecast-reliability-heading > div:first-child > span { font-weight: 700; color: #155c9a; }
+.forecast-reliability-heading-compact { display: block; }
+.forecast-reliability-heading-compact > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.forecast-reliability-heading-compact strong { font-size: 13px; }
 .forecast-review p { margin: 8px 0 0; font-size: 12px; overflow-wrap: anywhere; }
 .forecast-review details { margin-top: 8px; }
 .forecast-review summary { cursor: pointer; min-height: 32px; padding: 6px 0; }
+.forecast-review-compact details { margin: 0; }
+.forecast-review-compact summary { min-height: 0; padding: 2px 0; }
+.forecast-review-compact details[open] { flex-basis: 100%; }
 .forecast-reliability-error { color: #ae343d; }
 .forecast-reliability-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
 .forecast-reliability-metrics > span { display: grid; gap: 4px; }
@@ -1231,6 +1248,7 @@ tr:hover .drag-handle,
 .forecast-comparison-table th, .forecast-comparison-table td { padding: 8px; text-align: left; border-bottom: 1px solid var(--line); font-size: 12px; }
 @media (max-width: 600px) {
   .forecast-reliability-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .forecast-review-compact { align-items: flex-start; }
 }
 
 .timing-grid {

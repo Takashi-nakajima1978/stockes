@@ -2317,7 +2317,7 @@ function renderCryptoDetail() {
     </details>
   `;
   attachCryptoPositionForm();
-  renderForecastReview(els.cryptoDetail.querySelector("[data-instrument-forecast-review]"), btcForecast.validation, { market: "crypto", symbol: "BTC-JPY", forecast: btcForecast, formatter: yen });
+  renderForecastReview(els.cryptoDetail.querySelector("[data-instrument-forecast-review]"), btcForecast.validation, { market: "crypto", symbol: "BTC-JPY", forecast: btcForecast, formatter: yen, compact: true });
   renderEmbeddedPriceChart(els.cryptoDetail.querySelector(".crypto-chart-jpy"), btcPrice.series || [], yen, [], btcPrice, btcForecast);
 }
 
@@ -2341,7 +2341,7 @@ function renderFxDetail() {
     [".fx-chart-eur-jpy", "EUR-JPY", eurJpyPrice, eurJpyForecast],
   ]) {
     const root = els.fxDetail.querySelector(selector);
-    renderForecastReview(root.querySelector("[data-instrument-forecast-review]"), forecast.validation, { market: "fx", symbol, forecast, formatter: fxRate });
+    renderForecastReview(root.querySelector("[data-instrument-forecast-review]"), forecast.validation, { market: "fx", symbol, forecast, formatter: fxRate, compact: true });
     renderEmbeddedPriceChart(root, price.series || [], fxRate, [], price, forecast);
   }
 }
@@ -3218,6 +3218,7 @@ function forecastReliabilityHtml(review, saved, forecast, formatter, error = "",
   const count = saved?.evaluated || 0;
   const percent = (value) => Number.isFinite(value) ? `${value.toFixed(1)}%` : "未評価";
   const reliabilityLabel = error ? "信頼度：照合できません" : saved ? forecastReliabilityText(saved, horizon) : `信頼度：照合中（${horizon}）`;
+  const compactReliabilityLabel = reliabilityLabel.replace(/^信頼度[： ]*/, "");
   const status = error || (saved
     ? `保存 ${saved.saved}件 / 期限待ち ${saved.pending}件${saved.nextTargetDate ? `・次回 ${formatDate(saved.nextTargetDate)}` : ""}${saved.missingActual ? ` / 実績価格待ち ${saved.missingActual}件` : ""}`
     : "保存した予測を照合中");
@@ -3225,26 +3226,43 @@ function forecastReliabilityHtml(review, saved, forecast, formatter, error = "",
   const backtest = review?.evaluated
     ? `過去再検証（当時の保存予測ではありません）：${review.evaluated}回 / 方向一致 ${percent(review.directionAccuracyPct)} / 騰落率の誤差中央値 ${review.medianAbsoluteErrorPct.toFixed(1)}pt / 予測幅内 ${percent(review.intervalCoveragePct)}。短い学習期間での簡易検証で、上記の信頼度には含めません。`
     : options.savings ? "過去の値動きから作ったシナリオの数は、信頼度の比較実績件数ではありません。" : "過去再検証：価格履歴が不足しています。";
+  const explanation = `当時保存した${horizon}の予測${unit}が、実績${unit}の±5%以内だった割合${count ? `（${saved.successes} / ${count}件）` : saved ? "。まだ比較できる実績がありません" : ""}。上昇する確率ではありません。${options.savings ? "積立額の変更に左右されない基準価額を照合し、積立評価額そのものの的中率ではありません。" : "AIの主観評価ではなく、保存予測と実績の数値比較です。"}`;
+  const metrics = count ? `<div class="forecast-reliability-metrics">
+    <span>方向一致<strong>${percent(saved.directionAccuracyPct)}</strong></span>
+    <span>平均${unit}誤差<strong>${percent(saved.meanAbsoluteErrorPct)}</strong></span>
+    <span>${unit}一定の場合の誤差<strong>${percent(saved.baselineErrorPct)}</strong></span>
+    <span>予測幅に収まった割合<strong>${percent(saved.intervalCoveragePct)}</strong></span>
+  </div>` : "";
+  const comparisonDetails = `1日最初に表示した予測を保存し、同じ銘柄・同じ予測方式の、期間が重ならない予測で集計します${saved?.overlapping ? `（重複 ${saved.overlapping}件を除外）` : ""}。平均${unit}誤差は予測と実績の差の絶対値を実績${unit}で割った値です。休場日は${options.savings ? "7日以内の次の公表基準価額" : "翌取引日の終値"}で照合します。${count && count < 10 ? "評価件数が少ないため、割合は大きく変わります。" : ""}`;
+  const comparisonTable = comparisons.length ? `<div class="forecast-comparison-scroll"><table class="forecast-comparison-table"><thead><tr><th>予測日</th><th>対象日 / 実績日</th><th>予測${unit}</th><th>実績${unit}</th><th>${unit}誤差</th><th>±5%以内</th></tr></thead><tbody>${comparisons.map((item) => `<tr>
+    <td>${escapeHtml(formatDate(item.issuedDate))}</td><td>${escapeHtml(formatDate(item.targetDate))}<br>${escapeHtml(formatDate(item.outcome.date))}</td>
+    <td>${escapeHtml(formatter(item.predicted))}</td><td>${escapeHtml(formatter(item.outcome.price))}</td>
+    <td>${percent(item.outcome.errorPct)}</td><td>${item.outcome.errorPct <= saved.tolerancePct ? "一致" : "外れ"}</td>
+  </tr>`).join("")}</tbody></table></div><p>直近${comparisons.length}件の比較を表示しています。</p>` : "";
+  if (options.compact) {
+    return `
+      <div class="forecast-reliability-heading forecast-reliability-heading-compact">
+        <div><strong>予測信頼度</strong><span>${escapeHtml(compactReliabilityLabel)}</span></div>
+      </div>
+      <details><summary>信頼度の根拠・比較</summary>
+        <p>${escapeHtml(explanation)}</p>${metrics}
+        <p class="${error ? "forecast-reliability-error" : ""}">${escapeHtml(status)}</p>
+        <p>${escapeHtml(comparisonDetails)}</p>${comparisonTable}
+        <p>${escapeHtml(backtest)}</p>
+      </details>
+    `;
+  }
   return `
     <div class="forecast-reliability-heading">
       <div><strong>予測の信頼度${options.savings ? "（基準価額）" : ""}</strong><span>${escapeHtml(reliabilityLabel)}</span></div>
       <div><span>${escapeHtml(formatDate(terminal.date))} の${options.savings ? "基準価額" : "参考"}予測</span><strong>${escapeHtml(formatter(terminal.value))}</strong></div>
     </div>
-    <p>当時保存した${horizon}の予測${unit}が、実績${unit}の±5%以内だった割合${count ? `（${saved.successes} / ${count}件）` : saved ? "。まだ比較できる実績がありません" : ""}。上昇する確率ではありません。${options.savings ? "積立額の変更に左右されない基準価額を照合し、積立評価額そのものの的中率ではありません。" : ""}AIの主観評価ではなく、保存予測と実績の数値比較です。</p>
-    ${count ? `<div class="forecast-reliability-metrics">
-      <span>方向一致<strong>${percent(saved.directionAccuracyPct)}</strong></span>
-      <span>平均${unit}誤差<strong>${percent(saved.meanAbsoluteErrorPct)}</strong></span>
-      <span>${unit}一定の場合の誤差<strong>${percent(saved.baselineErrorPct)}</strong></span>
-      <span>予測幅に収まった割合<strong>${percent(saved.intervalCoveragePct)}</strong></span>
-    </div>` : ""}
+    <p>${escapeHtml(explanation)}</p>
+    ${metrics}
     <p class="${error ? "forecast-reliability-error" : ""}">${escapeHtml(status)}</p>
     <details><summary>比較の根拠${count ? `・${count}件` : options.savings ? "・保存条件" : "・過去再検証"}</summary>
-      <p>1日最初に表示した予測を保存し、同じ銘柄・同じ予測方式の、期間が重ならない予測で集計します${saved?.overlapping ? `（重複 ${saved.overlapping}件を除外）` : ""}。平均${unit}誤差は予測と実績の差の絶対値を実績${unit}で割った値です。休場日は${options.savings ? "7日以内の次の公表基準価額" : "翌取引日の終値"}で照合します。${count && count < 10 ? "評価件数が少ないため、割合は大きく変わります。" : ""}</p>
-      ${comparisons.length ? `<div class="forecast-comparison-scroll"><table class="forecast-comparison-table"><thead><tr><th>予測日</th><th>対象日 / 実績日</th><th>予測${unit}</th><th>実績${unit}</th><th>${unit}誤差</th><th>±5%以内</th></tr></thead><tbody>${comparisons.map((item) => `<tr>
-        <td>${escapeHtml(formatDate(item.issuedDate))}</td><td>${escapeHtml(formatDate(item.targetDate))}<br>${escapeHtml(formatDate(item.outcome.date))}</td>
-        <td>${escapeHtml(formatter(item.predicted))}</td><td>${escapeHtml(formatter(item.outcome.price))}</td>
-        <td>${percent(item.outcome.errorPct)}</td><td>${item.outcome.errorPct <= saved.tolerancePct ? "一致" : "外れ"}</td>
-      </tr>`).join("")}</tbody></table></div><p>直近${comparisons.length}件の比較を表示しています。</p>` : ""}
+      <p>${escapeHtml(comparisonDetails)}</p>
+      ${comparisonTable}
       <p>${escapeHtml(backtest)}</p>
     </details>
   `;
@@ -3262,12 +3280,13 @@ function renderForecastReview(node, review = null, options = {}) {
   const key = `${market}:${symbol}:${forecast[0].date}`;
   node.forecastRequestKey = key;
   node.hidden = false;
+  node.classList.toggle("forecast-review-compact", Boolean(options.compact));
   forecast.reliability ||= { text: "信頼度：照合中（3か月先）" };
   const show = (saved, error = "") => {
     forecast.reliability.text = error ? "信頼度：履歴を照合できません" : saved ? forecastReliabilityText(saved) : "信頼度：照合中（3か月先）";
     if (!node.isConnected || node.forecastRequestKey !== key) return;
     const open = node.querySelector("details")?.open;
-    node.innerHTML = forecastReliabilityHtml(review, saved, forecast, formatter, error);
+    node.innerHTML = forecastReliabilityHtml(review, saved, forecast, formatter, error, options);
     if (open) node.querySelector("details").open = true;
   };
   let cached = forecastHistoryRequests.get(key);
@@ -4390,6 +4409,30 @@ function showChartPointTooltip(canvas, tooltip, point, formatter) {
   tooltip.style.top = `${Math.max(12, pointTopInHost + (belowPoint ? 12 : -12))}px`;
 }
 
+function nicePriceAxis(values = [], targetIntervals = 5) {
+  const valid = values.filter(Number.isFinite);
+  if (!valid.length) return { min: 0, max: 1, ticks: [0, 1] };
+  let dataMin = Math.min(...valid);
+  let dataMax = Math.max(...valid);
+  if (!(dataMax > dataMin)) {
+    const padding = Math.abs(dataMax) * 0.05 || 1;
+    dataMin -= padding;
+    dataMax += padding;
+  }
+  const rawStep = (dataMax - dataMin) / clampNumber(targetIntervals, 2, 8);
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const ratio = rawStep / magnitude;
+  const factor = ratio <= 1 ? 1 : ratio <= 2 ? 2 : ratio <= 2.5 ? 2.5 : ratio <= 5 ? 5 : 10;
+  const step = factor * magnitude;
+  const min = Math.floor(dataMin / step) * step;
+  const max = Math.ceil(dataMax / step) * step;
+  const ticks = [];
+  for (let value = min; value <= max + step * 1e-9 && ticks.length < 20; value += step) {
+    ticks.push(Number(value.toPrecision(12)));
+  }
+  return { min, max, ticks };
+}
+
 function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarkers = [], price = {}, forecast = []) {
   root?.chartResizeObserver?.disconnect();
   if (root?.chartResizeListener) window.removeEventListener("resize", root.chartResizeListener);
@@ -4441,9 +4484,12 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
       ...markers.map((marker) => marker.price),
       ...forecast.flatMap((point) => [point.low, point.value, point.high]),
     ];
-    const min = Math.min(...values);
-    const max = Math.max(...values);
+    const axis = nicePriceAxis(values);
+    const min = axis.min;
+    const max = axis.max;
     const span = max - min || 1;
+    context.font = "12px system-ui";
+    pad.left = Math.max(64, ...axis.ticks.map((tick) => context.measureText(formatter(tick)).width + 18));
     const startMs = forecast.length ? new Date(`${startDate}T00:00:00Z`).getTime() : 0;
     const endMs = forecast.length ? new Date(`${endDate}T00:00:00Z`).getTime() : 0;
     const xForDate = (date) => pad.left + (clampNumber((new Date(`${date}T00:00:00Z`).getTime() - startMs) / (endMs - startMs), 0, 1) * (width - pad.left - pad.right));
@@ -4456,13 +4502,20 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
 
     context.strokeStyle = "#dbe2e4";
     context.lineWidth = 1;
-    for (let i = 0; i < 4; i += 1) {
-      const gy = pad.top + (i / 3) * (height - pad.top - pad.bottom);
+    context.font = "12px system-ui";
+    context.fillStyle = "#667277";
+    context.textAlign = "right";
+    context.textBaseline = "middle";
+    axis.ticks.forEach((tick) => {
+      const gy = y(tick);
       context.beginPath();
       context.moveTo(pad.left, gy);
       context.lineTo(width - pad.right, gy);
       context.stroke();
-    }
+      context.fillText(formatter(tick), pad.left - 8, clampNumber(gy, pad.top + 7, height - pad.bottom - 7));
+    });
+    context.textAlign = "left";
+    context.textBaseline = "alphabetic";
 
     const timing = buyTimingFromSeries(
       fullSeries,
@@ -4555,11 +4608,6 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
       right: width - pad.right,
       formatter,
     });
-    context.fillStyle = "#1a2428";
-    context.font = "12px system-ui";
-    context.fillText(forecast.length ? "過去2年9か月＋3か月予測" : "3年", pad.left, 16);
-    context.fillText(formatter(max), 8, pad.top + 4);
-    context.fillText(formatter(min), 8, height - pad.bottom + 4);
     if (forecast.length) {
       context.fillStyle = "#667277";
       context.textAlign = "left";
