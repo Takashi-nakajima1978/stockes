@@ -195,10 +195,15 @@ const PE_DEAL_SOURCE_URLS = [
   "https://www.nihon-ma.co.jp/news/",
   "https://www.nihon-ma.co.jp/news/keyword/takeoverbit/",
 ];
+const PE_RUMOR_NEWS_HOSTS = [
+  "nikkei.com", "bloomberg.co.jp", "reuters.com", "toyokeizai.net", "diamond.jp",
+  "maonline.jp", "jiji.com", "kyodonews.jp", "nhk.or.jp", "asahi.com", "mainichi.jp",
+];
 const PE_RECENT_TENDENCIES = [
   "直近数年の国内PE・MBO案件は、低PBR、ネットキャッシュ、安定CF、株主還元余地、上場維持コストが重い会社を重視して採点",
   "時価総額は50億-500億円を強い条件、500億-3000億円を大型PEでも検討し得る範囲、3000億-1兆円をJSR級の大型・特殊案件として扱う",
   "日本M&AセンターのTOB/MBO実例を参照し、非公開化の理由、買付予定数の上限なし、賛同・応募推奨の有無を強い材料として扱う",
+  "親族支配・メインバンクとPEの関係・官報関連のSPC/案件名・TOB観測報道は、出典を付けて個別確認し、未確認情報だけでは買収確度や投資判断を上げない",
   "発表前のPE候補は、直接のTOB材料がなくても、時価総額レンジ、低PBR/低EV、ネットキャッシュ、安定CF、株主還元余地、事業承継・創業家・政策保有株の整理余地で別枠確認する",
   "かどや製油のように、老舗ブランド、創業家の残存、大株主の持分整理、原材料高で中長期投資が必要な食品・生活必需品もPE候補として確認する",
   "ボードルア型のITインフラ・セキュリティ、レオパレス型の構造改革案件、フジテック型の大型TOBも別枠で確認する",
@@ -5046,13 +5051,123 @@ function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null, fx
   };
 }
 
+function analyzePeSpecialEvidence(candidate = {}, results = []) {
+  const symbol = String(candidate.symbol || "").trim().toUpperCase();
+  const code = symbol.match(/^(\d{4})(?:\.T)?$/)?.[1] || "";
+  const name = cleanText(candidate.name || "");
+  const matchesCandidate = (item) => {
+    const text = cleanText(`${item.title || ""} ${item.snippet || ""}`).toLowerCase();
+    const codeMatch = code && new RegExp(`(?:^|[^0-9])${code}(?:\\.T)?(?:$|[^0-9])`, "i").test(text);
+    return Boolean(codeMatch || (name.length >= 2 && text.includes(name.toLowerCase())));
+  };
+  const related = uniqueBy(results.filter(matchesCandidate), (item) => item.url || `${item.title}:${item.topic}`);
+  const evidence = (item, evidenceType, extra = {}) => ({
+    title: cleanText(item.title || "").slice(0, 180),
+    url: normalizeUrl(item.url),
+    source: hostOf(item.url),
+    publishedDate: cleanText(item.publishedDate || "").slice(0, 20),
+    snippet: cleanText(item.snippet || "").slice(0, 420),
+    evidenceType,
+    ...extra,
+  });
+  const familyPositivePattern = /(?:同族(?:経営|会社|支配)(?!ではない)|親族が.{0,12}(?:株主|役員|経営|保有)|親族(?:株主|役員).{0,12}(?:就任|保有|経営|支配)|創業家.{0,24}(?:経営|支配|株主|保有|一族)|親族内承継)/i;
+  const familyNegativePattern = /(?:非同族|同族(?:経営|支配)ではない|親族(?:関係|株主|役員)(?:は|が)(?:ない|いない)|親族がいない|経営陣に親族はいない|創業家と関係がない)/i;
+  const familyEvidence = related.filter((item) => {
+    const text = `${item.title || ""} ${item.snippet || ""}`;
+    return familyPositivePattern.test(text) || familyNegativePattern.test(text);
+  }).slice(0, 4).map((item) => evidence(item, "family_relationship"));
+  const familyUncertaintyPattern = /(?:ないとは言えない|ないとは限らない|断定できない|確認できない|確認されていない|不明)/i;
+  const familyHasNegative = familyEvidence.some((item) => {
+    const text = `${item.title} ${item.snippet}`;
+    return familyNegativePattern.test(text) && !familyUncertaintyPattern.test(text);
+  });
+  const familyHasPositive = familyEvidence.some((item) => {
+    const text = `${item.title} ${item.snippet}`;
+    return familyPositivePattern.test(text) && !familyUncertaintyPattern.test(text);
+  });
+  const familyStatus = familyHasNegative && familyHasPositive
+    ? "conflicting_reports"
+    : familyHasNegative
+    ? "no_family_confirmed"
+    : familyHasPositive
+    ? "family_control_reported"
+    : "unknown";
+
+  const bankPePattern = /(?:メインバンク|主要取引銀行|主力銀行)/i;
+  const peFundPattern = /(?:PEファンド|プライベートエクイティ|投資ファンド|買収ファンド|private equity|buyout fund)/i;
+  const bankRelationshipPattern = /(?:(?:メインバンク|主要取引銀行|主力銀行)(?:は|が|の|である)?[^。]{0,20}(?:PEファンド|投資ファンド|プライベートエクイティ)(?:の)?(?:系列|傘下|系|子会社|部門)|(?:PEファンド|投資ファンド|プライベートエクイティ)(?:の)?(?:系列|傘下|系|子会社).{0,20}(?:メインバンク|主要取引銀行|主力銀行))/i;
+  const bankEvidence = related.filter((item) => item.peSignalType === "pe_ownership"
+    && bankPePattern.test(`${item.title || ""} ${item.snippet || ""}`)
+    && peFundPattern.test(`${item.title || ""} ${item.snippet || ""}`))
+    .slice(0, 3)
+    .map((item) => evidence(item, "main_bank_pe", {
+      reportedRelationship: bankRelationshipPattern.test(`${item.title || ""} ${item.snippet || ""}`),
+    }));
+  const bankStatus = bankEvidence.some((item) => item.reportedRelationship)
+    ? "relationship_reported"
+    : bankEvidence.length ? "co_mentioned" : "unknown";
+
+  const kanpoEvidence = related.filter((item) => item.peSignalType === "pe_kanpo"
+    && hostOf(item.url).replace(/^www\./, "") === "kanpo.go.jp"
+    && /(?:プロジェクト|project|spc|特別目的会社|合同会社|株式譲渡|公開買付|tob|組織再編)/i.test(`${item.title || ""} ${item.snippet || ""}`))
+    .slice(0, 3)
+    .map((item) => {
+      const text = `${item.title || ""} ${item.snippet || ""}`;
+      const quotedProject = text.match(/(?:プロジェクト|project)\s*[「『"“]([^」』"”]{2,40})[」』"”]/i);
+      const englishProject = text.match(/\bProject\s+([A-Z][A-Za-z0-9-]{1,24})\b/);
+      return evidence(item, "kanpo_project", {
+        projectName: cleanText(quotedProject?.[1] || englishProject?.[1] || "").slice(0, 40),
+        companyMentionMatched: true,
+      });
+    });
+
+  const rumorPattern = /(?:TOB|MBO|非公開化|買収|M&A).{0,24}(?:観測|思惑|報道|検討|可能性)|(?:観測|思惑|報道|検討|可能性).{0,24}(?:TOB|MBO|非公開化|買収|M&A)|関係者.{0,20}(?:検討|協議|提案)/i;
+  const rumorEvidence = related.filter((item) => {
+    const sourceHost = hostOf(item.url).replace(/^www\./, "");
+    const sourceAllowed = PE_RUMOR_NEWS_HOSTS.some((host) => sourceHost === host || sourceHost.endsWith(`.${host}`));
+    const publishedDate = cleanText(item.publishedDate || "").slice(0, 10);
+    const publishedTime = publishedDate ? new Date(`${publishedDate}T00:00:00Z`).getTime() : NaN;
+    const recent = !Number.isFinite(publishedTime) || (Date.now() - publishedTime <= 180 * 86400000 && publishedTime <= Date.now() + 86400000);
+    return item.peSignalType === "pe_rumor"
+      && sourceAllowed
+      && recent
+      && rumorPattern.test(`${item.title || ""} ${item.snippet || ""}`);
+  })
+    .slice(0, 5)
+    .map((item) => evidence(item, "reported_rumor"));
+  const rumorSourceCount = new Set(rumorEvidence.map((item) => item.source)).size;
+
+  const radarEvidence = related.filter((item) => item.peSignalType === "pe_radar"
+    && hostOf(item.url).replace(/^www\./, "").endsWith("tobradar.com"))
+    .map((item) => {
+      const text = `${item.title || ""} ${item.snippet || ""}`;
+      const score = Number((text.match(/(?:TOB注目度\s*)?(\d{1,2}(?:\.\d+)?)\s*(?:点|強い候補|有力候補|優先して確認|要監視)/i) || [])[1]);
+      return evidence(item, "third_party_tob_watch", { watchScore: Number.isFinite(score) ? score : null });
+    })
+    .slice(0, 2);
+  const radarScore = radarEvidence.find((item) => Number.isFinite(item.watchScore))?.watchScore ?? null;
+
+  return {
+    familyStatus,
+    familyEvidence,
+    bankStatus,
+    bankEvidence,
+    kanpoEvidence,
+    rumorEvidence,
+    rumorSourceCount,
+    radarEvidence,
+    radarScore,
+  };
+}
+
 function searchPeSignal(candidate, allResults = [], relevantResults = [], financials = null) {
+  const standardResults = relevantResults.filter((item) => !item.peSignalType);
   const text = businessContextText([
     candidate.name,
     candidate.symbol,
     candidate.sector || "",
     candidate.notes || "",
-    ...relevantResults.map((item) => `${item.title} ${item.snippet} ${item.url}`),
+    ...standardResults.map((item) => `${item.title} ${item.snippet} ${item.url}`),
   ].join("\n"));
   const criteria = PE_CRITERIA.map((criterion) => {
     const hits = criterion.words.filter((word) => text.includes(word.toLowerCase()));
@@ -5065,6 +5180,7 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
     };
   }).filter(Boolean);
   const financialCriteria = normalizeFinancialCriteria(financials?.criteria || []);
+  const special = analyzePeSpecialEvidence(candidate, [...allResults, ...relevantResults]);
   const financialScore = financialCriteriaScore(financialCriteria);
   const financialPass = new Set(financialCriteria.filter((item) => item.status === "pass").map((item) => item.key));
   const financialWatch = new Set(financialCriteria.filter((item) => item.status === "watch").map((item) => item.key));
@@ -5103,6 +5219,13 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
   if (disappointmentHits.length && (financialPass.has("net_cash") || financialPass.has("pbr") || financialPass.has("ev_ebitda"))) {
     score += Math.min(18, disappointmentHits.length * 4);
   }
+  const specialScore = (special.familyStatus === "no_family_confirmed" ? 2 : 0)
+    + (special.familyStatus === "family_control_reported" ? -2 : 0)
+    + (special.bankStatus === "relationship_reported" ? 2 : 0)
+    + (special.kanpoEvidence.length ? 3 : 0)
+    + (special.rumorSourceCount >= 2 ? 3 : special.rumorSourceCount ? 1 : 0)
+    + (Number(special.radarScore) >= 75 ? 3 : Number(special.radarScore) >= 65 ? 2 : 0);
+  score += clamp(specialScore, -2, 8);
   if (isHighChaseChart(candidate.price || {})) score = Math.min(score, 30);
   const positiveKeys = new Set(criteria.filter((item) => item.score > 0).map((item) => item.key));
   const hasHardSignal = Boolean(directBuyerHits.length)
@@ -5161,7 +5284,8 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
   const matchScore = clamp(Math.round(score), 0, 100);
   const preSignalCandidate = Boolean(!hasHardSignal && preSignalBase && matchScore >= PE_PRE_SIGNAL_MIN_SCORE);
   const evidence = relevantResults
-    .filter((item) => /nihon-ma\.co\.jp/i.test(hostOf(item.url))
+    .filter((item) => Boolean(item.peSignalType)
+      || /nihon-ma\.co\.jp/i.test(hostOf(item.url))
       || PE_DIRECT_BUYER_WORDS.some((word) => businessContextText(`${item.title} ${item.snippet}`).includes(word.toLowerCase())))
     .slice(0, 3)
     .map((item) => ({
@@ -5169,7 +5293,62 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
       url: item.url,
       source: hostOf(item.url),
       snippet: item.snippet,
+      publishedDate: item.publishedDate || "",
+      evidenceType: item.peSignalType || "deal_news",
     }));
+  const specialFactors = [
+    {
+      key: "family_relationship",
+      label: "株主・経営陣の親族関係",
+      status: special.familyStatus,
+      summary: special.familyStatus === "no_family_confirmed"
+        ? "親族支配がない旨の明示的な記載を確認。出典と対象範囲を要確認。"
+        : special.familyStatus === "family_control_reported"
+        ? "親族・創業家の関与を示す記載あり。承継・売却意思は別途確認。"
+        : special.familyStatus === "conflicting_reports"
+        ? "親族関係について相反する記載あり。一次資料で確認するまで評価保留。"
+        : "確認できる記載なし。情報がないことを「親族なし」とは扱わない。",
+      evidence: special.familyEvidence,
+    },
+    {
+      key: "main_bank_pe_relationship",
+      label: "メインバンクとPEの関係",
+      status: special.bankStatus,
+      summary: special.bankStatus === "relationship_reported"
+        ? "メインバンクとPE系列・傘下等の関係を述べる記事を検出。事実確認が必要。"
+        : special.bankStatus === "co_mentioned"
+        ? "メインバンクとPEが同じ検索結果に登場。系列関係までは確認できない。"
+        : "関連する記載を確認できず。加点なし。",
+      evidence: special.bankEvidence,
+    },
+    {
+      key: "kanpo_project_name",
+      label: "官報の案件名・SPC情報",
+      status: special.kanpoEvidence.length ? "company_linked_project" : "unknown",
+      summary: special.kanpoEvidence.length
+        ? "官報の検索索引で会社名と案件関連語が同じ結果に一致。案件名だけから対象会社を推測しない。"
+        : "会社名と結び付く官報の案件名・SPC情報は未確認。",
+      evidence: special.kanpoEvidence,
+    },
+    {
+      key: "ma_observation_reports",
+      label: "M&A・TOB観測報道",
+      status: special.rumorSourceCount ? "reported_unconfirmed" : "unknown",
+      summary: special.rumorSourceCount
+        ? `${special.rumorSourceCount}媒体の観測・検討報道を検出。未確認情報として扱い、単独で買収確度とはしない。`
+        : "対象企業の観測報道は未確認。掲示板投稿は根拠に含めない。",
+      evidence: special.rumorEvidence,
+    },
+    {
+      key: "third_party_tob_watch",
+      label: "外部TOB監視指標",
+      status: Number.isFinite(special.radarScore) ? "third_party_reference" : "unknown",
+      summary: Number.isFinite(special.radarScore)
+        ? `TOBレーダーの公開監視スコア ${special.radarScore}。発生確率・投資判断ではない参考値。`
+        : "外部監視サイトで対象銘柄のスコアを確認できず。",
+      evidence: special.radarEvidence,
+    },
+  ];
   const label = matchScore >= 70
     ? "PE注目度高め"
     : matchScore >= PE_STRONG_MIN_SCORE
@@ -5192,7 +5371,16 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
         label: item.label,
         hits: item.hits,
       })),
-    ].slice(0, 8),
+      ...specialFactors.map(({ key, label, status, summary }) => ({ key, label, status, summary })),
+    ].slice(0, 14),
+    specialFactors,
+    learningFeatures: {
+      familyRelationshipStatus: special.familyStatus,
+      mainBankPeRelationshipStatus: special.bankStatus,
+      kanpoProjectEvidenceCount: special.kanpoEvidence.length,
+      maObservationSourceCount: special.rumorSourceCount,
+      externalTobWatchScore: special.radarScore,
+    },
     financialCriteria,
     financials: financials ? normalizeFinancialSnapshot(financials) : null,
     tendencies: PE_RECENT_TENDENCIES,
@@ -5226,6 +5414,7 @@ function searchPeSignal(candidate, allResults = [], relevantResults = [], financ
       hasFinancialBase: hasFinancialBase || kadoyaStyleBase || sourceBackedDealBase || preSignalBase,
       financialCriteria,
       matchScore,
+      specialFactors,
     }),
   };
 }
@@ -5246,6 +5435,14 @@ function peSignalSummary(label, criteria = [], buyerHits = [], options = {}) {
   if (options.brandTakePrivateHits?.length) parts.push(`かどや型材料: ${options.brandTakePrivateHits.slice(0, 3).join("、")}`);
   if (options.takePrivateMotiveHits?.length) parts.push(`非公開化理由: ${options.takePrivateMotiveHits.slice(0, 3).join("、")}`);
   if (options.disappointmentHits?.length) parts.push(`失望売り/還元不足材料: ${options.disappointmentHits.slice(0, 3).join("、")}`);
+  const observedSpecialFactors = (options.specialFactors || [])
+    .filter((item) => !["unknown", "no_family_confirmed"].includes(item.status))
+    .map((item) => item.label)
+    .slice(0, 3);
+  if (observedSpecialFactors.length) parts.push(`追加確認軸: ${observedSpecialFactors.join("・")}`);
+  if ((options.specialFactors || []).some((item) => item.key === "ma_observation_reports" && item.status === "reported_unconfirmed")) {
+    parts.push("M&A観測報道は未確認情報として扱う");
+  }
   if (options.preSignalCandidate) parts.push("発表前候補: 財務・株主構造・業態がPEの確認対象");
   else if (buyerHits.length) parts.push(`周辺語: ${buyerHits.slice(0, 3).join("、")}`);
   if (risk) parts.push(`注意: ${risk}`);
@@ -7094,20 +7291,50 @@ function jpStockEvidenceQueries(stock = {}) {
   ];
 }
 
+function peCompanyEvidenceQueries(stock = {}) {
+  const code = jpStockCode(stock.symbol);
+  const name = preferredJpCompanyName(stock) || stock.name || code;
+  if (!code || !name) return [];
+  return [
+    {
+      text: `site:kanpo.go.jp ${code} "${name}" (プロジェクト OR SPC OR 特別目的会社 OR 合同会社 OR 株式譲渡 OR TOB)`,
+      topic: "pe_kanpo",
+    },
+    {
+      text: `${code} "${name}" (株主 OR 経営陣) (親族 OR 創業家 OR メインバンク) (PE OR 投資ファンド OR 系列)`,
+      topic: "pe_ownership",
+    },
+    {
+      text: `${code} "${name}" (TOB観測 OR MBO観測 OR 非公開化観測 OR 買収観測 OR M&A報道)`,
+      topic: "pe_rumor",
+    },
+    {
+      text: `site:tobradar.com/candidates/mbo/ ${code} "${name}"`,
+      topic: "pe_radar",
+    },
+  ];
+}
+
 async function searchJpStockEvidence(stock = {}, websiteLimit = 20) {
   const queries = jpStockEvidenceQueries(stock);
   const perQueryLimit = Math.max(3, Math.ceil(websiteLimit / Math.max(1, queries.length)));
-  const [pages, yahooNews] = await Promise.all([mapLimit(queries, 2, async (query) => (
+  const peQueries = peCompanyEvidenceQueries(stock);
+  const [pages, yahooNews, pePages] = await Promise.all([mapLimit(queries, 2, async (query) => (
     searchGoogle(query.text, { limit: perQueryLimit, language: "ja-JP" })
       .then((items) => items.map((item) => ({ ...item, topic: query.topic, query: query.text })))
       .catch(() => [])
-  )), fetchYahooFinanceSearchNews(stock, Math.max(4, Math.ceil(websiteLimit / 2))).catch(() => [])]);
-  const filtered = uniqueBy([...pages.flat(), ...yahooNews], (item) => item.url)
+  )), fetchYahooFinanceSearchNews(stock, Math.max(4, Math.ceil(websiteLimit / 2))).catch(() => []), mapLimit(peQueries, 2, async (query) => (
+    searchGoogle(query.text, { limit: 3, language: "ja-JP" })
+      .then((items) => items.map((item) => ({ ...item, topic: query.topic, peSignalType: query.topic, query: query.text })))
+      .catch(() => [])
+  ))]);
+  const filtered = uniqueBy([...pePages.flat(), ...pages.flat(), ...yahooNews], (item) => item.url)
     .filter((item) => isJpStockSpecificEvidence(item, stock))
-    .sort((a, b) => Number(b.topic === "business_profile") - Number(a.topic === "business_profile")
+    .sort((a, b) => Number(Boolean(b.peSignalType)) - Number(Boolean(a.peSignalType))
+      || Number(b.topic === "business_profile") - Number(a.topic === "business_profile")
       || marketPerspectiveSort(a, b)
       || jpStockEvidenceScore(b, stock) - jpStockEvidenceScore(a, stock))
-    .slice(0, websiteLimit);
+    .slice(0, Math.max(websiteLimit, Math.min(4, peQueries.length)));
   const marketEvidence = await enrichMarketPerspectiveEvidence(
     marketPerspectiveEvidence(filtered, stock, 3), stock, 3,
   );
@@ -12806,6 +13033,8 @@ function normalizeCandidateLearningFeatures(features = {}) {
     "peMatchScore", "evidenceQuality", "marketCap", "priceToBook", "evToEbitda", "netCashRatio",
     "operatingCashFlow", "operatingCashFlowYears", "operatingCashFlowPositive", "returnOnEquityPct",
     "revenueGrowthPct", "debtToEquityPct", "pbr",
+    "peFamilyRelationshipStatus", "peMainBankRelationshipStatus", "peKanpoProjectEvidenceCount",
+    "peMaObservationSourceCount", "peExternalTobWatchScore",
   ];
   return Object.fromEntries(allowed
     .filter((key) => features && Object.hasOwn(features, key))
@@ -12840,6 +13069,11 @@ function candidateLearningFeatureSnapshot(candidate = {}) {
     returnOnEquityPct: candidate.financials?.returnOnEquityPct,
     revenueGrowthPct: candidate.financials?.revenueGrowthPct,
     debtToEquityPct: candidate.financials?.debtToEquityPct,
+    peFamilyRelationshipStatus: candidate.peSignal?.learningFeatures?.familyRelationshipStatus,
+    peMainBankRelationshipStatus: candidate.peSignal?.learningFeatures?.mainBankPeRelationshipStatus,
+    peKanpoProjectEvidenceCount: candidate.peSignal?.learningFeatures?.kanpoProjectEvidenceCount,
+    peMaObservationSourceCount: candidate.peSignal?.learningFeatures?.maObservationSourceCount,
+    peExternalTobWatchScore: candidate.peSignal?.learningFeatures?.externalTobWatchScore,
   });
 }
 

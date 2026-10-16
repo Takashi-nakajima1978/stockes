@@ -7514,9 +7514,35 @@ function peSignalHtml(signal) {
   const financialMissing = (financials.missingMetrics || []).slice(0, 3).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
   const risks = (signal.risks || []).map((item) => `<span class="risk">${escapeHtml(item)}</span>`).join("");
   const tendencies = (signal.tendencies || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
-  const evidence = (signal.evidence || []).map((item) => `
+  const specialEvidenceTypes = new Set(["family_relationship", "main_bank_pe", "kanpo_project", "reported_rumor", "third_party_tob_watch", "pe_ownership", "pe_kanpo", "pe_rumor", "pe_radar"]);
+  const evidence = (signal.evidence || []).filter((item) => !specialEvidenceTypes.has(item.evidenceType)).map((item) => `
     <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.source || item.title || "source")}</a>
   `).join("");
+  const specialFactors = (signal.specialFactors || []).map((item) => {
+    const statusLabels = {
+      unknown: "未確認",
+      no_family_confirmed: "親族支配なしの記載あり",
+      family_control_reported: "親族・創業家の関与報道あり",
+      conflicting_reports: "情報に食い違いあり",
+      relationship_reported: "系列等の関係を報道",
+      co_mentioned: "同じ記事に記載・関係未確認",
+      company_linked_project: "会社名と同一官報検索結果",
+      reported_unconfirmed: "観測報道・未確認",
+      third_party_reference: "外部サイトの参考値",
+    };
+    const sources = (item.evidence || []).map((source) => `
+      <a href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer">
+        ${escapeHtml(source.source || "出典")}${source.publishedDate ? ` ${escapeHtml(source.publishedDate)}` : ""}${source.title ? `: ${escapeHtml(source.title)}` : ""}${source.projectName ? ` / 案件名 ${escapeHtml(source.projectName)}` : ""}${Number.isFinite(source.watchScore) ? ` / 監視値 ${source.watchScore}` : ""}
+      </a>
+    `).join("");
+    return `
+      <div class="pe-factor">
+        <strong>${escapeHtml(item.label || "追加確認軸")}<span>${escapeHtml(statusLabels[item.status] || item.status || "未確認")}</span></strong>
+        <p>${escapeHtml(item.summary || "")}</p>
+        ${sources ? `<div class="pe-factor-sources">${sources}</div>` : ""}
+      </div>
+    `;
+  }).join("");
   const score = Number(signal.matchScore || 0);
   const cls = score >= 70 ? "strong" : score >= 45 ? "watch" : "weak";
   const warning = score < 45
@@ -7536,6 +7562,7 @@ function peSignalHtml(signal) {
       <div>${financialCriteria}${criteria}${risks}</div>
       ${financialMissing ? `<div class="pe-financial-insights">${financialMissing}</div>` : ""}
       ${tendencies ? `<div class="pe-tendencies">${tendencies}</div>` : ""}
+      ${specialFactors ? `<div class="pe-special-factors">${specialFactors}</div>` : ""}
       ${evidence ? `<div class="pe-evidence">${evidence}</div>` : ""}
     </div>
   `;

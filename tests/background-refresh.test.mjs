@@ -35,6 +35,11 @@ function loadFunctionBlock(source, name, endName, globals = {}) {
   return vm.runInNewContext(`${source.slice(start, end)}; ${name}`, globals);
 }
 
+const emptyPeSpecialEvidence = () => ({
+  familyStatus: "unknown", familyEvidence: [], bankStatus: "unknown", bankEvidence: [],
+  kanpoEvidence: [], rumorEvidence: [], rumorSourceCount: 0, radarEvidence: [], radarScore: null,
+});
+
 test("overlapping refreshes share work and can retry after a failure", async () => {
   const run = createSingleFlight();
   let release;
@@ -1955,6 +1960,7 @@ test("Kadoya-style PE take-private pattern is not filtered out as food", () => {
   assert.match(serverSource, /かどや製油/);
   assert.match(serverSource, /brand_staple/);
   const searchPeSignal = loadFunction(serverSource, "searchPeSignal", {
+    analyzePeSpecialEvidence: emptyPeSpecialEvidence,
     PE_CRITERIA: [
       { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益"], weight: 14 },
       { key: "shareholder", label: "株主変化", words: ["創業家", "大株主", "不応募"], weight: 20 },
@@ -1997,12 +2003,72 @@ test("Kadoya-style PE take-private pattern is not filtered out as food", () => {
   assert.match(signal.summary, /株主構造|かどや型材料/);
 });
 
+test("PE special evidence distinguishes family, bank links, official notices, rumors, and third-party scores", () => {
+  const hostOf = (value = "") => {
+    try { return new URL(value).hostname.replace(/^www\./, ""); } catch { return ""; }
+  };
+  const classify = loadFunction(serverSource, "analyzePeSpecialEvidence", {
+    cleanText: (value) => String(value || "").replace(/\s+/g, " ").trim(),
+    hostOf,
+    normalizeUrl: (value) => value,
+    uniqueBy: (items, keyOf) => [...new Map(items.map((item) => [keyOf(item), item])).values()],
+    PE_RUMOR_NEWS_HOSTS: ["nikkei.com", "bloomberg.co.jp"],
+  });
+  const currentDate = new Date().toISOString().slice(0, 10);
+  const evidenceItems = [
+    { peSignalType: "pe_ownership", title: "サンプル工業 有価証券報告書", snippet: "同族経営ではないことを説明", url: "https://example.co.jp/ir" },
+    { peSignalType: "pe_ownership", title: "サンプル工業 メインバンク", snippet: "主要取引銀行がPEファンド系列に属する", url: "https://example.co.jp/bank" },
+    { peSignalType: "pe_kanpo", title: "サンプル工業 プロジェクト「Orion」", snippet: "特別目的会社の公告", url: "https://www.kanpo.go.jp/notices/1" },
+    { peSignalType: "pe_rumor", title: "サンプル工業にTOB観測", snippet: "関係者が協議と報道", url: "https://www.nikkei.com/article/1", publishedDate: currentDate },
+    { peSignalType: "pe_rumor", title: "サンプル工業 非公開化の可能性", snippet: "MBO観測を報道", url: "https://www.bloomberg.co.jp/news/1", publishedDate: currentDate },
+    { peSignalType: "pe_radar", title: "サンプル工業 MBO候補", snippet: "TOB注目度 78.8 強い候補", url: "https://tobradar.com/candidates/mbo/" },
+  ];
+  const signal = classify({ symbol: "1234.T", name: "サンプル工業" }, evidenceItems);
+  assert.equal(signal.familyStatus, "no_family_confirmed");
+  assert.equal(signal.bankStatus, "relationship_reported");
+  assert.equal(signal.kanpoEvidence[0].projectName, "Orion");
+  assert.equal(signal.rumorSourceCount, 2);
+  assert.equal(signal.radarScore, 78.8);
+  const unknown = classify({ symbol: "5678.T", name: "別の会社" }, []);
+  assert.equal(unknown.familyStatus, "unknown");
+  assert.equal(unknown.bankStatus, "unknown");
+  assert.equal(unknown.rumorSourceCount, 0);
+
+  const searchPeSignal = loadFunction(serverSource, "searchPeSignal", {
+    analyzePeSpecialEvidence: classify,
+    PE_CRITERIA: [], PE_BUYER_WORDS: [], PE_DIRECT_BUYER_WORDS: [], PE_TAKE_PRIVATE_MOTIVE_WORDS: [],
+    PE_PRIORITY_MIN_SCORE: 45, PE_PRE_SIGNAL_MIN_SCORE: 48, PE_STRONG_MIN_SCORE: 55, PE_RECENT_TENDENCIES: [],
+    businessContextText: (value) => String(value || "").toLowerCase(),
+    normalizeFinancialCriteria: () => [], financialCriteriaScore: () => 0, isHighChaseChart: () => false,
+    clamp: (value, min, max) => Math.min(max, Math.max(min, value)), hostOf,
+    normalizeFinancialSnapshot: (value) => value, uniqueText: (items) => [...new Set(items)],
+    peSignalSummary: () => "追加確認",
+  });
+  const signalOnly = searchPeSignal({ symbol: "1234.T", name: "サンプル工業" }, evidenceItems, evidenceItems, null);
+  assert.equal(signalOnly.reportEligible, false, "rumors and a third-party watch score cannot qualify a candidate on their own");
+  assert.ok(signalOnly.matchScore <= 34);
+  assert.match(appSource, /pe-special-factors/);
+});
+
+test("PE evidence searches target official gazette indexes, bank/family disclosures, press reports, and TOB Radar", () => {
+  const queries = loadFunction(serverSource, "peCompanyEvidenceQueries", {
+    jpStockCode: (symbol) => String(symbol || "").match(/\d{4}/)?.[0] || "",
+    preferredJpCompanyName: () => "サンプル工業",
+  })({ symbol: "1234.T", name: "sample" });
+  assert.equal(JSON.stringify(queries.map((item) => item.topic)), JSON.stringify(["pe_kanpo", "pe_ownership", "pe_rumor", "pe_radar"]));
+  assert.match(queries[0].text, /site:kanpo\.go\.jp/);
+  assert.match(queries[3].text, /site:tobradar\.com/);
+  assert.match(serverSource, /pePages\.flat\(\)/);
+  assert.match(serverSource, /publishedTime <= Date\.now\(\) \+ 86400000/);
+});
+
 test("PE report includes pre-announcement candidates even before direct TOB news", () => {
   assert.match(serverSource, /PE_PRE_SIGNAL_MIN_SCORE/);
   assert.match(serverSource, /preSignalCandidate/);
   assert.match(serverSource, /reportBucket === "pe" \|\| isActionableDiscoveryCandidate/);
   assert.match(serverSource, /発表前候補/);
   const searchPeSignal = loadFunction(serverSource, "searchPeSignal", {
+    analyzePeSpecialEvidence: emptyPeSpecialEvidence,
     PE_CRITERIA: [
       { key: "cashflow", label: "安定キャッシュフロー", words: ["安定収益"], weight: 14 },
       { key: "debt_capacity", label: "低負債・借入余地", words: ["無借金"], weight: 14 },
@@ -2213,6 +2279,7 @@ test("Nihon M&A Center TOB articles feed PE discovery learning", () => {
   assert.match(serverSource, /filterDiscoveryResultByExclusions[\s\S]*filter\(hasCleanDiscoveryCandidateName\)/);
 
   const searchPeSignal = loadFunction(serverSource, "searchPeSignal", {
+    analyzePeSpecialEvidence: emptyPeSpecialEvidence,
     PE_CRITERIA: [
       { key: "take_private_motive", label: "非公開化の理由が明確", words: ["中長期的な成長施策", "短期的な株価変動", "買付予定数の上限なし"], weight: 22 },
       { key: "restructuring", label: "再編余地", words: ["TOB", "MBO", "非公開化"], weight: 20 },

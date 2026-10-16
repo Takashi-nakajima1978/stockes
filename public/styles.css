@@ -3204,6 +3204,55 @@ tr:hover .drag-handle,
   color: var(--accent);
 }
 
+.pe-signal > .pe-special-factors {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 0 14px;
+  border-top: 1px solid var(--line);
+}
+
+.pe-special-factors .pe-factor {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.pe-special-factors .pe-factor > strong {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pe-special-factors .pe-factor > strong > span {
+  flex: 0 0 auto;
+  border-radius: 6px;
+  background: #eef1f0;
+  color: var(--muted);
+  padding: 3px 6px;
+  font-size: 10px;
+}
+
+.pe-special-factors .pe-factor > p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.pe-special-factors .pe-factor-sources {
+  display: grid;
+  gap: 4px;
+}
+
+.pe-special-factors .pe-factor-sources a {
+  color: var(--accent-2);
+  font-size: 11px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
 .early-signal .risk,
 .pe-signal .risk {
   background: #fff3d8;
