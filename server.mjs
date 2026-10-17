@@ -3086,6 +3086,8 @@ function fallbackUsReview(row = {}) {
 function compactUsPrice(price = {}) {
   return {
     fetchedAt: price.fetchedAt,
+    priceDate: price.priceDate || "",
+    quoteAt: price.quoteAt || "",
     current: price.current,
     return1m: price.return1m,
     return3m: price.return3m,
@@ -8347,7 +8349,7 @@ async function fetchPriceHistoryNow(symbol, options = {}) {
     }))
     .filter((item) => item.date && Number.isFinite(item.amount) && item.amount > 0)
     .sort((a, b) => a.date.localeCompare(b.date));
-  const series = cleanPriceSeries(timestamps
+  let series = cleanPriceSeries(timestamps
     .map((timestamp, index) => ({
       date: new Date(timestamp * 1000).toISOString().slice(0, 10),
       open: Number(opens[index]),
@@ -8357,10 +8359,13 @@ async function fetchPriceHistoryNow(symbol, options = {}) {
       volume: Number(volumes[index]),
     }))
     .filter((point) => Number.isFinite(point.close)));
+  series = yahooRegularMarketSeries(series, meta);
   const metrics = { ...priceMetrics(series, {
     shortName: meta.shortName,
     longName: meta.longName,
     symbol: meta.symbol,
+    regularMarketTime: meta.regularMarketTime,
+    exchangeTimezoneName: meta.exchangeTimezoneName,
     dividends,
   }), fetchedAt: new Date().toISOString() };
   if (!options.includeDividendForecast) return metrics;
@@ -8368,6 +8373,46 @@ async function fetchPriceHistoryNow(symbol, options = {}) {
     timeout: Math.min(timeout, 9000),
   }).catch(() => null);
   return enrichPriceDividendForecast(metrics, dividendSnapshot);
+}
+
+function yahooRegularMarketSeries(series = [], meta = {}) {
+  const points = cleanPriceSeries(series);
+  const current = nullablePositiveNumber(meta.regularMarketPrice);
+  const timestamp = Number(meta.regularMarketTime);
+  if (!current || !Number.isFinite(timestamp) || timestamp <= 0) return points;
+
+  const date = dateInTimeZone(timestamp, meta.exchangeTimezoneName || "UTC");
+  const latest = points.at(-1);
+  if (!date || (latest && date < latest.date)) return points;
+  const open = nullablePositiveNumber(meta.regularMarketOpen) || current;
+  const high = Math.max(nullablePositiveNumber(meta.regularMarketDayHigh) || current, current);
+  const low = Math.min(nullablePositiveNumber(meta.regularMarketDayLow) || current, current);
+
+  const quote = latest && latest.date === date
+    ? {
+        ...latest,
+        high: Math.max(latest.high || current, high),
+        low: Math.min(latest.low || current, low),
+        close: current,
+      }
+    : { date, open, high, low, close: current, volume: Number(meta.regularMarketVolume) || 0 };
+
+  return latest?.date === date ? [...points.slice(0, -1), quote] : [...points, quote];
+}
+
+function dateInTimeZone(timestampSeconds, timeZone = "UTC") {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date(Number(timestampSeconds) * 1000));
+    const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return value.year && value.month && value.day ? `${value.year}-${value.month}-${value.day}` : "";
+  } catch {
+    return "";
+  }
 }
 
 async function fetchFundPriceHistory(symbol, options = {}) {
@@ -8492,6 +8537,10 @@ function priceMetrics(series, meta = {}) {
   series = cleanPriceSeries(series);
   if (series.length < 2) return emptyPrice(series, meta);
   const current = last(series).close;
+  const regularMarketTime = Number(meta.regularMarketTime);
+  const quoteDate = Number.isFinite(regularMarketTime) && regularMarketTime > 0
+    ? dateInTimeZone(regularMarketTime, meta.exchangeTimezoneName || "UTC")
+    : "";
   const closes = series.map((point) => point.close);
   const volumeValues = series.map((point) => point.volume).filter(Number.isFinite);
   const latestVolume = Number.isFinite(last(series).volume) ? last(series).volume : null;
@@ -8523,6 +8572,8 @@ function priceMetrics(series, meta = {}) {
   const regime = regimeAssessment(series);
   return {
     current,
+    priceDate: last(series).date,
+    quoteAt: quoteDate === last(series).date ? new Date(regularMarketTime * 1000).toISOString() : "",
     return1m: returnFrom(series, 21),
     return3m: returnFrom(series, 63),
     return6m: returnFrom(series, 126),

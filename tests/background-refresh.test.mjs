@@ -91,10 +91,11 @@ test("US list keeps current and acquisition prices adjacent with matching header
   const table = { innerHTML: "", querySelectorAll: () => [] };
   const usd = (value) => Number.isFinite(value) ? `$${value.toFixed(2)}` : "-";
   const averagePriceCell = loadFunction(appSource, "averagePriceCell", {});
+  const usPriceDateLabel = loadFunction(appSource, "usPriceDateLabel", { escapeHtml: String });
   const state = {
     usStocks: [{ symbol: "TEST", name: "Test Holding", market: "NASDAQ" }],
     usSelected: "TEST",
-    usAnalyses: { TEST: { price: { current: 210.75 }, fundamentals: { trailingPe: 18.5, revenueGrowthPct: 7.4 } } },
+    usAnalyses: { TEST: { price: { current: 210.75, priceDate: "2026-10-16" }, fundamentals: { trailingPe: 18.5, revenueGrowthPct: 7.4 } } },
   };
   const render = loadFunction(appSource, "renderUsTable", {
     state,
@@ -106,6 +107,7 @@ test("US list keeps current and acquisition prices adjacent with matching header
     symbolLinkHtml: String,
     usd,
     averagePriceCell,
+    usPriceDateLabel,
     shareCount: (value) => `${value}株`,
     positionPnlUsd: () => "pnl",
     dividendCell: () => "dividend",
@@ -120,7 +122,7 @@ test("US list keeps current and acquisition prices adjacent with matching header
   render();
   const cells = [...table.innerHTML.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((match) => match[1]);
   assert.equal(cells.length, headers.length);
-  assert.equal(cells[1], "$210.75");
+  assert.match(cells[1], /\$210\.75[\s\S]*基準 10\/16/);
   assert.match(cells[2], /取得<\/em><strong>\$217\.15/);
   assert.match(cells[2], /売却<\/em><strong>\$308\.58/);
   assert.deepEqual(cells.slice(3, 9), ["14.464株", "pnl", "dividend", "18.5倍", "7.4%", "stance"]);
@@ -167,6 +169,57 @@ test("US price refresh is independent from slow AI analysis and uses a longer qu
   assert.equal(button.textContent, "価格を更新");
   assert.match(status.textContent, /価格更新 1\/1銘柄/);
   assert.equal(viewCalls.includes("us"), true);
+});
+
+test("US prices use Yahoo's latest regular-market quote and exchange-local date", () => {
+  const nullablePositiveNumber = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null;
+  const dateInTimeZone = loadFunction(serverSource, "dateInTimeZone", {});
+  const applyQuote = loadFunction(serverSource, "yahooRegularMarketSeries", {
+    cleanPriceSeries: (series) => series,
+    nullablePositiveNumber,
+    dateInTimeZone,
+  });
+  const regularMarketTime = Date.parse("2026-10-16T20:03:50Z") / 1000;
+  const history = [{ date: "2026-10-15", open: 135, high: 136, low: 133, close: 134.47, volume: 100 }];
+
+  const appended = applyQuote(history, {
+    regularMarketPrice: 128.23,
+    regularMarketTime,
+    exchangeTimezoneName: "America/New_York",
+    regularMarketOpen: 129.1,
+    regularMarketDayHigh: 130.2,
+    regularMarketDayLow: 127.8,
+  });
+  assert.equal(appended.at(-1).date, "2026-10-16");
+  assert.equal(appended.at(-1).open, 129.1);
+  assert.equal(appended.at(-1).high, 130.2);
+  assert.equal(appended.at(-1).low, 127.8);
+  assert.equal(appended.at(-1).close, 128.23);
+
+  const replaced = applyQuote([...history, { ...history[0], date: "2026-10-16" }], {
+    regularMarketPrice: 128.23,
+    regularMarketTime,
+    exchangeTimezoneName: "America/New_York",
+  });
+  assert.equal(replaced.at(-1).close, 128.23);
+  assert.equal(replaced.at(-1).high, 136);
+  assert.equal(replaced.at(-1).low, 128.23);
+
+  const stale = applyQuote([...history, { ...history[0], date: "2026-10-17" }], {
+    regularMarketPrice: 128.23,
+    regularMarketTime,
+    exchangeTimezoneName: "America/New_York",
+  });
+  assert.equal(stale.at(-1).date, "2026-10-17");
+  assert.equal(stale.at(-1).close, 134.47);
+  assert.match(serverSource, /regularMarketTime: meta\.regularMarketTime,[\s\S]*exchangeTimezoneName: meta\.exchangeTimezoneName/);
+});
+
+test("US stock rows show the actual quote data date", () => {
+  const label = loadFunction(appSource, "usPriceDateLabel", { escapeHtml: String });
+  assert.match(label("2026-10-16"), /基準 10\/16/);
+  assert.match(label("2026-10-16"), /価格データ基準日 2026\/10\/16/);
+  assert.equal(label(""), "");
 });
 
 test("late analysis retains newer prices and new research", () => {

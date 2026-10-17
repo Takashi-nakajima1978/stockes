@@ -2106,7 +2106,7 @@ function renderUsTable() {
             </span>
           </div>
         </td>
-        <td>${usd(analysis?.price?.current)}</td>
+        <td>${usd(analysis?.price?.current)}${usPriceDateLabel(analysis?.price?.priceDate)}</td>
         <td>${averagePriceCell(position, usd)}</td>
         <td>${shareCount(position.quantity)}</td>
         <td>${positionPnlUsd(position)}</td>
@@ -2149,6 +2149,12 @@ function renderUsTable() {
       }
     });
   });
+}
+
+function usPriceDateLabel(priceDate = "") {
+  const date = String(priceDate || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!date) return "";
+  return `<small class="us-price-as-of" title="価格データ基準日 ${date[1]}/${date[2]}/${date[3]}">基準 ${date[2]}/${date[3]}</small>`;
 }
 
 function renderUsDetail() {

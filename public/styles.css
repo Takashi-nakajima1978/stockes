@@ -872,6 +872,15 @@ table {
   width: 130px;
 }
 
+.us-manage-table .us-price-as-of {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 th,
 td {
   padding: 9px 10px;
