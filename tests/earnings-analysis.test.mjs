@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { changedEdinetMaterialSymbols, earningsMaterialFingerprint, newEarningsPresentationSymbols, normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages, staleEarningsAnalysisSymbols } from "../earnings-analysis.mjs";
+import { changedEdinetMaterialSymbols, earningsMaterialFingerprint, isEarningsAutoMonitorDue, newEarningsPresentationSymbols, nextEarningsAutoMonitorAt, normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages, shouldRefreshFinancialSnapshots, staleEarningsAnalysisSymbols } from "../earnings-analysis.mjs";
 
 test("compares the newest distinct EDINET reporting periods and prefers the latest correction", () => {
   const reports = [
@@ -114,4 +114,28 @@ test("stale saved earnings reviews can be rediscovered after a restart", () => {
     "9301.T": { current: null, presentation: null },
     ABC: currentSources,
   }), ["9005.T"]);
+});
+
+test("earnings material monitoring runs weekly and retries failures no more than daily", () => {
+  const now = Date.parse("2026-10-17T00:00:00.000Z");
+  const success = { lastAttemptAt: "2026-10-10T00:00:00.000Z", lastSuccessAt: "2026-10-10T00:00:00.000Z" };
+  assert.equal(isEarningsAutoMonitorDue(success, now), true);
+  assert.equal(isEarningsAutoMonitorDue({ ...success, lastSuccessAt: "2026-10-16T00:00:00.000Z" }, now), false);
+  const failed = { ...success, lastAttemptAt: "2026-10-16T01:00:00.000Z" };
+  assert.equal(isEarningsAutoMonitorDue(failed, now), false);
+  assert.equal(nextEarningsAutoMonitorAt(failed), "2026-10-17T01:00:00.000Z");
+  assert.equal(isEarningsAutoMonitorDue(failed, now + 60 * 60 * 1000 + 1), true);
+  assert.equal(isEarningsAutoMonitorDue({}, now), true);
+});
+
+test("EDINET snapshots reuse successful data for a week and throttle failed retries", () => {
+  const now = Date.parse("2026-10-17T00:00:00.000Z");
+  const item = { symbol: "9005.T", edinet: { version: 3 }, edinetReportSetVersion: 2 };
+  const base = { generatedAt: "2026-10-16T00:00:00.000Z", items: [item], symbols: ["9005.T"], currentVersion: 3, reportSetVersion: 2, now };
+  assert.equal(shouldRefreshFinancialSnapshots(base), false);
+  assert.equal(shouldRefreshFinancialSnapshots({ ...base, generatedAt: "2026-10-09T00:00:00.000Z" }), true);
+  assert.equal(shouldRefreshFinancialSnapshots({ ...base, items: [{ ...item, edinet: { version: 3, status: "refresh_failed" } }], generatedAt: "2026-10-16T01:00:00.000Z" }), false);
+  assert.equal(shouldRefreshFinancialSnapshots({ ...base, items: [{ ...item, edinet: { version: 3, status: "refresh_failed" } }], generatedAt: "2026-10-15T00:00:00.000Z" }), true);
+  assert.equal(shouldRefreshFinancialSnapshots({ ...base, items: [], generatedAt: "2026-10-16T00:00:00.000Z" }), true);
+  assert.equal(shouldRefreshFinancialSnapshots({ ...base, force: true }), true);
 });

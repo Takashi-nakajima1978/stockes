@@ -6135,10 +6135,14 @@ function renderEarningsAutoStatus(automatic = {}) {
     setStatus(els.settingsEarningsAutoStatus, false, "自動監視停止中");
   } else if (automatic.configured === false) {
     setStatus(els.settingsEarningsAutoStatus, false, "EDINET APIキー未設定");
+  } else if (automatic.monitoring) {
+    setStatus(els.settingsEarningsAutoStatus, true, `決算資料を確認中 · 待機 ${automatic.queued || 0}銘柄`);
   } else if (automatic.running) {
     setStatus(els.settingsEarningsAutoStatus, true, `自動分析中 · 待機 ${automatic.queued || 0}銘柄`);
   } else {
-    setStatus(els.settingsEarningsAutoStatus, true, `${automatic.cadence || "1時間ごと"}に監視中 · 待機 ${automatic.queued || 0}銘柄`);
+    setStatus(els.settingsEarningsAutoStatus, true, `${automatic.cadence || "週1回"}で監視中 · 待機 ${automatic.queued || 0}銘柄`);
+    const date = (value) => value ? new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value)) : "初回確認待ち";
+    els.settingsEarningsAutoStatus.title = `最終確認: ${date(automatic.lastCheckedAt)} / 次回確認: ${date(automatic.nextCheckAt)}`;
   }
 }
 

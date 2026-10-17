@@ -56,7 +56,9 @@ export function createEdinetDirectory({ store, fetchDay, now = () => new Date(),
       const day = new Date(Date.parse(today) - offset * DAY).toISOString().slice(0, 10);
       const cached = saved.days?.[day];
       const age = time.getTime() - Date.parse(cached?.fetchedAt || "");
-      if (age >= 0 && age < (offset === 0 ? 30 * 60000 : DAY) && Array.isArray(cached?.documents)) {
+      // A filing's disclosure date is immutable; corrections and withdrawals arrive as new dated records.
+      // Recheck only today's still-open index, while retaining historical date buckets across restarts.
+      if (Array.isArray(cached?.documents) && (offset > 0 || (age >= 0 && age < 30 * 60000))) {
         days[day] = cached;
         continue;
       }

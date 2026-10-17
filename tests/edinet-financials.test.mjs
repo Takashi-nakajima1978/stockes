@@ -155,7 +155,7 @@ test("document selection includes adjacent interim periods and corrections witho
   assert.equal(selectEdinetDocuments(withdrawn, ["9005.T"]).get("9005.T").some(d => d.docID === "S100NEW1"), false);
 });
 
-test("directory fetch is shared and persisted, refreshes changed lists, and preserves disk cache on failure", async t => {
+test("directory fetch is shared, rechecks today's list, and reuses historical date buckets", async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "edinet-directory-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = createDataStore(dir);
@@ -173,10 +173,14 @@ test("directory fetch is shared and persisted, refreshes changed lists, and pres
   const before = await store.readJson("edinet-directory.json");
   clock = new Date(now.getTime() + 2 * 86400000);
   fail = true;
-  await assert.rejects(load(), /連続失敗/);
-  assert.deepEqual(await store.readJson("edinet-directory.json"), before);
+  const unavailable = await load();
+  assert.equal(calls, 6);
+  assert.equal(unavailable.warnings.length, 2);
+  assert.ok((await store.readJson("edinet-directory.json")).days["2026-10-15"]);
   fail = false;
   assert.ok((await load()).documents.length);
+  assert.equal(calls, 8);
+  assert.ok(before.days["2026-10-13"]);
 });
 
 const source = await readFile(new URL("../server.mjs", import.meta.url), "utf8");

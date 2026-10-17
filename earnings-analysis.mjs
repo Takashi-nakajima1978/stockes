@@ -1,5 +1,35 @@
 const RISK_TERMS = ["リスク", "不確実", "懸念", "影響", "依存", "訴訟", "規制", "減損", "継続企業", "risk", "uncertainty"];
 const PERFORMANCE_TERMS = ["セグメント", "売上", "営業利益", "成長", "設備投資", "受注", "地域別", "事業別", "revenue", "segment", "growth"];
+export const EARNINGS_AUTO_MONITOR_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+export const EARNINGS_AUTO_MONITOR_RETRY_MS = 24 * 60 * 60 * 1000;
+
+export function nextEarningsAutoMonitorAt(state = {}) {
+  const lastAttemptAt = Date.parse(state.lastAttemptAt || "");
+  const lastSuccessAt = Date.parse(state.lastSuccessAt || "");
+  if (Number.isFinite(lastAttemptAt) && (!Number.isFinite(lastSuccessAt) || lastAttemptAt > lastSuccessAt)) {
+    return new Date(lastAttemptAt + EARNINGS_AUTO_MONITOR_RETRY_MS).toISOString();
+  }
+  if (Number.isFinite(lastSuccessAt)) return new Date(lastSuccessAt + EARNINGS_AUTO_MONITOR_INTERVAL_MS).toISOString();
+  return "";
+}
+
+export function isEarningsAutoMonitorDue(state = {}, now = Date.now()) {
+  const nextAt = nextEarningsAutoMonitorAt(state);
+  return !nextAt || Date.parse(nextAt) <= now;
+}
+
+export function shouldRefreshFinancialSnapshots({ force = false, generatedAt = "", items = [], symbols = [], currentVersion, reportSetVersion, now = Date.now() } = {}) {
+  if (force) return true;
+  const age = now - Date.parse(generatedAt);
+  if (!Number.isFinite(age) || age < 0) return true;
+  const bySymbol = new Map((items || []).map((item) => [item.symbol, item]));
+  if ((symbols || []).some((symbol) => !bySymbol.has(symbol))) return true;
+  const currentItems = (symbols || []).map((symbol) => bySymbol.get(symbol));
+  const schemaCurrent = currentItems.every((item) => item.edinet?.version === currentVersion && item.edinetReportSetVersion === reportSetVersion);
+  const retryAfterFailure = currentItems.some((item) => item.edinet?.status === "refresh_failed");
+  if (!schemaCurrent && !retryAfterFailure) return true;
+  return age >= (retryAfterFailure ? EARNINGS_AUTO_MONITOR_RETRY_MS : EARNINGS_AUTO_MONITOR_INTERVAL_MS);
+}
 
 export function selectComparableEdinetReports(reports = []) {
   const byPeriod = new Map();
