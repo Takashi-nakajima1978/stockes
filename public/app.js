@@ -47,6 +47,7 @@ const state = {
   earningsReviewLoaded: new Set(),
   earningsReviewLoading: new Set(),
   earningsReviewPending: new Set(),
+  earningsBatchJob: null,
   usStocks: [],
   usAnalyses: {},
   usSummary: null,
@@ -144,6 +145,7 @@ const reorderState = {
 const DETAIL_FORM_EDIT_HOLD_MS = 8000;
 let detailFormEditHoldUntil = 0;
 let stockLookupSequence = 0;
+let earningsBatchPolling = false;
 
 const els = {
   viewButtons: [...document.querySelectorAll("[data-view-target]")],
@@ -339,6 +341,10 @@ const els = {
   settingsLmStatus: document.getElementById("settingsLmStatus"),
   settingsDisclosureStatus: document.getElementById("settingsDisclosureStatus"),
   settingsShareholderStatus: document.getElementById("settingsShareholderStatus"),
+  settingsEarningsAutoEnabled: document.getElementById("settingsEarningsAutoEnabled"),
+  settingsEarningsAutoStatus: document.getElementById("settingsEarningsAutoStatus"),
+  earningsBatchButton: document.getElementById("earningsBatchButton"),
+  earningsBatchStatus: document.getElementById("earningsBatchStatus"),
   settingsFinancialStatus: document.getElementById("settingsFinancialStatus"),
   diagnosticsButton: document.getElementById("diagnosticsButton"),
   disclosureCheckButton: document.getElementById("disclosureCheckButton"),
@@ -511,6 +517,7 @@ function applySettings(settings = {}) {
   if (els.settingsDailyDiscoveryHour) els.settingsDailyDiscoveryHour.value = Number.isFinite(settings.dailyDiscoveryHour) ? settings.dailyDiscoveryHour : 7;
   if (els.settingsHourlyRefreshEnabled) els.settingsHourlyRefreshEnabled.checked = settings.hourlyRefreshEnabled !== false;
   if (els.settingsMarketHoursOnlyRefresh) els.settingsMarketHoursOnlyRefresh.checked = settings.marketHoursOnlyRefresh !== false;
+  if (els.settingsEarningsAutoEnabled) els.settingsEarningsAutoEnabled.checked = settings.earningsAutoAnalysisEnabled !== false;
   if (els.settingsTdnetDisclosureEnabled) els.settingsTdnetDisclosureEnabled.checked = settings.tdnetDisclosureEnabled !== false;
   if (els.settingsTdnetDisclosureLookbackDays) els.settingsTdnetDisclosureLookbackDays.value = Number.isFinite(settings.tdnetDisclosureLookbackDays) ? settings.tdnetDisclosureLookbackDays : 3;
   if (els.settingsTdnetDisclosureUseLmStudio) els.settingsTdnetDisclosureUseLmStudio.checked = settings.tdnetDisclosureUseLmStudio !== false;
@@ -6097,6 +6104,91 @@ async function checkFinancials() {
   }
 }
 
+function renderEarningsBatchJob(job = {}, wasRunning = false) {
+  state.earningsBatchJob = job;
+  if (els.earningsBatchButton) {
+    els.earningsBatchButton.disabled = job.running === true;
+    els.earningsBatchButton.textContent = job.running ? "一括分析中..." : "Watchlist全銘柄を初回分析";
+  }
+  if (els.earningsBatchStatus) {
+    if (job.running) {
+      const target = job.total ? `${job.checked}/${job.total}` : `${job.checked}/準備中`;
+      els.earningsBatchStatus.textContent = `${target} · ${job.currentName || job.phase || "準備中"}${job.currentSymbol ? ` (${job.currentSymbol})` : ""}`;
+    } else if (job.phase === "未実行" || !job.phase) {
+      els.earningsBatchStatus.textContent = "初回分析前";
+    } else if (job.phase === "失敗") {
+      els.earningsBatchStatus.textContent = job.error || "開始できませんでした";
+    } else {
+      els.earningsBatchStatus.textContent = `${job.phase} · 分析 ${job.succeeded || 0} / 最新のため省略 ${job.skipped || 0} / 失敗 ${job.failed || 0}`;
+      if (job.errors?.length) els.earningsBatchStatus.title = job.errors.map((item) => `${item.symbol}: ${item.message}`).join("\n");
+    }
+  }
+  if (wasRunning && !job.running) {
+    state.earningsReviewLoaded.clear();
+    if (state.view === "analysis" && state.selected) void loadEarningsReview(state.selected);
+  }
+}
+
+function renderEarningsAutoStatus(automatic = {}) {
+  if (!els.settingsEarningsAutoStatus) return;
+  if (!automatic.enabled) {
+    setStatus(els.settingsEarningsAutoStatus, false, "自動監視停止中");
+  } else if (automatic.configured === false) {
+    setStatus(els.settingsEarningsAutoStatus, false, "EDINET APIキー未設定");
+  } else if (automatic.running) {
+    setStatus(els.settingsEarningsAutoStatus, true, `自動分析中 · 待機 ${automatic.queued || 0}銘柄`);
+  } else {
+    setStatus(els.settingsEarningsAutoStatus, true, `${automatic.cadence || "1時間ごと"}に監視中 · 待機 ${automatic.queued || 0}銘柄`);
+  }
+}
+
+async function loadEarningsBatchStatus() {
+  try {
+    const payload = await request("/api/earnings-debate/batch");
+    renderEarningsBatchJob(payload.job || {});
+    renderEarningsAutoStatus(payload.automatic || {});
+    if (payload.job?.running) void pollEarningsBatchJob();
+  } catch (error) {
+    if (els.settingsEarningsAutoStatus) setStatus(els.settingsEarningsAutoStatus, false, "状態を取得できません");
+    if (els.earningsBatchStatus) els.earningsBatchStatus.textContent = error.message || "状態を取得できません";
+  }
+}
+
+async function pollEarningsBatchJob() {
+  if (earningsBatchPolling) return;
+  earningsBatchPolling = true;
+  try {
+    let wasRunning = true;
+    while (state.earningsBatchJob?.running) {
+      await new Promise((resolve) => setTimeout(resolve, 1800));
+      const payload = await request("/api/earnings-debate/batch");
+      renderEarningsBatchJob(payload.job || {}, wasRunning);
+      renderEarningsAutoStatus(payload.automatic || {});
+      wasRunning = payload.job?.running === true;
+    }
+  } catch (error) {
+    if (els.earningsBatchStatus) els.earningsBatchStatus.textContent = `進捗確認に失敗しました: ${error.message || "接続エラー"}`;
+  } finally {
+    earningsBatchPolling = false;
+  }
+}
+
+async function startEarningsBatch() {
+  if (!els.earningsBatchButton || els.earningsBatchButton.disabled) return;
+  els.earningsBatchButton.disabled = true;
+  if (els.earningsBatchStatus) els.earningsBatchStatus.textContent = "準備中...";
+  try {
+    const payload = await request("/api/earnings-debate/batch", { method: "POST", body: "{}" });
+    renderEarningsBatchJob(payload.job || {});
+    toast(payload.message || "決算資料の一括分析を開始しました。");
+    if (payload.job?.running) void pollEarningsBatchJob();
+  } catch (error) {
+    els.earningsBatchButton.disabled = false;
+    if (els.earningsBatchStatus) els.earningsBatchStatus.textContent = error.message || "開始できませんでした";
+    toast(error.message || "一括分析を開始できませんでした。");
+  }
+}
+
 function renderDiagnostics() {
   if (!els.diagnosticsList || !state.diagnostics) return;
   const data = state.diagnostics;
@@ -8896,6 +8988,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
         dailyDiscoveryHour: valueOrZero(els.settingsDailyDiscoveryHour?.value),
         hourlyRefreshEnabled: els.settingsHourlyRefreshEnabled?.checked === true,
         marketHoursOnlyRefresh: els.settingsMarketHoursOnlyRefresh?.checked !== false,
+        earningsAutoAnalysisEnabled: els.settingsEarningsAutoEnabled?.checked !== false,
         tdnetDisclosureEnabled: els.settingsTdnetDisclosureEnabled?.checked === true,
         tdnetDisclosureLookbackDays: valueOrZero(els.settingsTdnetDisclosureLookbackDays?.value),
         tdnetDisclosureUseLmStudio: els.settingsTdnetDisclosureUseLmStudio?.checked !== false,
@@ -9193,6 +9286,7 @@ els.diagnosticsButton?.addEventListener("click", runDiagnostics);
 els.disclosureCheckButton?.addEventListener("click", checkDisclosures);
 els.shareholderCheckButton?.addEventListener("click", checkShareholders);
 els.financialCheckButton?.addEventListener("click", checkFinancials);
+els.earningsBatchButton?.addEventListener("click", startEarningsBatch);
 els.testNotificationButton?.addEventListener("click", testNotification);
 els.chart?.addEventListener("pointermove", updateChartHover);
 els.chart?.addEventListener("pointerleave", clearChartHover);
@@ -9235,6 +9329,7 @@ async function loadInitialData() {
   renderSettingsTabs();
   renderCurrentDataView();
   void safeLoad("設定", loadSettings);
+  void safeLoad("決算資料の監視状態", loadEarningsBatchStatus);
   void safeLoad("接続状態", loadStatus);
   await safeLoad("表示データ", () => ensureViewData(state.view), (error) => {
     if (state.view === "analysis" || state.view === "stocks") {

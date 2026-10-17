@@ -4,6 +4,9 @@ export function initializeBackupSettings({ request, toast }) {
   const root = document.getElementById("backupSettings");
   if (!root) return;
   const node = (id) => document.getElementById(id);
+  const nasSetupPanel = node("nasUbuntuSetup");
+  const nasSetupShow = node("nasSetupShow");
+  const nasSetupHide = node("nasSetupHide");
   const field = (name) => root.querySelector(`[data-drive-field="${name}"]`);
   const nasField = (name) => root.querySelector(`[data-nas-field="${name}"]`);
   const nasSetupField = (name) => root.querySelector(`[data-nas-setup="${name}"]`);
@@ -20,6 +23,19 @@ export function initializeBackupSettings({ request, toast }) {
     if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
     return parts[0] === 10 || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) || (parts[0] === 192 && parts[1] === 168);
   };
+
+  function setNasSetupVisible(visible, persist = true) {
+    nasSetupPanel.hidden = !visible;
+    nasSetupShow.hidden = visible;
+    if (persist) {
+      try { localStorage.setItem("stock-signal-nas-setup-dismissed", visible ? "false" : "true"); } catch {}
+    }
+  }
+
+  nasSetupShow.addEventListener("click", () => setNasSetupVisible(true));
+  nasSetupHide.addEventListener("click", () => setNasSetupVisible(false));
+  try { setNasSetupVisible(localStorage.getItem("stock-signal-nas-setup-dismissed") === "false", false); }
+  catch { setNasSetupVisible(false, false); }
 
   function updateNasSetupCommands() {
     const host = nasSetupField("host").value.trim();

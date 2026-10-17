@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages } from "../earnings-analysis.mjs";
+import { changedEdinetMaterialSymbols, earningsMaterialFingerprint, newEarningsPresentationSymbols, normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages, staleEarningsAnalysisSymbols } from "../earnings-analysis.mjs";
 
 test("compares the newest distinct EDINET reporting periods and prefers the latest correction", () => {
   const reports = [
@@ -60,4 +60,58 @@ test("earnings analysis output is bounded and invalid actions are neutralized", 
   assert.equal(result.debate.judge.thesis.length, 1600);
   assert.equal(result.narrativeComparison.newlyAddedRisks.length, 8);
   assert.equal(normalizeEarningsDebate({ sources: { current: { url: "javascript:alert(1)" } } }).sources.current.url, undefined);
+});
+
+test("new or corrected EDINET filings are detected without treating first-time imports as updates", () => {
+  const older = [{
+    symbol: "9005.T",
+    edinetReports: [{ document: { docID: "S100OLD1", periodEnd: "2026-03-31", submitDateTime: "2026-05-01" } }],
+  }];
+  const revised = [{
+    symbol: "9005.T",
+    edinetReports: [{ document: { docID: "S100NEW1", periodEnd: "2026-06-30", submitDateTime: "2026-08-01" } }],
+  }];
+  assert.deepEqual(changedEdinetMaterialSymbols([], revised), []);
+  assert.deepEqual(changedEdinetMaterialSymbols(older, revised), ["9005.T"]);
+  assert.deepEqual(changedEdinetMaterialSymbols(revised, revised), []);
+});
+
+test("new earnings presentations only trigger analysis for newly seen TDnet documents", () => {
+  const previous = {
+    generatedAt: "2026-10-16T08:00:00.000Z",
+    recent: [{ id: "old", symbol: "9005.T", title: "決算説明資料" }],
+  };
+  const next = {
+    generatedAt: "2026-10-17T08:00:00.000Z",
+    recent: [
+      { id: "old", symbol: "9005.T", title: "決算説明資料" },
+      { id: "new", symbol: "9201.T", title: "決算説明資料" },
+      { id: "other", symbol: "9201.T", title: "自己株式取得" },
+    ],
+  };
+  assert.deepEqual(newEarningsPresentationSymbols(previous, next), ["9201.T"]);
+  assert.deepEqual(newEarningsPresentationSymbols({}, next), []);
+});
+
+test("earnings material fingerprints change when the report or presentation changes", () => {
+  const base = { current: { documentId: "S100NEW1", periodEnd: "2026-06-30" }, presentation: { id: "tdnet-1", url: "https://release.tdnet.info/a.pdf" } };
+  assert.equal(earningsMaterialFingerprint(base), earningsMaterialFingerprint(base));
+  assert.notEqual(earningsMaterialFingerprint(base), earningsMaterialFingerprint({ ...base, current: { ...base.current, documentId: "S100NEW2" } }));
+  assert.notEqual(earningsMaterialFingerprint(base), earningsMaterialFingerprint({ ...base, presentation: { ...base.presentation, id: "tdnet-2" } }));
+});
+
+test("stale saved earnings reviews can be rediscovered after a restart", () => {
+  const currentSources = { current: { documentId: "S100NEW2", periodEnd: "2026-06-30" } };
+  const unchangedSources = { current: { documentId: "S100NEW1", periodEnd: "2026-03-31" } };
+  const reviews = [
+    { symbol: "9005.T", sourceFingerprint: earningsMaterialFingerprint(unchangedSources) },
+    { symbol: "9201.T", sourceFingerprint: earningsMaterialFingerprint(unchangedSources) },
+    { symbol: "ABC", sourceFingerprint: "old" },
+  ];
+  assert.deepEqual(staleEarningsAnalysisSymbols(reviews, {
+    "9005.T": currentSources,
+    "9201.T": unchangedSources,
+    "9301.T": { current: null, presentation: null },
+    ABC: currentSources,
+  }), ["9005.T"]);
 });

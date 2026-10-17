@@ -26,6 +26,74 @@ export function selectComparableEdinetReports(reports = []) {
   return { current, previous: previous || null };
 }
 
+export function earningsMaterialFingerprint(sources = {}) {
+  const document = (source = {}) => {
+    const item = source || {};
+    return {
+      id: validEdinetId(item.documentId) || edinetIdFromUrl(item.url),
+      periodEnd: String(item.periodEnd || "").slice(0, 10),
+      submittedAt: String(item.submittedAt || "").slice(0, 30),
+    };
+  };
+  const presentation = sources.presentation || {};
+  return JSON.stringify({
+    current: document(sources.current),
+    previous: document(sources.previous),
+    presentation: {
+      id: String(presentation.id || "").slice(0, 120),
+      date: String(presentation.date || "").slice(0, 20),
+      url: String(presentation.url || "").slice(0, 500),
+    },
+  });
+}
+
+export function staleEarningsAnalysisSymbols(reviews = [], sourcesBySymbol = {}) {
+  return [...new Set((reviews || [])
+    .filter((review) => /^\d{4}\.T$/.test(review?.symbol || ""))
+    .filter((review) => {
+      const sources = sourcesBySymbol[review.symbol];
+      if (!sources?.current?.documentId && !sources?.presentation?.id) return false;
+      return review.sourceFingerprint !== earningsMaterialFingerprint(sources);
+    })
+    .map((review) => review.symbol))];
+}
+
+export function changedEdinetMaterialSymbols(previousItems = [], nextItems = []) {
+  const identity = (item) => {
+    const current = selectComparableEdinetReports(item?.edinetReports || []).current?.document;
+    if (!current?.docID) return "";
+    return [current.docID, current.periodEnd, current.submitDateTime, current.docInfoEditStatus, current.withdrawalStatus].join("|");
+  };
+  const previousBySymbol = new Map((previousItems || []).map((item) => [item.symbol, identity(item)]));
+  return [...new Set((nextItems || [])
+    .filter((item) => /^\d{4}\.T$/.test(item?.symbol || ""))
+    .filter((item) => {
+      const before = previousBySymbol.get(item.symbol);
+      const after = identity(item);
+      return Boolean(before && after && before !== after);
+    })
+    .map((item) => item.symbol))];
+}
+
+export function newEarningsPresentationSymbols(previous = {}, next = {}) {
+  if (!previous.generatedAt) return [];
+  const disclosures = (cache) => [...(cache.important || []), ...(cache.recent || [])];
+  const oldIds = new Set(disclosures(previous).map((item) => item.id).filter(Boolean));
+  const symbols = [];
+  for (const item of disclosures(next)) {
+    if (!item.id || oldIds.has(item.id) || !isEarningsPresentationTitle(item.title)) continue;
+    const symbol = /^\d{4}\.T$/.test(item.symbol || "")
+      ? item.symbol
+      : `${String(item.code || "").slice(0, 4)}.T`;
+    if (/^\d{4}\.T$/.test(symbol)) symbols.push(symbol);
+  }
+  return [...new Set(symbols)];
+}
+
+export function isEarningsPresentationTitle(title = "") {
+  return /決算説明|決算補足|決算概要|業績説明|説明会資料|financial results presentation|earnings presentation/i.test(title);
+}
+
 export function selectRelevantPdfPages(pdfText = "", { maxPages = 8, kind = "report", pageCount = 0 } = {}) {
   const pages = String(pdfText).split("\f").map((text, index) => ({ page: index + 1, text: text.trim() }));
   const reportedPageCount = Math.max(0, Number(pageCount) || 0);
@@ -62,6 +130,9 @@ function normalizeSources(sources = {}) {
       title: String(source.title || "").slice(0, 160),
       date: String(source.date || "").slice(0, 20),
       periodEnd: String(source.periodEnd || "").slice(0, 10),
+      ...(validEdinetId(source.documentId) ? { documentId: validEdinetId(source.documentId) } : {}),
+      ...(source.submittedAt ? { submittedAt: String(source.submittedAt).slice(0, 30) } : {}),
+      ...(source.id ? { id: String(source.id).slice(0, 120) } : {}),
       ...(url ? { url } : {}),
     };
   };
@@ -80,12 +151,14 @@ export function normalizeEarningsDebate(value = {}, metadata = {}) {
   }).filter((item) => typeof item === "string" ? item : Object.keys(item).length);
   const judge = value.debate?.judge && typeof value.debate.judge === "object" ? value.debate.judge : {};
   const actions = ["買い増し検討", "保有継続", "売却検討", "新規購入は見送り", "判断保留"];
+  const sources = normalizeSources(metadata.sources || value.sources || {});
   return {
     symbol: String(metadata.symbol || value.symbol || "").slice(0, 16),
     companyName: String(metadata.companyName || value.companyName || "").slice(0, 120),
     generatedAt: String(metadata.generatedAt || value.generatedAt || ""),
     model: String(metadata.model || value.model || "").slice(0, 160),
-    sources: normalizeSources(metadata.sources || value.sources || {}),
+    sources,
+    sourceFingerprint: String(metadata.sourceFingerprint || value.sourceFingerprint || earningsMaterialFingerprint(sources)).slice(0, 2000),
     narrativeComparison: {
       newlyAddedRisks: list(value.narrativeComparison?.newlyAddedRisks),
       removedOrReducedRisks: list(value.narrativeComparison?.removedOrReducedRisks),
@@ -127,4 +200,13 @@ export function normalizeEarningsDebate(value = {}, metadata = {}) {
     },
     limitations: list(value.limitations, 8),
   };
+}
+
+function validEdinetId(value = "") {
+  const id = String(value || "").toUpperCase();
+  return /^[A-Z0-9]{8}$/.test(id) ? id : "";
+}
+
+function edinetIdFromUrl(value = "") {
+  try { return validEdinetId(new URL(String(value)).searchParams.get("id")); } catch { return ""; }
 }

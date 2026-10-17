@@ -982,6 +982,24 @@
 
             <div class="settings-card">
               <div class="panel-title compact-title">
+                <h3>決算資料・多角分析</h3>
+                <span id="settingsEarningsAutoStatus" role="status">確認中</span>
+              </div>
+              <section class="control-strip" aria-label="決算資料の自動分析">
+                <label class="checkbox-line setting-check">
+                  <input id="settingsEarningsAutoEnabled" type="checkbox" checked>
+                  <span>新しい決算資料を自動で分析</span>
+                </label>
+              </section>
+              <div class="diagnostics-actions">
+                <button id="earningsBatchButton" type="button" class="secondary">Watchlist全銘柄を初回分析</button>
+                <span id="earningsBatchStatus" role="status" aria-live="polite">未実行</span>
+              </div>
+              <small class="settings-help">日本株を対象に、EDINETとTDnetを1時間ごとに確認し、新しい資料が見つかった銘柄だけBull / Bear / Judge分析を順番に実行します。初回はボタンでWatchlist全体を確認します。サーバーとLM Studioの稼働、EDINET APIキーが必要です。</small>
+            </div>
+
+            <div class="settings-card">
+              <div class="panel-title compact-title">
                 <h3>株主情報監視</h3>
                 <span id="settingsShareholderStatus">未確認</span>
               </div>
@@ -1060,9 +1078,10 @@
           <div class="settings-tab-panel" data-settings-panel="backup" id="backupSettings" hidden>
             <section class="backup-section">
               <div class="backup-heading"><h3>nasne share2</h3><span id="nasConnectionStatus">未設定</span></div>
-              <p class="backup-note">全データと学習履歴をnasneの共有へ保存します。Ubuntuホストで共有をマウントし、Dockerへ接続する必要があります。下の設定欄で接続コマンドを作成できます。nasneがスタンバイ中は保存できません。</p>
-              <div class="nas-ubuntu-setup">
-                <h4>Ubuntu接続設定</h4>
+              <p class="backup-note">全データと学習履歴をnasneの共有へ保存します。Ubuntuホストで共有をマウントし、Dockerへ接続します。nasneがスタンバイ中は保存できません。</p>
+              <button id="nasSetupShow" type="button" class="secondary nas-setup-show">Ubuntu接続手順を表示</button>
+              <div class="nas-ubuntu-setup" id="nasUbuntuSetup" hidden>
+                <div class="backup-heading"><h4>Ubuntu接続設定</h4><button id="nasSetupHide" type="button" class="secondary" aria-label="Ubuntu接続手順を閉じる">閉じる</button></div>
                 <div class="backup-fields">
                   <label><span>nasneのIPアドレス</span><input data-nas-setup="host" value="192.168.100.139" inputmode="decimal" autocomplete="off"></label>
                   <label><span>保存する共有</span><select data-nas-setup="share"><option value="nasne_home">nasne_home</option><option value="share1">share1（内蔵HDD）</option><option value="share2" selected>share2（外付けHDD）</option></select></label>

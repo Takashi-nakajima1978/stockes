@@ -5033,7 +5033,11 @@ button.savings-order-button:disabled {
   border-bottom: 1px solid var(--line);
 }
 
-.nas-ubuntu-setup > h4 {
+.nas-setup-show {
+  margin: 4px 0 12px;
+}
+
+.nas-ubuntu-setup h4 {
   margin: 0;
   font-size: 16px;
 }

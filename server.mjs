@@ -18,13 +18,14 @@ import { createForecastHistory, forecastPriceFromCache } from "./forecast-histor
 import { buildSavingsForecast, savingsForecastFromDate } from "./savings-forecast.mjs";
 import { EDINET_ANALYSIS_VERSION, parseEdinetXbrl, analyzeEdinetReports, edinetInsights, edinetScoreAdjustment } from "./edinet-financials.mjs";
 import { createEdinetDirectory, selectEdinetDocuments } from "./edinet-documents.mjs";
-import { normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages } from "./earnings-analysis.mjs";
+import { changedEdinetMaterialSymbols, earningsMaterialFingerprint, isEarningsPresentationTitle, newEarningsPresentationSymbols, normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages, staleEarningsAnalysisSymbols } from "./earnings-analysis.mjs";
 import { normalizeAssetDebate } from "./asset-debate.mjs";
 import { buildForecastReflection, buildPortfolioRiskAnalysis, buildValidatedConfidenceCalibration, normalizePortfolioDebate } from "./portfolio-insights.mjs";
 
 const runPriceRefresh = createSingleFlight();
 const runHistoryFetch = createSingleFlight();
 const runEarningsDebate = createSingleFlight();
+const runFinancialSnapshotRefresh = createSingleFlight();
 const runAssetDebateTask = createSingleFlight();
 const runPortfolioReview = createSingleFlight();
 const runPortfolioReflection = createSingleFlight();
@@ -463,6 +464,7 @@ const defaultSettings = {
   dailyDiscoveryHour: 7,
   hourlyRefreshEnabled: true,
   marketHoursOnlyRefresh: true,
+  earningsAutoAnalysisEnabled: true,
   tdnetDisclosureEnabled: true,
   tdnetDisclosureLookbackDays: 3,
   tdnetDisclosureUseLmStudio: true,
@@ -533,6 +535,12 @@ let lmStudioStatusCache = null;
 let primeUniverseCache = null;
 let secCompanyTickerCache = null;
 let analysisJob = null;
+let earningsBatchJob = null;
+let earningsAutoDrainPromise = null;
+let earningsAutoMonitorHour = "";
+let earningsAutoMonitorRefreshing = false;
+let earningsAnalysisQueue = Promise.resolve();
+const earningsAutoQueue = new Map();
 let usAnalysisJob = null;
 let discoveryJob = null;
 let surgeForecastJob = null;
@@ -1093,6 +1101,25 @@ async function handleApi(req, res, url) {
     return json(res, 200, { ...cache, items: cache.items.map((item) => normalizeFinancialSnapshot(item)) });
   }
 
+  if (url.pathname === "/api/earnings-debate/batch" && req.method === "GET") {
+    const settings = await readSettings();
+    return json(res, 200, {
+      job: earningsBatchJobSnapshot(),
+      automatic: {
+        enabled: settings.earningsAutoAnalysisEnabled,
+        configured: Boolean(settings.edinetApiKey),
+        queued: earningsAutoQueue.size,
+        running: Boolean(earningsAutoDrainPromise),
+        cadence: "1時間ごと",
+      },
+    });
+  }
+
+  if (url.pathname === "/api/earnings-debate/batch" && req.method === "POST") {
+    const job = startEarningsBatchJob();
+    return json(res, 202, { job, message: "日本株Watchlistの決算多角分析を順番に開始しました。" });
+  }
+
   if (url.pathname === "/api/earnings-debate" && req.method === "GET") {
     const symbol = normalizeSymbol(url.searchParams.get("symbol") || "");
     if (!/^\d{4}\.T$/.test(symbol)) return json(res, 400, { error: "日本株の銘柄を選択してください。" });
@@ -1104,7 +1131,7 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const symbol = normalizeSymbol(body.symbol || "");
     if (!/^\d{4}\.T$/.test(symbol)) return json(res, 400, { error: "日本株の銘柄を選択してください。" });
-    const result = await runEarningsDebate(symbol, () => analyzeEarningsDebate(symbol));
+    const result = await runQueuedEarningsDebate(symbol, () => analyzeEarningsDebate(symbol));
     return json(res, 200, { result });
   }
 
@@ -1149,7 +1176,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/financials/check" && req.method === "POST") {
-    const cache = await updateFinancialSnapshots({ force: true });
+    const cache = await runFinancialSnapshotRefresh("watchlist", () => updateFinancialSnapshots({ force: true }));
     return json(res, 200, { ...cache, items: cache.items.map((item) => normalizeFinancialSnapshot(item)) });
   }
 
@@ -1806,7 +1833,7 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
   });
   const shouldForceFinancials = Boolean(settings.edinetApiKey)
     && (options.forceFinancials === true || missingFinancialForWatchlist);
-  const financialCache = await updateFinancialSnapshots({ force: shouldForceFinancials }).catch(async (error) => {
+  const financialCache = await runFinancialSnapshotRefresh("watchlist", () => updateFinancialSnapshots({ force: shouldForceFinancials })).catch(async (error) => {
     systemWarnings.push(`EDINET財務: ${error.message || "財務情報を更新できませんでした"}`);
     return previousFinancialCache;
   });
@@ -3972,7 +3999,10 @@ function scheduleHourlyRefresh() {
   };
   const researchTick = () => {
     if (backupManager.restoring) return;
-    void runPriceRefresh("research-scheduler", runHourlyRefreshIfDue).catch((error) => console.error("分析自動更新:", error.message));
+    void runPriceRefresh("research-scheduler", async () => {
+      await runHourlyRefreshIfDue().catch((error) => console.error("分析自動更新:", error.message));
+      await runEarningsAutoMonitorIfDue();
+    }).catch((error) => console.error("分析自動更新:", error.message));
   };
   setTimeout(() => { priceTick(); researchTick(); }, 12000);
   priceRefreshTimer = setInterval(priceTick, 60 * 1000);
@@ -4036,6 +4066,37 @@ async function runHourlyRefreshIfDue() {
     checks.push(updateCandidateHistoryOutcomes({ maxUpdates: 30 }));
   }
   await Promise.allSettled(checks);
+}
+
+async function runEarningsAutoMonitorIfDue() {
+  const settings = await readSettings();
+  if (!settings.earningsAutoAnalysisEnabled || backupManager.restoring) return;
+  const hour = cacheHourKey(new Date().toISOString());
+  if (earningsAutoMonitorHour === hour) {
+    void drainAutomaticEarningsDebates();
+    return;
+  }
+  earningsAutoMonitorHour = hour;
+
+  earningsAutoMonitorRefreshing = true;
+  try {
+    const checks = [];
+    if (settings.edinetApiKey) {
+      checks.push(runFinancialSnapshotRefresh("watchlist", () => updateFinancialSnapshots()).catch((error) => {
+        console.error("EDINET決算資料の自動確認:", error.message);
+      }));
+    }
+    if (settings.tdnetDisclosureEnabled) {
+      checks.push(checkTimelyDisclosures({ notify: false }).catch((error) => {
+        console.error("TDnet決算資料の自動確認:", error.message);
+      }));
+    }
+    await Promise.all(checks);
+  } finally {
+    earningsAutoMonitorRefreshing = false;
+  }
+  await queueStaleEarningsDebates();
+  await drainAutomaticEarningsDebates();
 }
 
 function isMarketOpen(market, value = new Date()) {
@@ -11557,6 +11618,8 @@ async function checkTimelyDisclosures(options = {}) {
   };
   await saveDisclosureCache(result);
   if (options.notify !== false) await notifyDisclosureSignals(result, settings).catch(() => {});
+  const updatedEarningsSymbols = newEarningsPresentationSymbols(previous, result);
+  if (updatedEarningsSymbols.length) queueAutomaticEarningsDebates(updatedEarningsSymbols, "TDnet");
   return result;
 }
 
@@ -14875,12 +14938,15 @@ async function updateFinancialSnapshots(options = {}) {
     previous,
     force: options.force,
   });
-  return saveFinancialCache({
+  const saved = await saveFinancialCache({
     ...collected,
     generatedAt,
     checkedCount: stocks.length,
     items: mergeFinancialSnapshotItems(previous.items, collected.items),
   });
+  const updatedSymbols = changedEdinetMaterialSymbols(previous.items, saved.items);
+  if (updatedSymbols.length) queueAutomaticEarningsDebates(updatedSymbols, "EDINET");
+  return saved;
 }
 
 async function readEarningsAnalysisCache() {
@@ -14902,6 +14968,195 @@ async function saveEarningsAnalysisResult(result) {
   return result;
 }
 
+function earningsBatchJobSnapshot() {
+  if (!earningsBatchJob) {
+    return { running: false, phase: "未実行", checked: 0, total: 0, succeeded: 0, skipped: 0, failed: 0, currentSymbol: "", currentName: "", errors: [] };
+  }
+  return { ...earningsBatchJob, errors: earningsBatchJob.errors.slice(0, 8) };
+}
+
+function startEarningsBatchJob() {
+  if (earningsBatchJob?.running) return earningsBatchJobSnapshot();
+  earningsBatchJob = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    running: true,
+    phase: "準備中",
+    checked: 0,
+    total: 0,
+    succeeded: 0,
+    skipped: 0,
+    failed: 0,
+    currentSymbol: "",
+    currentName: "",
+    errors: [],
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    finishedAt: "",
+  };
+  void executeEarningsBatchJob(earningsBatchJob);
+  return earningsBatchJobSnapshot();
+}
+
+async function executeEarningsBatchJob(job) {
+  try {
+    const settings = await readSettings();
+    if (!settings.edinetApiKey) throw new Error("先に設定のAI/EDINET欄へAPIキーを登録してください。");
+    job.phase = "LM Studioを確認中";
+    job.updatedAt = new Date().toISOString();
+    await getLmStudioModel();
+    job.phase = "EDINETの最新資料を確認中";
+    job.updatedAt = new Date().toISOString();
+    await runFinancialSnapshotRefresh("watchlist", () => updateFinancialSnapshots({ force: true }));
+    const stocks = (await readWatchlist()).filter((stock) => /^\d{4}\.T$/.test(stock.symbol));
+    job.total = stocks.length;
+    job.phase = "Watchlistを順番に分析中";
+    job.updatedAt = new Date().toISOString();
+    for (const stock of stocks) {
+      job.currentSymbol = stock.symbol;
+      job.currentName = stock.name;
+      job.phase = `${job.checked + 1}/${job.total} ${stock.name}を確認中`;
+      job.updatedAt = new Date().toISOString();
+      try {
+        const sources = await currentEarningsSources(stock.symbol);
+        const fingerprint = earningsMaterialFingerprint(sources);
+        const cached = (await readEarningsAnalysisCache()).items.find((item) => item.symbol === stock.symbol);
+        if (fingerprint && cached?.sourceFingerprint === fingerprint) {
+          job.skipped += 1;
+        } else {
+          await runQueuedEarningsDebate(stock.symbol, () => analyzeEarningsDebate(stock.symbol));
+          job.succeeded += 1;
+        }
+      } catch (error) {
+        job.failed += 1;
+        job.errors.push({ symbol: stock.symbol, message: String(error.message || "分析に失敗しました").slice(0, 240) });
+        job.errors = job.errors.slice(-8);
+      }
+      job.checked += 1;
+      job.updatedAt = new Date().toISOString();
+    }
+    job.running = false;
+    job.phase = job.failed ? "完了（一部失敗）" : "完了";
+    job.currentSymbol = "";
+    job.currentName = "";
+    job.finishedAt = new Date().toISOString();
+    job.updatedAt = job.finishedAt;
+  } catch (error) {
+    job.running = false;
+    job.phase = "失敗";
+    job.error = String(error.message || "一括分析に失敗しました").slice(0, 300);
+    job.finishedAt = new Date().toISOString();
+    job.updatedAt = job.finishedAt;
+  } finally {
+    void drainAutomaticEarningsDebates();
+  }
+}
+
+function runQueuedEarningsDebate(symbol, task) {
+  return runEarningsDebate(symbol, () => {
+    const queued = earningsAnalysisQueue.then(task, task);
+    earningsAnalysisQueue = queued.catch(() => {});
+    return queued;
+  });
+}
+
+function queueAutomaticEarningsDebates(symbols = [], reason = "") {
+  for (const symbol of symbols) {
+    if (!/^\d{4}\.T$/.test(symbol)) continue;
+    earningsAutoQueue.set(symbol, { reason, queuedAt: new Date().toISOString() });
+  }
+  void drainAutomaticEarningsDebates();
+}
+
+async function drainAutomaticEarningsDebates() {
+  if (earningsAutoDrainPromise) return earningsAutoDrainPromise;
+  const drain = (async () => {
+    if (!earningsAutoQueue.size || earningsBatchJob?.running || earningsAutoMonitorRefreshing || backupManager.restoring) return;
+    const settings = await readSettings();
+    if (!settings.earningsAutoAnalysisEnabled || !settings.edinetApiKey) return;
+    try {
+      await getLmStudioModel();
+    } catch (error) {
+      console.error("決算資料の自動分析は待機中です:", error.message);
+      return;
+    }
+    for (const [symbol, queuedItem] of [...earningsAutoQueue]) {
+      if (earningsBatchJob?.running || backupManager.restoring) break;
+      try {
+        const sources = await currentEarningsSources(symbol);
+        const fingerprint = earningsMaterialFingerprint(sources);
+        const cached = (await readEarningsAnalysisCache()).items.find((item) => item.symbol === symbol);
+        if (fingerprint && cached?.sourceFingerprint === fingerprint) {
+          if (earningsAutoQueue.get(symbol) === queuedItem) earningsAutoQueue.delete(symbol);
+          continue;
+        }
+        const result = await runQueuedEarningsDebate(symbol, () => analyzeEarningsDebate(symbol));
+        if (result?.sourceFingerprint === fingerprint && earningsAutoQueue.get(symbol) === queuedItem) earningsAutoQueue.delete(symbol);
+      } catch (error) {
+        console.error(`決算資料の自動分析 ${symbol} (${queuedItem.reason || "資料更新"}):`, error.message);
+      }
+    }
+  })();
+  earningsAutoDrainPromise = drain.finally(() => { earningsAutoDrainPromise = null; });
+  return earningsAutoDrainPromise;
+}
+
+async function currentEarningsSources(symbol) {
+  const financials = (await readFinancialCache()).items.find((item) => item.symbol === symbol);
+  const comparison = selectComparableEdinetReports(financials?.edinetReports || []);
+  const stock = (await readWatchlist()).find((item) => item.symbol === symbol);
+  const disclosureCache = await readDisclosureCache();
+  const presentation = stock ? latestEarningsPresentation(stock, disclosureCache) : null;
+  const descriptor = (document) => document ? {
+    title: document.docDescription || "",
+    periodEnd: document.periodEnd || "",
+    documentId: document.docID || "",
+    submittedAt: document.submitDateTime || "",
+    url: edinetDocumentUrl(document.docID),
+  } : null;
+  return {
+    current: descriptor(comparison.current?.document),
+    previous: descriptor(comparison.previous?.document),
+    presentation: presentation ? { id: presentation.id, date: presentation.date, title: presentation.title, url: presentation.url } : null,
+  };
+}
+
+async function queueStaleEarningsDebates() {
+  const settings = await readSettings();
+  if (!settings.earningsAutoAnalysisEnabled || !settings.edinetApiKey) return;
+  const [watchlist, financialCache, disclosureCache, analysisCache] = await Promise.all([
+    readWatchlist(), readFinancialCache(), readDisclosureCache(), readEarningsAnalysisCache(),
+  ]);
+  const stocks = new Map(watchlist.map((stock) => [stock.symbol, stock]));
+  const financials = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
+  const sourcesBySymbol = {};
+  for (const review of analysisCache.items || []) {
+    if (!/^\d{4}\.T$/.test(review.symbol) || !stocks.has(review.symbol)) continue;
+    const comparison = selectComparableEdinetReports(financials.get(review.symbol)?.edinetReports || []);
+    const descriptor = (document) => document ? {
+      title: document.docDescription || "",
+      periodEnd: document.periodEnd || "",
+      documentId: document.docID || "",
+      submittedAt: document.submitDateTime || "",
+      url: edinetDocumentUrl(document.docID),
+    } : null;
+    const presentation = latestEarningsPresentation(stocks.get(review.symbol), disclosureCache);
+    sourcesBySymbol[review.symbol] = {
+      current: descriptor(comparison.current?.document),
+      previous: descriptor(comparison.previous?.document),
+      presentation: presentation ? { id: presentation.id, date: presentation.date, title: presentation.title, url: presentation.url } : null,
+    };
+  }
+  const updatedSymbols = staleEarningsAnalysisSymbols(analysisCache.items, sourcesBySymbol);
+  if (updatedSymbols.length) queueAutomaticEarningsDebates(updatedSymbols, "保存済み分析との差分");
+}
+
+function latestEarningsPresentation(stock, disclosureCache = {}) {
+  const stockCode = String(stock.symbol || "").replace(/\.T$/, "");
+  return [...(disclosureCache.recent || []), ...(disclosureCache.important || [])]
+    .filter((item) => item.code?.slice(0, 4) === stockCode && isEarningsPresentationTitle(item.title) && item.url)
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.time).localeCompare(String(a.time)))[0] || null;
+}
+
 async function analyzeEarningsDebate(symbol) {
   const stock = (await readWatchlist()).find((item) => item.symbol === symbol);
   if (!stock) throw Object.assign(new Error("銘柄リストに見つかりません。"), { statusCode: 404 });
@@ -14911,7 +15166,7 @@ async function analyzeEarningsDebate(symbol) {
   const financialCache = await readFinancialCache();
   let financials = financialCache.items.find((item) => item.symbol === symbol);
   if (!financials || financials.edinetReportSetVersion !== EDINET_REPORT_SELECTION_VERSION) {
-    const refreshed = await updateFinancialSnapshots({ force: true });
+    const refreshed = await runFinancialSnapshotRefresh("watchlist", () => updateFinancialSnapshots({ force: true }));
     financials = refreshed.items.find((item) => item.symbol === symbol) || financials;
   }
   const comparison = selectComparableEdinetReports(financials?.edinetReports || []);
@@ -14932,10 +15187,7 @@ async function analyzeEarningsDebate(symbol) {
   ]);
 
   const disclosureCache = await readDisclosureCache();
-  const stockCode = symbol.replace(/\.T$/, "");
-  const supplementary = [...(disclosureCache.recent || []), ...(disclosureCache.important || [])]
-    .filter((item) => item.code?.slice(0, 4) === stockCode && isEarningsPresentationTitle(item.title) && item.url)
-    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.time).localeCompare(String(a.time)))[0] || null;
+  const supplementary = latestEarningsPresentation(stock, disclosureCache);
   const pdfDocuments = [];
   try {
     const bytes = await fetchEdinetPdf(comparison.current.document, settings.edinetApiKey);
@@ -15028,9 +15280,9 @@ async function analyzeEarningsDebate(symbol) {
     narrativeChanges: review.narrativeComparison || {},
     presentationAnalysis: review.vision || {},
     sourceDocuments: {
-      current: { title: currentFacts.document.docDescription || "", periodEnd: currentFacts.document.periodEnd || "", url: edinetDocumentUrl(currentFacts.document.docID) },
-      previous: previousFacts ? { title: previousFacts.document.docDescription || "", periodEnd: previousFacts.document.periodEnd || "", url: edinetDocumentUrl(previousFacts.document.docID) } : null,
-      presentation: supplementary ? { title: supplementary.title, date: supplementary.date, url: supplementary.url } : null,
+      current: { title: currentFacts.document.docDescription || "", periodEnd: currentFacts.document.periodEnd || "", documentId: currentFacts.document.docID || "", submittedAt: currentFacts.document.submitDateTime || "", url: edinetDocumentUrl(currentFacts.document.docID) },
+      previous: previousFacts ? { title: previousFacts.document.docDescription || "", periodEnd: previousFacts.document.periodEnd || "", documentId: previousFacts.document.docID || "", submittedAt: previousFacts.document.submitDateTime || "", url: edinetDocumentUrl(previousFacts.document.docID) } : null,
+      presentation: supplementary ? { id: supplementary.id, title: supplementary.title, date: supplementary.date, url: supplementary.url } : null,
     },
   };
   const bull = await callStructuredLm(model, [
@@ -15423,10 +15675,6 @@ async function generatePortfolioReflection(months = 3) {
   cache.updatedAt = result.asOf;
   await writeDataFile(PORTFOLIO_REFLECTION_CACHE_PATH, JSON.stringify(cache, null, 2));
   return result;
-}
-
-function isEarningsPresentationTitle(title = "") {
-  return /決算説明|決算補足|決算概要|業績説明|説明会資料|financial results presentation|earnings presentation/i.test(title);
 }
 
 function edinetDocumentUrl(docID = "") {
@@ -16271,6 +16519,7 @@ function normalizeSettings(settings = {}) {
     dailyDiscoveryHour: clamp(Number(settings.dailyDiscoveryHour ?? defaultSettings.dailyDiscoveryHour), 0, 23),
     hourlyRefreshEnabled: settings.hourlyRefreshEnabled !== false,
     marketHoursOnlyRefresh: settings.marketHoursOnlyRefresh !== false,
+    earningsAutoAnalysisEnabled: settings.earningsAutoAnalysisEnabled !== false,
     tdnetDisclosureEnabled: settings.tdnetDisclosureEnabled !== false,
     tdnetDisclosureLookbackDays: clamp(Number(settings.tdnetDisclosureLookbackDays || defaultSettings.tdnetDisclosureLookbackDays), 1, 7),
     tdnetDisclosureUseLmStudio: settings.tdnetDisclosureUseLmStudio !== false,
@@ -16324,6 +16573,7 @@ function applySettingsPatch(current, body = {}) {
   if (body.dailyDiscoveryHour !== undefined) next.dailyDiscoveryHour = body.dailyDiscoveryHour;
   if (typeof body.hourlyRefreshEnabled === "boolean") next.hourlyRefreshEnabled = body.hourlyRefreshEnabled;
   if (typeof body.marketHoursOnlyRefresh === "boolean") next.marketHoursOnlyRefresh = body.marketHoursOnlyRefresh;
+  if (typeof body.earningsAutoAnalysisEnabled === "boolean") next.earningsAutoAnalysisEnabled = body.earningsAutoAnalysisEnabled;
   if (typeof body.tdnetDisclosureEnabled === "boolean") next.tdnetDisclosureEnabled = body.tdnetDisclosureEnabled;
   if (body.tdnetDisclosureLookbackDays !== undefined) next.tdnetDisclosureLookbackDays = body.tdnetDisclosureLookbackDays;
   if (typeof body.tdnetDisclosureUseLmStudio === "boolean") next.tdnetDisclosureUseLmStudio = body.tdnetDisclosureUseLmStudio;
@@ -16377,6 +16627,7 @@ function publicSettings(settings) {
     dailyDiscoveryHour: settings.dailyDiscoveryHour,
     hourlyRefreshEnabled: settings.hourlyRefreshEnabled,
     marketHoursOnlyRefresh: settings.marketHoursOnlyRefresh,
+    earningsAutoAnalysisEnabled: settings.earningsAutoAnalysisEnabled,
     tdnetDisclosureEnabled: settings.tdnetDisclosureEnabled,
     tdnetDisclosureLookbackDays: settings.tdnetDisclosureLookbackDays,
     tdnetDisclosureUseLmStudio: settings.tdnetDisclosureUseLmStudio,
