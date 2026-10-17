@@ -6,7 +6,7 @@ RUN apk add --no-cache poppler-utils
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-fund --no-audit
-COPY server.mjs refresh-control.mjs surge-forecast.mjs edinet-financials.mjs edinet-documents.mjs earnings-analysis.mjs portfolio-insights.mjs ./
+COPY server.mjs refresh-control.mjs surge-forecast.mjs edinet-financials.mjs edinet-documents.mjs earnings-analysis.mjs portfolio-insights.mjs asset-debate.mjs ./
 COPY backup.mjs data-store.mjs response-cache.mjs investment-evidence.mjs forecast-history.mjs savings-forecast.mjs ./
 COPY public ./public
 COPY data ./data
