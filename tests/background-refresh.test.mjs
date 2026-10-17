@@ -1811,6 +1811,40 @@ test("price charts show visible purchase and sale markers", () => {
   assert.match(appSource, /過去再検証/);
 });
 
+test("portfolio risk review uses only held Japanese Watchlist stocks and invalidates mixed-market cache", async () => {
+  const snapshot = loadFunction(serverSource, "portfolioHoldingsSnapshot", {
+    readWatchlist: async () => [
+      { symbol: "9005.T", name: "東急", quantity: 100 },
+      { symbol: "7201.T", name: "日産", quantity: 50 },
+    ],
+    readAnalysisCache: async () => ({ analyses: [
+      { symbol: "9005.T", price: { current: 1800, series: [{ date: "2026-10-10", close: 1800 }], dividendPerShareAnnual: 60 }, financials: { overseasSalesRatio: 20 } },
+      { symbol: "7201.T", price: { current: null } },
+    ] }),
+    readCryptoAnalysisCache: async () => ({ usdJpy: { current: 150, series: [{ date: "2026-10-10", close: 150 }] } }),
+    positionMetrics: (stock) => ({ quantity: stock.quantity }),
+    stockSector: () => "運輸",
+    annualDividendPerShare: (price) => price.dividendPerShareAnnual,
+    numberOrNull: (value) => Number.isFinite(value) ? value : null,
+    uniqueText: (values) => [...new Set(values.filter(Boolean))],
+  });
+  const data = await snapshot();
+  assert.deepEqual(Array.from(data.holdings, (item) => item.symbol), ["9005.T"]);
+  assert.ok(data.holdings.every((item) => item.market === "jp"));
+  assert.deepEqual(Array.from(data.unpricedSymbols), ["7201.T"]);
+  assert.equal(data.usdJpyRate, 150);
+  assert.doesNotMatch(serverSource.slice(serverSource.indexOf("async function portfolioHoldingsSnapshot()"), serverSource.indexOf("async function generatePortfolioReview(")), /readUsWatchlist|readUsAnalysisCache/);
+
+  const readCache = loadFunction(serverSource, "readPortfolioReviewCache", {
+    readDataJson: async () => ({ metrics: {} }),
+    PORTFOLIO_REVIEW_CACHE_PATH: "portfolio-review-cache.json",
+  });
+  assert.equal(await readCache(), null);
+  assert.match(indexSource, /日本株Watchlist・リスク分析/);
+  assert.match(indexSource, /米国株は各銘柄の個別分析で確認します/);
+  assert.match(serverSource, /scope: "japan-watchlist"/);
+});
+
 test("embedded price charts use readable price ticks and concise BTC/FX confidence", () => {
   const nicePriceAxis = loadFunction(appSource, "nicePriceAxis", {
     clampNumber: (value, min, max) => Math.min(max, Math.max(min, value)),

@@ -15518,7 +15518,10 @@ async function generateAssetDebate(market, symbol) {
 }
 
 async function readPortfolioReviewCache() {
-  try { return await readDataJson(PORTFOLIO_REVIEW_CACHE_PATH); }
+  try {
+    const cached = await readDataJson(PORTFOLIO_REVIEW_CACHE_PATH);
+    return cached?.scope === "japan-watchlist" ? cached : null;
+  }
   catch { return null; }
 }
 
@@ -15560,35 +15563,32 @@ async function refreshDecisionConfidenceCalibration() {
 }
 
 async function portfolioHoldingsSnapshot() {
-  const [jpStocks, usStocks, jpCache, usCache, crypto] = await Promise.all([
-    readWatchlist(), readUsWatchlist(), readAnalysisCache(), readUsAnalysisCache(), readCryptoAnalysisCache(),
+  const [jpStocks, jpCache, crypto] = await Promise.all([
+    readWatchlist(), readAnalysisCache(), readCryptoAnalysisCache(),
   ]);
   const jpBySymbol = new Map(jpCache.analyses.map((item) => [item.symbol, item]));
-  const usBySymbol = new Map(usCache.analyses.map((item) => [item.symbol, item]));
   const holdings = [];
   const unpricedSymbols = [];
-  for (const [market, stocks, bySymbol] of [["jp", jpStocks, jpBySymbol], ["us", usStocks, usBySymbol]]) {
-    for (const stock of stocks) {
-      const analysis = bySymbol.get(stock.symbol);
-      const price = analysis?.price || {};
-      const position = positionMetrics(stock, price);
-      if (!(position.quantity > 0)) continue;
-      if (!(Number(price.current) > 0)) {
-        unpricedSymbols.push(stock.symbol);
-        continue;
-      }
-      holdings.push({
-        symbol: stock.symbol,
-        name: stock.name,
-        market,
-        sector: market === "jp" ? stockSector(stock) : analysis?.fundamentals?.sector || stock.sector || "不明",
-        currentPrice: Number(price.current),
-        quantity: position.quantity,
-        annualDividendPerShare: annualDividendPerShare(price),
-        overseasSalesRatio: market === "jp" ? numberOrNull(analysis?.financials?.overseasSalesRatio) : null,
-        series: Array.isArray(price.series) ? price.series.slice(-900) : [],
-      });
+  for (const stock of jpStocks) {
+    const analysis = jpBySymbol.get(stock.symbol);
+    const price = analysis?.price || {};
+    const position = positionMetrics(stock, price);
+    if (!(position.quantity > 0)) continue;
+    if (!(Number(price.current) > 0)) {
+      unpricedSymbols.push(stock.symbol);
+      continue;
     }
+    holdings.push({
+      symbol: stock.symbol,
+      name: stock.name,
+      market: "jp",
+      sector: stockSector(stock),
+      currentPrice: Number(price.current),
+      quantity: position.quantity,
+      annualDividendPerShare: annualDividendPerShare(price),
+      overseasSalesRatio: numberOrNull(analysis?.financials?.overseasSalesRatio),
+      series: Array.isArray(price.series) ? price.series.slice(-900) : [],
+    });
   }
   return {
     holdings,
@@ -15613,6 +15613,7 @@ async function generatePortfolioReview(input = {}) {
       : []),
   ]).slice(0, 40);
   const result = {
+    scope: "japan-watchlist",
     generatedAt: new Date().toISOString(),
     metrics,
     debate: null,
@@ -15624,7 +15625,7 @@ async function generatePortfolioReview(input = {}) {
       const model = await getLmStudioModel();
       const facts = JSON.stringify(metrics).slice(0, 30000);
       const bull = await callStructuredLm(model, [
-        "Role: bullish portfolio analyst. Use scenario results and concentration metrics to explain resilience or opportunities from diversification, dividends, and supported sector links. Separate observations from assumptions; invent no business exposure. Historical price/FX correlation is not causal, and allocation scores are not return forecasts.",
+        "Role: bullish Japanese portfolio analyst. Analyze only the supplied Japanese Watchlist holdings; U.S. stocks are intentionally excluded from this portfolio review. Use scenario results and concentration metrics to explain resilience or opportunities from diversification, dividends, and supported sector links. Separate observations from assumptions; invent no business exposure. Historical price/FX correlation is not causal, and allocation scores are not return forecasts.",
         "Portfolio metrics: " + facts,
         "Return strict JSON only; write text in natural Japanese: {\"thesis\":\"日本語\",\"positives\":[\"日本語\"],\"risks\":[\"日本語\"]}",
       ].join("\n"), { maxTokens: 1800 });
