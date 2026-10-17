@@ -1,6 +1,7 @@
 import http from "node:http";
-import { readFile, mkdir, stat, mkdtemp, rm, tmpdir, writeFile } from "node:fs/promises";
+import { readFile, mkdir, stat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzip, inflateRawSync } from "node:zlib";
