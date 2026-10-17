@@ -2474,7 +2474,8 @@ test("discovery separates PE candidates, stock candidates, and sector evidence i
   assert.match(appSource, /function renderSurgeForecastCharts/);
   assert.match(dockerfileSource, /COPY package\.json package-lock\.json \.\//);
   assert.match(dockerfileSource, /RUN npm ci --omit=dev --ignore-scripts/);
-  assert.match(dockerfileSource, /COPY server\.mjs refresh-control\.mjs surge-forecast\.mjs edinet-financials\.mjs edinet-documents\.mjs \.\//);
+  assert.match(dockerfileSource, /RUN apk add --no-cache poppler-utils/);
+  assert.match(dockerfileSource, /COPY server\.mjs refresh-control\.mjs surge-forecast\.mjs edinet-financials\.mjs edinet-documents\.mjs earnings-analysis\.mjs portfolio-insights\.mjs \.\//);
   assert.match(dockerignoreSource, /data\/surge-forecast\.json/);
   assert.match(appSource, /function peCandidateReportsHtml/);
   assert.match(appSource, /candidateButtons\("\[data-add-suggestion\]"\)/);

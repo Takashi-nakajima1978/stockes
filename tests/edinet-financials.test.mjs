@@ -136,10 +136,17 @@ test("filing text remains bounded source data and external entities or malformed
   assert.throws(() => parseEdinetXbrl("<x><unclosed></x>"));
 });
 
+test("multimodal review can re-extract a longer narrative excerpt without changing normal cache size", () => {
+  const longText = "事業リスクの変化。".repeat(900);
+  const source = xml(context("risk", "2025-04-01", "2026-03-31") + fact("BusinessRisksTextBlock", "risk", longText, ""));
+  assert.equal(parseEdinetXbrl(source, document, "risk.xbrl").narratives[0].text.length, 1500);
+  assert.equal(parseEdinetXbrl(source, document, "risk.xbrl", { narrativeLimit: 8000 }).narratives[0].text.length, 8000);
+});
+
 const doc = (id, type, end, submit, extra = {}) => ({ docID: id, edinetCode: "E00001", secCode: "90050", docTypeCode: type, periodEnd: end, submitDateTime: submit, xbrlFlag: "1", withdrawalStatus: "0", disclosureStatus: "0", legalStatus: "1", ...extra });
-test("document selection includes interim and correction without promoting late corrections of older years", () => {
-  const docs = [doc("S100OLD1", "120", "2025-03-31", "2025-06-20"), doc("S100NEW1", "120", "2026-03-31", "2026-06-20"), doc("S100COR1", "130", "", "2026-08-01", { parentDocID: "S100OLD1" }), doc("S100HAL1", "160", "2027-03-31", "2026-11-10")];
-  assert.deepEqual(selectEdinetDocuments(docs, ["9005.T"]).get("9005.T").map(d => d.docID), ["S100NEW1", "S100HAL1", "S100COR1"]);
+test("document selection includes adjacent interim periods and corrections without promoting old filings", () => {
+  const docs = [doc("S100OLD1", "120", "2025-03-31", "2025-06-20"), doc("S100NEW1", "120", "2026-03-31", "2026-06-20"), doc("S100COR1", "130", "", "2026-08-01", { parentDocID: "S100OLD1" }), doc("S100HAL0", "160", "2025-09-30", "2025-11-10"), doc("S100HAL1", "160", "2026-09-30", "2026-11-10")];
+  assert.deepEqual(selectEdinetDocuments(docs, ["9005.T"]).get("9005.T").map(d => d.docID), ["S100NEW1", "S100HAL1", "S100HAL0", "S100COR1"]);
   assert.equal(isFinancialEdinetDocument({ ...docs[1], withdrawalStatus: "2" }), false);
   assert.equal(isFinancialEdinetDocument({ ...docs[1], disclosureStatus: "1" }), false);
   assert.equal(isFinancialEdinetDocument({ ...docs[1], xbrlFlag: "0" }), false);

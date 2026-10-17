@@ -43,6 +43,10 @@ const state = {
   stocksLoaded: false,
   stockLoadError: "",
   analyses: {},
+  earningsReviews: {},
+  earningsReviewLoaded: new Set(),
+  earningsReviewLoading: new Set(),
+  earningsReviewPending: new Set(),
   usStocks: [],
   usAnalyses: {},
   usSummary: null,
@@ -77,6 +81,13 @@ const state = {
   usSelected: null,
   view: preferredView(),
   performanceMarket: "jp",
+  portfolioReview: null,
+  portfolioReflection: null,
+  portfolioReflections: {},
+  portfolioReflectionMonths: 3,
+  portfolioInsightsLoaded: false,
+  portfolioReviewPending: false,
+  portfolioReflectionPending: false,
   ideaView: "candidates",
   cryptoView: "btc",
   jpUnheldExpanded: false,
@@ -172,6 +183,16 @@ const els = {
   performanceChartTooltip: document.getElementById("performanceChartTooltip"),
   performanceChartPanel: document.getElementById("performanceChartPanel"),
   performanceEmpty: document.getElementById("performanceEmpty"),
+  portfolioReviewForm: document.getElementById("portfolioReviewForm"),
+  portfolioFxTarget: document.getElementById("portfolioFxTarget"),
+  portfolioEquityShock: document.getElementById("portfolioEquityShock"),
+  portfolioCashAmount: document.getElementById("portfolioCashAmount"),
+  portfolioReviewButton: document.getElementById("portfolioReviewButton"),
+  portfolioReviewStatus: document.getElementById("portfolioReviewStatus"),
+  portfolioReviewOutput: document.getElementById("portfolioReviewOutput"),
+  portfolioReflectionButton: document.getElementById("portfolioReflectionButton"),
+  portfolioReflectionOutput: document.getElementById("portfolioReflectionOutput"),
+  portfolioReflectionTabs: [...document.querySelectorAll("[data-reflection-months]")],
   savingsCreateForm: document.getElementById("savingsCreateForm"),
   savingsFormStatus: document.getElementById("savingsFormStatus"),
   savingsPlans: document.getElementById("savingsPlans"),
@@ -1243,7 +1264,10 @@ function ensureViewData(view) {
     });
   }
   if (view === "performance") {
-    return Promise.all([ensureViewData("stocks"), ensureViewData("us")]).then(() => renderPerformance());
+    return Promise.all([ensureViewData("stocks"), ensureViewData("us")]).then(async () => {
+      await loadPortfolioInsightCache();
+      renderPerformance();
+    });
   }
   if (view === "crypto") return ensureDataSection("crypto", () => loadCrypto());
   if (view === "ideas") return ensureDataSection("ideas", () => loadDiscoveryCache());
@@ -2081,6 +2105,155 @@ function renderPerformance() {
     endDate: timeline.endDate,
     includeZero: true,
   });
+  renderPortfolioInsights();
+}
+
+function renderPortfolioInsights() {
+  if (!els.portfolioReviewOutput || !els.portfolioReflectionOutput) return;
+  const pctText = (value) => Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(1)}%` : "未算出";
+  const review = state.portfolioReview;
+  const metrics = review?.metrics;
+  if (!metrics) {
+    els.portfolioReviewStatus.textContent = state.portfolioReviewPending ? "分析中" : "未分析";
+    els.portfolioReviewOutput.innerHTML = state.portfolioReviewPending
+      ? "<p>保有株の価格履歴と相関を計算しています。</p>"
+      : "<p>保有株の価格履歴を読み込み後、分析できます。</p>";
+  } else {
+    const stressRows = (metrics.stress?.items || []).slice(0, 8).map((item) => `
+      <tr><td>${escapeHtml(item.name)} <small>${escapeHtml(item.symbol)}</small></td><td>${pctText(item.scenarioImpactPct)}${item.fxImpactPct === null ? "（為替未推定）" : ""}</td><td>${yen(item.scenarioChangeYen)}</td><td>${Number.isFinite(item.weightPct) ? `${item.weightPct.toFixed(1)}%` : "-"}</td></tr>
+    `).join("");
+    const allocations = (metrics.rebalancing?.candidates || []).slice(0, 8).map((item) => {
+      const allocation = metrics.rebalancing.items?.find((candidate) => candidate.symbol === item.symbol);
+      const parts = Object.entries(item.scoreBreakdown || {}).map(([key, value]) => `${key} ${value}`).join(" / ");
+      return `<li><strong>${escapeHtml(item.name)}</strong> ${escapeHtml(item.symbol)} · 優先度 ${item.score}/100${allocation ? ` · 配分目安 ${yen(allocation.amount)}` : " · 今回は配分なし"}<small>${escapeHtml(parts)}${Number.isFinite(item.annualYieldPct) ? ` · 利回り ${item.annualYieldPct.toFixed(1)}%` : " · 配当未確認"}${Number.isFinite(item.chartPosition52wPct) ? ` · 52週位置 ${item.chartPosition52wPct.toFixed(0)}%` : ""}</small></li>`;
+    }).join("");
+    const pairLabels = new Map((metrics.stress?.items || []).map((item) => [item.symbol, item.name]));
+    const pairs = (metrics.correlation?.topPairs || []).slice(0, 6).map((pair) => `<li>${escapeHtml(pairLabels.get(pair.left) || pair.left)} × ${escapeHtml(pairLabels.get(pair.right) || pair.right)} · 相関 ${pair.correlation.toFixed(2)} (${pair.observations}週)</li>`).join("");
+    const sectors = (metrics.concentration?.sectors || []).slice(0, 6).map((item) => `<li>${escapeHtml(item.sector)} · ${item.weightPct.toFixed(1)}%</li>`).join("");
+    const excludedSymbols = metrics.correlation?.excludedSymbols || [];
+    const debate = review.debate ? `
+      <div class="portfolio-debate-grid">
+        <section><h5>Bull / 強気</h5><p>${escapeHtml(review.debate.bull.thesis)}</p><ul>${review.debate.bull.positives.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>
+        <section><h5>Bear / 弱気</h5><p>${escapeHtml(review.debate.bear.thesis)}</p><ul>${review.debate.bear.concerns.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>
+        <section class="portfolio-judge"><h5>Judge / 審判</h5><strong>${escapeHtml(review.debate.judge.conclusion)}</strong><p>${escapeHtml(review.debate.judge.rationale)}</p><ul>${review.debate.judge.priorities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>
+      </div>` : "";
+    const warnings = [...(review.warnings || []), ...(metrics.unpricedSymbols?.length ? [`価格未取得: ${metrics.unpricedSymbols.join("、")}`] : [])];
+    els.portfolioReviewStatus.textContent = `${metrics.holdingsCount}銘柄 · ${review.aiStatus || "定量分析"}`;
+    els.portfolioReviewOutput.innerHTML = `
+      <div class="portfolio-insight-stats">
+        <div><span>対象評価額</span><strong>${yen(metrics.totalValueYen)}</strong></div>
+        <div><span>シナリオ変化額</span><strong class="${metrics.stress.estimatedChangeYen >= 0 ? "metric-pos" : "metric-neg"}">${metrics.stress.estimatedChangeYen >= 0 ? "+" : ""}${yen(metrics.stress.estimatedChangeYen)}</strong></div>
+        <div><span>為替影響のカバー率</span><strong>${metrics.stress.coveragePct.toFixed(1)}%</strong></div>
+        <div><span>週次データ</span><strong>${metrics.correlation.observations}週</strong></div>
+        <div><span>年率変動率</span><strong>${pctText(metrics.correlation.annualizedVolatilityPct)}</strong></div>
+        <div><span>過去最大下落</span><strong>${pctText(metrics.correlation.maxDrawdownPct)}</strong></div>
+        <div><span>95%週次損失目安</span><strong>${pctText(metrics.correlation.historicalVaR95Pct)}</strong></div>
+        <div><span>95%尾部平均</span><strong>${pctText(metrics.correlation.historicalExpectedShortfall95Pct)}</strong></div>
+      </div>
+      <p class="portfolio-scenario-note">USD/JPY ${Number.isFinite(metrics.currentUsdJpy) ? metrics.currentUsdJpy.toFixed(2) : "未取得"} → ${metrics.scenario.usdJpyTarget.toFixed(2)} (${pctText(metrics.scenario.fxMovePct)}) · 株価ショック ${pctText(metrics.scenario.equityShockPct)} · 為替影響対象 ${yen(metrics.stress.coverageValueYen)} / ${yen(metrics.totalValueYen)}</p>
+      <h4>銘柄別の参考影響</h4>
+      <div class="table-wrap"><table class="watchlist-table"><thead><tr><th>銘柄</th><th>想定変化率</th><th>損益影響</th><th>構成比</th></tr></thead><tbody>${stressRows || "<tr><td colspan='4'>価格データが不足しています</td></tr>"}</tbody></table></div>
+      <div class="portfolio-insight-columns"><section><h4>連動の強い組み合わせ</h4><ul>${pairs || "<li>相関を計算できる価格履歴が不足</li>"}</ul></section><section><h4>業種構成</h4><ul>${sectors || "<li>保有データなし</li>"}</ul></section></div>
+      <h4>追加資金 ${yen(metrics.rebalancing.cashYen)} の配分候補</h4><ol>${allocations || "<li>現在保有する候補がありません</li>"}</ol>
+      <p class="portfolio-method-note">配分後の未配分額: ${yen(metrics.rebalancing.unallocatedYen)}${excludedSymbols.length ? ` · 相関・リスク統計の対象外（週次履歴不足）: ${excludedSymbols.map(escapeHtml).join("、")}` : ""}</p>
+      <p class="portfolio-method-note">${escapeHtml(metrics.rebalancing.method)} ${escapeHtml(metrics.stress.caveat)}</p>
+      ${debate}${warnings.length ? `<ul class="portfolio-warnings">${warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+      <p class="portfolio-method-note">${metrics.limitations.map(escapeHtml).join(" ")}</p>
+    `;
+  }
+  const reflection = state.portfolioReflection;
+  if (!reflection) {
+    els.portfolioReflectionOutput.innerHTML = state.portfolioReflectionPending
+      ? "<p>保存済み予測を実際の価格と照合しています。</p>"
+      : "<p>評価済みの予測がありません。予測の目標日を過ぎ、実績価格が保存されると比較できます。</p>";
+  } else {
+    const overall = reflection.overall || {};
+    const patterns = (reflection.ai?.patterns || []).map((item) => `<li><strong>${escapeHtml(item.pattern)}</strong> · ${escapeHtml(item.evidence)} (${item.sampleCount}件・信頼度${escapeHtml(item.confidence)})</li>`).join("");
+    const actionStats = (reflection.actions || []).map((item) => `<li>${escapeHtml(item.key)} · ${item.evaluated}件 · 株価方向一致 ${Number.isFinite(item.directionAccuracyPct) ? `${item.directionAccuracyPct.toFixed(1)}%` : "-"}${Number.isFinite(item.recommendationHitRatePct) ? ` · 判断一致 ${item.recommendationHitRatePct.toFixed(1)}% (${item.recommendationEvaluated}件)` : ""} · 平均実績 ${Number.isFinite(item.meanRealizedReturnPct) ? pctText(item.meanRealizedReturnPct) : "-"}</li>`).join("");
+    const rules = reflection.calibration?.rules || [];
+    const ruleRows = rules.map((item) => `<li>${escapeHtml(item.market === "jp" ? "日本株" : "米国株")} / ${escapeHtml(item.sector)} / ${escapeHtml(item.action)} · 信頼度 -${item.confidencePenalty}点 · 学習${item.training.evaluated}件 / 検証${item.validation.evaluated}件</li>`).join("");
+    els.portfolioReflectionOutput.innerHTML = `
+      <p class="portfolio-reflection-status">${escapeHtml(reflection.aiStatus || "定量比較")} · ${reflection.periodMonths}か月 · ${reflection.asOf ? new Date(reflection.asOf).toLocaleString("ja-JP") : ""}</p>
+      <div class="portfolio-insight-stats">
+        <div><span>独立して評価済み</span><strong>${overall.evaluated || 0}件</strong></div>
+        <div><span>予測平均誤差</span><strong>${pctText(overall.meanAbsoluteErrorPct)}</strong></div>
+        <div><span>現在値基準の誤差</span><strong>${pctText(overall.baselineErrorPct)}</strong></div>
+        <div><span>方向一致率</span><strong>${pctText(overall.directionAccuracyPct)}</strong></div>
+        <div><span>予測幅の実績包含率</span><strong>${pctText(overall.intervalCoveragePct)}</strong></div>
+        <div><span>実績平均リターン</span><strong>${pctText(overall.meanRealizedReturnPct)}</strong></div>
+      </div>
+      ${reflection.ai?.summary ? `<p>${escapeHtml(reflection.ai.summary)}</p>` : `<p>${escapeHtml(reflection.note || "")}</p>`}
+      ${patterns ? `<h4>確認された傾向・仮説</h4><ul>${patterns}</ul>` : ""}
+      ${actionStats ? `<h4>判断別の実績</h4><ul>${actionStats}</ul>` : ""}
+      ${reflection.ai?.mistakes?.length ? `<h4>誤り方</h4><ul>${reflection.ai.mistakes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+      ${reflection.ai?.nextChecks?.length ? `<h4>次回からの確認点</h4><ul>${reflection.ai.nextChecks.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+      <p class="portfolio-method-note">${escapeHtml(reflection.calibrationNote || "")}</p>
+      ${ruleRows ? `<h4>検証済みの自動補正</h4><ul>${ruleRows}</ul>` : ""}
+      ${reflection.warning ? `<p class="portfolio-warnings">${escapeHtml(reflection.warning)}</p>` : ""}
+    `;
+  }
+  if (els.portfolioReviewButton) {
+    els.portfolioReviewButton.disabled = state.portfolioReviewPending;
+    els.portfolioReviewButton.textContent = state.portfolioReviewPending ? "分析中..." : "ストレス・配分を分析";
+  }
+  if (els.portfolioReflectionButton) {
+    els.portfolioReflectionButton.disabled = state.portfolioReflectionPending;
+    els.portfolioReflectionButton.textContent = state.portfolioReflectionPending ? "照合中..." : "実績を照合して反省会";
+  }
+  els.portfolioReflectionTabs.forEach((button) => button.setAttribute("aria-pressed", String(Number(button.dataset.reflectionMonths) === state.portfolioReflectionMonths)));
+}
+
+async function loadPortfolioInsightCache() {
+  if (state.portfolioInsightsLoaded) return;
+  try {
+    const [review, reflection3, reflection6] = await Promise.all([
+      request("/api/portfolio-review"),
+      request("/api/portfolio-reflection?months=3"),
+      request("/api/portfolio-reflection?months=6"),
+    ]);
+    state.portfolioReview = review.result || null;
+    state.portfolioReflections = { 3: reflection3.result || null, 6: reflection6.result || null };
+    state.portfolioReflection = state.portfolioReflections[state.portfolioReflectionMonths];
+  } catch {
+    // The quantitative portfolio screen remains usable if the analysis API is unavailable.
+  } finally {
+    state.portfolioInsightsLoaded = true;
+    if (state.view === "performance") renderPerformance();
+  }
+}
+
+async function submitPortfolioReview(event) {
+  event.preventDefault();
+  state.portfolioReviewPending = true;
+  renderPortfolioInsights();
+  try {
+    const payload = await request("/api/portfolio-review", {
+      method: "POST",
+      body: JSON.stringify({
+        usdJpyTarget: Number(els.portfolioFxTarget.value),
+        equityShockPct: Number(els.portfolioEquityShock.value),
+        additionalCashYen: Number(els.portfolioCashAmount.value),
+      }),
+    });
+    state.portfolioReview = payload.result || null;
+    toast("相関・ストレス・配分候補を更新しました。");
+  } catch (error) { toast(error.message); }
+  finally { state.portfolioReviewPending = false; renderPortfolioInsights(); }
+}
+
+async function runPortfolioReflectionReview() {
+  state.portfolioReflectionPending = true;
+  renderPortfolioInsights();
+  try {
+    const payload = await request("/api/portfolio-reflection", {
+      method: "POST",
+      body: JSON.stringify({ months: state.portfolioReflectionMonths }),
+    });
+    state.portfolioReflection = payload.result || null;
+    state.portfolioReflections[state.portfolioReflectionMonths] = state.portfolioReflection;
+    toast("AI判断と実際の価格推移を照合しました。");
+  } catch (error) { toast(error.message); }
+  finally { state.portfolioReflectionPending = false; renderPortfolioInsights(); }
 }
 
 function renderUsTable() {
@@ -2243,7 +2416,17 @@ function renderUsDetail() {
     </section>
   `;
   attachUsPositionForm(stock.symbol);
-  renderForecastReview(els.usDetail.querySelector("[data-us-forecast-review]"), forecastReview, { market: "us", symbol: stock.symbol, forecast, formatter: usd });
+  renderForecastReview(els.usDetail.querySelector("[data-us-forecast-review]"), forecastReview, {
+    market: "us", symbol: stock.symbol, forecast, formatter: usd,
+    context: {
+      action: ({ HOLD: "HOLD", EXIT_WATCH: "SELL", REVIEW: "WATCH" })[analysis?.ai?.stance] || "",
+      confidence: analysis?.ai?.confidence,
+      sector: analysis?.fundamentals?.sector || "",
+      trend3mPct: analysis?.price?.return3m,
+      volatilityPct: analysis?.price?.volatility1yPct,
+      priceRegime: analysis?.price?.trend3y || "",
+    },
+  });
   renderEmbeddedPriceChart(els.usDetail, price.series || [], usd, chartTradeMarkers(stock), price, forecast);
 }
 
@@ -3084,15 +3267,124 @@ function progressWithPrevious(message, previousText = "") {
   return `${message} / ${previous}`;
 }
 
+async function loadEarningsReview(symbol) {
+  if (state.earningsReviewLoaded.has(symbol) || state.earningsReviewLoading.has(symbol)) return;
+  state.earningsReviewLoading.add(symbol);
+  try {
+    const payload = await request(`/api/earnings-debate?symbol=${encodeURIComponent(symbol)}`);
+    if (payload.result) state.earningsReviews[symbol] = payload.result;
+  } catch {
+    // The panel remains usable if an older server does not expose the saved review yet.
+  } finally {
+    state.earningsReviewLoading.delete(symbol);
+    state.earningsReviewLoaded.add(symbol);
+    if (state.selected === symbol && state.view === "analysis") renderSelection();
+  }
+}
+
+function earningsListHtml(items = []) {
+  return (items || []).map((item) => {
+    const text = typeof item === "string"
+      ? item
+      : [item.topic, item.detail, item.direction, item.before && `前: ${item.before}`, item.after && `今回: ${item.after}`, item.segment, item.value && `${item.value}${item.unit || ""}`, item.period, item.evidence && `根拠: ${item.evidence}`, item.impact].filter(Boolean).join(" / ");
+    return text ? `<li>${escapeHtml(text)}</li>` : "";
+  }).join("");
+}
+
+function earningsDebatePanelHtml(stock) {
+  const review = state.earningsReviews[stock.symbol];
+  const judge = review?.debate?.judge;
+  const running = state.earningsReviewPending.has(stock.symbol);
+  const link = (source, label) => source?.url
+    ? `<a href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}${source.periodEnd ? ` (${escapeHtml(source.periodEnd)})` : ""}</a>`
+    : "";
+  const riskChanges = review ? `
+    <div class="earnings-review-grid risk-change-grid">
+      <section><h5>新たなリスク</h5><ul>${earningsListHtml(review.narrativeComparison?.newlyAddedRisks) || "<li>明確な追加項目なし / 判定不能</li>"}</ul></section>
+      <section><h5>軽減・削除されたリスク</h5><ul>${earningsListHtml(review.narrativeComparison?.removedOrReducedRisks) || "<li>明確な変化なし / 判定不能</li>"}</ul></section>
+      <section><h5>表現の変化</h5><ul>${earningsListHtml(review.narrativeComparison?.wordingChanges) || "<li>明確な言い回しの変化なし / 判定不能</li>"}</ul></section>
+    </div>
+    <p>${escapeHtml(review.narrativeComparison?.summary || "")}</p>
+    <div class="earnings-review-grid">
+      <section><h5>セグメント・成長要因</h5><ul>${earningsListHtml(review.vision?.segmentDrivers) || "<li>資料から確認できません</li>"}</ul></section>
+      <section><h5>資料から抽出した数値</h5><ul>${earningsListHtml(review.vision?.extractedFigures) || "<li>確認できる数値なし</li>"}</ul></section>
+    </div>
+    <div class="earnings-debate-roles">
+      <section><h5>Bull / 強気</h5><p>${escapeHtml(review.debate?.bull?.thesis || "")}</p><ul>${earningsListHtml(review.debate?.bull?.positives)}</ul></section>
+      <section><h5>Bear / 弱気</h5><p>${escapeHtml(review.debate?.bear?.thesis || "")}</p><ul>${earningsListHtml(review.debate?.bear?.negatives)}</ul></section>
+    </div>
+    <section class="earnings-judge">
+      <div><h5>Judge / 審判</h5><strong>${escapeHtml(judge?.action || "判断保留")}${Number.isFinite(judge?.score) ? ` · 根拠充足度 ${judge.score}/100` : ""}</strong></div>
+      <p>${escapeHtml(judge?.thesis || "")}</p>
+      <ul>${earningsListHtml(judge?.bullCase)}${earningsListHtml(judge?.bearCase)}${earningsListHtml(judge?.keyChecks)}</ul>
+      <p>${escapeHtml(judge?.confidence || "")}${judge?.caveat ? ` / ${escapeHtml(judge.caveat)}` : ""}</p>
+    </section>
+    <div class="earnings-sources">
+      ${link(review.sources?.current, "今回のEDINET書類")}
+      ${link(review.sources?.previous, "前回のEDINET書類")}
+      ${review.sources?.presentation?.url ? `<a href="${escapeAttr(review.sources.presentation.url)}" target="_blank" rel="noreferrer">決算説明資料 (${escapeHtml(review.sources.presentation.date || "")})</a>` : ""}
+    </div>
+    <p class="earnings-note">${escapeHtml(review.vision?.note || "")} ${(review.limitations || []).map(escapeHtml).join(" ")}</p>
+  ` : `<p>EDINETの前回期・今回期と、保存済みの決算説明資料を確認して多角分析します。</p>`;
+  return `
+    <section class="decision-card earnings-debate-card">
+      <div class="earnings-debate-heading">
+        <h4>決算資料・多角分析</h4>
+        <button type="button" class="secondary" data-earnings-debate="${escapeAttr(stock.symbol)}" ${running ? "disabled" : ""}>${running ? "分析中..." : "決算資料を多角分析"}</button>
+      </div>
+      ${riskChanges}
+      ${review?.vision?.pagesAnalyzed?.length ? `<p class="earnings-note">確認ページ: ${review.vision.pagesAnalyzed.map(escapeHtml).join("、")}</p>` : ""}
+      ${review?.vision?.uncertainties?.length ? `<ul>${earningsListHtml(review.vision.uncertainties)}</ul>` : ""}
+      ${review ? "" : "<p class='earnings-note'>EDINET APIキーとLM Studioの設定が必要です。分析は手動実行で、資料PDFは処理後に保存しません。</p>"}
+    </section>
+  `;
+}
+
+function attachEarningsDebateButton(symbol) {
+  const button = els.decisionDetail.querySelector("[data-earnings-debate]");
+  if (button) button.addEventListener("click", () => runEarningsDebate(symbol));
+}
+
+async function runEarningsDebate(symbol) {
+  if (state.earningsReviewPending.has(symbol)) return;
+  state.earningsReviewPending.add(symbol);
+  if (state.selected === symbol) renderSelection();
+  try {
+    const payload = await request("/api/earnings-debate", {
+      method: "POST",
+      body: JSON.stringify({ symbol }),
+    });
+    if (payload.result) state.earningsReviews[symbol] = payload.result;
+    state.earningsReviewLoaded.add(symbol);
+    toast("決算資料の差分とBull / Bear / Judge分析を保存しました。");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    state.earningsReviewPending.delete(symbol);
+    if (state.selected === symbol && state.view === "analysis") renderSelection();
+  }
+}
+
 function renderSelection() {
   const stock = state.stocks.find((item) => item.symbol === state.selected);
   const analysis = stock ? state.analyses[stock.symbol] : null;
+  if (stock) void loadEarningsReview(stock.symbol);
   els.selectedSymbol.innerHTML = stock ? symbolLinkHtml(stock.symbol, "jp") : "未選択";
 
   const price = analysis?.price || {};
   const forecastReview = stock ? cachedComputation(price, `review:${stock.symbol}:${forecastDateKey()}`, () => evaluateDecisionForecast(price.series || [], stock.symbol)) : null;
   const forecast = stock ? cachedComputation(price, `forecast:${stock.symbol}:${forecastDateKey()}`, () => decisionChartForecast(price.series || [], price, stock.symbol, new Date(), forecastReview)) : [];
-  renderForecastReview(els.forecastReview, forecastReview, { market: "jp", symbol: stock?.symbol, forecast, formatter: yen });
+  renderForecastReview(els.forecastReview, forecastReview, {
+    market: "jp", symbol: stock?.symbol, forecast, formatter: yen,
+    context: {
+      action: analysis?.action || "",
+      confidence: analysis?.confidence,
+      sector: stock?.sector || "",
+      trend3mPct: price.return3m,
+      volatilityPct: price.volatility1yPct,
+      priceRegime: price.trend3y || "",
+    },
+  });
   drawChart(price.series || [], stock ? chartTradeMarkers(stock) : [], price, forecast);
   renderChartTiming(price);
 
@@ -3106,8 +3398,10 @@ function renderSelection() {
     els.decisionDetail.innerHTML = `
       ${positionEditor(stock, null, null)}
       <p>${escapeHtml(stock.name)}は未分析です。</p>
+      ${earningsDebatePanelHtml(stock)}
     `;
     attachPositionForm(stock.symbol);
+    attachEarningsDebateButton(stock.symbol);
     els.evidenceList.innerHTML = "<article class=\"evidence-item\"><p>分析を実行すると根拠リンクを保存して表示します。</p></article>";
     return;
   }
@@ -3119,9 +3413,11 @@ function renderSelection() {
     ${chartMessageHtml(price)}
     ${jpAiConfirmationHtml(stock, analysis, position)}
     ${financialInfoHtml(analysis.financials, analysis.price)}
+    ${earningsDebatePanelHtml(stock)}
     ${shareholderInfoHtml(analysis.shareholders)}
   `;
   attachPositionForm(stock.symbol);
+  attachEarningsDebateButton(stock.symbol);
 
   const evidence = analysis.evidence || [];
   const evidenceHtml = evidence.map((item) => `
@@ -3299,7 +3595,7 @@ function renderForecastReview(node, review = null, options = {}) {
     cached = { time: Date.now(), saved: null };
     cached.promise = request("/api/forecast-history", {
       method: "POST",
-      body: JSON.stringify({ market, symbol, version: DECISION_FORECAST_VERSION, forecast }),
+      body: JSON.stringify({ market, symbol, version: DECISION_FORECAST_VERSION, forecast, context: options.context || {} }),
     }).then((saved) => { cached.saved = saved; return saved; });
     if (forecastHistoryRequests.size >= 100) forecastHistoryRequests.delete(forecastHistoryRequests.keys().next().value);
     forecastHistoryRequests.set(key, cached);
@@ -8760,6 +9056,14 @@ els.performanceTabs.forEach((button) => {
     next.focus();
   });
 });
+
+els.portfolioReviewForm?.addEventListener("submit", submitPortfolioReview);
+els.portfolioReflectionButton?.addEventListener("click", runPortfolioReflectionReview);
+els.portfolioReflectionTabs.forEach((button) => button.addEventListener("click", () => {
+  state.portfolioReflectionMonths = Number(button.dataset.reflectionMonths) === 6 ? 6 : 3;
+  state.portfolioReflection = state.portfolioReflections[state.portfolioReflectionMonths] || null;
+  renderPortfolioInsights();
+}));
 
 els.analyzeButton.addEventListener("click", analyze);
 els.sectorEvidenceAnalyzeButton?.addEventListener("click", () => analyze());

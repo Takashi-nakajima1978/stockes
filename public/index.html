@@ -275,6 +275,30 @@
           <p class="performance-assumption">過去3年の週次リターンから4週単位の値動きを再抽出した1,000経路です。線は1年後の中央値に近い一経路、帯は各週の10〜90%参考幅です。損益推移では保有銘柄の同じ週の値動きをまとめ、銘柄間の連動も反映します。予想配当は各経路に加算します。過去の変動を使った参考試算で、上昇確率や将来の利益を示すものではありません。履歴不足の銘柄は価格変動の試算対象外です。</p>
           <p id="performanceEmpty" class="empty-state" hidden></p>
         </section>
+
+        <section class="table-panel portfolio-insights-panel">
+          <div class="panel-title">
+            <h3>ポートフォリオ・リスク分析</h3>
+            <span id="portfolioReviewStatus">未分析</span>
+          </div>
+          <form id="portfolioReviewForm" class="portfolio-scenario-controls">
+            <label><span>想定 USD/JPY</span><input id="portfolioFxTarget" type="number" min="70" max="250" step="0.1" value="140"></label>
+            <label><span>株価ショック</span><select id="portfolioEquityShock"><option value="0">0%</option><option value="-10">-10%</option><option value="-20" selected>-20%</option><option value="-30">-30%</option></select></label>
+            <label><span>追加資金（円）</span><input id="portfolioCashAmount" type="number" min="0" max="100000000" step="10000" value="500000"></label>
+            <button id="portfolioReviewButton" type="submit">ストレス・配分を分析</button>
+          </form>
+          <div id="portfolioReviewOutput" class="portfolio-insights-output"><p>保有株の価格履歴を読み込み後、分析できます。</p></div>
+          <div class="portfolio-reflection-controls">
+            <h4>AI判断の反省会</h4>
+            <div class="segmented-control" role="group" aria-label="実績評価期間">
+              <button type="button" data-reflection-months="3" aria-pressed="true">3か月</button>
+              <button type="button" data-reflection-months="6" aria-pressed="false">6か月</button>
+            </div>
+            <button id="portfolioReflectionButton" type="button" class="secondary">実績を照合して反省会</button>
+            <p>期間内に実績が確定した予測を比較します。同じ銘柄の重複期間は重ねて数えません。</p>
+          </div>
+          <div id="portfolioReflectionOutput" class="portfolio-insights-output"><p>評価済みの予測がありません。</p></div>
+        </section>
       </section>
 
       <section class="view-panel" data-view="stocks">

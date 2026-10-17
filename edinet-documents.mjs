@@ -25,9 +25,11 @@ export function selectEdinetDocuments(documents, symbols) {
     // Select by reporting period first: a late correction of an old year is not the newest result.
     reports.sort((a, b) => b.periodEnd.localeCompare(a.periodEnd) || b.submitDateTime.localeCompare(a.submitDateTime) || b.docTypeCode.localeCompare(a.docTypeCode));
     const annual = reports.find(doc => ["120", "130"].includes(doc.docTypeCode));
-    const interim = reports.find(doc => ["140", "150", "160", "170"].includes(doc.docTypeCode) && (!annual || doc.submitDateTime > annual.submitDateTime));
+    const interims = reports.filter(doc => ["140", "150", "160", "170"].includes(doc.docTypeCode));
+    const interim = interims.find(doc => !annual || doc.submitDateTime > annual.submitDateTime) || interims[0];
+    const previousInterim = interim && interims.find(doc => doc.periodEnd < interim.periodEnd);
     const correction = reports.filter(doc => ["130", "150", "170"].includes(doc.docTypeCode)).sort((a, b) => b.submitDateTime.localeCompare(a.submitDateTime))[0];
-    const selected = [...new Map([annual, interim, correction].filter(Boolean).map(doc => [doc.docID, doc])).values()];
+    const selected = [...new Map([annual, interim, previousInterim, correction].filter(Boolean).map(doc => [doc.docID, doc])).values()];
     if (selected.length) bySymbol.set(symbol, selected);
   }
   return bySymbol;

@@ -42,7 +42,7 @@ const periodKey = row => `${row.entity}|${row.scope}|${row.accountingStandard}|$
 const annual = row => row.days >= 330 && row.days <= 380;
 
 // Resolve periods, dimensions and units from the XML itself, never from context ID spelling.
-export function parseEdinetXbrl(xml, document = {}, file = "") {
+export function parseEdinetXbrl(xml, document = {}, file = "", options = {}) {
   if (Buffer.byteLength(xml, "utf8") > 32 * 1024 * 1024) throw new Error("XBRL本文がサイズ上限を超えています");
   const contexts = new Map();
   const units = new Map();
@@ -151,9 +151,10 @@ export function parseEdinetXbrl(xml, document = {}, file = "") {
     }
     return { ...row, days: Math.round((Date.parse(row.endDate) - Date.parse(row.startDate)) / DAY) + 1, values, sources, docID: document.docID || "", submittedAt: document.submitDateTime || "" };
   }).sort((a, b) => b.endDate.localeCompare(a.endDate) || b.days - a.days).slice(0, 16);
+  const narrativeLimit = Math.max(1500, Math.min(10000, Number(options.narrativeLimit) || 1500));
   const narratives = accepted.filter(f => narrativeNames[f.name]).map(f => ({
     label: narrativeNames[f.name], endDate: f.endDate, scope: f.scope, docID: document.docID || "", concept: f.name,
-    text: text(f.value.replace(/<[^>]*>/g, " ")).slice(0, 1500),
+    text: text(f.value.replace(/<[^>]*>/g, " ")).slice(0, narrativeLimit),
   })).filter(f => f.text).sort((a, b) => b.endDate.localeCompare(a.endDate)).slice(0, 4);
   return { version: EDINET_ANALYSIS_VERSION, document, periods, narratives, warnings: [...new Set(warnings)].slice(0, 12) };
 }

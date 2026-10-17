@@ -43,6 +43,19 @@ test("the first displayed forecast is immutable for the day and survives a servi
   assert.equal(history.instruments["jp:9005.T"][0].predicted, 110);
 });
 
+test("forecast records preserve bounded decision context for later reflection", async (t) => {
+  const { store, service } = await harness(t);
+  await service.record({
+    ...input(),
+    context: { action: "BUY", confidence: 78, sector: "建設", trend3mPct: -12, volatilityPct: 42, priceRegime: "pullback", prompt: "ignored" },
+  }, price());
+  const history = await store.readJson("forecast-history.json");
+  const saved = history.instruments["jp:9005.T"][0].context;
+  assert.deepEqual(saved, {
+    action: "BUY", confidence: 78, sector: "建設", trend3mPct: -12, volatilityPct: 42, priceRegime: "pullback",
+  });
+});
+
 test("concurrent JP and US saves preserve both currencies' records", async (t) => {
   const { store, service } = await harness(t);
   await Promise.all([

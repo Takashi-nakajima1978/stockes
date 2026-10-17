@@ -106,7 +106,26 @@ function snapshot(input, price, now) {
     version, issuedDate: today, issuedAt: now.toISOString(), sourceDate: latest.date,
     originPrice: first.value, targetDate: terminal.date,
     predicted: terminal.value, low: terminal.low, high: terminal.high,
+    context: sanitizeForecastContext(input.context),
   };
+}
+
+function sanitizeForecastContext(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const action = ["BUY", "HOLD", "SELL", "WATCH"].includes(String(source.action || "").toUpperCase())
+    ? String(source.action).toUpperCase()
+    : "";
+  const sector = String(source.sector || "").replace(/[\u0000-\u001f<>]/g, " ").trim().slice(0, 60);
+  const number = (input, minimum, maximum) => Number.isFinite(input) ? Math.max(minimum, Math.min(maximum, input)) : null;
+  const context = {
+    action,
+    confidence: number(source.confidence, 0, 100),
+    sector,
+    trend3mPct: number(source.trend3mPct, -200, 500),
+    volatilityPct: number(source.volatilityPct, 0, 500),
+    priceRegime: String(source.priceRegime || "").slice(0, 40),
+  };
+  return Object.values(context).some((item) => item !== "" && item !== null) ? context : {};
 }
 
 export function createForecastHistory(store, now = () => new Date()) {
