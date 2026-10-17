@@ -155,8 +155,9 @@ const label = loadFunction("forecastReliabilityText");
 const html = loadFunction("forecastReliabilityHtml", { forecastReliabilityText: label, escapeHtml: (value) => String(value), formatDate: (value) => value });
 
 test("zero outcomes are labeled as accumulating and retrospective tests never masquerade as saved forecasts", () => {
-  const result = html({ evaluated: 6, directionAccuracyPct: 100, medianAbsoluteErrorPct: 2, intervalCoveragePct: 100 }, summarizeForecasts([], "2026-01-14"), input().forecast, (value) => `JPY ${value}`);
-  assert.match(result, /信頼度：蓄積中/);
+  const result = html({ evaluated: 6, directionAccuracyPct: 100, medianAbsoluteErrorPct: 2, intervalCoveragePct: 100 }, { ...summarizeForecasts([], "2026-01-14"), saved: 2, pending: 2, nextTargetDate: "2027-01-14" }, input().forecast, (value) => `JPY ${value}`, "", { compact: true });
+  assert.match(result, /蓄積中/);
+  assert.match(result, /保存予測 2件 \/ 実績比較 0件 \/ 期限待ち 2件・初回照合 2027-01-14/);
   assert.match(result, /当時の保存予測ではありません/);
   assert.match(result, /上記の信頼度には含めません/);
   assert.doesNotMatch(result, /信頼度 100%/);

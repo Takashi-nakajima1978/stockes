@@ -3639,6 +3639,11 @@ function forecastReliabilityHtml(review, saved, forecast, formatter, error = "",
   const percent = (value) => Number.isFinite(value) ? `${value.toFixed(1)}%` : "未評価";
   const reliabilityLabel = error ? "信頼度：照合できません" : saved ? forecastReliabilityText(saved, horizon) : `信頼度：照合中（${horizon}）`;
   const compactReliabilityLabel = reliabilityLabel.replace(/^信頼度[： ]*/, "");
+  const compactStatus = error
+    ? `保存予測を照合できません: ${error}`
+    : saved
+      ? `保存予測 ${saved.saved || 0}件 / 実績比較 ${count}件 / 期限待ち ${saved.pending || 0}件${saved.nextTargetDate ? `・初回照合 ${formatDate(saved.nextTargetDate)}` : ""}${saved.missingActual ? `・実績価格待ち ${saved.missingActual}件` : ""}`
+      : "保存予測を照合中";
   const status = error || (saved
     ? `保存 ${saved.saved}件 / 期限待ち ${saved.pending}件${saved.nextTargetDate ? `・次回 ${formatDate(saved.nextTargetDate)}` : ""}${saved.missingActual ? ` / 実績価格待ち ${saved.missingActual}件` : ""}`
     : "保存した予測を照合中");
@@ -3664,6 +3669,7 @@ function forecastReliabilityHtml(review, saved, forecast, formatter, error = "",
       <div class="forecast-reliability-heading forecast-reliability-heading-compact">
         <div><strong>予測信頼度</strong><span>${escapeHtml(compactReliabilityLabel)}</span></div>
       </div>
+      <p class="forecast-reliability-status-compact">${escapeHtml(compactStatus)}</p>
       <details><summary>信頼度の根拠・比較</summary>
         <p>${escapeHtml(explanation)}</p>${metrics}
         <p class="${error ? "forecast-reliability-error" : ""}">${escapeHtml(status)}</p>
@@ -4880,13 +4886,14 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
     const pad = { top: 22, right: 18, bottom: 28, left: 64 };
     const now = new Date();
     const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString().slice(0, 10);
-    const startDate = forecast.length ? calendarMonthOffset(today, -33) : "";
+    const historyWindowStartDate = forecast.length ? calendarMonthOffset(today, -33) : "";
     const endDate = forecast.length ? calendarMonthOffset(today, 3) : "";
     const fullSeries = cachedComputation(series, `clean:${series.length}:${series.at(-1)?.close}`, () => cleanChartSeries(series));
     const cleanSeries = fullSeries
-      .filter((point) => !forecast.length || (point.date >= startDate && point.date <= today));
+      .filter((point) => !forecast.length || (point.date >= historyWindowStartDate && point.date <= today));
     const current = Number(price.current) > 0 ? Number(price.current) : Number(cleanSeries.at(-1)?.close);
     if (forecast.length && current > 0 && cleanSeries.at(-1)?.date !== today) cleanSeries.push({ date: today, close: current });
+    const chartStartDate = forecast.length ? cleanSeries[0]?.date || today : "";
     state.series = cleanSeries;
     state.points = [];
     state.plot = null;
@@ -4910,7 +4917,7 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
     const span = max - min || 1;
     context.font = "12px system-ui";
     pad.left = Math.max(64, ...axis.ticks.map((tick) => context.measureText(formatter(tick)).width + 18));
-    const startMs = forecast.length ? new Date(`${startDate}T00:00:00Z`).getTime() : 0;
+    const startMs = forecast.length ? new Date(`${chartStartDate}T00:00:00Z`).getTime() : 0;
     const endMs = forecast.length ? new Date(`${endDate}T00:00:00Z`).getTime() : 0;
     const xForDate = (date) => pad.left + (clampNumber((new Date(`${date}T00:00:00Z`).getTime() - startMs) / (endMs - startMs), 0, 1) * (width - pad.left - pad.right));
     const x = (index) => forecast.length
@@ -5031,7 +5038,8 @@ function renderEmbeddedPriceChart(root, series = [], formatter = yen, tradeMarke
     if (forecast.length) {
       context.fillStyle = "#667277";
       context.textAlign = "left";
-      const labels = [startDate, calendarMonthOffset(today, -16), today, calendarMonthOffset(today, 1), endDate].map((date) => {
+      const historyMidpoint = new Date((startMs + new Date(`${today}T00:00:00Z`).getTime()) / 2).toISOString().slice(0, 10);
+      const labels = [chartStartDate, historyMidpoint, today, calendarMonthOffset(today, 1), endDate].map((date) => {
         const parsed = new Date(`${date}T00:00:00Z`);
         const text = `${parsed.getUTCFullYear()}/${parsed.getUTCMonth() + 1}`;
         const size = context.measureText(text).width;

@@ -1839,6 +1839,9 @@ test("embedded price charts use readable price ticks and concise BTC/FX confiden
   const embeddedChartEnd = appSource.indexOf("\nfunction ", embeddedChartStart + 1);
   const embeddedChartSource = appSource.slice(embeddedChartStart, embeddedChartEnd);
   assert.match(embeddedChartSource, /axis\.ticks\.forEach/);
+  assert.match(embeddedChartSource, /const chartStartDate = forecast\.length \? cleanSeries\[0\]\?\.date \|\| today : ""/);
+  assert.match(embeddedChartSource, /new Date\(`\$\{chartStartDate\}T00:00:00Z`\)/);
+  assert.match(embeddedChartSource, /const historyMidpoint = new Date\(/);
   assert.doesNotMatch(embeddedChartSource, /過去2年9か月＋3か月予測/);
   assert.doesNotMatch(embeddedChartSource, /context\.fillText\(formatter\(max\)/);
 });

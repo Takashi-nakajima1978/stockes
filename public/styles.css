@@ -1242,6 +1242,7 @@ tr:hover .drag-handle,
 .forecast-reliability-heading-compact { display: block; }
 .forecast-reliability-heading-compact > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
 .forecast-reliability-heading-compact strong { font-size: 13px; }
+.forecast-reliability-status-compact { flex-basis: 100%; margin: 0; font-size: 11px; }
 .forecast-review p { margin: 8px 0 0; font-size: 12px; overflow-wrap: anywhere; }
 .forecast-review details { margin-top: 8px; }
 .forecast-review summary { cursor: pointer; min-height: 32px; padding: 6px 0; }
