@@ -734,6 +734,29 @@ test("completed earnings batch items invalidate and reload their saved review im
   assert.equal(state.earningsReviewLoaded.has("9005.T"), false);
 });
 
+test("failed earnings items are visible and expose a retry action", () => {
+  const state = { earningsBatchJob: null };
+  const els = {
+    earningsBatchButton: { disabled: false, textContent: "" },
+    earningsBatchStatus: { textContent: "" },
+    earningsBatchErrors: { hidden: true, innerHTML: "" },
+  };
+  const render = loadFunction(appSource, "renderEarningsBatchJob", {
+    state,
+    els,
+    escapeHtml: (value) => String(value).replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+  });
+  render({
+    id: "batch-2", running: false, phase: "完了（一部失敗）", finishedAt: "2026-10-18T00:00:00Z",
+    succeeded: 26, skipped: 0, failed: 15,
+    errors: [{ symbol: "7744.T", message: "JSON出力が途中で終了しました" }],
+  });
+  assert.equal(els.earningsBatchButton.textContent, "失敗銘柄を再分析");
+  assert.equal(els.earningsBatchErrors.hidden, false);
+  assert.match(els.earningsBatchErrors.innerHTML, /7744\.T/);
+  assert.match(els.earningsBatchErrors.innerHTML, /JSON出力が途中で終了しました/);
+});
+
 test("earnings debate panel keeps progress and failure visible in the card", () => {
   const state = {
     earningsReviews: {},
@@ -744,6 +767,7 @@ test("earnings debate panel keeps progress and failure visible in the card", () 
     state,
     escapeHtml: (value) => String(value),
     escapeAttr: (value) => String(value),
+    earningsListHtml: loadFunction(appSource, "earningsListHtml", { escapeHtml: (value) => String(value) }),
   });
   const running = render({ name: "IHI", symbol: "7013.T" });
   assert.match(running, /EDINET資料を確認し、Bull・Bear・Judgeの順に分析しています/);
@@ -754,6 +778,21 @@ test("earnings debate panel keeps progress and failure visible in the card", () 
   const failed = render({ name: "IHI", symbol: "7013.T" });
   assert.match(failed, /role="alert"/);
   assert.match(failed, /分析に失敗しました: LM Studioに接続できません/);
+
+  delete state.earningsReviewErrors["7013.T"];
+  state.earningsReviews["7013.T"] = {
+    narrativeComparison: { summary: "利益率の改善を確認" },
+    debate: {
+      bull: { thesis: "営業利益が伸長" },
+      bear: { thesis: "受注の持続性は要確認" },
+      judge: { action: "判断保留", score: 72, thesis: "次期の受注を確認" },
+    },
+  };
+  const completed = render({ name: "IHI", symbol: "7013.T" });
+  assert.match(completed, /利益率の改善を確認/);
+  assert.match(completed, /営業利益が伸長/);
+  assert.match(completed, /受注の持続性は要確認/);
+  assert.match(completed, /根拠充足度 72\/100/);
 });
 
 test("multi-role model prompts use English instructions and Japanese user-facing output", () => {
@@ -763,6 +802,9 @@ test("multi-role model prompts use English instructions and Japanese user-facing
   assert.match(serverSource, /Role: skeptical equity analyst/);
   assert.match(serverSource, /Role: neutral judge/);
   assert.match(serverSource, /Write all user-facing fields in natural Japanese/);
+  assert.match(serverSource, /function lmJsonSchemaFormat\(name, schema\)/);
+  assert.match(serverSource, /response_format: options\.responseFormat/);
+  assert.match(serverSource, /schema: EARNINGS_BULL_SCHEMA/);
   assert.doesNotMatch(serverSource, /あなたは銘柄分析の強気派です|あなたは厳格な弱気派です|あなたは審判です/);
 });
 

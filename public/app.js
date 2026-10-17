@@ -347,6 +347,7 @@ const els = {
   settingsEarningsAutoStatus: document.getElementById("settingsEarningsAutoStatus"),
   earningsBatchButton: document.getElementById("earningsBatchButton"),
   earningsBatchStatus: document.getElementById("earningsBatchStatus"),
+  earningsBatchErrors: document.getElementById("earningsBatchErrors"),
   settingsFinancialStatus: document.getElementById("settingsFinancialStatus"),
   diagnosticsButton: document.getElementById("diagnosticsButton"),
   disclosureCheckButton: document.getElementById("disclosureCheckButton"),
@@ -6143,7 +6144,11 @@ function renderEarningsBatchJob(job = {}, wasRunning = false) {
   state.earningsBatchJob = job;
   if (els.earningsBatchButton) {
     els.earningsBatchButton.disabled = job.running === true;
-    els.earningsBatchButton.textContent = job.running ? "一括分析中..." : "Watchlist全銘柄を初回分析";
+    els.earningsBatchButton.textContent = job.running
+      ? "一括分析中..."
+      : job.failed > 0 && job.finishedAt
+        ? "失敗銘柄を再分析"
+        : "Watchlist全銘柄を初回分析";
   }
   if (els.earningsBatchStatus) {
     if (job.running) {
@@ -6155,8 +6160,14 @@ function renderEarningsBatchJob(job = {}, wasRunning = false) {
       els.earningsBatchStatus.textContent = job.error || "開始できませんでした";
     } else {
       els.earningsBatchStatus.textContent = `${job.phase} · 分析 ${job.succeeded || 0} / 最新のため省略 ${job.skipped || 0} / 失敗 ${job.failed || 0}`;
-      if (job.errors?.length) els.earningsBatchStatus.title = job.errors.map((item) => `${item.symbol}: ${item.message}`).join("\n");
     }
+  }
+  if (els.earningsBatchErrors) {
+    const errors = Array.isArray(job.errors) ? job.errors : [];
+    els.earningsBatchErrors.hidden = errors.length === 0;
+    els.earningsBatchErrors.innerHTML = errors.length
+      ? `<details><summary>失敗理由を確認（最新${errors.length}件）</summary><ul>${errors.map((item) => `<li><strong>${escapeHtml(item.symbol || "銘柄")}</strong>: ${escapeHtml(item.message || "分析に失敗しました")}</li>`).join("")}</ul></details>`
+      : "";
   }
   if (wasRunning && !job.running) {
     state.earningsReviewLoaded.clear();

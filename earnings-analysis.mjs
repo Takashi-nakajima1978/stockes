@@ -3,6 +3,102 @@ const PERFORMANCE_TERMS = ["セグメント", "売上", "営業利益", "成長"
 export const EARNINGS_AUTO_MONITOR_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 export const EARNINGS_AUTO_MONITOR_RETRY_MS = 24 * 60 * 60 * 1000;
 
+const textListSchema = { type: "array", maxItems: 3, items: { type: "string" } };
+const riskItemSchema = {
+  type: "object",
+  properties: { topic: { type: "string" }, detail: { type: "string" }, evidence: { type: "string" } },
+  required: ["topic", "detail", "evidence"],
+  additionalProperties: false,
+};
+
+export const EARNINGS_REVIEW_SCHEMA = {
+  type: "object",
+  properties: {
+    narrativeComparison: {
+      type: "object",
+      properties: {
+        newlyAddedRisks: { type: "array", maxItems: 3, items: riskItemSchema },
+        removedOrReducedRisks: { type: "array", maxItems: 3, items: riskItemSchema },
+        wordingChanges: {
+          type: "array",
+          maxItems: 3,
+          items: {
+            type: "object",
+            properties: {
+              topic: { type: "string" }, direction: { type: "string" }, before: { type: "string" }, after: { type: "string" }, evidence: { type: "string" },
+            },
+            required: ["topic", "direction", "before", "after", "evidence"],
+            additionalProperties: false,
+          },
+        },
+        summary: { type: "string" },
+      },
+      required: ["newlyAddedRisks", "removedOrReducedRisks", "wordingChanges", "summary"],
+      additionalProperties: false,
+    },
+    vision: {
+      type: "object",
+      properties: {
+        segmentDrivers: {
+          type: "array",
+          maxItems: 3,
+          items: {
+            type: "object",
+            properties: { segment: { type: "string" }, detail: { type: "string" }, evidence: { type: "string" } },
+            required: ["segment", "detail", "evidence"],
+            additionalProperties: false,
+          },
+        },
+        extractedFigures: {
+          type: "array",
+          maxItems: 3,
+          items: {
+            type: "object",
+            properties: { value: { type: "string" }, unit: { type: "string" }, period: { type: "string" }, segment: { type: "string" }, evidence: { type: "string" } },
+            required: ["value", "unit", "period", "segment", "evidence"],
+            additionalProperties: false,
+          },
+        },
+        uncertainties: textListSchema,
+      },
+      required: ["segmentDrivers", "extractedFigures", "uncertainties"],
+      additionalProperties: false,
+    },
+  },
+  required: ["narrativeComparison", "vision"],
+  additionalProperties: false,
+};
+
+export const EARNINGS_BULL_SCHEMA = {
+  type: "object",
+  properties: { thesis: { type: "string" }, positives: textListSchema, challenges: textListSchema, evidence: textListSchema },
+  required: ["thesis", "positives", "challenges", "evidence"],
+  additionalProperties: false,
+};
+
+export const EARNINGS_BEAR_SCHEMA = {
+  type: "object",
+  properties: { thesis: { type: "string" }, negatives: textListSchema, counterpoints: textListSchema, missingEvidence: textListSchema, evidence: textListSchema },
+  required: ["thesis", "negatives", "counterpoints", "missingEvidence", "evidence"],
+  additionalProperties: false,
+};
+
+export const EARNINGS_JUDGE_SCHEMA = {
+  type: "object",
+  properties: {
+    action: { type: "string", enum: ["買い増し検討", "保有継続", "売却検討", "新規購入は見送り", "判断保留"] },
+    score: { type: "integer", minimum: 0, maximum: 100 },
+    thesis: { type: "string" },
+    bullCase: textListSchema,
+    bearCase: textListSchema,
+    keyChecks: textListSchema,
+    confidence: { type: "string" },
+    caveat: { type: "string" },
+  },
+  required: ["action", "score", "thesis", "bullCase", "bearCase", "keyChecks", "confidence", "caveat"],
+  additionalProperties: false,
+};
+
 export function nextEarningsAutoMonitorAt(state = {}) {
   const lastAttemptAt = Date.parse(state.lastAttemptAt || "");
   const lastSuccessAt = Date.parse(state.lastSuccessAt || "");

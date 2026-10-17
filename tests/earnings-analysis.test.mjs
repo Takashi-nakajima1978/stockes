@@ -1,6 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { changedEdinetMaterialSymbols, earningsMaterialFingerprint, isEarningsAutoMonitorDue, newEarningsPresentationSymbols, nextEarningsAutoMonitorAt, normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages, shouldRefreshFinancialSnapshots, staleEarningsAnalysisSymbols } from "../earnings-analysis.mjs";
+import { changedEdinetMaterialSymbols, EARNINGS_BEAR_SCHEMA, EARNINGS_BULL_SCHEMA, EARNINGS_JUDGE_SCHEMA, EARNINGS_REVIEW_SCHEMA, earningsMaterialFingerprint, isEarningsAutoMonitorDue, newEarningsPresentationSymbols, nextEarningsAutoMonitorAt, normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages, shouldRefreshFinancialSnapshots, staleEarningsAnalysisSymbols } from "../earnings-analysis.mjs";
+
+test("earnings debate schemas require bounded structured outputs for every agent", () => {
+  for (const schema of [EARNINGS_BULL_SCHEMA, EARNINGS_BEAR_SCHEMA, EARNINGS_JUDGE_SCHEMA, EARNINGS_REVIEW_SCHEMA]) {
+    assert.equal(schema.type, "object");
+    assert.deepEqual(schema.required, Object.keys(schema.properties));
+    assert.equal(schema.additionalProperties, false);
+  }
+  assert.equal(EARNINGS_BULL_SCHEMA.properties.positives.maxItems, 3);
+  assert.deepEqual(EARNINGS_JUDGE_SCHEMA.properties.action.enum, ["買い増し検討", "保有継続", "売却検討", "新規購入は見送り", "判断保留"]);
+  assert.equal(EARNINGS_REVIEW_SCHEMA.properties.narrativeComparison.properties.newlyAddedRisks.maxItems, 3);
+});
 
 test("compares the newest distinct EDINET reporting periods and prefers the latest correction", () => {
   const reports = [

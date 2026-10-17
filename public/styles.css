@@ -422,6 +422,26 @@ progress {
   justify-content: flex-start;
 }
 
+.earnings-batch-errors {
+  margin-top: 10px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.earnings-batch-errors summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.earnings-batch-errors ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.earnings-batch-errors li + li {
+  margin-top: 5px;
+}
+
 .diagnostics-list {
   display: grid;
   gap: 10px;
