@@ -53,6 +53,9 @@ const state = {
   cacheVersions: { jp: "", us: "", crypto: "" },
   cryptoHolding: null,
   cryptoAnalysis: null,
+  assetDebates: {},
+  assetDebateLoaded: new Set(),
+  assetDebatePending: new Set(),
   savingsPlans: [],
   savingsSeries: {},
   savingsNisaContext: { available: false },
@@ -2330,6 +2333,92 @@ function usPriceDateLabel(priceDate = "") {
   return `<small class="us-price-as-of" title="価格データ基準日 ${date[1]}/${date[2]}/${date[3]}">基準 ${date[2]}/${date[3]}</small>`;
 }
 
+function assetDebateKey(market, symbol) {
+  return `${market}:${symbol}`;
+}
+
+function assetDebatePanelHtml(market, symbol, name, basisHint) {
+  const key = assetDebateKey(market, symbol);
+  const result = state.assetDebates[key];
+  const debate = result?.debate;
+  const pending = state.assetDebatePending.has(key);
+  const items = (values = []) => (values || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const date = result?.generatedAt ? new Date(result.generatedAt).toLocaleString("ja-JP") : "";
+  const sourceDate = result?.sourceGeneratedAt ? new Date(result.sourceGeneratedAt).toLocaleString("ja-JP") : "日時不明";
+  const score = Number.isFinite(result?.debate?.judge?.score) ? ` · 根拠充足度 ${result.debate.judge.score}/100` : "";
+  return `
+    <section class="decision-card earnings-debate-card asset-debate-card">
+      <div class="earnings-debate-heading">
+        <div><h4>Bull / Bear / Judge 多角分析</h4><small>${escapeHtml(name)} · ${escapeHtml(symbol)}</small></div>
+        <button type="button" class="secondary" data-asset-debate data-asset-market="${escapeAttr(market)}" data-asset-symbol="${escapeAttr(symbol)}" ${pending ? "disabled" : ""}>${pending ? "分析中..." : result ? "最新データで再分析" : "多角分析を実行"}</button>
+      </div>
+      ${debate ? `
+        <p class="asset-debate-status">分析 ${escapeHtml(date)} · ${escapeHtml(result.model || "LM Studio")} · 入力データ ${escapeHtml(sourceDate)}</p>
+        <div class="earnings-debate-roles">
+          <section><h5>Bull / 強気</h5><p>${escapeHtml(debate.bull?.thesis || "")}</p><ul>${items(debate.bull?.positives)}${items(debate.bull?.risks)}</ul></section>
+          <section><h5>Bear / 弱気</h5><p>${escapeHtml(debate.bear?.thesis || "")}</p><ul>${items(debate.bear?.concerns)}${items(debate.bear?.counterpoints)}</ul></section>
+        </div>
+        <section class="earnings-judge">
+          <div><h5>Judge / 審判</h5><strong>${escapeHtml(debate.judge?.conclusion || "判断保留")}${score}</strong></div>
+          <p>${escapeHtml(debate.judge?.rationale || "")}</p>
+          ${debate.judge?.priorities?.length ? `<h5>次に確認すること</h5><ul>${items(debate.judge.priorities)}</ul>` : ""}
+          ${debate.judge?.caveat ? `<p>${escapeHtml(debate.judge.caveat)}</p>` : ""}
+        </section>
+        <p class="asset-debate-basis"><strong>分析対象:</strong> ${escapeHtml(result.evidenceBasis || basisHint)} ${escapeHtml((result.limitations || []).join(" "))}</p>
+      ` : `<p>${escapeHtml(basisHint)}</p><p class="earnings-note">結果はまだありません。実行すると同一のLM StudioモデルをBull / Bear / Judgeの順で使います。独立した複数モデルの投票ではありません。</p>`}
+      <p class="earnings-note">審判の根拠充足度は上昇確率ではなく、利益を保証しません。</p>
+    </section>
+  `;
+}
+
+function refreshAssetDebateView(market, symbol) {
+  if (market === "us" && state.view === "us" && state.usSelected === symbol) renderUsDetail();
+  if (market === "crypto" && state.view === "crypto" && state.cryptoView === "btc") renderCryptoDetail();
+  if (market === "fx" && state.view === "crypto" && state.cryptoView === "fx") renderFxDetail();
+}
+
+async function loadAssetDebate(market, symbol) {
+  const key = assetDebateKey(market, symbol);
+  if (state.assetDebateLoaded.has(key)) return;
+  state.assetDebateLoaded.add(key);
+  try {
+    const payload = await request(`/api/asset-debate?market=${encodeURIComponent(market)}&symbol=${encodeURIComponent(symbol)}`);
+    if (payload.result) {
+      state.assetDebates[key] = payload.result;
+      refreshAssetDebateView(market, symbol);
+    }
+  } catch {
+    // Saved debate is optional; the manual analysis action remains available.
+  }
+}
+
+function attachAssetDebateButtons(root) {
+  root?.querySelectorAll("[data-asset-debate]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const market = button.dataset.assetMarket;
+      const symbol = button.dataset.assetSymbol;
+      const key = assetDebateKey(market, symbol);
+      if (state.assetDebatePending.has(key)) return;
+      state.assetDebatePending.add(key);
+      state.assetDebateLoaded.add(key);
+      refreshAssetDebateView(market, symbol);
+      try {
+        const payload = await request("/api/asset-debate", {
+          method: "POST",
+          body: JSON.stringify({ market, symbol }),
+        });
+        if (payload.result) state.assetDebates[key] = payload.result;
+        toast("Bull / Bear / Judge分析を保存しました。");
+      } catch (error) {
+        toast(error.message || "多角分析を実行できませんでした。");
+      } finally {
+        state.assetDebatePending.delete(key);
+        refreshAssetDebateView(market, symbol);
+      }
+    });
+  });
+}
+
 function renderUsDetail() {
   if (!els.usDetail) return;
   const stock = state.usStocks.find((item) => item.symbol === state.usSelected);
@@ -2414,8 +2503,11 @@ function renderUsDetail() {
     <section class="evidence-list us-evidence-list">
       ${evidence || "<article class=\"evidence-item\"><p>英語記事の日本語要約は、更新後に表示します。</p></article>"}
     </section>
+    ${assetDebatePanelHtml("us", stock.symbol, stock.name, "米国株データを更新すると、株価・SEC財務・保有情報・保存済みニュース等を根拠に分析します。")}
   `;
   attachUsPositionForm(stock.symbol);
+  attachAssetDebateButtons(els.usDetail);
+  void loadAssetDebate("us", stock.symbol);
   renderForecastReview(els.usDetail.querySelector("[data-us-forecast-review]"), forecastReview, {
     market: "us", symbol: stock.symbol, forecast, formatter: usd,
     context: {
@@ -2495,6 +2587,7 @@ function renderCryptoDetail() {
         </div>
     </section>
     ${cryptoTimingHtml(analysis)}
+    ${assetDebatePanelHtml("crypto", "BTC-JPY", "Bitcoin", "BTCの価格履歴・テクニカル指標・買い/売り目安を使います。ニュースやマクロ情報は含みません。")}
     <details class="crypto-technicals-disclosure">
       <summary>テクニカル詳細を表示</summary>
       ${technicalEntryHtml(analysis?.btcJpy || {}, yen)}
@@ -2505,6 +2598,8 @@ function renderCryptoDetail() {
     </details>
   `;
   attachCryptoPositionForm();
+  attachAssetDebateButtons(els.cryptoDetail);
+  void loadAssetDebate("crypto", "BTC-JPY");
   renderForecastReview(els.cryptoDetail.querySelector("[data-instrument-forecast-review]"), btcForecast.validation, { market: "crypto", symbol: "BTC-JPY", forecast: btcForecast, formatter: yen, compact: true });
   renderEmbeddedPriceChart(els.cryptoDetail.querySelector(".crypto-chart-jpy"), btcPrice.series || [], yen, [], btcPrice, btcForecast);
 }
@@ -2520,10 +2615,13 @@ function renderFxDetail() {
   const eurJpyForecast = instrumentChartForecast(eurJpyPrice, "EUR-JPY");
   els.fxDetail.innerHTML = `
     <section class="fx-pairs-grid">
-      ${fxPairHtml("USD/JPY", "米ドル", usdJpyPrice, usdTiming, "usd-jpy")}
-      ${fxPairHtml("EUR/JPY", "ユーロ", eurJpyPrice, eurTiming, "eur-jpy")}
+      ${fxPairHtml("USD/JPY", "米ドル", usdJpyPrice, usdTiming, "usd-jpy", "USD-JPY")}
+      ${fxPairHtml("EUR/JPY", "ユーロ", eurJpyPrice, eurTiming, "eur-jpy", "EUR-JPY")}
     </section>
   `;
+  attachAssetDebateButtons(els.fxDetail);
+  void loadAssetDebate("fx", "USD-JPY");
+  void loadAssetDebate("fx", "EUR-JPY");
   for (const [selector, symbol, price, forecast] of [
     [".fx-chart-usd-jpy", "USD-JPY", usdJpyPrice, usdJpyForecast],
     [".fx-chart-eur-jpy", "EUR-JPY", eurJpyPrice, eurJpyForecast],
@@ -2534,7 +2632,7 @@ function renderFxDetail() {
   }
 }
 
-function fxPairHtml(pair, currencyName, price, timing, chartClass) {
+function fxPairHtml(pair, currencyName, price, timing, chartClass, symbol) {
   return `
     <section class="fx-pair-section">
       <article class="decision-card fx-chart-${chartClass}">
@@ -2549,6 +2647,7 @@ function fxPairHtml(pair, currencyName, price, timing, chartClass) {
         </div>
       </article>
       ${fxTimingHtml(currencyName, timing)}
+      ${assetDebatePanelHtml("fx", symbol, pair, `${pair}の為替価格履歴・テクニカル指標・為替目安を使います。ニュースや金利見通しは含みません。`)}
     </section>
   `;
 }

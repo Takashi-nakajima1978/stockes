@@ -1379,6 +1379,29 @@ tr:hover .drag-handle,
   min-width: 0;
 }
 
+.asset-debate-card {
+  display: grid;
+  gap: 10px;
+}
+
+.asset-debate-card .earnings-debate-heading small,
+.asset-debate-status,
+.asset-debate-basis {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.asset-debate-card .earnings-debate-heading small {
+  display: block;
+  margin-top: 3px;
+}
+
+.asset-debate-status,
+.asset-debate-basis {
+  margin: 0;
+}
+
 .portfolio-insights-panel {
   display: grid;
   gap: 14px;

@@ -2586,9 +2586,21 @@ test("crypto screen separates BTC from USD/JPY and EUR/JPY tabs", () => {
   const renderPair = loadFunction(appSource, "fxPairHtml", {
     fxRate: (value) => String(value ?? "-"),
     fxTimingHtml: () => "",
+    assetDebatePanelHtml: (market, symbol) => `<aside data-debate="${market}:${symbol}"></aside>`,
   });
-  assert.match(renderPair("USD/JPY", "米ドル", { current: 157 }, null, "usd-jpy"), /fx-chart-usd-jpy/);
-  assert.match(renderPair("EUR/JPY", "ユーロ", { current: 177 }, null, "eur-jpy"), /fx-chart-eur-jpy/);
+  assert.match(renderPair("USD/JPY", "米ドル", { current: 157 }, null, "usd-jpy", "USD-JPY"), /fx-chart-usd-jpy/);
+  assert.match(renderPair("USD/JPY", "米ドル", { current: 157 }, null, "usd-jpy", "USD-JPY"), /data-debate="fx:USD-JPY"/);
+  assert.match(renderPair("EUR/JPY", "ユーロ", { current: 177 }, null, "eur-jpy", "EUR-JPY"), /fx-chart-eur-jpy/);
+});
+
+test("Bull/Bear/Judge analysis is available for US stocks, BTC and both FX pairs", () => {
+  assert.match(appSource, /assetDebatePanelHtml\("us", stock\.symbol/);
+  assert.match(appSource, /assetDebatePanelHtml\("crypto", "BTC-JPY"/);
+  assert.match(appSource, /fxPairHtml\("USD\/JPY"[\s\S]*?"USD-JPY"\)/);
+  assert.match(appSource, /fxPairHtml\("EUR\/JPY"[\s\S]*?"EUR-JPY"\)/);
+  assert.match(appSource, /data-asset-debate/);
+  assert.match(appSource, /上昇確率ではなく/);
+  assert.match(serverSource, /url\.pathname === "\/api\/asset-debate"/);
 });
 
 test("crypto refresh fetches EUR/JPY independently and keeps BTC position in yen", async () => {

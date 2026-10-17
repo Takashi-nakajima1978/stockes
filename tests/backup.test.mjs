@@ -186,6 +186,7 @@ test("local and Drive backups restore every learning file and forecast outcome o
     "analysis-cache.json": { analyses: [{ symbol: "9005.T", forecastReview: { errorPct: 12, adjustment: -0.05 } }] },
     "financial-cache.json": { items: [{ symbol: "9005.T", edinet: { version: 2, analysis: { revenueGrowthPct: 5 } } }] },
     "edinet-directory.json": { days: { "2026-10-15": { documents: [{ docID: "S100TEST" }] } } },
+    "asset-debate-cache.json": { version: 1, items: [{ market: "fx", symbol: "USD-JPY", debate: { judge: { conclusion: "中立" } } }] },
   };
   for (const [name, value] of Object.entries(learningFiles)) await store.write(name, JSON.stringify(value));
   const local = await manager.download();
