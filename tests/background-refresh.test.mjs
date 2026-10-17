@@ -756,6 +756,16 @@ test("earnings debate panel keeps progress and failure visible in the card", () 
   assert.match(failed, /分析に失敗しました: LM Studioに接続できません/);
 });
 
+test("multi-role model prompts use English instructions and Japanese user-facing output", () => {
+  assert.match(serverSource, /Use English for analysis, classification, scoring, financial reasoning, and risk assessment/);
+  assert.match(serverSource, /Role: evidence-based reviewer of financial filings and presentation charts/);
+  assert.match(serverSource, /Role: bullish equity analyst/);
+  assert.match(serverSource, /Role: skeptical equity analyst/);
+  assert.match(serverSource, /Role: neutral judge/);
+  assert.match(serverSource, /Write all user-facing fields in natural Japanese/);
+  assert.doesNotMatch(serverSource, /あなたは銘柄分析の強気派です|あなたは厳格な弱気派です|あなたは審判です/);
+});
+
 test("background polling checks cache versions and reloads only changed, loaded markets", async () => {
   const calls = [];
   const context = {
@@ -1315,7 +1325,7 @@ test("AI learning proposals are bounded, sample-gated, and must agree with measu
   })(performance);
   assert.match(prompt, /\+10%/);
   assert.match(prompt, /hitRate/);
-  assert.match(prompt, /後続検証/);
+  assert.match(prompt, /later out-of-time validation/);
   assert.match(prompt, /weights/);
 
   const contradicted = validate({ weights: [{ signal: "buyline:deep", adjustment: 2 }] }, {
