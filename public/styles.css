@@ -1560,6 +1560,22 @@ tr:hover .drag-handle,
   gap: 12px;
 }
 
+.earnings-review-status {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.earnings-review-status.is-error {
+  border-left-color: var(--danger);
+  background: #fff2f2;
+  color: #842f33;
+}
+
 .earnings-debate-heading h4,
 .earnings-review-grid h5,
 .earnings-debate-roles h5,

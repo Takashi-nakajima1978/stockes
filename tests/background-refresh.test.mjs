@@ -734,6 +734,28 @@ test("completed earnings batch items invalidate and reload their saved review im
   assert.equal(state.earningsReviewLoaded.has("9005.T"), false);
 });
 
+test("earnings debate panel keeps progress and failure visible in the card", () => {
+  const state = {
+    earningsReviews: {},
+    earningsReviewPending: new Set(["7013.T"]),
+    earningsReviewErrors: {},
+  };
+  const render = loadFunction(appSource, "earningsDebatePanelHtml", {
+    state,
+    escapeHtml: (value) => String(value),
+    escapeAttr: (value) => String(value),
+  });
+  const running = render({ name: "IHI", symbol: "7013.T" });
+  assert.match(running, /EDINET資料を確認し、Bull・Bear・Judgeの順に分析しています/);
+  assert.match(running, /分析中\.\.\./);
+
+  state.earningsReviewPending.clear();
+  state.earningsReviewErrors["7013.T"] = "LM Studioに接続できません";
+  const failed = render({ name: "IHI", symbol: "7013.T" });
+  assert.match(failed, /role="alert"/);
+  assert.match(failed, /分析に失敗しました: LM Studioに接続できません/);
+});
+
 test("background polling checks cache versions and reloads only changed, loaded markets", async () => {
   const calls = [];
   const context = {

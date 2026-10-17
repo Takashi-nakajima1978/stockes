@@ -48,6 +48,7 @@ const state = {
   earningsReviewLoading: new Set(),
   earningsReviewReloadAfterLoad: new Set(),
   earningsReviewPending: new Set(),
+  earningsReviewErrors: {},
   earningsBatchJob: null,
   usStocks: [],
   usAnalyses: {},
@@ -3407,6 +3408,7 @@ function earningsDebatePanelHtml(stock) {
   const review = state.earningsReviews[stock.symbol];
   const judge = review?.debate?.judge;
   const running = state.earningsReviewPending.has(stock.symbol);
+  const error = state.earningsReviewErrors[stock.symbol];
   const link = (source, label) => source?.url
     ? `<a href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}${source.periodEnd ? ` (${escapeHtml(source.periodEnd)})` : ""}</a>`
     : "";
@@ -3444,6 +3446,8 @@ function earningsDebatePanelHtml(stock) {
         <h4>決算資料・多角分析</h4>
         <button type="button" class="secondary" data-earnings-debate="${escapeAttr(stock.symbol)}" ${running ? "disabled" : ""}>${running ? "分析中..." : "決算資料を多角分析"}</button>
       </div>
+      ${running ? '<p class="earnings-review-status" role="status" aria-live="polite">EDINET資料を確認し、Bull・Bear・Judgeの順に分析しています。LM Studioの応答に時間がかかる場合があります。</p>' : ""}
+      ${error ? `<p class="earnings-review-status is-error" role="alert">分析に失敗しました: ${escapeHtml(error)}</p>` : ""}
       ${riskChanges}
       ${review?.vision?.pagesAnalyzed?.length ? `<p class="earnings-note">確認ページ: ${review.vision.pagesAnalyzed.map(escapeHtml).join("、")}</p>` : ""}
       ${review?.vision?.uncertainties?.length ? `<ul>${earningsListHtml(review.vision.uncertainties)}</ul>` : ""}
@@ -3459,6 +3463,7 @@ function attachEarningsDebateButton(symbol) {
 
 async function runEarningsDebate(symbol) {
   if (state.earningsReviewPending.has(symbol)) return;
+  delete state.earningsReviewErrors[symbol];
   state.earningsReviewPending.add(symbol);
   if (state.selected === symbol) renderSelection();
   try {
@@ -3466,10 +3471,12 @@ async function runEarningsDebate(symbol) {
       method: "POST",
       body: JSON.stringify({ symbol }),
     });
-    if (payload.result) state.earningsReviews[symbol] = payload.result;
+    if (!payload.result) throw new Error("分析結果が返りませんでした。サーバーの分析状況を確認してください。");
+    state.earningsReviews[symbol] = payload.result;
     state.earningsReviewLoaded.add(symbol);
     toast("決算資料の差分とBull / Bear / Judge分析を保存しました。");
   } catch (error) {
+    state.earningsReviewErrors[symbol] = error.message || "分析に失敗しました。";
     toast(error.message);
   } finally {
     state.earningsReviewPending.delete(symbol);
