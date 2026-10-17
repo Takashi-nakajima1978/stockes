@@ -16,6 +16,7 @@ data/crypto-analysis-cache.json
 data/crypto-holding.json
 data/savings-plans.json
 data/candidate-history.json
+data/decision-calibration.json
 data/forecast-history.json
 data/backup-config.json
 data/backup-status.json
