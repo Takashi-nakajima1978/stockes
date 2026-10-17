@@ -710,6 +710,30 @@ test("startup only loads data for the active view", () => {
   assert.match(appSource, /if \(state\.view !== "analysis"\) return;/);
 });
 
+test("completed earnings batch items invalidate and reload their saved review immediately", () => {
+  const refreshed = [];
+  const state = {
+    earningsBatchJob: { id: "batch-1", lastCompletedSymbol: "9201.T" },
+    earningsReviewLoaded: new Set(["9005.T"]),
+    earningsReviewLoading: new Set(),
+    earningsReviewReloadAfterLoad: new Set(),
+    selected: "9005.T",
+    view: "analysis",
+  };
+  const invalidate = loadFunction(appSource, "invalidateEarningsReview", {
+    state,
+    loadEarningsReview: (symbol) => refreshed.push(symbol),
+  });
+  const render = loadFunction(appSource, "renderEarningsBatchJob", {
+    state,
+    invalidateEarningsReview: invalidate,
+    els: { earningsBatchButton: { disabled: false }, earningsBatchStatus: {} },
+  });
+  render({ id: "batch-1", running: true, checked: 16, total: 41, currentSymbol: "7013.T", currentName: "IHI", lastCompletedSymbol: "9005.T" }, true);
+  assert.deepEqual(refreshed, ["9005.T"]);
+  assert.equal(state.earningsReviewLoaded.has("9005.T"), false);
+});
+
 test("background polling checks cache versions and reloads only changed, loaded markets", async () => {
   const calls = [];
   const context = {

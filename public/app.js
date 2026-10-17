@@ -46,6 +46,7 @@ const state = {
   earningsReviews: {},
   earningsReviewLoaded: new Set(),
   earningsReviewLoading: new Set(),
+  earningsReviewReloadAfterLoad: new Set(),
   earningsReviewPending: new Set(),
   earningsBatchJob: null,
   usStocks: [],
@@ -3383,7 +3384,12 @@ async function loadEarningsReview(symbol) {
     // The panel remains usable if an older server does not expose the saved review yet.
   } finally {
     state.earningsReviewLoading.delete(symbol);
-    state.earningsReviewLoaded.add(symbol);
+    if (state.earningsReviewReloadAfterLoad.delete(symbol)) {
+      state.earningsReviewLoaded.delete(symbol);
+      void loadEarningsReview(symbol);
+    } else {
+      state.earningsReviewLoaded.add(symbol);
+    }
     if (state.selected === symbol && state.view === "analysis") renderSelection();
   }
 }
@@ -6104,7 +6110,21 @@ async function checkFinancials() {
   }
 }
 
+function invalidateEarningsReview(symbol) {
+  if (!symbol) return;
+  state.earningsReviewLoaded.delete(symbol);
+  if (state.earningsReviewLoading.has(symbol)) {
+    state.earningsReviewReloadAfterLoad.add(symbol);
+  } else if (state.selected === symbol && state.view === "analysis") {
+    void loadEarningsReview(symbol);
+  }
+}
+
 function renderEarningsBatchJob(job = {}, wasRunning = false) {
+  const previousJob = state.earningsBatchJob;
+  const completedSymbolChanged = previousJob?.id === job.id
+    && job.lastCompletedSymbol
+    && job.lastCompletedSymbol !== previousJob.lastCompletedSymbol;
   state.earningsBatchJob = job;
   if (els.earningsBatchButton) {
     els.earningsBatchButton.disabled = job.running === true;
@@ -6125,8 +6145,8 @@ function renderEarningsBatchJob(job = {}, wasRunning = false) {
   }
   if (wasRunning && !job.running) {
     state.earningsReviewLoaded.clear();
-    if (state.view === "analysis" && state.selected) void loadEarningsReview(state.selected);
-  }
+    if (state.view === "analysis" && state.selected) invalidateEarningsReview(state.selected);
+  } else if (completedSymbolChanged) invalidateEarningsReview(job.lastCompletedSymbol);
 }
 
 function renderEarningsAutoStatus(automatic = {}) {

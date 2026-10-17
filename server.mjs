@@ -15004,7 +15004,7 @@ async function saveEarningsAnalysisResult(result) {
 
 function earningsBatchJobSnapshot() {
   if (!earningsBatchJob) {
-    return { running: false, phase: "未実行", checked: 0, total: 0, succeeded: 0, skipped: 0, failed: 0, currentSymbol: "", currentName: "", errors: [] };
+    return { running: false, phase: "未実行", checked: 0, total: 0, succeeded: 0, skipped: 0, failed: 0, currentSymbol: "", currentName: "", lastCompletedSymbol: "", errors: [] };
   }
   return { ...earningsBatchJob, errors: earningsBatchJob.errors.slice(0, 8) };
 }
@@ -15022,6 +15022,7 @@ function startEarningsBatchJob() {
     failed: 0,
     currentSymbol: "",
     currentName: "",
+    lastCompletedSymbol: "",
     errors: [],
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -15066,6 +15067,7 @@ async function executeEarningsBatchJob(job) {
         job.errors = job.errors.slice(-8);
       }
       job.checked += 1;
+      job.lastCompletedSymbol = stock.symbol;
       job.updatedAt = new Date().toISOString();
     }
     job.running = false;
