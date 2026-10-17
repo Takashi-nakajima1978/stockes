@@ -1,9 +1,12 @@
+import { buildUbuntuNasCommands } from "./nas-ubuntu-setup.mjs";
+
 export function initializeBackupSettings({ request, toast }) {
   const root = document.getElementById("backupSettings");
   if (!root) return;
   const node = (id) => document.getElementById(id);
   const field = (name) => root.querySelector(`[data-drive-field="${name}"]`);
   const nasField = (name) => root.querySelector(`[data-nas-field="${name}"]`);
+  const nasSetupField = (name) => root.querySelector(`[data-nas-setup="${name}"]`);
   let loaded = false;
   let previewToken = "";
   let busy = false;
@@ -17,6 +20,50 @@ export function initializeBackupSettings({ request, toast }) {
     if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
     return parts[0] === 10 || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) || (parts[0] === 192 && parts[1] === 168);
   };
+
+  function updateNasSetupCommands() {
+    const host = nasSetupField("host").value.trim();
+    const share = nasSetupField("share").value;
+    const commandNodes = {
+      mount: node("nasMountCommand"),
+      persist: node("nasPersistCommand"),
+      compose: node("nasComposeCommand"),
+    };
+    const buttons = {
+      mount: root.querySelector('[data-backup-action="nas-copy-mount"]'),
+      persist: root.querySelector('[data-backup-action="nas-copy-persist"]'),
+      compose: root.querySelector('[data-backup-action="nas-copy-compose"]'),
+    };
+    try {
+      const commands = buildUbuntuNasCommands(host, share);
+      try { localStorage.setItem("stock-signal-nas-setup", JSON.stringify({ host, share })); } catch {}
+      for (const [key, value] of Object.entries(commands)) commandNodes[key].textContent = value;
+      Object.values(buttons).forEach((button) => { button.disabled = false; });
+      node("nasSetupStatus").textContent = "家庭内LANのIPv4アドレスを確認してから実行してください。Ubuntu側の操作には管理者パスワードが必要です。";
+    } catch (error) {
+      for (const command of Object.values(commandNodes)) command.textContent = "";
+      Object.values(buttons).forEach((button) => { button.disabled = true; });
+      node("nasSetupStatus").textContent = error.message;
+    }
+  }
+
+  async function copyNasSetupCommand(action) {
+    const key = action === "nas-copy-mount" ? "nasMountCommand" : action === "nas-copy-persist" ? "nasPersistCommand" : "nasComposeCommand";
+    const content = node(key).textContent;
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(node(key));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const copied = document.execCommand("copy");
+      selection.removeAllRanges();
+      if (!copied) throw new Error("コピーできません。コマンドを選択してコピーしてください。");
+    }
+    node("nasSetupStatus").textContent = "コマンドをコピーしました。内容を確認してUbuntuの端末で実行してください。";
+  }
 
   function explainOAuthCallback() {
     const hint = node("driveOAuthHint");
@@ -75,7 +122,7 @@ export function initializeBackupSettings({ request, toast }) {
     node("driveConnectionStatus").textContent = config.connected ? "接続済み" : "未接続";
     node("driveBackupStatus").textContent = state.running ? "Google Driveに保存中…" : state.error ? state.error : `最終保存: ${date(state.lastSuccess)}`;
     node("driveBackupDetail").textContent = state.lastFileName ? `${state.lastFileName} / ${size(state.lastSize)}` : "";
-    node("nasConnectionStatus").textContent = !nas.configured ? "Docker未設定" : nas.available ? "share2接続可能" : "share2未接続";
+    node("nasConnectionStatus").textContent = !nas.configured ? "Ubuntu未接続" : nas.available ? "NAS共有接続可能" : "NAS共有未接続";
     node("nasBackupStatus").textContent = nas.running ? "nasneに保存中…" : nas.error || `最終保存: ${date(nas.lastSuccess)}`;
     node("nasBackupDetail").textContent = [nas.lastFileName ? `${nas.lastFileName} / ${size(nas.lastSize)}` : "", nas.connectionError].filter(Boolean).join(" / ");
     const fileLink = node("driveBackupFile");
@@ -158,6 +205,11 @@ export function initializeBackupSettings({ request, toast }) {
     if (!button || busy) return;
     const action = button.dataset.backupAction;
     if (action === "select") { node("backupFile").click(); return; }
+    if (action.startsWith("nas-copy-")) {
+      try { await copyNasSetupCommand(action); }
+      catch (error) { node("nasSetupStatus").textContent = error.message; }
+      return;
+    }
     const popup = action === "connect" ? window.open("about:blank", "stock-signal-drive-auth", "width=650,height=750") : null;
     let failed = false;
     busy = true;
@@ -198,6 +250,19 @@ export function initializeBackupSettings({ request, toast }) {
       if (loaded && !failed) void load().catch(() => {});
     }
   });
+
+  root.querySelectorAll("[data-nas-setup]").forEach((input) => {
+    input.addEventListener("input", updateNasSetupCommands);
+    input.addEventListener("change", updateNasSetupCommands);
+  });
+  try {
+    const saved = JSON.parse(localStorage.getItem("stock-signal-nas-setup") || "null");
+    if (saved && isPrivateIpv4(saved.host) && ["nasne_home", "share1", "share2"].includes(saved.share)) {
+      nasSetupField("host").value = saved.host;
+      nasSetupField("share").value = saved.share;
+    }
+  } catch {}
+  updateNasSetupCommands();
 
   node("backupFile").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];

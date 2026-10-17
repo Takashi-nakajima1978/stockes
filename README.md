@@ -60,7 +60,7 @@ node server.mjs
 docker compose up --build
 ```
 
-DockerからMac上のLM Studioへつなぐため、composeでは `http://host.docker.internal:1234/v1` を使います。起動後、Docker Desktopには `local-stock-signal` が表示されます。
+Dockerホスト上のLM Studioへつなぐため、composeでは `http://host.docker.internal:1234/v1` を使います。起動後、Dockerには `local-stock-signal` が表示されます。
 
 ## 株価予測の信頼度
 
@@ -121,15 +121,11 @@ Driveの認証情報は `data/backup-config.json`、結果は `data/backup-statu
 
 Googleの仕様: [オフラインアクセスとOAuth](https://developers.google.com/identity/protocols/oauth2/web-server)、[Driveアップロード](https://developers.google.com/workspace/drive/api/guides/manage-uploads)。
 
-### Sony nasneのshare2へ日次保存
+### UbuntuからSony nasneへ日次保存
 
-Dockerホストにnasneの外付けHDD共有 `share2` をマウントしてから、NAS用Compose設定を追加して起動します。FinderでMacにマウントした場合は通常 `/Volumes/share2` です。Dockerが別のLinuxマシンで動いている場合は、そのマシン自身に共有をマウントし、Mac上のパスではなくLinux側のマウント先を指定してください。
+設定→バックアップ→nasne share2でNASのIPアドレスと共有名を選び、表示されたコマンドをコピーします。初回はUbuntuホストに `cifs-utils` を入れて共有をマウントし、必要なら再起動後の自動マウントを設定してから、Composeコマンドをプロジェクトフォルダーで実行します。初期値は `192.168.100.139` の `share2`、マウント先は `/mnt/nasne-share2` です。接続確認後は設定画面だけで日次バックアップの有効/無効と実行時刻を変更できます。Ubuntuのホストマウントには管理者権限が必要なため、初回セットアップ時の端末操作は必要です。
 
-```sh
-NAS_BACKUP_HOST_PATH="/Volumes/share2" docker compose -f docker-compose.yml -f docker-compose.nas.yml up -d --build
-```
-
-設定の「バックアップ」→「nasne share2」で「書き込みを確認」を実行し、問題がなければ日次設定を保存します。初期時刻は毎日04:00（日本時間）です。「今すぐ保存」で動作確認でき、NAS上の最新ファイルを選んで復元することもできます。日次保存はアプリ起動中に行い、失敗した場合は30分後に再試行します。nasneがスタンバイ中は書き込めないため、設定時刻にnasneが利用可能であることを確認してください。
+設定の「書き込みを確認」を実行し、問題がなければ日次設定を保存します。初期時刻は毎日04:00（日本時間）です。「今すぐ保存」で動作確認でき、NAS上の最新ファイルから復元できます。日次保存はアプリ起動中に行い、失敗した場合は30分後に再試行します。nasneがスタンバイ中は保存できないため、設定時刻にnasneが利用可能であることを確認してください。
 
 バックアップは全データ形式の圧縮ファイル `stock-signal-YYYY-MM-DD.json.gz` で、候補の学習履歴・予測実績・各種キャッシュ・接続設定も含みます。復元は最新ファイルの検証と確認を経て実行します。接続キーを含むため、家庭内ネットワークを外部公開しないでください。Sony nasneでは通常 `share1` が内蔵HDD、`share2` が外付けHDDです。
 

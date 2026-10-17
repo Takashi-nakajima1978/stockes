@@ -103,7 +103,7 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
   const saveConfig = (config) => store.write(configPath, JSON.stringify(config, null, 2));
   const saveStatus = (state) => store.write(statusPath, JSON.stringify(state, null, 2));
   function getNasDirectory() {
-    if (!nasRoot) throw failure("Dockerにnasneのshare2が接続されていません。NAS用Compose設定で共有フォルダーをマウントしてください。");
+    if (!nasRoot) throw failure("Ubuntu側でnasneの共有をマウントし、NAS用Compose設定でDockerへ接続してください。設定画面のUbuntu接続設定を確認してください。");
     if (!path.isAbsolute(nasRoot)) throw failure("NASのマウント先は絶対パスで指定してください。", 500);
     return nasRoot;
   }
@@ -112,19 +112,19 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
     let info;
     try { info = await stat(directory); }
     catch (error) {
-      if (error.code === "ENOENT") throw failure("nasneのshare2がマウントされていません。");
+      if (error.code === "ENOENT") throw failure("nasneのshare2がマウントされていません。Ubuntuホストの接続を確認してください。");
       throw error;
     }
     if (!info.isDirectory()) throw failure("NASのマウント先がフォルダーではありません。");
     return directory;
   }
   async function inspectNas() {
-    if (!nasRoot) return { configured: false, available: false, connectionError: "Dockerにnasneのshare2が接続されていません。" };
+    if (!nasRoot) return { configured: false, available: false, connectionError: "Ubuntu側で共有をマウントし、設定画面のComposeコマンドでDockerへ接続してください。" };
     try {
       await requireNasDirectory();
       return { configured: true, available: true, connectionError: "" };
     } catch (error) {
-      return { configured: true, available: false, connectionError: error.code === "ENOENT" ? "nasneのshare2がマウントされていません。" : `NASを確認できません: ${error.message}` };
+      return { configured: true, available: false, connectionError: error.code === "ENOENT" ? "nasneのshare2がマウントされていません。Ubuntuホストの接続を確認してください。" : `NASを確認できません: ${error.message}` };
     }
   }
   const dataFiles = async () => (await readdir(root, { withFileTypes: true }).catch((error) => {
@@ -327,7 +327,7 @@ export function createBackupManager({ store, effectiveSettings = async () => ({}
     async configureNas(patch = {}) {
       const config = await readConfig();
       const next = { ...config };
-      if (patch.enabled === true && !nasRoot) throw failure("先にNAS用Compose設定でnasneのshare2をDockerへ接続してください。");
+      if (patch.enabled === true && !nasRoot) throw failure("先にUbuntu側でnasneの共有をマウントし、NAS用Compose設定でDockerへ接続してください。");
       if (typeof patch.enabled === "boolean") next.nasEnabled = patch.enabled;
       for (const key of ["hour", "minute"]) {
         if (patch[key] !== undefined) {

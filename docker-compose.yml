@@ -2,6 +2,8 @@ services:
   stock-signal:
     build: .
     container_name: local-stock-signal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "5173:5173"
     environment:

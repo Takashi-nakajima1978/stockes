@@ -1060,7 +1060,21 @@
           <div class="settings-tab-panel" data-settings-panel="backup" id="backupSettings" hidden>
             <section class="backup-section">
               <div class="backup-heading"><h3>nasne share2</h3><span id="nasConnectionStatus">未設定</span></div>
-              <p class="backup-note">全データと学習履歴をnasneの外付けHDDへ保存します。share2をDockerホストにマウントし、NAS用Compose設定でアプリへ接続してください。Finderで別のMacにマウントしただけでは、別マシン上のDockerからは使えません。nasneがスタンバイ中は保存できません。</p>
+              <p class="backup-note">全データと学習履歴をnasneの共有へ保存します。Ubuntuホストで共有をマウントし、Dockerへ接続する必要があります。下の設定欄で接続コマンドを作成できます。nasneがスタンバイ中は保存できません。</p>
+              <div class="nas-ubuntu-setup">
+                <h4>Ubuntu接続設定</h4>
+                <div class="backup-fields">
+                  <label><span>nasneのIPアドレス</span><input data-nas-setup="host" value="192.168.100.139" inputmode="decimal" autocomplete="off"></label>
+                  <label><span>保存する共有</span><select data-nas-setup="share"><option value="nasne_home">nasne_home</option><option value="share1">share1（内蔵HDD）</option><option value="share2" selected>share2（外付けHDD）</option></select></label>
+                </div>
+                <p class="backup-note">初回はUbuntu側で一度だけ端末操作が必要です。まず共有を接続し、次に再起動後も自動接続する設定を追加し、最後にアプリへ反映します。3のコマンドはdocker-compose.ymlがあるプロジェクトフォルダーで実行してください。認証情報が必要なNASにはゲスト接続できません。</p>
+                <div class="nas-command-grid">
+                  <section><h5>1. 共有を接続</h5><pre id="nasMountCommand"></pre><button type="button" class="secondary" data-backup-action="nas-copy-mount">接続コマンドをコピー</button></section>
+                  <section><h5>2. 再起動後も自動接続</h5><pre id="nasPersistCommand"></pre><button type="button" class="secondary" data-backup-action="nas-copy-persist">自動接続設定をコピー</button></section>
+                  <section><h5>3. Dockerへ反映</h5><pre id="nasComposeCommand"></pre><button type="button" class="secondary" data-backup-action="nas-copy-compose">Docker反映コマンドをコピー</button></section>
+                </div>
+                <p id="nasSetupStatus" class="backup-note" role="status" aria-live="polite"></p>
+              </div>
               <div class="backup-fields">
                 <label class="checkbox-line"><input type="checkbox" data-nas-field="enabled"><span>日次バックアップ</span></label>
                 <label><span>毎日の時刻（日本時間）</span><input type="time" data-nas-field="time" value="04:00" required></label>

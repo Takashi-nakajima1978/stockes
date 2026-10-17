@@ -5000,6 +5000,59 @@ button.savings-order-button:disabled {
   width: auto;
 }
 
+.backup-fields select {
+  width: 100%;
+}
+
+.nas-ubuntu-setup {
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.nas-ubuntu-setup > h4 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.nas-command-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.nas-command-grid section {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.nas-command-grid h5 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.nas-command-grid pre {
+  min-height: 116px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #f5f7f6;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.nas-command-grid button {
+  width: 100%;
+  white-space: normal;
+}
+
 .backup-full-width {
   grid-column: 1 / -1;
 }
@@ -5045,6 +5098,9 @@ button.savings-order-button:disabled {
 
 @media (max-width: 650px) {
   .backup-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .nas-command-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .backup-actions > button {
