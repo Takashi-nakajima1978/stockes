@@ -156,6 +156,7 @@ const els = {
   stockCount: document.getElementById("stockCount"),
   stockProgress: document.getElementById("stockProgress"),
   analyzeButton: document.getElementById("analyzeButton"),
+  usPriceRefreshButton: document.getElementById("usPriceRefreshButton"),
   usAnalyzeButton: document.getElementById("usAnalyzeButton"),
   profitSummary: document.querySelector('[data-view="analysis"] .profit-summary'),
   usProfitSummary: document.querySelector('[data-view="us"] .us-profit-summary'),
@@ -1318,8 +1319,6 @@ async function loadUsAnalysisJob() {
   if (payload.result) applyUsAnalysisPayload(payload.result);
   renderUsAnalysisJob();
   if (state.usAnalysisJob?.running) {
-    state.usRefreshing = true;
-    renderUsSummary();
     void pollUsAnalysisJob()
     .then((result) => {
       applyUsAnalysisPayload(result);
@@ -5278,11 +5277,15 @@ async function analyzeUs(options = {}) {
         els.usLastRun.textContent = `価格更新済み。AI分析中 ${new Date(quickPayload.generatedAt).toLocaleString("ja-JP")}`;
       }
       priceUpdated = true;
+      state.usRefreshing = false;
       renderUs();
     } catch (quickError) {
       console.warn("米国株の価格だけの高速更新に失敗しました", quickError);
+      state.usRefreshing = false;
+      renderUsSummary();
       if (els.usLastRun) els.usLastRun.textContent = progressWithPrevious("価格更新に時間がかかっています", previousStatus);
     }
+    els.usAnalyzeButton.textContent = "AI分析中";
     const payload = await request("/api/us-analyze", {
       method: "POST",
       body: JSON.stringify({ ...body, reuseFreshPrices: priceUpdated }),
@@ -5305,6 +5308,50 @@ async function analyzeUs(options = {}) {
     state.usRefreshing = false;
     els.usAnalyzeButton.disabled = false;
     els.usAnalyzeButton.textContent = originalText;
+    renderUsSummary();
+  }
+}
+
+async function refreshUsPricesOnly(options = {}) {
+  const button = els.usPriceRefreshButton;
+  if (!button || button.disabled) return;
+  const originalText = button.textContent;
+  const previousStatus = els.usLastRun?.textContent || "";
+  button.disabled = true;
+  button.textContent = "価格更新中";
+  state.usRefreshing = true;
+  if (els.usLastRun) {
+    els.usLastRun.textContent = progressWithPrevious(
+      options.source === "reload" ? "再読み込み後の価格確認中" : "価格更新中",
+      previousStatus,
+    );
+  }
+  renderUsSummary();
+  try {
+    const payload = await request("/api/us-analyze", {
+      method: "POST",
+      signal: AbortSignal.timeout(180000),
+      body: JSON.stringify({ manual: true, force: true, quick: true }),
+    });
+    applyUsAnalysisPayload(payload);
+    const fetchedAt = new Date(payload.generatedAt || "").getTime();
+    const analyses = Array.isArray(payload.analyses) ? payload.analyses : [];
+    const refreshed = analyses.filter((analysis) => {
+      const quoteAt = new Date(analysis.refreshedPriceOnlyAt || "").getTime();
+      return Number.isFinite(quoteAt) && quoteAt >= fetchedAt;
+    }).length;
+    if (els.usLastRun) {
+      els.usLastRun.textContent = `価格更新 ${refreshed}/${analyses.length}銘柄 ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
+    }
+    if (payload.warnings?.length) toast(payload.warnings.join(" / "));
+    renderUs();
+  } catch (error) {
+    if (els.usLastRun) els.usLastRun.textContent = `価格更新失敗: ${error.message || "価格を取得できませんでした"}`;
+    toast(error.message || "米国株の価格を更新できませんでした。");
+  } finally {
+    state.usRefreshing = false;
+    button.disabled = false;
+    button.textContent = originalText;
     renderUsSummary();
   }
 }
@@ -8710,6 +8757,7 @@ els.performanceTabs.forEach((button) => {
 
 els.analyzeButton.addEventListener("click", analyze);
 els.sectorEvidenceAnalyzeButton?.addEventListener("click", () => analyze());
+els.usPriceRefreshButton?.addEventListener("click", refreshUsPricesOnly);
 els.usAnalyzeButton?.addEventListener("click", analyzeUs);
 els.cryptoAnalyzeButton?.addEventListener("click", analyzeCrypto);
 els.cryptoTabButtons.forEach((button) => {
@@ -8791,7 +8839,7 @@ async function loadInitialData() {
 async function refreshAfterBrowserReload() {
   if (navigationType() !== "reload") return;
   if (state.view === "us") {
-    await analyzeUs({ source: "reload" });
+    await refreshUsPricesOnly({ source: "reload" });
     return;
   }
   if (state.view === "crypto") {

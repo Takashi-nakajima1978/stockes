@@ -131,6 +131,44 @@ test("US list keeps current and acquisition prices adjacent with matching header
   assert.match(table.innerHTML, /colspan="10"/);
 });
 
+test("US price refresh is independent from slow AI analysis and uses a longer quote timeout", async () => {
+  assert.match(indexSource, /id="usPriceRefreshButton"[^>]*>価格を更新/);
+  assert.match(indexSource, /id="usAnalyzeButton"[^>]*>AI分析を更新/);
+  assert.match(appSource, /usPriceRefreshButton\?\.addEventListener\("click", refreshUsPricesOnly\)/);
+  assert.match(appSource, /await refreshUsPricesOnly\(\{ source: "reload" \}\)/);
+  assert.match(serverSource, /const US_QUICK_PRICE_HISTORY_TIMEOUT_MS = 10000/);
+  const body = serverSource.slice(serverSource.indexOf("async function performUsPriceRefresh"), serverSource.indexOf("async function analyzeUsHoldings"));
+  assert.match(body, /timeout: US_QUICK_PRICE_HISTORY_TIMEOUT_MS/);
+
+  const button = { disabled: false, textContent: "価格を更新" };
+  const status = { textContent: "" };
+  const summary = { classList: { toggle() {}, remove() {}, add() {} }, dataset: {}, setAttribute() {}, removeAttribute() {} };
+  const viewCalls = [];
+  const refresh = loadFunction(appSource, "refreshUsPricesOnly", {
+    AbortSignal,
+    els: { usPriceRefreshButton: button, usLastRun: status, usProfitSummary: summary },
+    state: { usRefreshing: false },
+    request: async (path, options) => {
+      assert.equal(path, "/api/us-analyze");
+      assert.equal(JSON.parse(options.body).quick, true);
+      return {
+        generatedAt: "2026-10-17T01:00:00.000Z",
+        analyses: [{ symbol: "ACN", refreshedPriceOnlyAt: "2026-10-17T01:00:01.000Z" }],
+      };
+    },
+    applyUsAnalysisPayload: () => {},
+    renderUsSummary: () => viewCalls.push("summary"),
+    renderUs: () => viewCalls.push("us"),
+    toast: () => {},
+    progressWithPrevious: (message) => message,
+  });
+  await refresh();
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, "価格を更新");
+  assert.match(status.textContent, /価格更新 1\/1銘柄/);
+  assert.equal(viewCalls.includes("us"), true);
+});
+
 test("late analysis retains newer prices and new research", () => {
   const newer = { symbol: "X", price: { current: 120, fetchedAt: "2026-09-10T01:05:00Z" }, position: { pnl: 20 }, exitPlan: { price: 110 } };
   const analysis = { symbol: "X", price: { current: 100, fetchedAt: "2026-09-10T01:00:00Z" }, thesis: "new research" };

@@ -87,6 +87,7 @@ const TRAILING_STOP_LOSS_PCT = 20;
 const US_EVIDENCE_TRANSLATION_CHUNK_SIZE = 3;
 const PRICE_HISTORY_TIMEOUT_MS = 12000;
 const QUICK_PRICE_HISTORY_TIMEOUT_MS = 4000;
+const US_QUICK_PRICE_HISTORY_TIMEOUT_MS = 10000;
 const US_NEWS_MAX_AGE_DAYS = 45;
 const US_EVIDENCE_TRANSLATION_TIMEOUT_MS = 180000;
 const US_HOLDING_REVIEW_TIMEOUT_MS = 180000;
@@ -1871,7 +1872,7 @@ async function performUsPriceRefresh(options = {}) {
     const previousAnalysis = previousBySymbol.get(stock.symbol) || null;
     let priceError = "";
     const fetchedPrice = await fetchPriceHistory(stock.symbol, {
-      timeout: QUICK_PRICE_HISTORY_TIMEOUT_MS,
+      timeout: US_QUICK_PRICE_HISTORY_TIMEOUT_MS,
       includeDividendForecast: true,
     }).catch((error) => {
       priceError = error.message || "価格を取得できませんでした";
