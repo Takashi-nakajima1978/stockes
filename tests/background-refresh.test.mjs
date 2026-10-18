@@ -818,6 +818,9 @@ test("multi-role model prompts use English instructions and Japanese user-facing
   assert.match(serverSource, /earningsDebateOutputIssues\(output\)/);
   assert.match(serverSource, /finalChatMessageText\(message\)/);
   assert.doesNotMatch(serverSource, /message\.content\s*\|\|\s*message\.reasoning_content/);
+  assert.match(serverSource, /function isStructuredOutputFormatError\(error\)/);
+  assert.match(serverSource, /LM Studio\(\?: vision\)\? returned 400/);
+  assert.match(serverSource, /includeErrorDetails: true/);
   assert.match(serverSource, /schema: EARNINGS_BULL_SCHEMA/);
   assert.doesNotMatch(serverSource, /あなたは銘柄分析の強気派です|あなたは厳格な弱気派です|あなたは審判です/);
 });

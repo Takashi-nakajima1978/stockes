@@ -10381,6 +10381,7 @@ async function callLmStudioResponses(model, prompt, options = {}) {
   const data = await fetchWithTimeout(`${baseUrl}/responses`, {
     parseJson: true,
     errorPrefix: "LM Studio responses returned",
+    includeErrorDetails: true,
     timeout: options.timeoutMs || settings.lmStudioTimeoutMs,
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -10405,6 +10406,7 @@ async function callLmStudioChat(model, prompt, options = {}) {
   const data = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
     parseJson: true,
     errorPrefix: "LM Studio returned",
+    includeErrorDetails: true,
     timeout: options.timeoutMs || settings.lmStudioTimeoutMs,
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -10440,6 +10442,7 @@ async function callLmStudioVision(model, prompt, pages = [], options = {}) {
   const data = await fetchWithTimeout(baseUrl + "/chat/completions", {
     parseJson: true,
     errorPrefix: "LM Studio vision returned",
+    includeErrorDetails: true,
     timeout: options.timeoutMs || settings.lmStudioTimeoutMs,
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -15427,7 +15430,7 @@ async function callStructuredLm(model, prompt, options = {}) {
   try {
     raw = await invoke(prompt, { ...options, maxTokens: tokenLimit, responseFormat });
   } catch (error) {
-    if (!/response.?format|json.?schema|structured output|unsupported|invalid request/i.test(String(error.message || ""))) throw error;
+    if (!isStructuredOutputFormatError(error)) throw error;
     schemaSupported = false;
     raw = await invoke(prompt, {
       ...options,
@@ -15465,7 +15468,7 @@ async function callStructuredLm(model, prompt, options = {}) {
         responseFormat: { type: "json_object" },
       });
     } catch (fallbackError) {
-      if (!/response.?format|json.?schema|structured output|unsupported|invalid request/i.test(String(fallbackError.message || ""))) throw fallbackError;
+      if (!isStructuredOutputFormatError(fallbackError)) throw fallbackError;
       fallbackRaw = await invoke(retryPrompt, {
         ...options,
         maxTokens: retryTokens,
@@ -15484,6 +15487,12 @@ async function callStructuredLm(model, prompt, options = {}) {
 
 function lmJsonSchemaFormat(name, schema) {
   return { type: "json_schema", json_schema: { name, strict: true, schema } };
+}
+
+function isStructuredOutputFormatError(error) {
+  const message = String(error?.message || error || "");
+  return /response.?format|json.?schema|structured output|unsupported|invalid request/i.test(message)
+    || /LM Studio(?: vision)? returned 400\b/i.test(message);
 }
 
 async function readAssetDebateCache() {
@@ -17283,10 +17292,21 @@ async function fetchWithTimeout(url, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const { parseJson, errorPrefix = "HTTP", ...fetchOptions } = options;
+    const { parseJson, errorPrefix = "HTTP", includeErrorDetails = false, ...fetchOptions } = options;
     const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
     if (parseJson) {
-      if (!response.ok) throw new Error(`${errorPrefix} ${response.status}`);
+      if (!response.ok) {
+        let detail = "";
+        if (includeErrorDetails) {
+          try {
+            const body = JSON.parse(await response.text());
+            const error = body?.error;
+            detail = typeof error === "string" ? error : String(error?.message || body?.message || body?.detail || "");
+          } catch {}
+        }
+        const safeDetail = detail.replace(/\s+/g, " ").trim().slice(0, 320);
+        throw new Error(`${errorPrefix} ${response.status}${safeDetail ? `: ${safeDetail}` : ""}`);
+      }
       return await response.json();
     }
     return response;
