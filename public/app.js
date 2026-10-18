@@ -49,6 +49,7 @@ const state = {
   earningsReviewReloadAfterLoad: new Set(),
   earningsReviewPending: new Set(),
   earningsReviewErrors: {},
+  earningsBatchFailedSymbols: new Set(),
   earningsBatchJob: null,
   usStocks: [],
   usAnalyses: {},
@@ -3381,7 +3382,12 @@ async function loadEarningsReview(symbol) {
   state.earningsReviewLoading.add(symbol);
   try {
     const payload = await request(`/api/earnings-debate?symbol=${encodeURIComponent(symbol)}`);
-    if (payload.result) state.earningsReviews[symbol] = payload.result;
+    if (payload.result) {
+      state.earningsReviews[symbol] = payload.result;
+      delete state.earningsReviewErrors[symbol];
+      state.earningsBatchFailedSymbols ||= new Set();
+      state.earningsBatchFailedSymbols.delete(symbol);
+    }
   } catch {
     // The panel remains usable if an older server does not expose the saved review yet.
   } finally {
@@ -6138,9 +6144,25 @@ function invalidateEarningsReview(symbol) {
 
 function renderEarningsBatchJob(job = {}, wasRunning = false) {
   const previousJob = state.earningsBatchJob;
+  state.earningsReviewErrors ||= {};
+  state.earningsBatchFailedSymbols ||= new Set();
+  const newJob = Boolean(job.id && previousJob?.id && job.id !== previousJob.id);
+  if (newJob) {
+    for (const symbol of state.earningsBatchFailedSymbols) delete state.earningsReviewErrors[symbol];
+    state.earningsBatchFailedSymbols.clear();
+  }
+  let selectedFailureChanged = false;
   const completedSymbolChanged = previousJob?.id === job.id
     && job.lastCompletedSymbol
     && job.lastCompletedSymbol !== previousJob.lastCompletedSymbol;
+  const errors = Array.isArray(job.errors) ? job.errors : [];
+  for (const item of errors) {
+    if (!/^\d{4}\.T$/.test(item.symbol || "")) continue;
+    const message = String(item.message || "一括分析に失敗しました");
+    if (state.earningsReviewErrors[item.symbol] !== message) selectedFailureChanged = true;
+    state.earningsReviewErrors[item.symbol] = message;
+    state.earningsBatchFailedSymbols.add(item.symbol);
+  }
   state.earningsBatchJob = job;
   if (els.earningsBatchButton) {
     els.earningsBatchButton.disabled = job.running === true;
@@ -6173,6 +6195,7 @@ function renderEarningsBatchJob(job = {}, wasRunning = false) {
     state.earningsReviewLoaded.clear();
     if (state.view === "analysis" && state.selected) invalidateEarningsReview(state.selected);
   } else if (completedSymbolChanged) invalidateEarningsReview(job.lastCompletedSymbol);
+  if (selectedFailureChanged && state.view === "analysis" && state.selected) renderSelection();
 }
 
 function renderEarningsAutoStatus(automatic = {}) {

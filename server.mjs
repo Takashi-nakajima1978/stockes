@@ -15008,7 +15008,7 @@ function earningsBatchJobSnapshot() {
   if (!earningsBatchJob) {
     return { running: false, phase: "未実行", checked: 0, total: 0, succeeded: 0, skipped: 0, failed: 0, currentSymbol: "", currentName: "", lastCompletedSymbol: "", errors: [] };
   }
-  return { ...earningsBatchJob, errors: earningsBatchJob.errors.slice(0, 8) };
+  return { ...earningsBatchJob, errors: earningsBatchJob.errors.slice(0, MAX_MANAGED_STOCKS) };
 }
 
 function startEarningsBatchJob() {
@@ -15066,7 +15066,7 @@ async function executeEarningsBatchJob(job) {
       } catch (error) {
         job.failed += 1;
         job.errors.push({ symbol: stock.symbol, message: String(error.message || "分析に失敗しました").slice(0, 240) });
-        job.errors = job.errors.slice(-8);
+        job.errors = job.errors.slice(-MAX_MANAGED_STOCKS);
       }
       job.checked += 1;
       job.lastCompletedSymbol = stock.symbol;
@@ -15394,13 +15394,44 @@ async function callStructuredLm(model, prompt, options = {}) {
     return parseJsonObject(raw);
   } catch (error) {
     if (!schemaSupported) throw error;
-    const retryPrompt = `${prompt}\n\nRetry shorter. The prior response was invalid. Return at most 2 concise items per list and only valid JSON matching the requested fields.`;
-    const retryRaw = await callLmStudioChat(model, retryPrompt, {
-      ...options,
-      maxTokens: Math.min(tokenLimit, 1200),
-      responseFormat,
-    });
-    return parseJsonObject(retryRaw);
+    const retryPrompt = `${prompt}\n\nThe previous JSON was invalid. Return a compact object only: at most 2 short items per list, one short sentence per text field, no markdown.`;
+    const retryTokens = Math.min(2600, Math.max(tokenLimit + 500, Math.ceil(tokenLimit * 1.5)));
+    let lastError = error;
+    try {
+      const retryRaw = await callLmStudioChat(model, retryPrompt, {
+        ...options,
+        maxTokens: retryTokens,
+        responseFormat,
+      });
+      return parseJsonObject(retryRaw);
+    } catch (retryError) {
+      lastError = retryError;
+    }
+
+    const fallbackSystem = lmJsonInstructions("Return one compact, valid JSON object matching the requested fields. Keep every string short and lists to at most 2 items.");
+    let fallbackRaw;
+    try {
+      fallbackRaw = await callLmStudioChat(model, retryPrompt, {
+        ...options,
+        maxTokens: retryTokens,
+        system: fallbackSystem,
+        responseFormat: { type: "json_object" },
+      });
+    } catch (fallbackError) {
+      if (!/response.?format|json.?schema|structured output|unsupported|invalid request/i.test(String(fallbackError.message || ""))) throw fallbackError;
+      fallbackRaw = await callLmStudioChat(model, retryPrompt, {
+        ...options,
+        maxTokens: retryTokens,
+        system: fallbackSystem,
+        responseFormat: undefined,
+      });
+    }
+    try {
+      return parseJsonObject(fallbackRaw);
+    } catch (fallbackError) {
+      lastError = fallbackError;
+      throw new Error(`LM StudioのJSON出力を再試行後も解析できませんでした: ${String(lastError.message || error.message).slice(0, 180)}`);
+    }
   }
 }
 

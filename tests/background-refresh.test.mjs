@@ -735,7 +735,7 @@ test("completed earnings batch items invalidate and reload their saved review im
 });
 
 test("failed earnings items are visible and expose a retry action", () => {
-  const state = { earningsBatchJob: null };
+  const state = { earningsBatchJob: null, earningsReviewErrors: {}, earningsBatchFailedSymbols: new Set() };
   const els = {
     earningsBatchButton: { disabled: false, textContent: "" },
     earningsBatchStatus: { textContent: "" },
@@ -755,6 +755,10 @@ test("failed earnings items are visible and expose a retry action", () => {
   assert.equal(els.earningsBatchErrors.hidden, false);
   assert.match(els.earningsBatchErrors.innerHTML, /7744\.T/);
   assert.match(els.earningsBatchErrors.innerHTML, /JSON出力が途中で終了しました/);
+  assert.equal(state.earningsReviewErrors["7744.T"], "JSON出力が途中で終了しました");
+
+  render({ id: "batch-3", running: true, phase: "準備中", checked: 0, total: 41, errors: [] });
+  assert.equal(state.earningsReviewErrors["7744.T"], undefined);
 });
 
 test("earnings debate panel keeps progress and failure visible in the card", () => {
@@ -804,6 +808,8 @@ test("multi-role model prompts use English instructions and Japanese user-facing
   assert.match(serverSource, /Write all user-facing fields in natural Japanese/);
   assert.match(serverSource, /function lmJsonSchemaFormat\(name, schema\)/);
   assert.match(serverSource, /response_format: options\.responseFormat/);
+  assert.match(serverSource, /retryTokens = Math\.min\(2600, Math\.max\(tokenLimit \+ 500/);
+  assert.match(serverSource, /responseFormat: \{ type: "json_object" \}/);
   assert.match(serverSource, /schema: EARNINGS_BULL_SCHEMA/);
   assert.doesNotMatch(serverSource, /あなたは銘柄分析の強気派です|あなたは厳格な弱気派です|あなたは審判です/);
 });

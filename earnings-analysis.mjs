@@ -3,10 +3,11 @@ const PERFORMANCE_TERMS = ["セグメント", "売上", "営業利益", "成長"
 export const EARNINGS_AUTO_MONITOR_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 export const EARNINGS_AUTO_MONITOR_RETRY_MS = 24 * 60 * 60 * 1000;
 
-const textListSchema = { type: "array", maxItems: 3, items: { type: "string" } };
+const shortTextSchema = (maxLength = 160) => ({ type: "string", maxLength });
+const textListSchema = { type: "array", maxItems: 3, items: shortTextSchema() };
 const riskItemSchema = {
   type: "object",
-  properties: { topic: { type: "string" }, detail: { type: "string" }, evidence: { type: "string" } },
+  properties: { topic: shortTextSchema(80), detail: shortTextSchema(180), evidence: shortTextSchema(180) },
   required: ["topic", "detail", "evidence"],
   additionalProperties: false,
 };
@@ -25,13 +26,13 @@ export const EARNINGS_REVIEW_SCHEMA = {
           items: {
             type: "object",
             properties: {
-              topic: { type: "string" }, direction: { type: "string" }, before: { type: "string" }, after: { type: "string" }, evidence: { type: "string" },
+              topic: shortTextSchema(80), direction: shortTextSchema(40), before: shortTextSchema(140), after: shortTextSchema(140), evidence: shortTextSchema(180),
             },
             required: ["topic", "direction", "before", "after", "evidence"],
             additionalProperties: false,
           },
         },
-        summary: { type: "string" },
+        summary: shortTextSchema(280),
       },
       required: ["newlyAddedRisks", "removedOrReducedRisks", "wordingChanges", "summary"],
       additionalProperties: false,
@@ -44,7 +45,7 @@ export const EARNINGS_REVIEW_SCHEMA = {
           maxItems: 3,
           items: {
             type: "object",
-            properties: { segment: { type: "string" }, detail: { type: "string" }, evidence: { type: "string" } },
+            properties: { segment: shortTextSchema(80), detail: shortTextSchema(180), evidence: shortTextSchema(180) },
             required: ["segment", "detail", "evidence"],
             additionalProperties: false,
           },
@@ -54,7 +55,7 @@ export const EARNINGS_REVIEW_SCHEMA = {
           maxItems: 3,
           items: {
             type: "object",
-            properties: { value: { type: "string" }, unit: { type: "string" }, period: { type: "string" }, segment: { type: "string" }, evidence: { type: "string" } },
+            properties: { value: shortTextSchema(60), unit: shortTextSchema(30), period: shortTextSchema(40), segment: shortTextSchema(80), evidence: shortTextSchema(160) },
             required: ["value", "unit", "period", "segment", "evidence"],
             additionalProperties: false,
           },
@@ -71,14 +72,14 @@ export const EARNINGS_REVIEW_SCHEMA = {
 
 export const EARNINGS_BULL_SCHEMA = {
   type: "object",
-  properties: { thesis: { type: "string" }, positives: textListSchema, challenges: textListSchema, evidence: textListSchema },
+  properties: { thesis: shortTextSchema(320), positives: textListSchema, challenges: textListSchema, evidence: textListSchema },
   required: ["thesis", "positives", "challenges", "evidence"],
   additionalProperties: false,
 };
 
 export const EARNINGS_BEAR_SCHEMA = {
   type: "object",
-  properties: { thesis: { type: "string" }, negatives: textListSchema, counterpoints: textListSchema, missingEvidence: textListSchema, evidence: textListSchema },
+  properties: { thesis: shortTextSchema(320), negatives: textListSchema, counterpoints: textListSchema, missingEvidence: textListSchema, evidence: textListSchema },
   required: ["thesis", "negatives", "counterpoints", "missingEvidence", "evidence"],
   additionalProperties: false,
 };
@@ -88,12 +89,12 @@ export const EARNINGS_JUDGE_SCHEMA = {
   properties: {
     action: { type: "string", enum: ["買い増し検討", "保有継続", "売却検討", "新規購入は見送り", "判断保留"] },
     score: { type: "integer", minimum: 0, maximum: 100 },
-    thesis: { type: "string" },
+    thesis: shortTextSchema(360),
     bullCase: textListSchema,
     bearCase: textListSchema,
     keyChecks: textListSchema,
-    confidence: { type: "string" },
-    caveat: { type: "string" },
+    confidence: shortTextSchema(120),
+    caveat: shortTextSchema(180),
   },
   required: ["action", "score", "thesis", "bullCase", "bearCase", "keyChecks", "confidence", "caveat"],
   additionalProperties: false,
