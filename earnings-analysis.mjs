@@ -270,6 +270,46 @@ function normalizeSources(sources = {}) {
   };
 }
 
+function hasRepeatedEnglishTokenSequence(value = "") {
+  const tokens = [...String(value).toLowerCase().matchAll(/[a-z][a-z0-9]*/g)].map((match) => match[0]);
+  for (let width = 1; width <= 3; width += 1) {
+    for (let start = 0; start + width * 4 <= tokens.length; start += 1) {
+      let repeats = 1;
+      while (start + width * (repeats + 1) <= tokens.length) {
+        const previous = tokens.slice(start, start + width);
+        const next = tokens.slice(start + width * repeats, start + width * (repeats + 1));
+        if (!previous.every((token, index) => token === next[index])) break;
+        repeats += 1;
+      }
+      if (repeats >= (width === 1 ? 5 : 4)) return true;
+    }
+  }
+  return false;
+}
+
+export function earningsDebateOutputIssues(value = {}) {
+  const issues = [];
+  const inspect = (item, field) => {
+    if (typeof item === "string") {
+      if (hasRepeatedEnglishTokenSequence(item)) issues.push(field);
+      return;
+    }
+    if (Array.isArray(item)) {
+      item.forEach((entry, index) => inspect(entry, `${field}[${index}]`));
+      return;
+    }
+    if (item && typeof item === "object") {
+      Object.entries(item).forEach(([key, entry]) => inspect(entry, `${field}.${key}`));
+    }
+  };
+  for (const field of ["narrativeComparison", "vision.segmentDrivers", "vision.extractedFigures", "vision.uncertainties", "debate"]) {
+    const parts = field.split(".");
+    const section = parts.reduce((current, key) => current?.[key], value);
+    if (section !== undefined) inspect(section, field);
+  }
+  return [...new Set(issues)];
+}
+
 export function normalizeEarningsDebate(value = {}, metadata = {}) {
   const list = (items, max = 8) => (Array.isArray(items) ? items : []).slice(0, max).map((item) => {
     if (typeof item === "string") return item.trim().slice(0, 500);

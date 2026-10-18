@@ -49,6 +49,7 @@ const state = {
   earningsReviewReloadAfterLoad: new Set(),
   earningsReviewPending: new Set(),
   earningsReviewErrors: {},
+  earningsReviewInvalidated: {},
   earningsBatchFailedSymbols: new Set(),
   earningsBatchJob: null,
   usStocks: [],
@@ -3385,8 +3386,15 @@ async function loadEarningsReview(symbol) {
     if (payload.result) {
       state.earningsReviews[symbol] = payload.result;
       delete state.earningsReviewErrors[symbol];
+      delete state.earningsReviewInvalidated[symbol];
       state.earningsBatchFailedSymbols ||= new Set();
       state.earningsBatchFailedSymbols.delete(symbol);
+    } else if (payload.invalidated) {
+      delete state.earningsReviews[symbol];
+      delete state.earningsReviewErrors[symbol];
+      state.earningsReviewInvalidated[symbol] = true;
+    } else {
+      delete state.earningsReviewInvalidated[symbol];
     }
   } catch {
     // The panel remains usable if an older server does not expose the saved review yet.
@@ -3446,7 +3454,9 @@ function earningsDebatePanelHtml(stock) {
       ${review.sources?.presentation?.url ? `<a href="${escapeAttr(review.sources.presentation.url)}" target="_blank" rel="noreferrer">決算説明資料 (${escapeHtml(review.sources.presentation.date || "")})</a>` : ""}
     </div>
     <p class="earnings-note">${escapeHtml(review.vision?.note || "")} ${(review.limitations || []).map(escapeHtml).join(" ")}</p>
-  ` : `<p>EDINETの前回期・今回期と、保存済みの決算説明資料を確認して多角分析します。</p>`;
+  ` : state.earningsReviewInvalidated?.[stock.symbol]
+    ? `<p class="earnings-note">以前の保存結果に不自然な語句の反復があったため、表示対象から除外しました。決算資料を再分析してください。</p>`
+    : `<p>EDINETの前回期・今回期と、保存済みの決算説明資料を確認して多角分析します。</p>`;
   return `
     <section class="decision-card earnings-debate-card">
       <div class="earnings-debate-heading">
@@ -3471,6 +3481,7 @@ function attachEarningsDebateButton(symbol) {
 async function runEarningsDebate(symbol) {
   if (state.earningsReviewPending.has(symbol)) return;
   delete state.earningsReviewErrors[symbol];
+  delete state.earningsReviewInvalidated[symbol];
   state.earningsReviewPending.add(symbol);
   if (state.selected === symbol) renderSelection();
   try {
@@ -3481,6 +3492,7 @@ async function runEarningsDebate(symbol) {
     if (!payload.result) throw new Error("分析結果が返りませんでした。サーバーの分析状況を確認してください。");
     state.earningsReviews[symbol] = payload.result;
     state.earningsReviewLoaded.add(symbol);
+    delete state.earningsReviewInvalidated[symbol];
     toast("決算資料の差分とBull / Bear / Judge分析を保存しました。");
   } catch (error) {
     state.earningsReviewErrors[symbol] = error.message || "分析に失敗しました。";

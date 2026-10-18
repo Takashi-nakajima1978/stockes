@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { changedEdinetMaterialSymbols, EARNINGS_BEAR_SCHEMA, EARNINGS_BULL_SCHEMA, EARNINGS_JUDGE_SCHEMA, EARNINGS_REVIEW_SCHEMA, earningsMaterialFingerprint, isEarningsAutoMonitorDue, newEarningsPresentationSymbols, nextEarningsAutoMonitorAt, normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages, shouldRefreshFinancialSnapshots, staleEarningsAnalysisSymbols } from "../earnings-analysis.mjs";
+import { changedEdinetMaterialSymbols, EARNINGS_BEAR_SCHEMA, EARNINGS_BULL_SCHEMA, EARNINGS_JUDGE_SCHEMA, EARNINGS_REVIEW_SCHEMA, earningsDebateOutputIssues, earningsMaterialFingerprint, isEarningsAutoMonitorDue, newEarningsPresentationSymbols, nextEarningsAutoMonitorAt, normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages, shouldRefreshFinancialSnapshots, staleEarningsAnalysisSymbols } from "../earnings-analysis.mjs";
 
 test("earnings debate schemas require bounded structured outputs for every agent", () => {
   for (const schema of [EARNINGS_BULL_SCHEMA, EARNINGS_BEAR_SCHEMA, EARNINGS_JUDGE_SCHEMA, EARNINGS_REVIEW_SCHEMA]) {
@@ -74,6 +74,18 @@ test("earnings analysis output is bounded and invalid actions are neutralized", 
   assert.equal(result.debate.judge.thesis.length, 1600);
   assert.equal(result.narrativeComparison.newlyAddedRisks.length, 8);
   assert.equal(normalizeEarningsDebate({ sources: { current: { url: "javascript:alert(1)" } } }).sources.current.url, undefined);
+});
+
+test("earnings debate rejects repeated model-token loops without flagging normal analysis", () => {
+  assert.deepEqual(earningsDebateOutputIssues({
+    debate: { bull: { thesis: "東急は沿線価値の向上が期待されます investment-investment-investment-investment-investment" } },
+  }), ["debate.bull.thesis"]);
+  assert.deepEqual(earningsDebateOutputIssues({
+    narrativeComparison: { summary: "down-up/downgrade-down-up/downgrade-down-up/downgrade-down-up/downgrade" },
+  }), ["narrativeComparison.summary"]);
+  assert.deepEqual(earningsDebateOutputIssues({
+    debate: { judge: { thesis: "営業利益は改善しましたが、受注の持続性は次期決算で確認が必要です。" } },
+  }), []);
 });
 
 test("new or corrected EDINET filings are detected without treating first-time imports as updates", () => {

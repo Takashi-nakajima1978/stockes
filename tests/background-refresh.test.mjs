@@ -778,6 +778,11 @@ test("earnings debate panel keeps progress and failure visible in the card", () 
   assert.match(running, /分析中\.\.\./);
 
   state.earningsReviewPending.clear();
+  state.earningsReviewInvalidated = { "7013.T": true };
+  const invalidated = render({ name: "IHI", symbol: "7013.T" });
+  assert.match(invalidated, /不自然な語句の反復/);
+
+  delete state.earningsReviewInvalidated["7013.T"];
   state.earningsReviewErrors["7013.T"] = "LM Studioに接続できません";
   const failed = render({ name: "IHI", symbol: "7013.T" });
   assert.match(failed, /role="alert"/);
@@ -810,6 +815,9 @@ test("multi-role model prompts use English instructions and Japanese user-facing
   assert.match(serverSource, /response_format: options\.responseFormat/);
   assert.match(serverSource, /retryTokens = Math\.min\(2600, Math\.max\(tokenLimit \+ 500/);
   assert.match(serverSource, /responseFormat: \{ type: "json_object" \}/);
+  assert.match(serverSource, /earningsDebateOutputIssues\(output\)/);
+  assert.match(serverSource, /finalChatMessageText\(message\)/);
+  assert.doesNotMatch(serverSource, /message\.content\s*\|\|\s*message\.reasoning_content/);
   assert.match(serverSource, /schema: EARNINGS_BULL_SCHEMA/);
   assert.doesNotMatch(serverSource, /あなたは銘柄分析の強気派です|あなたは厳格な弱気派です|あなたは審判です/);
 });
