@@ -8614,7 +8614,7 @@ async function fetchYahooFundNavHistory(symbol, options = {}) {
     const url = new URL(`https://finance.yahoo.co.jp/quote/${encodeURIComponent(symbol)}/history`);
     url.searchParams.set("from", fromDate.replaceAll("-", ""));
     url.searchParams.set("to", today.replaceAll("-", ""));
-    url.searchParams.set("timeFrame", "w");
+    url.searchParams.set("timeFrame", "d");
     url.searchParams.set("page", String(page));
     const response = await fetchWithTimeout(url, {
       timeout: options.timeout || 4500,

@@ -3057,7 +3057,7 @@ test("savings valuation compares NAV-based value with stepped monthly contributi
     { date: "2026-04-13", close: 9500 },
     { date: "2026-05-04", close: 11000 },
   ]);
-  assert.deepEqual(valuation.rows.map((point) => point.principal), [5000, 5000, 10000, 10000, 15000]);
+  assert.deepEqual(valuation.rows.map((point) => point.principal), [5000, 5000, 10000, 15000]);
   assert.notEqual(valuation.rows[1].value, valuation.rows[0].value);
   assert.notEqual(valuation.rows[2].value - valuation.rows[1].value, 5000);
   assert.equal(valuation.principalSeries.length, valuation.rows.length);
@@ -3076,7 +3076,7 @@ test("fund NAV history parser reads dated observations from Yahoo history rows",
   ]);
 });
 
-test("fund NAV history pages backward through weekly rows to the requested contribution month", async () => {
+test("fund NAV history fetches daily rows through the requested contribution month", async () => {
   const calls = [];
   const fetchHistory = loadFunction(serverSource, "fetchYahooFundNavHistory", {
     URL,
@@ -3094,7 +3094,7 @@ test("fund NAV history pages backward through weekly rows to the requested contr
   });
   const series = await fetchHistory("9I31223A", { fromDate: "2026-03-01" });
   assert.equal(calls.length, 2);
-  assert.ok(calls.every((url) => new URL(url).searchParams.get("timeFrame") === "w"));
+  assert.ok(calls.every((url) => new URL(url).searchParams.get("timeFrame") === "d"));
   assert.ok(calls.every((url) => new URL(url).searchParams.get("from") === "20260301"));
   assert.equal(series.length, 28);
 });
@@ -3120,9 +3120,10 @@ test("savings screen tracks actual monthly contributions and supports editing th
   assert.doesNotMatch(appSource, /data-savings-chart-mode/);
   assert.match(appSource, /buildSavingsValuationHistory/);
   assert.match(appSource, /基準価額換算の参考評価額/);
+  assert.match(appSource, /日次の公表基準価額/);
   assert.match(appSource, /累計積立元本/);
   assert.match(serverSource, /fetchYahooFundNavHistory/);
-  assert.match(serverSource, /timeFrame", "w"/);
+  assert.match(serverSource, /timeFrame", "d"/);
   assert.match(stylesSource, /\.savings-create-fields/);
   assert.match(stylesSource, /\.savings-chart-legend/);
   const normalizeSavingsPlan = loadFunction(serverSource, "normalizeSavingsPlan", {

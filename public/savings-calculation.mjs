@@ -172,7 +172,15 @@ export function buildSavingsValuationHistory(contributionHistory = {}, navSeries
     .filter((point) => (!firstMonth || point.date >= `${firstMonth}-01`) && (!plan.today || point.date <= plan.today))
     .map((point) => [point.date, point])).values()].sort((a, b) => a.date.localeCompare(b.date));
   const quoteByMonth = new Map();
-  for (const quote of quotes) if (!quoteByMonth.has(quote.date.slice(0, 7))) quoteByMonth.set(quote.date.slice(0, 7), quote);
+  for (const quote of quotes) {
+    const month = quote.date.slice(0, 7);
+    const current = quoteByMonth.get(month);
+    const day = Number(quote.date.slice(8, 10));
+    const currentDay = current ? Number(current.date.slice(8, 10)) : Infinity;
+    if (!current || Math.abs(day - 12) < Math.abs(currentDay - 12) || (Math.abs(day - 12) === Math.abs(currentDay - 12) && day < currentDay)) {
+      quoteByMonth.set(month, quote);
+    }
+  }
   const anchorDate = plan.currentValueDate || quotes.at(-1)?.date || "";
   const anchored = plan.balanceBasis !== "opening" && Number(plan.currentValue) > 0;
   const snapshotPrincipalKnown = plan.currentPrincipal !== null && plan.currentPrincipal !== undefined && plan.currentPrincipal !== "" && Number.isFinite(Number(plan.currentPrincipal)) && Number(plan.currentPrincipal) >= 0;

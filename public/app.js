@@ -892,7 +892,7 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
   const historyNote = series?.error
     ? `基準価額を取得できません: ${series.error}`
     : series?.series?.length
-      ? `週次の公表基準価額 ${formatDate(valuation.rows[0]?.date || series.series[0].date)}〜${formatDate(valuation.rows.at(-1)?.date || series.series.at(-1).date)}を使用。月内の最初の観測値で口数換算した参考評価額です。`
+      ? `日次の公表基準価額 ${formatDate(valuation.rows[0]?.date || series.series[0].date)}〜${formatDate(valuation.rows.at(-1)?.date || series.series.at(-1).date)}を使用。各月12日に最も近い観測値で口数換算した参考評価額です。実際の約定日・価格とは異なる場合があります。`
       : series?.loading
         ? "基準価額を取得しています。"
         : "ファンドコードから基準価額の履歴を取得します。";

@@ -39,6 +39,29 @@ test("an entered starting balance includes all holdings and known cost enables t
   assert.equal(result.comparisonLabel, "投資元本（開始前を含む）");
 });
 
+test("monthly contributions use the NAV observation closest to the 12th", () => {
+  const contributions = buildSavingsContributionHistory({ recurring: false, schedule: [{ month: "2026-06", amount: 12000 }] }, "2026-06");
+  const prices = [
+    { date: "2026-06-04", close: 100 },
+    { date: "2026-06-11", close: 200 },
+    { date: "2026-06-19", close: 300 },
+  ];
+  const result = buildSavingsValuationHistory(contributions, prices);
+  near(result.rows.find((point) => point.date === "2026-06-11").value, 12000);
+  near(result.rows.find((point) => point.date === "2026-06-19").value, 18000);
+});
+
+test("equidistant NAV observations prefer the date before the 12th", () => {
+  const contributions = buildSavingsContributionHistory({ recurring: false, schedule: [{ month: "2026-06", amount: 12000 }] }, "2026-06");
+  const prices = [
+    { date: "2026-06-05", close: 100 },
+    { date: "2026-06-19", close: 200 },
+  ];
+  const result = buildSavingsValuationHistory(contributions, prices);
+  near(result.rows.find((point) => point.date === "2026-06-05").value, 12000);
+  near(result.rows.find((point) => point.date === "2026-06-19").value, 24000);
+});
+
 test("a prior-month snapshot does not double count the snapshot month's purchase later", () => {
   const contributions = { ...plan, schedule: [...plan.schedule, { month: "2026-10", amount: 10000 }] };
   const throughOctober = buildSavingsContributionHistory(contributions, "2026-10");
