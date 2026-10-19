@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collectNisaStockPurchases, savingsNisaAllowance } from "../public/savings-calculation.mjs";
+import { collectNisaStockPurchases, savingsCurrentMonthBooked, savingsNisaAllowance } from "../public/savings-calculation.mjs";
 
 const context = { available: true, purchases: [], growthAnnualLimit: 2400000 };
 const monthly = (id, amount, type = "nisa-tsumitate", provider = "rakuten") => ({ id, provider, accountType: type, recurring: true, schedule: [{ month: "2026-01", amount }] });
@@ -25,8 +25,8 @@ test("funds share one annual allowance and first excess month is visible", () =>
   const result = savingsNisaAllowance([monthly("a", 70000), monthly("b", 40000)], context, "2026-10-13");
   const current = bucket(result);
   assert.equal(current.planned, 1320000);
-  assert.equal(current.used, 990000);
-  assert.equal(current.remainingNow, 210000);
+  assert.equal(current.used, 1100000);
+  assert.equal(current.remainingNow, 100000);
   assert.equal(current.remaining, 0);
   assert.equal(current.excess, 120000);
   assert.equal(current.firstExcessMonth, "2026-11");
@@ -40,8 +40,8 @@ test("growth savings share the limit with Japanese NISA stock purchases even aft
   const growth = bucket(result, "nisa-growth");
   assert.equal(growth.stockPlanned, 2000000);
   assert.equal(growth.planned, 2480000);
-  assert.equal(growth.used, 2360000);
-  assert.equal(growth.remainingNow, 40000);
+  assert.equal(growth.used, 2400000);
+  assert.equal(growth.remainingNow, 0);
   assert.equal(growth.excess, 80000);
   assert.equal(growth.firstExcessMonth, "2026-11");
 });
@@ -75,12 +75,22 @@ test("future amount changes and a lower configured growth cap are respected", ()
 });
 
 test("snapshot month inclusion changes booked amount, not full-year plans", () => {
-  const plan = { ...monthly("fund", 100000), currentValueDate: "2026-10-13", currentMonthIncluded: true };
+  const plan = { ...monthly("fund", 100000), currentValue: 1000000, currentValueDate: "2026-10-13", currentMonthIncluded: true };
   const result = savingsNisaAllowance([plan], context, "2026-10-13");
   assert.equal(bucket(result).used, 1000000);
   assert.equal(bucket(result).planned, 1200000);
   assert.equal(bucket(savingsNisaAllowance([{ ...plan, currentValueDate: "2026-10-30" }], context, "2026-10-13")).used, 900000);
   assert.equal(bucket(savingsNisaAllowance([{ ...plan, currentMonthIncluded: false }], context, "2026-10-13")).used, 900000);
+  assert.equal(savingsCurrentMonthBooked({ ...plan, currentValue: 0, currentMonthIncluded: false }, "2026-10-13"), true);
+});
+
+test("the 12th purchase is added to the current month after purchase without double counting a later snapshot", () => {
+  const base = { ...monthly("fund", 100000), currentValue: 1000000, currentValueDate: "2026-10-11", currentMonthIncluded: false };
+  assert.equal(savingsCurrentMonthBooked(base, "2026-10-11"), false);
+  assert.equal(savingsCurrentMonthBooked(base, "2026-10-12"), true);
+  assert.equal(bucket(savingsNisaAllowance([base], context, "2026-10-12")).used, 1000000);
+  assert.equal(savingsCurrentMonthBooked({ ...base, currentValueDate: "2026-10-13" }, "2026-10-19"), false);
+  assert.equal(savingsCurrentMonthBooked({ ...base, currentValueDate: "2026-10-13", currentMonthIncluded: true }, "2026-10-19"), true);
 });
 
 test("new years reset the annual limit and do not carry unused allowance or old stock purchases forward", () => {

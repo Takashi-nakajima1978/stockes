@@ -20,6 +20,19 @@ function validNisaDate(value) {
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
+export function savingsCurrentMonthBooked(plan = {}, today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())) {
+  if (!validNisaDate(today)) return false;
+  const month = today.slice(0, 7);
+  if (!(scheduledContribution(plan.schedule, month, Boolean(plan.recurring)) > 0)) return false;
+  const purchaseDate = `${month}-12`;
+  const snapshotDate = validNisaDate(plan.currentValueDate) ? plan.currentValueDate : "";
+  if (plan.currentMonthIncluded && snapshotDate.startsWith(`${month}-`) && snapshotDate <= today) return true;
+  const hasSnapshotValue = Number(plan.currentValue) > 0;
+  if (today < purchaseDate) return false;
+  if (!hasSnapshotValue) return !snapshotDate || snapshotDate <= today;
+  return Boolean(snapshotDate && snapshotDate < purchaseDate);
+}
+
 export function collectNisaStockPurchases(stocks = []) {
   const byDate = new Map();
   let undatedCount = 0;
@@ -52,7 +65,7 @@ export function savingsNisaAllowance(plans = [], context = {}, today = new Intl.
       const bucket = buckets.get(savingsAccountType(plan));
       if (!bucket) continue;
       let planned = 0;
-      const included = plan.currentMonthIncluded && plan.currentValueDate?.slice(0, 7) === currentMonth && plan.currentValueDate <= today;
+      const included = savingsCurrentMonthBooked(plan, today);
       for (let index = 0; index < 12; index += 1) {
         const month = `${targetYear}-${String(index + 1).padStart(2, "0")}`;
         const amount = scheduledContribution(plan.schedule, month, Boolean(plan.recurring));

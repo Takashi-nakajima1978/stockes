@@ -1,4 +1,4 @@
-import { buildSavingsContributionHistory, buildSavingsValuationHistory, buildSavingsTaxComparison, savingsAccountType, savingsNisaAllowance } from "./savings-calculation.mjs";
+import { buildSavingsContributionHistory, buildSavingsValuationHistory, buildSavingsTaxComparison, savingsAccountType, savingsCurrentMonthBooked, savingsNisaAllowance } from "./savings-calculation.mjs";
 import { initializeBackupSettings } from "./backup-settings.mjs";
 
 const yenFormats = [0, 1].map((maximumFractionDigits) => new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY", maximumFractionDigits }));
@@ -765,7 +765,7 @@ function renderSavings() {
   const nisaAllowance = savingsNisaAllowance(state.savingsPlans, state.savingsNisaContext);
   const views = new Map(state.savingsPlans.map((plan) => {
     const valueDate = plan.currentValueDate || localDateKey();
-    const includeCurrent = plan.currentMonthIncluded && valueDate.slice(0, 7) === currentMonth;
+    const includeCurrent = savingsCurrentMonthBooked(plan, localDateKey());
     const history = buildSavingsContributionHistory(plan, includeCurrent ? currentMonth : completedThrough, currentMonth);
     const series = state.savingsSeries[plan.symbol]?.series || [];
     return [plan.id, { history, nisaAllowance, valuation: buildSavingsValuationHistory(history, series, { ...plan, currentValueDate: valueDate, today: localDateKey() }) }];
@@ -846,7 +846,7 @@ async function renderSavingsForecast(node, plan) {
       </div>
       <div class="savings-chart-legend"><span><i class="savings-legend-forecast"></i>評価額の参考予測（代表シナリオ）</span><span><i class="savings-legend-principal"></i>現在評価額＋追加積立（運用なし）</span></div>
       <div class="performance-chart-wrap savings-chart-wrap"><canvas data-savings-chart="${escapeAttr(plan.id)}:forecast" aria-label="今後1年の積立評価額予測と運用しない場合の比較"></canvas><div class="chart-tooltip" data-savings-tooltip hidden></div></div>
-      <p class="savings-history-note">基準価額 ${escapeHtml(result.sourceDate)}を起点に、過去3年以内の連続52週の値動き${result.pathCount}通りを比較。点線は1年後の基準価額が中央値に近い1経路、帯は各時点の10〜90%幅で、保証範囲ではありません。積立は月末買付の仮定（当月未計上分を含み、当日が月末なら翌日）。値動きは週次、月末も表示。分配金・税金・手数料・拠出限度による調整は未反映です。</p>
+      <p class="savings-history-note">基準価額 ${escapeHtml(result.sourceDate)}を起点に、過去3年以内の連続52週の値動き${result.pathCount}通りを比較。点線は1年後の基準価額が中央値に近い1経路、帯は各時点の10〜90%幅で、保証範囲ではありません。積立は毎月12日ごろ買付の仮定（当月分が未計上で買付日を過ぎた場合は翌日）。値動きは週次、月末も表示。分配金・税金・手数料・拠出限度による調整は未反映です。</p>
       <section class="forecast-review" data-savings-reliability aria-label="積立予測の信頼度"></section>
       <details class="savings-month-history"><summary>月別の予測額・積立額</summary><div class="savings-month-table-wrap"><table><thead><tr><th>対象日</th><th>追加積立</th><th>追加累計</th><th>参考評価額</th><th>運用増減</th><th>参考幅</th></tr></thead><tbody>${result.monthly.map((row) => `<tr><th>${escapeHtml(row.date)}</th><td>${yen(flowByDate.get(row.date) || 0)}</td><td>${yen(row.contributions)}</td><td>${yen(row.value)}</td><td class="${row.gain >= 0 ? "gain" : "loss"}">${moneyChange(row.gain)}</td><td>${yen(row.low)}〜${yen(row.high)}</td></tr>`).join("")}</tbody></table></div></details>`;
     node.querySelector("[data-savings-reliability]").innerHTML = forecastReliabilityHtml(null, result.reliability, result.navForecast, yen, result.reliabilityError, { savings: true, horizon: "1年先" });
@@ -905,7 +905,7 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
     <tr><th scope="row">${escapeHtml(row.month)}</th><td>${row.amount ? yen(row.amount) : "-"}</td><td>${yen(row.total)}</td></tr>
   `).join("");
   const currentMonthRow = latestMonth === localMonthKey() ? "" : `
-    <tr class="savings-current-month"><th scope="row">${escapeHtml(localMonthKey())} 設定</th><td>${history.monthlyAmount ? yen(history.monthlyAmount) : "-"}</td><td>${yen(history.total)}<small>月内のため未計上</small></td></tr>
+    <tr class="savings-current-month"><th scope="row">${escapeHtml(localMonthKey())} 設定</th><td>${history.monthlyAmount ? yen(history.monthlyAmount) : "-"}</td><td>${yen(history.total)}<small>12日ごろの買付前のため未計上</small></td></tr>
   `;
   return `
     <article class="savings-plan" data-savings-plan="${escapeAttr(plan.id)}">
@@ -926,7 +926,7 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
       ${savingsTaxComparisonHtml(comparison)}
       <section class="savings-chart-section">
         <div class="savings-chart-heading"><h4>積立記録グラフ</h4><span>${escapeHtml(historySummary)}</span></div>
-        <p class="savings-history-note">${plan.recurring ? latestMonth === localMonthKey() ? "継続中・当月の積立は反映済みです。" : `継続中・月が変わると前月分を追加。次回 ${escapeHtml(calendarMonthOffset(`${localMonthKey()}-01`, 1).slice(0, 7))}に${escapeHtml(localMonthKey())}分 ${yen(history.monthlyAmount)}を計上します。` : "継続停止中・登録した月の積立額だけを計上します。"} 基準価額は表示中に自動更新します。</p>
+        <p class="savings-history-note">${plan.recurring ? latestMonth === localMonthKey() ? "継続中・毎月12日ごろの買付分を当月累計に反映しています。" : "継続中・毎月12日ごろの買付前は当月分を未計上にし、買付後に追加します。" : "継続停止中・登録した月の積立額だけを計上します。"} 基準価額は表示中に自動更新します。</p>
         <div class="savings-chart-legend" aria-label="グラフの凡例">
           <span><i class="savings-legend-value"></i>${valueLabel}</span>
           <span><i class="savings-legend-principal"></i>${escapeHtml(valuation.comparisonLabel || "累計積立元本")}</span>

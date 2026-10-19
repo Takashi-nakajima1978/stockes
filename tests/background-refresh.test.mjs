@@ -3119,6 +3119,7 @@ test("savings screen tracks actual monthly contributions and supports editing th
   assert.match(appSource, /name="symbol" maxlength="14" required pattern=/);
   assert.doesNotMatch(appSource, /data-savings-chart-mode/);
   assert.match(appSource, /buildSavingsValuationHistory/);
+  assert.match(appSource, /savingsCurrentMonthBooked\(plan, localDateKey\(\)\)/);
   assert.match(appSource, /基準価額換算の参考評価額/);
   assert.match(appSource, /日次の公表基準価額/);
   assert.match(appSource, /累計積立元本/);

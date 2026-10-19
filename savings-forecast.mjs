@@ -1,6 +1,6 @@
-import { buildSavingsContributionHistory, buildSavingsValuationHistory, scheduledContribution } from "./public/savings-calculation.mjs";
+import { buildSavingsContributionHistory, buildSavingsValuationHistory, scheduledContribution, savingsCurrentMonthBooked } from "./public/savings-calculation.mjs";
 
-export const SAVINGS_FORECAST_VERSION = "savings-annual-window-v1";
+export const SAVINGS_FORECAST_VERSION = "savings-12th-purchase-window-v2";
 const DAY = 86400000;
 const time = (date) => Date.parse(`${date}T00:00:00Z`);
 const dateKey = (value) => new Date(value).toISOString().slice(0, 10);
@@ -27,7 +27,7 @@ export function buildSavingsForecast(plan, series, today) {
   if (!latest || now - time(latest.date) > 14 * DAY) return { error: "基準価額が古いため、1年予測を作成できません。再取得してください。" };
   const month = today.slice(0, 7);
   const monthStart = new Date(time(`${month}-01`));
-  const includeCurrent = plan.currentMonthIncluded && plan.currentValueDate?.slice(0, 7) === month;
+  const includeCurrent = savingsCurrentMonthBooked(plan, today);
   const through = includeCurrent ? month : dateKey(new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth(), 0))).slice(0, 7);
   const history = buildSavingsContributionHistory(plan, through, month);
   const valuation = buildSavingsValuationHistory(history, quotes, { ...plan, currentValueDate: plan.currentValueDate || today, today });
@@ -57,9 +57,9 @@ export function buildSavingsForecast(plan, series, today) {
   for (let at = now + 7 * DAY; at < end; at += 7 * DAY) dates.add(dateKey(at));
   const cashflows = [];
   for (let offset = 0; offset <= 12; offset += 1) {
-    const lastDay = Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + offset + 1, 0);
-    const key = dateKey(lastDay).slice(0, 7);
-    const at = Math.max(now + DAY, lastDay);
+    const key = dateKey(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + offset, 1)).slice(0, 7);
+    const purchaseDate = time(`${key}-12`);
+    const at = Math.max(now + DAY, purchaseDate);
     if (at > end) continue;
     dates.add(dateKey(at));
     if (offset === 0 && includeCurrent) continue;

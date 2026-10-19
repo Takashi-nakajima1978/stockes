@@ -26,13 +26,14 @@ test("one-year savings forecast preserves holdings, adds deposits and separates 
   assert.equal(result.endDate, "2027-10-14");
   assert.ok(result.forecast.length >= 53);
   assert.equal(result.originValue, 2467742);
-  assert.equal(result.cashflows.length, 12);
-  assert.equal(result.cashflows[0].date, "2026-10-31");
+  assert.equal(result.cashflows.length, 13);
+  assert.equal(result.cashflows[0].date, "2026-10-15");
+  assert.equal(result.cashflows[1].date, "2026-11-12");
   const last = result.forecast.at(-1);
-  assert.equal(last.contributions, 37800 * 12);
-  assert.ok(Math.abs(last.value - (2467742 + 37800 * 12)) < 1e-8);
+  assert.equal(last.contributions, 37800 * 13);
+  assert.ok(Math.abs(last.value - (2467742 + 37800 * 13)) < 1e-8);
   assert.ok(Math.abs(last.gain) < 1e-8);
-  assert.equal(result.baseline.at(-1).value, 2467742 + 37800 * 12);
+  assert.equal(result.baseline.at(-1).value, 2467742 + 37800 * 13);
   assert.equal(result.monthly.at(-1).date, result.endDate);
 });
 
@@ -41,9 +42,9 @@ test("month-specific changes, included current month and non-recurring settings 
   const result = buildSavingsForecast(changed, seriesFor(today, true), today);
   assert.equal(result.cashflows[0].month, "2026-11");
   assert.equal(result.forecast[0].value, plan.currentValue);
-  assert.equal(result.forecast.at(-1).contributions, 37800 * 2 + 100000 * 9);
+  assert.equal(result.forecast.at(-1).contributions, 37800 * 2 + 100000 * 10);
   const stopped = buildSavingsForecast({ ...changed, recurring: false }, seriesFor(today, true), today);
-  assert.deepEqual(stopped.cashflows, [{ date: "2027-01-31", month: "2027-01", amount: 100000 }]);
+  assert.deepEqual(stopped.cashflows, [{ date: "2027-01-12", month: "2027-01", amount: 100000 }]);
 });
 
 test("forecast paths vary weekly, are repeatable, and do not use future observations", () => {
@@ -56,6 +57,15 @@ test("forecast paths vary weekly, are repeatable, and do not use future observat
   assert.ok(first.forecast.at(-1).high > first.forecast.at(-1).low);
   assert.ok(first.forecast.every((p) => p.value > 0 && p.low <= p.high));
   assert.equal(first.forecast.at(-1).gain, first.forecast.at(-1).value - first.baseline.at(-1).value);
+});
+
+test("a purchase made around the 12th is included now and not forecast a second time", () => {
+  const planBeforePurchase = { ...plan, currentValueDate: "2026-10-11", currentMonthIncluded: false };
+  const result = buildSavingsForecast(planBeforePurchase, seriesFor("2026-10-19", true), "2026-10-19");
+  assert.equal(result.cashflows[0].month, "2026-11");
+  assert.equal(result.cashflows[0].date, "2026-11-12");
+  assert.equal(result.cashflows.length, 12);
+  assert.ok(result.originValue > plan.currentValue, "the current month's purchase is included in the starting valuation");
 });
 
 test("fund price forecast does not change when balances or monthly deposits change", () => {
@@ -74,7 +84,7 @@ test("insufficient or stale NAV and inconsistent balances never produce a fabric
   assert.match(buildSavingsForecast(plan, sparse, today).error, /履歴が不足/);
 });
 
-test("calendar years clamp leap days, and a month-end unbooked deposit happens after the origin", () => {
+test("calendar years clamp leap days, and an unbooked purchase date never precedes the forecast origin", () => {
   const leap = "2024-02-29";
   const result = buildSavingsForecast({ ...plan, currentValueDate: leap, schedule: [{ month: "2023-04", amount: 5000 }] }, seriesFor(leap), leap);
   assert.equal(result.endDate, "2025-02-28");
