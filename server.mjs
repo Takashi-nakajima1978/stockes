@@ -12257,7 +12257,8 @@ function positionMetrics(stock, price = {}) {
   const positions = normalizePositions(stock);
   const sales = normalizeSales(stock);
   const aggregate = aggregatePositions(positions);
-  const lotState = positionLotState(positions, sales);
+  const fractionalDigits = String(stock.symbol || "").toUpperCase().endsWith(".T") ? 6 : 8;
+  const lotState = positionLotState(positions, sales, fractionalDigits);
   const grossQuantity = aggregate.quantity || 0;
   const grossInvested = aggregate.invested || 0;
   const soldQuantity = lotState.soldQuantity || 0;
@@ -12737,7 +12738,9 @@ function aggregateSales(sales) {
   };
 }
 
-function positionLotState(positions = [], sales = []) {
+function positionLotState(positions = [], sales = [], fractionalDigits = 6) {
+  const precision = 10 ** fractionalDigits;
+  const roundQuantity = (value) => Math.round(value * precision) / precision;
   const remainingLots = positions.map((lot) => ({ ...lot }));
   let soldQuantity = 0;
   let realizedCost = 0;
@@ -12760,25 +12763,27 @@ function positionLotState(positions = [], sales = []) {
     unmatchedSaleQuantity += saleLeft;
   }
 
+  const minimumQuantity = fractionalDigits <= 6 ? 0.000001 : 0;
   const openLots = remainingLots
-    .filter((lot) => lot.quantity > 0.000001)
+    .filter((lot) => lot.quantity > minimumQuantity)
     .map((lot) => ({
       purchaseDate: lot.purchaseDate,
       purchasePrice: lot.purchasePrice,
-      quantity: Math.round(lot.quantity * 1000000) / 1000000,
+      quantity: roundQuantity(lot.quantity),
       accountType: lot.accountType,
-    }));
+    }))
+    .filter((lot) => lot.quantity > 0);
   const remainingQuantity = openLots.reduce((sum, lot) => sum + lot.quantity, 0);
   const remainingInvested = openLots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
 
   return {
     remainingLots: openLots,
-    soldQuantity: Math.round(soldQuantity * 1000000) / 1000000,
-    remainingQuantity: Math.round(remainingQuantity * 1000000) / 1000000,
+    soldQuantity: roundQuantity(soldQuantity),
+    remainingQuantity: roundQuantity(remainingQuantity),
     remainingInvested,
     realizedCost,
     realizedProceeds,
-    unmatchedSaleQuantity: Math.round(unmatchedSaleQuantity * 1000000) / 1000000,
+    unmatchedSaleQuantity: roundQuantity(unmatchedSaleQuantity),
   };
 }
 

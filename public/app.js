@@ -421,6 +421,15 @@ function shareCount(value) {
   return `${value.toLocaleString("ja-JP", { maximumFractionDigits: 4 })}株`;
 }
 
+function usShareCount(value) {
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  return `${value.toLocaleString("ja-JP", { maximumFractionDigits: 8 })}株`;
+}
+
+function quantityPrecisionForStock(stock = {}) {
+  return String(stock.symbol || "").toUpperCase().endsWith(".T") ? 6 : 8;
+}
+
 function multipleText(value) {
   return Number.isFinite(value) ? `${value.toFixed(value >= 10 ? 1 : 2)}倍` : "-";
 }
@@ -2296,7 +2305,7 @@ function renderUsTable() {
         </td>
         <td>${usd(analysis?.price?.current)}${usPriceDateLabel(analysis?.price?.priceDate)}</td>
         <td>${averagePriceCell(position, usd)}</td>
-        <td>${shareCount(position.quantity)}</td>
+        <td>${usShareCount(position.quantity)}</td>
         <td>${positionPnlUsd(position)}</td>
         <td>${dividendCell(position, analysis?.price, usd)}</td>
         <td>${multipleText(fundamentals.trailingPe)}</td>
@@ -3252,7 +3261,7 @@ function usPositionEditor(stock, position, price = {}) {
           <span></span>
         </div>
         <div class="lot-list">
-          ${displayLots.map((lot) => lotRow(lot)).join("")}
+          ${displayLots.map((lot) => lotRow(lot, { fractionalDigits: 8 })).join("")}
         </div>
         <button type="button" class="secondary add-lot" data-add-lot>明細を追加</button>
       </div>
@@ -3265,7 +3274,7 @@ function usPositionEditor(stock, position, price = {}) {
           <span></span>
         </div>
         <div class="sale-list">
-          ${displaySales.map((lot) => saleRow(lot)).join("")}
+          ${displaySales.map((lot) => saleRow(lot, { fractionalDigits: 8 })).join("")}
         </div>
         <button type="button" class="secondary add-lot" data-add-sale>売却明細を追加</button>
       </div>
@@ -3273,8 +3282,8 @@ function usPositionEditor(stock, position, price = {}) {
         <span><strong>取引口座</strong>Revolut USA / USD</span>
         <span><strong>平均取得</strong>${usd(metrics.purchasePrice)}</span>
         <span><strong>平均売却</strong>${usd(metrics.averageSellPrice)}</span>
-        <span><strong>残株数</strong>${shareCount(metrics.quantity)}</span>
-        <span><strong>売却済み</strong>${shareCount(metrics.soldQuantity)}</span>
+        <span><strong>残株数</strong>${usShareCount(metrics.quantity)}</span>
+        <span><strong>売却済み</strong>${usShareCount(metrics.soldQuantity)}</span>
         <span><strong>配当込み損益</strong>${positionPnlUsd(metrics)}</span>
         <span><strong>株価損益</strong>${usd(metrics.pnlAmount)}</span>
         <span><strong>確定損益</strong>${usd(metrics.realizedPnlAmount)}</span>
@@ -3287,8 +3296,8 @@ function usPositionEditor(stock, position, price = {}) {
         <span><strong>残り元本</strong>${usd(metrics.invested)}</span>
         <span><strong>評価額</strong>${usd(metrics.marketValue)}</span>
       </div>
-      ${metrics.unmatchedSaleQuantity > 0 ? `<p class="unmatched-sale-warning">売却明細のうち${shareCount(metrics.unmatchedSaleQuantity)}は購入明細に割り当てられていません。購入明細の日付・株数を確認してください。</p>` : ""}
-      ${priceReservationEditor(stock, usd, "予約価格 USD")}
+      ${metrics.unmatchedSaleQuantity > 0 ? `<p class="unmatched-sale-warning">売却明細のうち${usShareCount(metrics.unmatchedSaleQuantity)}は購入明細に割り当てられていません。購入明細の日付・株数を確認してください。</p>` : ""}
+      ${priceReservationEditor(stock, usd, "予約価格 USD", { fractionalDigits: 8 })}
       <button type="submit">保存</button>
     </form>
   `;
@@ -3300,11 +3309,11 @@ function attachUsPositionForm(symbol) {
   attachDetailFormEditGuard(form);
   form.querySelector("[data-add-lot]")?.addEventListener("click", () => {
     const list = form.querySelector(".lot-list");
-    list.insertAdjacentHTML("beforeend", lotRow({ purchaseDate: "", purchasePrice: null, quantity: null }));
+    list.insertAdjacentHTML("beforeend", lotRow({ purchaseDate: "", purchasePrice: null, quantity: null }, { fractionalDigits: 8 }));
   });
   form.querySelector("[data-add-sale]")?.addEventListener("click", () => {
     const list = form.querySelector(".sale-list");
-    list.insertAdjacentHTML("beforeend", saleRow({ sellDate: "", sellPrice: null, quantity: null }));
+    list.insertAdjacentHTML("beforeend", saleRow({ sellDate: "", sellPrice: null, quantity: null }, { fractionalDigits: 8 }));
   });
   attachPriceReservationControls(form);
   form.addEventListener("click", (event) => {
@@ -6512,7 +6521,7 @@ function isNoUpsideChart(price = {}) {
 function positionMetrics(stock, price = {}) {
   const lots = positionLots(stock);
   const sales = saleLots(stock);
-  const lotState = positionLotState(lots, sales);
+  const lotState = positionLotState(lots, sales, quantityPrecisionForStock(stock));
   const grossQuantity = lots.reduce((sum, lot) => sum + lot.quantity, 0);
   const grossInvested = lots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
   const soldQuantity = lotState.soldQuantity;
@@ -6581,7 +6590,9 @@ function positionMetrics(stock, price = {}) {
   };
 }
 
-function positionLotState(positions = [], sales = []) {
+function positionLotState(positions = [], sales = [], fractionalDigits = 6) {
+  const precision = 10 ** fractionalDigits;
+  const roundQuantity = (value) => Math.round(value * precision) / precision;
   const remainingLots = positions.map((lot) => ({ ...lot }));
   let soldQuantity = 0;
   let realizedCost = 0;
@@ -6604,19 +6615,21 @@ function positionLotState(positions = [], sales = []) {
     unmatchedSaleQuantity += saleLeft;
   }
 
+  const minimumQuantity = fractionalDigits <= 6 ? 0.000001 : 0;
   const openLots = remainingLots
-    .filter((lot) => lot.quantity > 0.000001)
-    .map((lot) => ({ ...lot, quantity: Math.round(lot.quantity * 1000000) / 1000000 }));
+    .filter((lot) => lot.quantity > minimumQuantity)
+    .map((lot) => ({ ...lot, quantity: roundQuantity(lot.quantity) }))
+    .filter((lot) => lot.quantity > 0);
   const remainingQuantity = openLots.reduce((sum, lot) => sum + lot.quantity, 0);
   const remainingInvested = openLots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
   return {
     remainingLots: openLots,
-    soldQuantity: Math.round(soldQuantity * 1000000) / 1000000,
-    remainingQuantity: Math.round(remainingQuantity * 1000000) / 1000000,
+    soldQuantity: roundQuantity(soldQuantity),
+    remainingQuantity: roundQuantity(remainingQuantity),
     remainingInvested,
     realizedCost,
     realizedProceeds,
-    unmatchedSaleQuantity: Math.round(unmatchedSaleQuantity * 1000000) / 1000000,
+    unmatchedSaleQuantity: roundQuantity(unmatchedSaleQuantity),
   };
 }
 
@@ -6865,7 +6878,7 @@ function portfolioPerformanceTimeline(stocks = [], analyses = {}, nowValue = new
       const historicalPrice = current
         ? Number(price.current) > 0 ? Number(price.current) : null
         : (price.series || []).filter((point) => point.date <= date).at(-1)?.close || null;
-      const lotState = positionLotState(lots, sales);
+      const lotState = positionLotState(lots, sales, quantityPrecisionForStock(stock));
       if (lotState.remainingQuantity > 0 && !(Number(historicalPrice) > 0)) {
         incomplete = true;
         continue;
@@ -8547,6 +8560,11 @@ function cryptoPnl(amount, ratio, formatter) {
 
 function lotRow(lot, options = {}) {
   const showAccount = options.accountType === true;
+  const fractionalDigits = Number.isInteger(options.fractionalDigits) ? options.fractionalDigits : 4;
+  const quantityStep = (10 ** -fractionalDigits).toFixed(fractionalDigits);
+  const quantityValue = Number.isFinite(Number(lot.quantity)) && Number(lot.quantity) > 0
+    ? Number(lot.quantity).toFixed(fractionalDigits).replace(/\.?0+$/, "")
+    : "";
   return `
     <div class="lot-row${showAccount ? " has-account" : ""}">
       <label>
@@ -8564,14 +8582,19 @@ function lotRow(lot, options = {}) {
       </label>
       <label>
         <span>株数</span>
-        <input name="quantity" type="number" min="0" step="0.0001" value="${numberValue(lot.quantity)}">
+        <input name="quantity" type="number" min="0" step="${quantityStep}" value="${quantityValue}">
       </label>
       <button type="button" class="icon lot-remove" data-remove-lot aria-label="明細を削除">×</button>
     </div>
   `;
 }
 
-function saleRow(lot) {
+function saleRow(lot, options = {}) {
+  const fractionalDigits = Number.isInteger(options.fractionalDigits) ? options.fractionalDigits : 4;
+  const quantityStep = (10 ** -fractionalDigits).toFixed(fractionalDigits);
+  const quantityValue = Number.isFinite(Number(lot.quantity)) && Number(lot.quantity) > 0
+    ? Number(lot.quantity).toFixed(fractionalDigits).replace(/\.?0+$/, "")
+    : "";
   return `
     <div class="lot-row sale-row">
       <label>
@@ -8584,7 +8607,7 @@ function saleRow(lot) {
       </label>
       <label>
         <span>株数</span>
-        <input name="sellQuantity" type="number" min="0" step="0.0001" value="${numberValue(lot.quantity)}">
+        <input name="sellQuantity" type="number" min="0" step="${quantityStep}" value="${quantityValue}">
       </label>
       <button type="button" class="icon lot-remove" data-remove-sale aria-label="売却明細を削除">×</button>
     </div>
@@ -8618,8 +8641,13 @@ function readSaleRows(form) {
     .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99"));
 }
 
-function priceReservationEditor(stock, formatter = yen, priceLabel = "予約価格") {
+function priceReservationEditor(stock, formatter = yen, priceLabel = "予約価格", options = {}) {
   const reservation = priceReservationValue(stock);
+  const fractionalDigits = Number.isInteger(options.fractionalDigits) ? options.fractionalDigits : 4;
+  const quantityStep = (10 ** -fractionalDigits).toFixed(fractionalDigits);
+  const quantityValue = Number.isFinite(Number(reservation.quantity)) && Number(reservation.quantity) > 0
+    ? Number(reservation.quantity).toFixed(fractionalDigits).replace(/\.?0+$/, "")
+    : "";
   return `
     <div class="price-reservation" aria-label="価格予約">
       <div class="reservation-title">
@@ -8639,7 +8667,7 @@ function priceReservationEditor(stock, formatter = yen, priceLabel = "予約価�
         </label>
         <label>
           <span>株数</span>
-          <input name="reservationQuantity" type="number" min="0" step="0.0001" value="${numberValue(reservation.quantity)}" placeholder="例: 100">
+          <input name="reservationQuantity" type="number" min="0" step="${quantityStep}" value="${quantityValue}" placeholder="例: 100">
         </label>
         <div class="reservation-expiry-field">
           <label>
@@ -8655,7 +8683,7 @@ function priceReservationEditor(stock, formatter = yen, priceLabel = "予約価�
       </div>
       <div class="reservation-summary">
         <strong>現在の予約</strong>
-        <span>${escapeHtml(priceReservationSummary(reservation, formatter))}</span>
+        <span>${escapeHtml(priceReservationSummary(reservation, formatter, options.fractionalDigits === 8 ? usShareCount : shareCount))}</span>
       </div>
     </div>
   `;
@@ -8685,12 +8713,12 @@ function reservationSideLabel(value = "") {
   return value === "buy" ? "買い予約" : value === "sell" ? "売り予約" : "";
 }
 
-function priceReservationSummary(reservation, formatter = yen) {
+function priceReservationSummary(reservation, formatter = yen, quantityFormatter = shareCount) {
   const parts = [];
   const side = reservationSideLabel(reservation.side);
   if (side) parts.push(side);
   if (Number.isFinite(reservation.price)) parts.push(formatter(reservation.price));
-  if (Number.isFinite(reservation.quantity)) parts.push(shareCount(reservation.quantity));
+  if (Number.isFinite(reservation.quantity)) parts.push(quantityFormatter(reservation.quantity));
   if (reservation.expiresAt) parts.push(`${reservation.expiresAt}まで`);
   if (reservation.note) parts.push(reservation.note);
   return parts.length ? parts.join(" / ") : "未入力";

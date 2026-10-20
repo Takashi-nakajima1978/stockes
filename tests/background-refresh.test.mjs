@@ -109,6 +109,7 @@ test("US list keeps current and acquisition prices adjacent with matching header
     averagePriceCell,
     usPriceDateLabel,
     shareCount: (value) => `${value}株`,
+    usShareCount: (value) => `${value}株`,
     positionPnlUsd: () => "pnl",
     dividendCell: () => "dividend",
     multipleText: (value) => `${value}倍`,
@@ -1713,6 +1714,7 @@ test("FIFO realized and unrealized P/L retain completed loss cycles after rebuy"
     positionLots: (stock) => stock.positions,
     saleLots: (stock) => stock.sales,
     positionLotState: browserLotState,
+    quantityPrecisionForStock: (stock) => String(stock.symbol || "").toUpperCase().endsWith(".T") ? 6 : 8,
     finiteOrNull: (value) => Number.isFinite(Number(value)) ? Number(value) : null,
     finiteOrZero: (value) => Number.isFinite(Number(value)) ? Number(value) : 0,
     daysSince: () => 1,
@@ -1751,6 +1753,27 @@ test("FIFO realized and unrealized P/L retain completed loss cycles after rebuy"
   assert.equal(browser.realizedPnlAmount, server.realizedPnlAmount);
   assert.equal(browser.quantity, server.quantity);
 
+  const fractionalPosition = {
+    symbol: "ACN",
+    market: "NYSE",
+    positions: [{ purchaseDate: "2026-01-01", purchasePrice: 10, quantity: 1.12345678 }],
+    sales: [{ sellDate: "2026-02-01", sellPrice: 11, quantity: 0.00000001 }],
+  };
+  for (const metrics of [
+    browserMetrics(fractionalPosition, { current: 12, dividendEvents: [] }),
+    serverMetrics(fractionalPosition, { current: 12, dividendEvents: [] }),
+  ]) {
+    assert.equal(metrics.quantity, 1.12345677);
+    assert.equal(metrics.soldQuantity, 0.00000001);
+    assert.equal(metrics.remainingLots[0].quantity, 1.12345677);
+  }
+  for (const metrics of [
+    browserMetrics({ ...fractionalPosition, positions: [{ ...fractionalPosition.positions[0], quantity: 0.00000001 }], sales: [] }, { current: 12, dividendEvents: [] }),
+    serverMetrics({ ...fractionalPosition, positions: [{ ...fractionalPosition.positions[0], quantity: 0.00000001 }], sales: [] }, { current: 12, dividendEvents: [] }),
+  ]) {
+    assert.equal(metrics.quantity, 0.00000001);
+  }
+
   const unmatchedBrowser = browserLotState(
     [{ purchaseDate: "2026-07-01", purchasePrice: 100, quantity: 2 }],
     [{ sellDate: "2026-06-01", sellPrice: 90, quantity: 2 }],
@@ -1762,6 +1785,31 @@ test("FIFO realized and unrealized P/L retain completed loss cycles after rebuy"
   assert.equal(unmatchedBrowser.unmatchedSaleQuantity, 2);
   assert.equal(unmatchedServer.unmatchedSaleQuantity, 2);
   assert.match(appSource, /class="unmatched-sale-warning"/);
+});
+
+test("US share quantity inputs and displays preserve eight decimal places without changing Japanese inputs", () => {
+  const uiGlobals = {
+    escapeAttr: (value) => String(value ?? ""),
+    numberValue: (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? String(value) : "",
+    usShareCount: (value) => `${Number(value).toLocaleString("ja-JP", { maximumFractionDigits: 8 })}株`,
+    shareCount: (value) => `${value}株`,
+  };
+  const browserLotRow = loadFunction(appSource, "lotRow", uiGlobals);
+  const browserSaleRow = loadFunction(appSource, "saleRow", uiGlobals);
+  assert.match(browserLotRow({ quantity: 1.12345678 }, { fractionalDigits: 8 }), /name="quantity"[^>]*step="0\.00000001"[^>]*value="1\.12345678"/);
+  assert.match(browserSaleRow({ quantity: 0.00000001 }, { fractionalDigits: 8 }), /name="sellQuantity"[^>]*step="0\.00000001"[^>]*value="0\.00000001"/);
+  assert.match(browserLotRow({ quantity: 1.25 }), /name="quantity"[^>]*step="0\.0001"[^>]*value="1\.25"/);
+  const formatter = loadFunction(appSource, "usShareCount", {});
+  assert.equal(formatter(1.12345678), "1.12345678株");
+  const reservationEditor = loadFunction(appSource, "priceReservationEditor", {
+    ...uiGlobals,
+    priceReservationValue: () => ({ side: "", price: null, quantity: 0.00000001, expiresAt: "", note: "" }),
+    escapeHtml: String,
+    reservationSideOptions: () => "",
+    priceReservationSummary: () => "",
+  });
+  assert.match(reservationEditor({}, String, "予約価格 USD", { fractionalDigits: 8 }), /name="reservationQuantity"[^>]*step="0\.00000001"[^>]*value="0\.00000001"/);
+  assert.match(appSource, /priceReservationEditor\(stock, usd, "予約価格 USD", \{ fractionalDigits: 8 \}\)/);
 });
 
 test("held-position dividend yield is based on remaining acquisition cost", () => {
@@ -2796,6 +2844,7 @@ test("portfolio P/L timeline resamples three years of weekly returns and adds fo
     businessDates: loadFunction(appSource, "businessDates", {}),
     positionLots: (stock) => stock.positions || [],
     saleLots: (stock) => stock.sales || [],
+    quantityPrecisionForStock: (stock) => String(stock.symbol || "").toUpperCase().endsWith(".T") ? 6 : 8,
     positionLotState: (lots, sales) => ({
       remainingQuantity: lots.reduce((sum, lot) => sum + lot.quantity, 0) - sales.reduce((sum, sale) => sum + sale.quantity, 0),
     }),
