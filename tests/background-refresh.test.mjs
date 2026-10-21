@@ -1966,6 +1966,7 @@ test("embedded price charts use readable price ticks and concise BTC/FX confiden
     escapeHtml: (value) => String(value),
     formatDate: (value) => value,
     forecastReliabilityText: () => "信頼度：蓄積中（3か月先）",
+    dailyForecastChangesHtml: () => "",
   });
   const compact = reliabilityHtml(null, { evaluated: 0, saved: 0, pending: 0, comparisons: [] }, [{ date: "2027-01-15", value: 13_616_303 }], String, "", { compact: true });
   assert.match(compact, /予測信頼度/);

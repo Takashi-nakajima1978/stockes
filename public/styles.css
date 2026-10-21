@@ -1259,6 +1259,13 @@ tr:hover .drag-handle,
 
 .forecast-reliability-heading strong { font-size: 15px; }
 .forecast-reliability-heading > div:first-child > span { font-weight: 700; color: #155c9a; }
+.forecast-daily-change { margin-top: 10px; padding: 8px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.forecast-daily-change-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.forecast-daily-change-heading > strong:first-child { font-size: 13px; }
+.forecast-daily-change-value.positive { color: #147a53; }
+.forecast-daily-change-value.negative { color: #ae343d; }
+.forecast-daily-change-value.neutral { color: var(--muted); }
+.forecast-daily-change details { margin-top: 4px; }
 .forecast-reliability-heading-compact { display: block; }
 .forecast-reliability-heading-compact > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
 .forecast-reliability-heading-compact strong { font-size: 13px; }

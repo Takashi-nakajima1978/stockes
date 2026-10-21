@@ -116,6 +116,21 @@ test("scoring includes misses and removes overlapping windows and different mode
   assert.equal(summary.comparisons[0].predicted, 130);
 });
 
+test("daily snapshots compare each saved three-month forecast with the previous displayed forecast", () => {
+  const rows = [
+    record("2026-01-14", "2026-04-14", 110),
+    record("2026-01-15", "2026-04-15", 112.2),
+    record("2026-01-16", "2026-04-16", 108.84),
+  ];
+  const summary = summarizeForecasts(rows, "2026-01-16");
+  assert.equal(summary.dailySnapshots.length, 3);
+  assert.equal(summary.dailySnapshots[0].issuedDate, "2026-01-16");
+  assert.equal(summary.dailySnapshots[0].previousIssuedDate, "2026-01-15");
+  assert.ok(Math.abs(summary.dailySnapshots[0].change + 3.36) < 1e-9);
+  assert.ok(Math.abs(summary.dailySnapshots[0].changePct - ((108.84 - 112.2) / 112.2 * 100)) < 1e-9);
+  assert.equal(summary.dailySnapshots[2].change, null);
+});
+
 test("a saved outcome is never rewritten when later price history changes", () => {
   const rows = [record()];
   settleForecasts(rows, [{ date: "2026-04-14", close: 90 }], "2026-04-15");
@@ -152,7 +167,8 @@ function loadFunction(name, globals = {}) {
   return vm.runInNewContext(`${appSource.slice(start, appSource.indexOf("\n}", start) + 2)}; ${name}`, globals);
 }
 const label = loadFunction("forecastReliabilityText");
-const html = loadFunction("forecastReliabilityHtml", { forecastReliabilityText: label, escapeHtml: (value) => String(value), formatDate: (value) => value });
+const dailyChanges = loadFunction("dailyForecastChangesHtml", { escapeHtml: (value) => String(value) });
+const html = loadFunction("forecastReliabilityHtml", { forecastReliabilityText: label, dailyForecastChangesHtml: dailyChanges, escapeHtml: (value) => String(value), formatDate: (value) => value });
 
 test("zero outcomes are labeled as accumulating and retrospective tests never masquerade as saved forecasts", () => {
   const result = html({ evaluated: 6, directionAccuracyPct: 100, medianAbsoluteErrorPct: 2, intervalCoveragePct: 100 }, { ...summarizeForecasts([], "2026-01-14"), saved: 2, pending: 2, nextTargetDate: "2027-01-14" }, input().forecast, (value) => `JPY ${value}`, "", { compact: true });
@@ -176,6 +192,21 @@ test("confidence, sample count, misses, benchmark and tooltip are visible with r
   const tooltip = loadFunction("chartPointTooltipHtml", { escapeHtml: String, formatDate: String });
   assert.match(tooltip({ kind: "forecast", date: "2026-04-14", value: 110, reliability: { text: label(summary) } }, String), /信頼度 0%/);
   assert.doesNotMatch(tooltip({ kind: "actual", date: "2026-04-14", value: 100, reliability: { text: label(summary) } }, String), /信頼度/);
+});
+
+test("forecast panel separates day-over-day forecast revisions from future actual-price accuracy", () => {
+  const daily = [
+    { issuedDate: "2026-01-15", targetDate: "2026-04-15", predicted: 112.2, previousIssuedDate: "2026-01-14", previousPredicted: 110, change: 2.2, changePct: 2 },
+    { issuedDate: "2026-01-14", targetDate: "2026-04-14", predicted: 110, previousIssuedDate: "", previousPredicted: null, change: null, changePct: null },
+  ];
+  const saved = { ...summarizeForecasts([], "2026-01-15"), dailySnapshots: daily };
+  const result = html(null, saved, input().forecast, (value) => `$${value.toFixed(2)}`);
+  assert.match(result, /日次の予測変化/);
+  assert.match(result, /前回 2026-01-14 の \$110\.00 → 今回 \$112\.20/);
+  assert.match(result, /\+\$2\.20 \(\+2\.00%\)/);
+  assert.match(result, /将来の実績との誤差ではありません/);
+  assert.match(result, /保存日/);
+  assert.match(result, /まだ比較できる実績がありません/);
 });
 
 test("a failed history request is distinct from zero evaluated forecasts", () => {
@@ -220,6 +251,7 @@ test("fund confidence uses only saved one-year predictions, with no mixing of th
   assert.match(rendered, /基準価額一定の場合/);
   assert.match(rendered, /評価額そのものの的中率ではありません/);
   assert.doesNotMatch(rendered, /3か月先/);
+  assert.match(rendered, /日次の予測変化（1年先）/);
 });
 
 test("fund snapshots use Japan's calendar day even before UTC midnight", async (t) => {

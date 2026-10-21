@@ -3659,6 +3659,35 @@ function forecastReliabilityText(saved, horizon = "3か月先") {
   return `信頼度 ${Math.round(saved.confidencePct)}%（${horizon}・${saved.evaluated}件${saved.evaluated < 10 ? "・少数データ" : ""}）`;
 }
 
+function dailyForecastChangesHtml(saved, formatter, formatDate, horizon, unit) {
+  const snapshots = saved?.dailySnapshots || [];
+  if (!snapshots.length) return "";
+  const latest = snapshots[0];
+  const hasChange = Number.isFinite(latest.change) && Number.isFinite(latest.changePct);
+  const changeClass = !hasChange || latest.change === 0 ? "neutral" : latest.change > 0 ? "positive" : "negative";
+  const changeText = hasChange
+    ? `${latest.change > 0 ? "+" : ""}${formatter(latest.change)} (${latest.changePct > 0 ? "+" : ""}${latest.changePct.toFixed(2)}%)`
+    : "比較用の前回予測を蓄積中";
+  const comparison = latest.previousIssuedDate
+    ? `前回 ${escapeHtml(formatDate(latest.previousIssuedDate))} の ${escapeHtml(formatter(latest.previousPredicted))} → 今回 ${escapeHtml(formatter(latest.predicted))}`
+    : "今日の予測を保存しました。次回の表示から前回比を確認できます。";
+  const updateMethod = unit === "基準価額"
+    ? "基準価額の履歴をもとに積立予測を更新し"
+    : "最新価格と過去検証の補正で予測を更新し";
+  const rows = snapshots.map((item) => {
+    const delta = Number.isFinite(item.change) && Number.isFinite(item.changePct)
+      ? `${item.change > 0 ? "+" : ""}${formatter(item.change)} (${item.changePct > 0 ? "+" : ""}${item.changePct.toFixed(2)}%)`
+      : "初回";
+    return `<tr><td>${escapeHtml(formatDate(item.issuedDate))}</td><td>${escapeHtml(formatDate(item.targetDate))}</td><td>${escapeHtml(formatter(item.predicted))}</td><td>${escapeHtml(delta)}</td></tr>`;
+  }).join("");
+  return `<section class="forecast-daily-change">
+    <div class="forecast-daily-change-heading"><strong>日次の予測変化（${escapeHtml(horizon)}）</strong><strong class="forecast-daily-change-value ${changeClass}">${escapeHtml(changeText)}</strong></div>
+    <p>${comparison}</p>
+    <p>予測を表示した日の「${escapeHtml(horizon)}予測${unit}」同士を比較しています。将来の実績との誤差ではありません。${updateMethod}、精度の向上は実績が揃ってから別途評価します。</p>
+    ${snapshots.length > 1 ? `<details><summary>直近の予測更新（${snapshots.length}件）</summary><div class="forecast-comparison-scroll"><table class="forecast-comparison-table"><thead><tr><th>保存日</th><th>予測対象日</th><th>予測価格</th><th>前回比</th></tr></thead><tbody>${rows}</tbody></table></div></details>` : ""}
+  </section>`;
+}
+
 function forecastReliabilityHtml(review, saved, forecast, formatter, error = "", options = {}) {
   const terminal = forecast.at(-1);
   const horizon = options.horizon || "3か月先";
@@ -3692,14 +3721,16 @@ function forecastReliabilityHtml(review, saved, forecast, formatter, error = "",
     <td>${escapeHtml(formatter(item.predicted))}</td><td>${escapeHtml(formatter(item.outcome.price))}</td>
     <td>${percent(item.outcome.errorPct)}</td><td>${item.outcome.errorPct <= saved.tolerancePct ? "一致" : "外れ"}</td>
   </tr>`).join("")}</tbody></table></div><p>直近${comparisons.length}件の比較を表示しています。</p>` : "";
+  const longTermLabel = options.savings ? "1年先の実績精度・比較" : "3か月後の実績精度・比較";
   if (options.compact) {
     return `
-      <div class="forecast-reliability-heading forecast-reliability-heading-compact">
-        <div><strong>予測信頼度</strong><span>${escapeHtml(compactReliabilityLabel)}</span></div>
-      </div>
-      <p class="forecast-reliability-status-compact">${escapeHtml(compactStatus)}</p>
-      <details><summary>信頼度の根拠・比較</summary>
+      ${dailyForecastChangesHtml(saved, formatter, formatDate, horizon, unit)}
+      <details><summary>${escapeHtml(longTermLabel)}（信頼度の根拠・比較）</summary>
+        <div class="forecast-reliability-heading forecast-reliability-heading-compact">
+          <div><strong>予測信頼度</strong><span>${escapeHtml(compactReliabilityLabel)}</span></div>
+        </div>
         <p>${escapeHtml(explanation)}</p>${metrics}
+        <p class="forecast-reliability-status-compact ${error ? "forecast-reliability-error" : ""}">${escapeHtml(compactStatus)}</p>
         <p class="${error ? "forecast-reliability-error" : ""}">${escapeHtml(status)}</p>
         <p>${escapeHtml(comparisonDetails)}</p>${comparisonTable}
         <p>${escapeHtml(backtest)}</p>
@@ -3707,17 +3738,20 @@ function forecastReliabilityHtml(review, saved, forecast, formatter, error = "",
     `;
   }
   return `
-    <div class="forecast-reliability-heading">
-      <div><strong>予測の信頼度${options.savings ? "（基準価額）" : ""}</strong><span>${escapeHtml(reliabilityLabel)}</span></div>
-      <div><span>${escapeHtml(formatDate(terminal.date))} の${options.savings ? "基準価額" : "参考"}予測</span><strong>${escapeHtml(formatter(terminal.value))}</strong></div>
-    </div>
-    <p>${escapeHtml(explanation)}</p>
-    ${metrics}
-    <p class="${error ? "forecast-reliability-error" : ""}">${escapeHtml(status)}</p>
-    <details><summary>比較の根拠${count ? `・${count}件` : options.savings ? "・保存条件" : "・過去再検証"}</summary>
-      <p>${escapeHtml(comparisonDetails)}</p>
-      ${comparisonTable}
-      <p>${escapeHtml(backtest)}</p>
+    ${dailyForecastChangesHtml(saved, formatter, formatDate, horizon, unit)}
+    <details><summary>${escapeHtml(longTermLabel)}（${escapeHtml(reliabilityLabel)}）</summary>
+      <div class="forecast-reliability-heading">
+        <div><strong>予測信頼度${options.savings ? "（基準価額）" : ""}</strong><span>${escapeHtml(reliabilityLabel)}</span></div>
+        <div><span>${escapeHtml(formatDate(terminal.date))} の${options.savings ? "基準価額" : "参考"}予測</span><strong>${escapeHtml(formatter(terminal.value))}</strong></div>
+      </div>
+      <p>${escapeHtml(explanation)}</p>
+      ${metrics}
+      <p class="${error ? "forecast-reliability-error" : ""}">${escapeHtml(status)}</p>
+      <details><summary>比較の根拠${count ? `・${count}件` : options.savings ? "・保存条件" : "・過去再検証"}</summary>
+        <p>${escapeHtml(comparisonDetails)}</p>
+        ${comparisonTable}
+        <p>${escapeHtml(backtest)}</p>
+      </details>
     </details>
   `;
 }
@@ -3739,9 +3773,11 @@ function renderForecastReview(node, review = null, options = {}) {
   const show = (saved, error = "") => {
     forecast.reliability.text = error ? "信頼度：履歴を照合できません" : saved ? forecastReliabilityText(saved) : "信頼度：照合中（3か月先）";
     if (!node.isConnected || node.forecastRequestKey !== key) return;
-    const open = node.querySelector("details")?.open;
+    const openStates = Array.from(node.querySelectorAll("details"), (details) => details.open);
     node.innerHTML = forecastReliabilityHtml(review, saved, forecast, formatter, error, options);
-    if (open) node.querySelector("details").open = true;
+    node.querySelectorAll("details").forEach((details, index) => {
+      if (index < openStates.length) details.open = openStates[index];
+    });
   };
   let cached = forecastHistoryRequests.get(key);
   if (!cached || Date.now() - cached.time > 5 * 60 * 1000) {

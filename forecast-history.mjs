@@ -58,6 +58,20 @@ export function summarizeForecasts(records, today, version = DECISION_FORECAST_V
   const successes = independent.filter((record) => record.outcome.errorPct <= TOLERANCE_PCT).length;
   const mean = (field) => count ? independent.reduce((sum, record) => sum + record.outcome[field], 0) / count : null;
   const future = matching.filter((record) => record.targetDate >= today);
+  const dailySnapshots = matching.slice(-14).reverse().map((record, index, recent) => {
+    const previous = recent[index + 1];
+    const change = previous ? record.predicted - previous.predicted : null;
+    return {
+      issuedDate: record.issuedDate,
+      targetDate: record.targetDate,
+      predicted: record.predicted,
+      previousIssuedDate: previous?.issuedDate || "",
+      previousTargetDate: previous?.targetDate || "",
+      previousPredicted: previous?.predicted ?? null,
+      change,
+      changePct: previous && positive(previous.predicted) ? change / previous.predicted * 100 : null,
+    };
+  });
   return {
     version,
     tolerancePct: TOLERANCE_PCT,
@@ -74,6 +88,7 @@ export function summarizeForecasts(records, today, version = DECISION_FORECAST_V
     overlapping: settled.length - count,
     nextTargetDate: future[0]?.targetDate || "",
     comparisons: independent.slice(-12).reverse(),
+    dailySnapshots,
   };
 }
 
