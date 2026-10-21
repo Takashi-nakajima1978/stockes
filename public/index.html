@@ -690,8 +690,9 @@
           <ol id="savingsOrderList" class="savings-order-list" aria-label="積立商品の表示順"></ol>
           <p id="savingsOrderStatus" class="savings-order-status" role="status"></p>
         </details>
-        <form id="savingsCreateForm" class="savings-create-form">
-          <h3>運用商品を追加</h3>
+        <details id="savingsCreate" class="savings-create">
+          <summary>運用商品を追加</summary>
+          <form id="savingsCreateForm" class="savings-create-form">
           <div class="savings-create-fields">
             <label><span>口座</span><select name="provider"><option value="rakuten">楽天証券</option><option value="sbi">SBI証券</option><option value="ideco">MUFG iDeCo</option></select></label>
             <label><span>口座区分</span><select name="accountType"><option value="unspecified">未設定</option><option value="nisa-tsumitate">NISA・つみたて</option><option value="nisa-growth">NISA・成長</option><option value="taxable">課税口座</option><option value="ideco" disabled>iDeCo</option></select></label>
@@ -711,9 +712,10 @@
             <label class="checkbox-line"><input name="currentMonthIncluded" type="checkbox"><span>評価額に基準月の積立を含む</span></label>
             <label class="checkbox-line"><input name="recurring" type="checkbox"><span>この金額で毎月継続</span></label>
             <button type="submit">商品を登録</button>
-            <span id="savingsFormStatus" role="status"></span>
           </div>
-        </form>
+          </form>
+        </details>
+        <p id="savingsFormStatus" class="savings-form-status" role="status"></p>
         <div id="savingsPlans" class="savings-plans" aria-live="polite"><p class="empty-state">積立商品を読み込み中です。</p></div>
       </section>
 

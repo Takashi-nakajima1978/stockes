@@ -3151,6 +3151,9 @@ test("fund NAV history fetches daily rows through the requested contribution mon
 
 test("savings screen tracks actual monthly contributions and supports editing the registered fund", () => {
   assert.match(indexSource, /data-view-target="savings"/);
+  assert.match(indexSource, /<details id="savingsCreate" class="savings-create">\s*<summary>運用商品を追加<\/summary>/);
+  assert.doesNotMatch(indexSource, /<details id="savingsCreate" class="savings-create" open>/);
+  assert.match(appSource, /createDetails\.open = false/);
   assert.match(indexSource, /MUFG iDeCo/);
   assert.match(indexSource, /name="startMonth" type="month"/);
   assert.match(indexSource, /name="recurring" type="checkbox"/);

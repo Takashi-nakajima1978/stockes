@@ -9254,6 +9254,11 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
     updateSavingsNisaPreview(form);
     if (status) status.textContent = "登録しました。基準価額を取得中です。";
     renderSavings();
+    const createDetails = form.closest("#savingsCreate");
+    if (createDetails) {
+      createDetails.open = false;
+      createDetails.querySelector("summary")?.focus();
+    }
     const savedPlan = state.savingsPlans.find((item) => item.symbol === symbol);
     void fetchSavingsSeries(symbol, savingsPlanStartDate(savedPlan)).then(() => {
       if (state.view === "savings") renderSavings();
