@@ -9,6 +9,19 @@ export function scheduledContribution(schedule = [], month = "", recurring = fal
   return prior ? Number(prior.amount) : 0;
 }
 
+export function savingsPurchaseSchedule(plan = {}) {
+  const schedule = Array.isArray(plan.schedule) ? plan.schedule : [];
+  if (plan.paymentMethod !== "credit" || plan.provider === "ideco") return schedule;
+  return schedule.map((item) => {
+    const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(item?.month || "");
+    if (!match) return item;
+    const monthIndex = Number(match[1]) * 12 + Number(match[2]);
+    const year = Math.floor(monthIndex / 12);
+    const month = (monthIndex % 12) + 1;
+    return { ...item, month: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}` };
+  });
+}
+
 export function savingsAccountType(plan = {}) {
   if (plan.provider === "ideco") return "ideco";
   return ["nisa-tsumitate", "nisa-growth", "taxable"].includes(plan.accountType) ? plan.accountType : "unspecified";
@@ -23,7 +36,7 @@ function validNisaDate(value) {
 export function savingsCurrentMonthBooked(plan = {}, today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())) {
   if (!validNisaDate(today)) return false;
   const month = today.slice(0, 7);
-  if (!(scheduledContribution(plan.schedule, month, Boolean(plan.recurring)) > 0)) return false;
+  if (!(scheduledContribution(savingsPurchaseSchedule(plan), month, Boolean(plan.recurring)) > 0)) return false;
   const purchaseDate = `${month}-12`;
   const snapshotDate = validNisaDate(plan.currentValueDate) ? plan.currentValueDate : "";
   if (plan.currentMonthIncluded && snapshotDate.startsWith(`${month}-`) && snapshotDate <= today) return true;
@@ -66,9 +79,10 @@ export function savingsNisaAllowance(plans = [], context = {}, today = new Intl.
       if (!bucket) continue;
       let planned = 0;
       const included = savingsCurrentMonthBooked(plan, today);
+      const purchaseSchedule = savingsPurchaseSchedule(plan);
       for (let index = 0; index < 12; index += 1) {
         const month = `${targetYear}-${String(index + 1).padStart(2, "0")}`;
-        const amount = scheduledContribution(plan.schedule, month, Boolean(plan.recurring));
+        const amount = scheduledContribution(purchaseSchedule, month, Boolean(plan.recurring));
         planned += amount;
         bucket.months[index] += amount;
         if (month < currentMonth || (month === currentMonth && included)) bucket.used += amount;
@@ -139,7 +153,7 @@ export function buildSavingsContributionHistory(
   throughMonth = new Date().toISOString().slice(0, 7),
   currentMonth = throughMonth,
 ) {
-  const schedule = (Array.isArray(plan.schedule) ? plan.schedule : [])
+  const schedule = savingsPurchaseSchedule(plan)
     .filter((item) => /^\d{4}-(0[1-9]|1[0-2])$/.test(item?.month) && Number.isFinite(Number(item.amount)) && Number(item.amount) > 0)
     .sort((a, b) => a.month.localeCompare(b.month));
   if (!schedule.length || !/^\d{4}-(0[1-9]|1[0-2])$/.test(throughMonth)) {

@@ -1689,6 +1689,8 @@ test("Japan win/loss counts use current holdings while sold loss remains in real
     },
     positionMetrics: (stock) => stock.metrics,
     nisaAllowanceSummary: () => ({}),
+    currentFiscalYearRange: () => ({ year: 2026, startDate: "2026-04-01", endDate: "2027-04-01" }),
+    realizedPnlForPeriod: () => 0,
   });
   const summary = summaryFromJapan();
   assert.equal(summary.count, 2);
@@ -1787,6 +1789,27 @@ test("FIFO realized and unrealized P/L retain completed loss cycles after rebuy"
   assert.match(appSource, /class="unmatched-sale-warning"/);
 });
 
+test("fiscal-year realized P/L uses FIFO cost basis and excludes sales outside the fiscal year", () => {
+  const fiscalRange = loadFunction(appSource, "currentFiscalYearRange", {});
+  const realizedPnlForPeriod = loadFunction(appSource, "realizedPnlForPeriod", {});
+  assert.deepEqual(fiscalRange(new Date(2026, 9, 24)), {
+    year: 2026, startDate: "2026-04-01", endDate: "2027-04-01",
+  });
+  assert.deepEqual(fiscalRange(new Date(2027, 1, 1)), {
+    year: 2026, startDate: "2026-04-01", endDate: "2027-04-01",
+  });
+  const positions = [
+    { purchaseDate: "2026-01-05", purchasePrice: 100, quantity: 10 },
+    { purchaseDate: "2026-02-02", purchasePrice: 200, quantity: 10 },
+  ];
+  const sales = [
+    { sellDate: "2026-03-15", sellPrice: 80, quantity: 2 },
+    { sellDate: "2026-04-10", sellPrice: 150, quantity: 5 },
+  ];
+  assert.equal(realizedPnlForPeriod(positions, sales, "2026-04-01", "2027-04-01"), 250);
+  assert.equal(realizedPnlForPeriod(positions, sales, "2026-01-01", "2027-01-01"), 210);
+});
+
 test("US share quantity inputs and displays preserve eight decimal places without changing Japanese inputs", () => {
   const uiGlobals = {
     escapeAttr: (value) => String(value ?? ""),
@@ -1833,8 +1856,12 @@ test("held-stock dividend yield labels and detail displays use acquisition cost"
   assert.match(indexSource, /id="usDividendReceivedTiming"/);
   assert.match(indexSource, /id="realizedPnlTotal"/);
   assert.match(indexSource, /id="usRealizedPnlTotal"/);
+  assert.match(indexSource, /id="realizedPnlFiscalYear"/);
+  assert.match(indexSource, /id="usRealizedPnlFiscalYear"/);
   assert.match(appSource, /els\.realizedPnlTotal[\s\S]*summary\.realizedPnlAmount/);
   assert.match(appSource, /els\.usRealizedPnlTotal[\s\S]*summary\.realizedPnlAmount/);
+  assert.match(appSource, /els\.realizedPnlFiscalYear[\s\S]*summary\.realizedPnlFiscalYear/);
+  assert.match(appSource, /els\.usRealizedPnlFiscalYear[\s\S]*summary\.realizedPnlFiscalYear/);
   assert.match(appSource, /dividendReceivedTotal: document\.getElementById\("dividendReceivedTotal"\)/);
   assert.match(appSource, /usDividendReceivedTotal: document\.getElementById\("usDividendReceivedTotal"\)/);
   assert.match(appSource, /els\.dividendReceivedTotal[\s\S]*summary\.dividendReceived/);
@@ -1862,6 +1889,8 @@ test("portfolio summary puts annual dividend first and evaluation before investe
   ].map((id) => summary.indexOf(id));
   assert.ok(cardOrder.every((index) => index >= 0));
   assert.deepEqual(cardOrder, [...cardOrder].sort((a, b) => a - b));
+  assert.match(summary, /<article class="profit-card paired-metrics">[\s\S]*id="marketTotal"[\s\S]*id="investedTotal"[\s\S]*<\/article>/);
+  assert.match(summary, /<article class="profit-card paired-metrics">[\s\S]*id="realizedPnlTotal"[\s\S]*id="realizedPnlFiscalYear"[\s\S]*<\/article>/);
 });
 
 test("US portfolio summary uses the same annual dividend and value card order", () => {
@@ -1876,6 +1905,8 @@ test("US portfolio summary uses the same annual dividend and value card order", 
   ].map((id) => summary.indexOf(id));
   assert.ok(cardOrder.every((index) => index >= 0));
   assert.deepEqual(cardOrder, [...cardOrder].sort((a, b) => a - b));
+  assert.match(summary, /<article class="profit-card paired-metrics">[\s\S]*id="usMarketTotal"[\s\S]*id="usInvestedTotal"[\s\S]*<\/article>/);
+  assert.match(summary, /<article class="profit-card paired-metrics">[\s\S]*id="usRealizedPnlTotal"[\s\S]*id="usRealizedPnlFiscalYear"[\s\S]*<\/article>/);
 });
 
 test("dividend receipt tile shows the nearest actual payment date for open holdings", () => {
@@ -3156,6 +3187,7 @@ test("savings screen tracks actual monthly contributions and supports editing th
   assert.match(appSource, /createDetails\.open = false/);
   assert.match(indexSource, /MUFG iDeCo/);
   assert.match(indexSource, /name="startMonth" type="month"/);
+  assert.match(indexSource, /name="paymentMethod"/);
   assert.match(indexSource, /name="recurring" type="checkbox"/);
   assert.match(indexSource, /証券会社への注文は行いません/);
   assert.match(indexSource, /積立管理/);
@@ -3216,6 +3248,7 @@ test("savings screen tracks actual monthly contributions and supports editing th
   assert.equal(savedPlan.currentValueDate, "2026-10-13");
   assert.equal(savedPlan.balanceBasis, "opening");
   assert.equal(savedPlan.currentMonthIncluded, false);
+  assert.equal(savedPlan.paymentMethod, "account");
   assert.equal(savedPlan.accountType, "ideco");
   const legacy = normalizeSavingsPlan({ symbol: "03311065", currentValue: 2467742, updatedAt: "2026-10-12T16:00:00Z" });
   assert.equal(legacy.currentValueDate, "2026-10-13");
@@ -3229,6 +3262,8 @@ test("savings screen tracks actual monthly contributions and supports editing th
     assert.equal(normalized.accountType, accountType);
     assert.equal(normalized.currentValue, legacy.currentValue);
   }
+  assert.equal(normalizeSavingsPlan({ ...legacy, provider: "sbi", paymentMethod: "credit" }).paymentMethod, "credit");
+  assert.equal(normalizeSavingsPlan({ ...legacy, provider: "ideco", paymentMethod: "credit" }).paymentMethod, "account");
   assert.equal(normalizeSavingsPlan({ provider: "ideco", accountType: "nisa-tsumitate" }).accountType, "ideco");
   assert.equal(normalizeSavingsPlan({ provider: "rakuten", accountType: "ideco" }).accountType, "unspecified");
   assert.equal(JSON.stringify(savedPlan.schedule), JSON.stringify([{ month: "2026-10", amount: 30000 }]));

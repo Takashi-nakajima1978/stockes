@@ -93,6 +93,19 @@ test("the 12th purchase is added to the current month after purchase without dou
   assert.equal(savingsCurrentMonthBooked({ ...base, currentValueDate: "2026-10-13", currentMonthIncluded: true }, "2026-10-19"), true);
 });
 
+test("credit-card NISA usage follows the next-month purchase date, not the debit month", () => {
+  const plan = { ...monthly("card", 100000), paymentMethod: "credit", schedule: [{ month: "2026-10", amount: 100000 }] };
+  assert.equal(savingsCurrentMonthBooked(plan, "2026-10-12"), false);
+  assert.equal(savingsCurrentMonthBooked(plan, "2026-11-11"), false);
+  assert.equal(savingsCurrentMonthBooked(plan, "2026-11-12"), true);
+  const beforePurchase = savingsNisaAllowance([plan], context, "2026-10-23");
+  assert.equal(bucket(beforePurchase).planned, 200000);
+  assert.equal(bucket(beforePurchase).used, 0);
+  const purchaseDay = savingsNisaAllowance([plan], context, "2026-11-12");
+  assert.equal(bucket(purchaseDay).used, 100000);
+  assert.equal(bucket(purchaseDay, "nisa-tsumitate", 2027).planned, 1200000);
+});
+
 test("new years reset the annual limit and do not carry unused allowance or old stock purchases forward", () => {
   const plan = { ...monthly("fund", 100000), schedule: [{ month: "2026-10", amount: 100000 }] };
   const result = savingsNisaAllowance([plan], { ...context, purchases: [{ date: "2026-04-01", amount: 2300000 }] }, "2027-01-01");

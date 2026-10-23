@@ -51,6 +51,16 @@ test("monthly contributions use the NAV observation closest to the 12th", () => 
   near(result.rows.find((point) => point.date === "2026-06-19").value, 18000);
 });
 
+test("credit-card debit month is recorded as the following month's purchase", () => {
+  const plan = { paymentMethod: "credit", recurring: false, schedule: [{ month: "2026-10", amount: 12000 }] };
+  const throughOctober = buildSavingsContributionHistory(plan, "2026-10");
+  const throughNovember = buildSavingsContributionHistory(plan, "2026-11");
+  assert.deepEqual(throughOctober.rows, []);
+  assert.deepEqual(throughNovember.rows.map(({ month, amount }) => ({ month, amount })), [{ month: "2026-11", amount: 12000 }]);
+  const yearEnd = buildSavingsContributionHistory({ ...plan, schedule: [{ month: "2026-12", amount: 5000 }] }, "2027-01");
+  assert.deepEqual(yearEnd.rows.map(({ month, amount }) => ({ month, amount })), [{ month: "2027-01", amount: 5000 }]);
+});
+
 test("equidistant NAV observations prefer the date before the 12th", () => {
   const contributions = buildSavingsContributionHistory({ recurring: false, schedule: [{ month: "2026-06", amount: 12000 }] }, "2026-06");
   const prices = [

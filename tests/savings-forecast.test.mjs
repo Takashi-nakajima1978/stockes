@@ -68,6 +68,15 @@ test("a purchase made around the 12th is included now and not forecast a second 
   assert.ok(result.originValue > plan.currentValue, "the current month's purchase is included in the starting valuation");
 });
 
+test("credit-card deposits are forecast for the month after the debit", () => {
+  const cardPlan = { ...plan, provider: "rakuten", paymentMethod: "credit", schedule: [{ month: "2026-10", amount: 37800 }] };
+  const result = buildSavingsForecast(cardPlan, seriesFor(today, true), today);
+  assert.equal(result.version, "savings-12th-purchase-window-v3");
+  assert.equal(result.cashflows[0].month, "2026-11");
+  assert.equal(result.cashflows[0].date, "2026-11-12");
+  assert.equal(result.cashflows.length, 12);
+});
+
 test("fund price forecast does not change when balances or monthly deposits change", () => {
   const first = buildSavingsForecast(plan, seriesFor(), today);
   const second = buildSavingsForecast({ ...plan, id: "other", currentValue: 4000000, currentMonthIncluded: true,

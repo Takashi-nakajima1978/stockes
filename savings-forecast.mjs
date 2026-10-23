@@ -1,6 +1,6 @@
-import { buildSavingsContributionHistory, buildSavingsValuationHistory, scheduledContribution, savingsCurrentMonthBooked } from "./public/savings-calculation.mjs";
+import { buildSavingsContributionHistory, buildSavingsValuationHistory, scheduledContribution, savingsCurrentMonthBooked, savingsPurchaseSchedule } from "./public/savings-calculation.mjs";
 
-export const SAVINGS_FORECAST_VERSION = "savings-12th-purchase-window-v2";
+export const SAVINGS_FORECAST_VERSION = "savings-12th-purchase-window-v3";
 const DAY = 86400000;
 const time = (date) => Date.parse(`${date}T00:00:00Z`);
 const dateKey = (value) => new Date(value).toISOString().slice(0, 10);
@@ -14,7 +14,7 @@ export function savingsForecastFromDate(plan, today) {
   const date = new Date(time(today));
   const year = date.getUTCFullYear() - 3;
   const month = date.getUTCMonth();
-  const first = (plan.schedule || []).map((row) => `${row.month}-01`).sort()[0];
+  const first = savingsPurchaseSchedule(plan).map((row) => `${row.month}-01`).sort()[0];
   const historyStart = dateKey(Date.UTC(year, month, Math.min(date.getUTCDate(), new Date(Date.UTC(year, month + 1, 0)).getUTCDate())));
   return first && first < historyStart ? first : historyStart;
 }
@@ -56,6 +56,7 @@ export function buildSavingsForecast(plan, series, today) {
   const dates = new Set([today, endDate]);
   for (let at = now + 7 * DAY; at < end; at += 7 * DAY) dates.add(dateKey(at));
   const cashflows = [];
+  const purchaseSchedule = savingsPurchaseSchedule(plan);
   for (let offset = 0; offset <= 12; offset += 1) {
     const key = dateKey(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + offset, 1)).slice(0, 7);
     const purchaseDate = time(`${key}-12`);
@@ -63,7 +64,7 @@ export function buildSavingsForecast(plan, series, today) {
     if (at > end) continue;
     dates.add(dateKey(at));
     if (offset === 0 && includeCurrent) continue;
-    const amount = scheduledContribution(plan.schedule, key, Boolean(plan.recurring));
+    const amount = scheduledContribution(purchaseSchedule, key, Boolean(plan.recurring));
     if (amount > 0) cashflows.push({ date: dateKey(at), month: key, amount });
   }
   const orderedDates = [...dates].sort();

@@ -17014,6 +17014,7 @@ function normalizeSavingsPlan(plan = {}) {
     currentPrincipal: currentPrincipal === null ? null : Math.min(1000000000, currentPrincipal),
     currentValueDate: normalizeDate(plan.currentValueDate) || jstDate(plan.updatedAt),
     currentMonthIncluded: Boolean(plan.currentMonthIncluded),
+    paymentMethod: provider !== "ideco" && plan.paymentMethod === "credit" ? "credit" : "account",
     balanceBasis: plan.balanceBasis === "opening" ? "opening" : "current",
     openingValue: openingValue === null ? null : Math.min(1000000000, openingValue),
     openingPrincipal: openingPrincipal === null ? null : Math.min(1000000000, openingPrincipal),

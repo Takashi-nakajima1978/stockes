@@ -86,10 +86,12 @@
             <strong id="totalReturnAmount">-</strong>
             <small id="totalReturnPct">購入日以降の配当込み</small>
           </article>
-          <article class="profit-card">
+          <article class="profit-card paired-metrics">
             <span>確定損益</span>
-            <strong id="realizedPnlTotal">-</strong>
-            <small>売却済み明細・FIFO</small>
+            <div class="profit-card-pair">
+              <div><small>通算</small><strong id="realizedPnlTotal">-</strong><small>売却済み明細・FIFO</small></div>
+              <div><small id="realizedPnlFiscalYearLabel">今年度</small><strong id="realizedPnlFiscalYear">-</strong><small>4月〜翌3月</small></div>
+            </div>
           </article>
           <article class="profit-card">
             <span>年間配当目安</span>
@@ -102,15 +104,12 @@
             <small id="dividendReceivedTiming">次回受領予定：日付データ未取得</small>
             <small>配当込み損益に含む実績</small>
           </article>
-          <article class="profit-card">
-            <span>評価額</span>
-            <strong id="marketTotal">-</strong>
-            <small>現在値ベース</small>
-          </article>
-          <article class="profit-card">
-            <span>投下額</span>
-            <strong id="investedTotal">-</strong>
-            <small>購入金額</small>
+          <article class="profit-card paired-metrics">
+            <span>評価額・投下額</span>
+            <div class="profit-card-pair">
+              <div><small>評価額</small><strong id="marketTotal">-</strong><small>現在値ベース</small></div>
+              <div><small>投下額</small><strong id="investedTotal">-</strong><small>購入金額</small></div>
+            </div>
           </article>
           <article class="profit-card">
             <span>NISA成長枠</span>
@@ -404,10 +403,12 @@
             <strong id="usProfitAmount">-</strong>
             <small id="usProfitPct">更新待ち</small>
           </article>
-          <article class="profit-card">
+          <article class="profit-card paired-metrics">
             <span>確定損益</span>
-            <strong id="usRealizedPnlTotal">-</strong>
-            <small>売却済み明細・FIFO</small>
+            <div class="profit-card-pair">
+              <div><small>通算</small><strong id="usRealizedPnlTotal">-</strong><small>売却済み明細・FIFO</small></div>
+              <div><small id="usRealizedPnlFiscalYearLabel">今年度</small><strong id="usRealizedPnlFiscalYear">-</strong><small>4月〜翌3月</small></div>
+            </div>
           </article>
           <article class="profit-card">
             <span>年間配当目安</span>
@@ -420,15 +421,12 @@
             <small id="usDividendReceivedTiming">次回受領予定：日付データ未取得</small>
             <small>配当込み損益に含む実績</small>
           </article>
-          <article class="profit-card">
-            <span>評価額</span>
-            <strong id="usMarketTotal">-</strong>
-            <small>今の株価ベース</small>
-          </article>
-          <article class="profit-card">
-            <span>投下額</span>
-            <strong id="usInvestedTotal">-</strong>
-            <small>購入金額</small>
+          <article class="profit-card paired-metrics">
+            <span>評価額・投下額</span>
+            <div class="profit-card-pair">
+              <div><small>評価額</small><strong id="usMarketTotal">-</strong><small>今の株価ベース</small></div>
+              <div><small>投下額</small><strong id="usInvestedTotal">-</strong><small>購入金額</small></div>
+            </div>
           </article>
           <article class="profit-card">
             <span>勝ち / 負け</span>
@@ -695,6 +693,7 @@
           <form id="savingsCreateForm" class="savings-create-form">
           <div class="savings-create-fields">
             <label><span>口座</span><select name="provider"><option value="rakuten">楽天証券</option><option value="sbi">SBI証券</option><option value="ideco">MUFG iDeCo</option></select></label>
+            <label><span>積立方法</span><select name="paymentMethod"><option value="account">口座引落</option><option value="credit">クレジットカード</option></select></label>
             <label><span>口座区分</span><select name="accountType"><option value="unspecified">未設定</option><option value="nisa-tsumitate">NISA・つみたて</option><option value="nisa-growth">NISA・成長</option><option value="taxable">課税口座</option><option value="ideco" disabled>iDeCo</option></select></label>
             <label><span>商品名</span><input name="name" maxlength="100" required placeholder="例：全世界株式インデックス"></label>
             <label><span>商品コード（Yahoo!ファイナンス）</span><input name="symbol" maxlength="14" required placeholder="例：0331418A" autocapitalize="characters"></label>
@@ -704,9 +703,10 @@
             <label><span>評価額の起点</span><select name="balanceBasis"><option value="current">現在額から</option><option value="opening">開始前残高</option></select></label>
             <label><span>開始前の評価額</span><input name="openingValue" type="number" min="0" step="1" inputmode="numeric" disabled></label>
             <label><span>開始前の投資元本（任意）</span><input name="openingPrincipal" type="number" min="0" step="1" inputmode="numeric" placeholder="不明なら空欄"></label>
-            <label><span>開始月</span><input name="startMonth" type="month" required></label>
+            <label><span data-savings-start-month-label>開始月</span><input name="startMonth" type="month" required></label>
             <label><span>月の積立額</span><input name="amount" type="number" min="1" step="1" inputmode="numeric" required placeholder="例：30000"></label>
           </div>
+          <p class="savings-history-note" data-savings-payment-note>口座引落の場合、設定月の12日ごろを買付月として記録します。</p>
           <div data-savings-nisa-preview hidden></div>
           <div class="savings-create-actions">
             <label class="checkbox-line"><input name="currentMonthIncluded" type="checkbox"><span>評価額に基準月の積立を含む</span></label>
