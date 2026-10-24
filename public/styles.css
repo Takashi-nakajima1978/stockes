@@ -680,18 +680,28 @@ progress {
 }
 
 .profit-card-pair > div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  justify-content: space-between;
   align-items: baseline;
   gap: 10px;
   min-width: 0;
 }
 
+.profit-card-pair > div > small {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .profit-card-pair > div > strong {
+  flex-shrink: 0;
   text-align: right;
   white-space: nowrap;
   font-size: 18px;
   font-variant-numeric: tabular-nums;
+}
+
+.profit-summary:not(.us-profit-summary) .profit-card-pair > div > strong {
+  font-size: 16px;
 }
 
 .content-grid {
