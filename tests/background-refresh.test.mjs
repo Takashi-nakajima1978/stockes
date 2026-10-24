@@ -1874,7 +1874,7 @@ test("held-stock dividend yield labels and detail displays use acquisition cost"
 });
 
 test("portfolio summary puts annual dividend first and evaluation before invested amount", () => {
-  const start = indexSource.indexOf('<section class="profit-summary"');
+  const start = indexSource.indexOf('<section class="profit-summary jp-profit-summary"');
   const end = indexSource.indexOf("</section>", start);
   const summary = indexSource.slice(start, end);
   const cardOrder = [

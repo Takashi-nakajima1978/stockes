@@ -509,6 +509,14 @@ progress {
   gap: 10px;
 }
 
+.jp-profit-summary {
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+}
+
+.jp-profit-summary .profit-card.paired-metrics {
+  grid-column: span 2;
+}
+
 .profit-summary.is-refreshing::before {
   content: attr(data-refresh-label);
   grid-column: 1 / -1;
@@ -698,10 +706,6 @@ progress {
   white-space: nowrap;
   font-size: 18px;
   font-variant-numeric: tabular-nums;
-}
-
-.profit-summary:not(.us-profit-summary) .profit-card-pair > div > strong {
-  font-size: 16px;
 }
 
 .content-grid {
@@ -4126,6 +4130,14 @@ tr:hover .drag-handle,
     grid-column: 1 / -1;
   }
 
+  .jp-profit-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .jp-profit-summary .profit-card.paired-metrics {
+    grid-column: 1 / -1;
+  }
+
   .manage-grid .stock-form {
     grid-template-columns: 1fr;
   }
@@ -4234,6 +4246,12 @@ tr:hover .drag-handle,
   .suggestion-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+@media (min-width: 721px) and (max-width: 1700px) {
+  .jp-profit-summary {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
 
