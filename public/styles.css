@@ -671,25 +671,26 @@ progress {
 }
 
 .profit-card.paired-metrics {
-  grid-column: span 2;
+  grid-column: auto;
 }
 
 .profit-card-pair {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
 
 .profit-card-pair > div {
   display: grid;
-  align-content: start;
-  gap: 4px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
   min-width: 0;
 }
 
 .profit-card-pair > div > strong {
-  overflow-wrap: anywhere;
-  font-size: 20px;
+  text-align: right;
+  white-space: nowrap;
+  font-size: 18px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -4109,6 +4110,10 @@ tr:hover .drag-handle,
   .profit-summary,
   .crypto-profit-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .profit-card.paired-metrics {
+    grid-column: 1 / -1;
   }
 
   .manage-grid .stock-form {

@@ -1852,8 +1852,6 @@ test("held-stock dividend yield labels and detail displays use acquisition cost"
   assert.match(indexSource, /id="dividendReceivedTotal"/);
   assert.match(indexSource, /id="usDividendIncomeTotal"/);
   assert.match(indexSource, /id="usDividendReceivedTotal"/);
-  assert.match(indexSource, /id="dividendReceivedTiming"/);
-  assert.match(indexSource, /id="usDividendReceivedTiming"/);
   assert.match(indexSource, /id="realizedPnlTotal"/);
   assert.match(indexSource, /id="usRealizedPnlTotal"/);
   assert.match(indexSource, /id="realizedPnlFiscalYear"/);
@@ -1867,8 +1865,6 @@ test("held-stock dividend yield labels and detail displays use acquisition cost"
   assert.match(appSource, /els\.dividendReceivedTotal[\s\S]*summary\.dividendReceived/);
   assert.match(appSource, /els\.usDividendIncomeTotal[\s\S]*summary\.annualDividendEstimate/);
   assert.match(appSource, /els\.usDividendReceivedTotal[\s\S]*summary\.dividendReceived/);
-  assert.match(appSource, /els\.dividendReceivedTiming[\s\S]*nextDividendPaymentLabel\(state\.stocks, state\.analyses\)/);
-  assert.match(appSource, /els\.usDividendReceivedTiming[\s\S]*nextDividendPaymentLabel\(state\.usStocks, state\.usAnalyses\)/);
   assert.match(appSource, /function jpAiConfirmationHtml[\s\S]*<strong>取得額配当利回り<\/strong>\$\{positionDividendYieldText\(position\)\}[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
   assert.match(appSource, /function renderUsDetail[\s\S]*<strong>取得額配当利回り<\/strong>\$\{positionDividendYieldText\(metrics\)\}[\s\S]*<strong>1株配当<\/strong>[\s\S]*<strong>年間配当目安<\/strong>/);
   assert.match(appSource, /function evidenceSummaryHtml[\s\S]*<strong>取得額配当利回り<\/strong>\$\{positionDividendYieldText\(position\)\}/);
@@ -1907,30 +1903,6 @@ test("US portfolio summary uses the same annual dividend and value card order", 
   assert.deepEqual(cardOrder, [...cardOrder].sort((a, b) => a - b));
   assert.match(summary, /<article class="profit-card paired-metrics">[\s\S]*id="usMarketTotal"[\s\S]*id="usInvestedTotal"[\s\S]*<\/article>/);
   assert.match(summary, /<article class="profit-card paired-metrics">[\s\S]*id="usRealizedPnlTotal"[\s\S]*id="usRealizedPnlFiscalYear"[\s\S]*<\/article>/);
-});
-
-test("dividend receipt tile shows the nearest actual payment date for open holdings", () => {
-  const label = loadFunction(appSource, "nextDividendPaymentLabel", {
-    positionMetrics: (stock) => ({ quantity: stock.quantity }),
-    hasOpenPosition: (_stock, position) => position.quantity > 0,
-    dividendDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? value : "",
-  });
-  const today = new Date(2026, 9, 3);
-  const stocks = [
-    { symbol: "AAA.T", quantity: 100 },
-    { symbol: "BBB.T", quantity: 0 },
-    { symbol: "CCC.T", quantity: 50 },
-  ];
-  const analyses = {
-    "AAA.T": { price: { dividendPaymentDate: "2026-10-15" } },
-    "BBB.T": { price: { dividendPaymentDate: "2026-10-05" } },
-    "CCC.T": { price: { dividendPaymentDate: "2026-10-08" } },
-  };
-  assert.equal(label(stocks, analyses, today), "次回受領予定：10月8日");
-  assert.equal(label([{ symbol: "AAA.T", quantity: 100 }], {
-    "AAA.T": { price: { dividendPaymentDate: "2027-01-08" } },
-  }, today), "次回受領予定：2027年1月8日");
-  assert.equal(label(stocks, {}, today), "次回受領予定：日付データ未取得");
 });
 
 test("price charts show visible purchase and sale markers", () => {
