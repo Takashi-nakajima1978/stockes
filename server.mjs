@@ -65,6 +65,7 @@ const SHAREHOLDER_CACHE_PATH = path.join(__dirname, "data", "shareholder-cache.j
 const FINANCIAL_CACHE_PATH = path.join(__dirname, "data", "financial-cache.json");
 const EARNINGS_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "earnings-analysis-cache.json");
 const EARNINGS_AUTO_MONITOR_STATE_PATH = path.join(__dirname, "data", "earnings-auto-monitor-state.json");
+const EARNINGS_BATCH_STATE_PATH = path.join(__dirname, "data", "earnings-batch-state.json");
 const PORTFOLIO_REVIEW_CACHE_PATH = path.join(__dirname, "data", "portfolio-review-cache.json");
 const ASSET_DEBATE_CACHE_PATH = path.join(__dirname, "data", "asset-debate-cache.json");
 const PORTFOLIO_REFLECTION_CACHE_PATH = path.join(__dirname, "data", "portfolio-reflection-cache.json");
@@ -537,6 +538,7 @@ let primeUniverseCache = null;
 let secCompanyTickerCache = null;
 let analysisJob = null;
 let earningsBatchJob = null;
+let earningsBatchJobLoadPromise = null;
 let earningsAutoDrainPromise = null;
 let earningsAutoMonitorRefreshing = false;
 let earningsAnalysisQueue = Promise.resolve();
@@ -1102,10 +1104,17 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/earnings-debate/batch" && req.method === "GET") {
+    await ensureEarningsBatchJobLoaded();
     const settings = await readSettings();
     const monitorState = await readEarningsAutoMonitorState();
+    const analysisCache = await readEarningsAnalysisCache();
     return json(res, 200, {
-      job: earningsBatchJobSnapshot(),
+      job: {
+        ...earningsBatchJobSnapshot(),
+        savedResultCount: analysisCache.items.length,
+        invalidResultCount: analysisCache.invalidSymbols.length,
+        latestSavedAt: analysisCache.items.map((item) => item.generatedAt).filter(Boolean).sort().at(-1) || "",
+      },
       automatic: {
         enabled: settings.earningsAutoAnalysisEnabled,
         configured: Boolean(settings.edinetApiKey),
@@ -1120,7 +1129,8 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/earnings-debate/batch" && req.method === "POST") {
-    const job = startEarningsBatchJob();
+    await ensureEarningsBatchJobLoaded();
+    const job = await startEarningsBatchJob();
     return json(res, 202, { job, message: "日本株Watchlistの決算多角分析を順番に開始しました。" });
   }
 
@@ -15032,14 +15042,102 @@ async function saveEarningsAnalysisResult(result) {
   return result;
 }
 
+function earningsBatchStateForSave(job = earningsBatchJob) {
+  if (!job) return null;
+  return {
+    id: String(job.id || ""),
+    running: job.running === true,
+    phase: String(job.phase || ""),
+    checked: Math.max(0, Number(job.checked) || 0),
+    total: Math.max(0, Number(job.total) || 0),
+    succeeded: Math.max(0, Number(job.succeeded) || 0),
+    skipped: Math.max(0, Number(job.skipped) || 0),
+    failed: Math.max(0, Number(job.failed) || 0),
+    currentSymbol: String(job.currentSymbol || ""),
+    currentName: String(job.currentName || ""),
+    lastCompletedSymbol: String(job.lastCompletedSymbol || ""),
+    errors: Array.isArray(job.errors) ? job.errors.slice(-MAX_MANAGED_STOCKS) : [],
+    startedAt: String(job.startedAt || ""),
+    updatedAt: String(job.updatedAt || ""),
+    finishedAt: String(job.finishedAt || ""),
+    ...(job.error ? { error: String(job.error).slice(0, 300) } : {}),
+  };
+}
+
+async function persistEarningsBatchJob(job = earningsBatchJob) {
+  const snapshot = earningsBatchStateForSave(job);
+  if (snapshot) await writeDataFile(EARNINGS_BATCH_STATE_PATH, JSON.stringify(snapshot, null, 2));
+}
+
+async function ensureEarningsBatchJobLoaded() {
+  if (!earningsBatchJobLoadPromise) {
+    earningsBatchJobLoadPromise = (async () => {
+      let savedJob = null;
+      try {
+        savedJob = await readDataJson(EARNINGS_BATCH_STATE_PATH);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+
+      if (savedJob && typeof savedJob === "object" && !Array.isArray(savedJob)) {
+        earningsBatchJob = {
+          ...savedJob,
+          running: false,
+          errors: Array.isArray(savedJob.errors) ? savedJob.errors.slice(-MAX_MANAGED_STOCKS) : [],
+        };
+        if (savedJob.running) {
+          earningsBatchJob.phase = "前回の実行は中断";
+          earningsBatchJob.error = "サーバー再起動前の処理は停止しました。保存済み結果を確認し、再確認を実行できます。";
+          earningsBatchJob.currentSymbol = "";
+          earningsBatchJob.currentName = "";
+          earningsBatchJob.updatedAt = new Date().toISOString();
+          await persistEarningsBatchJob();
+        }
+        return;
+      }
+
+      const cache = await readEarningsAnalysisCache();
+      if (cache.items.length || cache.invalidSymbols.length) {
+        const latestSavedAt = cache.items.map((item) => item.generatedAt).filter(Boolean).sort().at(-1) || "";
+        const invalidErrors = cache.invalidSymbols.map((symbol) => ({
+          symbol,
+          message: "保存結果に不自然な語句の反復があり、表示から除外しました。再分析してください。",
+        }));
+        earningsBatchJob = {
+          id: "saved-analysis-cache",
+          running: false,
+          phase: cache.invalidSymbols.length ? "保存済み結果の再確認が必要" : "保存済み結果あり",
+          checked: cache.items.length,
+          total: cache.items.length + cache.invalidSymbols.length,
+          succeeded: cache.items.length,
+          skipped: 0,
+          failed: cache.invalidSymbols.length,
+          currentSymbol: "",
+          currentName: "",
+          lastCompletedSymbol: "",
+          errors: invalidErrors,
+          startedAt: latestSavedAt,
+          updatedAt: latestSavedAt,
+          finishedAt: latestSavedAt,
+        };
+        await persistEarningsBatchJob();
+      }
+    })().catch((error) => {
+      earningsBatchJobLoadPromise = null;
+      throw error;
+    });
+  }
+  return earningsBatchJobLoadPromise;
+}
+
 function earningsBatchJobSnapshot() {
   if (!earningsBatchJob) {
     return { running: false, phase: "未実行", checked: 0, total: 0, succeeded: 0, skipped: 0, failed: 0, currentSymbol: "", currentName: "", lastCompletedSymbol: "", errors: [] };
   }
-  return { ...earningsBatchJob, errors: earningsBatchJob.errors.slice(0, MAX_MANAGED_STOCKS) };
+  return { ...earningsBatchJob, errors: (earningsBatchJob.errors || []).slice(0, MAX_MANAGED_STOCKS) };
 }
 
-function startEarningsBatchJob() {
+async function startEarningsBatchJob() {
   if (earningsBatchJob?.running) return earningsBatchJobSnapshot();
   earningsBatchJob = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
@@ -15058,6 +15156,7 @@ function startEarningsBatchJob() {
     updatedAt: new Date().toISOString(),
     finishedAt: "",
   };
+  await persistEarningsBatchJob();
   void executeEarningsBatchJob(earningsBatchJob);
   return earningsBatchJobSnapshot();
 }
@@ -15068,19 +15167,23 @@ async function executeEarningsBatchJob(job) {
     if (!settings.edinetApiKey) throw new Error("先に設定のAI/EDINET欄へAPIキーを登録してください。");
     job.phase = "LM Studioを確認中";
     job.updatedAt = new Date().toISOString();
+    await persistEarningsBatchJob(job);
     await getLmStudioModel();
     job.phase = "EDINETの最新資料を確認中";
     job.updatedAt = new Date().toISOString();
+    await persistEarningsBatchJob(job);
     await runFinancialSnapshotRefresh("watchlist", () => updateFinancialSnapshots({ force: true }));
     const stocks = (await readWatchlist()).filter((stock) => /^\d{4}\.T$/.test(stock.symbol));
     job.total = stocks.length;
     job.phase = "Watchlistを順番に分析中";
     job.updatedAt = new Date().toISOString();
+    await persistEarningsBatchJob(job);
     for (const stock of stocks) {
       job.currentSymbol = stock.symbol;
       job.currentName = stock.name;
       job.phase = `${job.checked + 1}/${job.total} ${stock.name}を確認中`;
       job.updatedAt = new Date().toISOString();
+      await persistEarningsBatchJob(job);
       try {
         const sources = await currentEarningsSources(stock.symbol);
         const fingerprint = earningsMaterialFingerprint(sources);
@@ -15099,6 +15202,7 @@ async function executeEarningsBatchJob(job) {
       job.checked += 1;
       job.lastCompletedSymbol = stock.symbol;
       job.updatedAt = new Date().toISOString();
+      await persistEarningsBatchJob(job);
     }
     job.running = false;
     job.phase = job.failed ? "完了（一部失敗）" : "完了";
@@ -15106,12 +15210,14 @@ async function executeEarningsBatchJob(job) {
     job.currentName = "";
     job.finishedAt = new Date().toISOString();
     job.updatedAt = job.finishedAt;
+    await persistEarningsBatchJob(job);
   } catch (error) {
     job.running = false;
     job.phase = "失敗";
     job.error = String(error.message || "一括分析に失敗しました").slice(0, 300);
     job.finishedAt = new Date().toISOString();
     job.updatedAt = job.finishedAt;
+    await persistEarningsBatchJob(job).catch((saveError) => console.error("決算一括分析の状態を保存できません:", saveError.message));
   } finally {
     void drainAutomaticEarningsDebates();
   }

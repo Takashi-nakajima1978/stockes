@@ -6250,6 +6250,9 @@ function invalidateEarningsReview(symbol) {
 
 function renderEarningsBatchJob(job = {}, wasRunning = false) {
   const previousJob = state.earningsBatchJob;
+  const savedResultCount = Math.max(0, Number(job.savedResultCount) || 0);
+  const invalidResultCount = Math.max(0, Number(job.invalidResultCount) || 0);
+  const savedResultsLabel = `保存済み結果 ${savedResultCount}銘柄${invalidResultCount ? ` · 要再分析 ${invalidResultCount}銘柄` : ""}`;
   state.earningsReviewErrors ||= {};
   state.earningsBatchFailedSymbols ||= new Set();
   const newJob = Boolean(job.id && previousJob?.id && job.id !== previousJob.id);
@@ -6276,19 +6279,26 @@ function renderEarningsBatchJob(job = {}, wasRunning = false) {
       ? "一括分析中..."
       : job.failed > 0 && job.finishedAt
         ? "失敗銘柄を再分析"
-        : "Watchlist全銘柄を初回分析";
+        : savedResultCount > 0
+          ? "Watchlist全銘柄を再確認"
+          : "Watchlist全銘柄を初回分析";
   }
   if (els.earningsBatchStatus) {
     if (job.running) {
       const target = job.total ? `${job.checked}/${job.total}` : `${job.checked}/準備中`;
       els.earningsBatchStatus.textContent = `${target} · ${job.currentName || job.phase || "準備中"}${job.currentSymbol ? ` (${job.currentSymbol})` : ""}`;
     } else if (job.phase === "未実行" || !job.phase) {
-      els.earningsBatchStatus.textContent = "初回分析前";
+      els.earningsBatchStatus.textContent = savedResultCount > 0 || invalidResultCount > 0
+        ? savedResultsLabel
+        : "初回分析前";
     } else if (job.phase === "失敗") {
-      els.earningsBatchStatus.textContent = job.error || "開始できませんでした";
+      els.earningsBatchStatus.textContent = `${job.error || "開始できませんでした"}${savedResultCount > 0 || invalidResultCount > 0 ? ` · ${savedResultsLabel}` : ""}`;
     } else {
-      els.earningsBatchStatus.textContent = `${job.phase} · 分析 ${job.succeeded || 0} / 最新のため省略 ${job.skipped || 0} / 失敗 ${job.failed || 0}`;
+      els.earningsBatchStatus.textContent = `${job.phase} · 分析 ${job.succeeded || 0} / 最新のため省略 ${job.skipped || 0} / 失敗 ${job.failed || 0} · ${savedResultsLabel}`;
     }
+    els.earningsBatchStatus.title = job.latestSavedAt
+      ? `分析結果の最終保存: ${new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", dateStyle: "medium", timeStyle: "short" }).format(new Date(job.latestSavedAt))}`
+      : "";
   }
   if (els.earningsBatchErrors) {
     const errors = Array.isArray(job.errors) ? job.errors : [];
