@@ -10476,6 +10476,42 @@ async function callLmStudioVision(model, prompt, pages = [], options = {}) {
   return text;
 }
 
+async function callLmStudioNativeChat(model, prompt, options = {}) {
+  const settings = await readSettings();
+  const apiRoot = activeLmStudioUrl(settings).replace(/\/v1\/?$/i, "").replace(/\/$/, "");
+  const input = options.images?.length
+    ? [
+      { type: "text", content: prompt },
+      ...options.images.map((page) => ({ type: "image", data_url: page.dataUrl })),
+    ]
+    : prompt;
+  const data = await fetchWithTimeout(`${apiRoot}/api/v1/chat`, {
+    parseJson: true,
+    errorPrefix: "LM Studio reasoning-off fallback returned",
+    includeErrorDetails: true,
+    timeout: options.timeoutMs || settings.lmStudioTimeoutMs,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model,
+      input,
+      system_prompt: options.system || lmJsonInstructions(),
+      reasoning: "off",
+      temperature: 0.2,
+      max_output_tokens: options.maxTokens || options.maxOutputTokens || 1800,
+      store: false,
+    }),
+  });
+  const text = (Array.isArray(data?.output) ? data.output : [])
+    .filter((item) => item?.type === "message" && typeof item.content === "string")
+    .map((item) => item.content.trim())
+    .filter(Boolean)
+    .join("\n");
+  if (!text) throw new Error("LM Studio reasoning-off fallback returned no final answer");
+  rememberLmStudioOk(settings, activeLmStudioUrl(settings), model);
+  return text;
+}
+
 function finalChatMessageText(message = {}) {
   if (typeof message.content === "string") return message.content.trim();
   if (Array.isArray(message.content)) {
@@ -15523,11 +15559,27 @@ async function callStructuredLm(model, prompt, options = {}) {
     options.validate?.(parsed);
     return parsed;
   };
-  const invoke = (content, requestOptions) => {
+  const invokeRaw = (content, requestOptions) => {
     const { images: _images, validate: _validate, ...lmOptions } = requestOptions;
     return options.images?.length
       ? callLmStudioVision(model, content, options.images, lmOptions)
       : callLmStudioChat(model, content, lmOptions);
+  };
+  const invoke = async (content, requestOptions) => {
+    try {
+      return await invokeRaw(content, requestOptions);
+    } catch (error) {
+      if (!/reasoning without a final answer|output was empty/i.test(String(error.message || error))) throw error;
+      try {
+        return await callLmStudioNativeChat(model, content, requestOptions);
+      } catch (fallbackError) {
+        const fallbackMessage = String(fallbackError.message || "失敗");
+        if (/reasoning-off fallback returned 404\b/i.test(fallbackMessage)) {
+          throw new Error("LM Studioが推論OFFでの再試行に対応していません。LM Studio 0.4.0以降へ更新してください。");
+        }
+        throw new Error(`最終回答が空でした。推論OFFの再試行も失敗しました: ${fallbackMessage.slice(0, 180)}`);
+      }
+    }
   };
   if (!options.schema) {
     let raw;

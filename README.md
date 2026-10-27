@@ -147,6 +147,7 @@ Googleの仕様: [オフラインアクセスとOAuth](https://developers.google
 
 - PDF解析にはDocker内のPopplerを使います。コンテナを再ビルドして反映してください。PDF本体と一時画像は処理後に破棄し、結果・ページ参照のみ `data/earnings-analysis-cache.json` に保存します。この結果は一括/Drive/NASバックアップに含まれます。
 - Watchlist一括分析の進捗・完了状態も `data/earnings-batch-state.json` に保存します。サーバー再起動後も前回の状態と保存済み分析件数を表示し、実行途中で停止した場合は中断を明示します。
+- LM Studioが推論内容だけ返して最終回答を返さない場合は、推論をOFFにしたNative Chat APIで再試行します。この再試行にはLM Studio 0.4.0以降が必要です。
 - スライド画像の読み取りには画像入力に対応したLM Studioモデルが必要です。未対応の場合もテキスト資料の差分とBull/Bear/Judge分析を試み、Vision未実行と明示します。決算説明資料が最近の保存済みTDnet開示にない場合は、EDINET資料中心となりスライド分析を省略します。
 - Bullは上振れ材料、Bearは反証・下振れ要因、Judgeは双方と数値をまとめます。3役は同じローカルモデルを役割分担しており、独立モデル同士の投票ではありません。Judgeスコアは根拠充足度で、上昇確率や利益保証ではありません。
 

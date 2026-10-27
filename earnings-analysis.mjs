@@ -305,7 +305,7 @@ function hasRepeatedFragmentSequence(value = "") {
 }
 
 function hasLeakedAnalysisText(value = "") {
-  return /<\/?blockquote\b|\bthe user wants\b|\bthe input\b.{0,100}\b(?:corrupt|glitched|broken)\b|\bcore thesis is\b|\bthought balance\b|\bchain of thought\b|\blet me think\b|\bas an ai\b|\bsystem prompt\b|\bjson response\b/i.test(String(value));
+  return /<\/?blockquote\b|<\/?think\b|\bthe user wants\b|\bthe input\b.{0,100}\b(?:corrupt|glitched|broken)\b|\bcore thesis is\b|\bthought balance\b|\bchain of thought\b|\blet me think\b|\bas an ai\b|\bsystem prompt\b|\bjson response\b/i.test(String(value));
 }
 
 export function earningsDebateOutputIssues(value = {}) {
