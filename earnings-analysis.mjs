@@ -287,11 +287,34 @@ function hasRepeatedEnglishTokenSequence(value = "") {
   return false;
 }
 
+function hasRepeatedFragmentSequence(value = "") {
+  const text = String(value).toLowerCase().replace(/[\p{P}\p{S}\s]+/gu, "");
+  const maxWidth = Math.min(24, Math.floor(text.length / 5));
+  for (let width = 2; width <= maxWidth; width += 1) {
+    for (let start = 0; start + width * 5 <= text.length; start += 1) {
+      const fragment = text.slice(start, start + width);
+      if (!/[a-z\u3040-\u30ff\u3400-\u9fff]/u.test(fragment)) continue;
+      if ((fragment.match(/\d/g) || []).length >= width / 2) continue;
+      let repeats = 1;
+      while (start + width * (repeats + 1) <= text.length
+        && text.slice(start + width * repeats, start + width * (repeats + 1)) === fragment) repeats += 1;
+      if (repeats >= 5) return true;
+    }
+  }
+  return false;
+}
+
+function hasLeakedAnalysisText(value = "") {
+  return /<\/?blockquote\b|\bthe user wants\b|\bthe input\b.{0,100}\b(?:corrupt|glitched|broken)\b|\bcore thesis is\b|\bthought balance\b|\bchain of thought\b|\blet me think\b|\bas an ai\b|\bsystem prompt\b|\bjson response\b/i.test(String(value));
+}
+
 export function earningsDebateOutputIssues(value = {}) {
   const issues = [];
   const inspect = (item, field) => {
     if (typeof item === "string") {
       if (hasRepeatedEnglishTokenSequence(item)) issues.push(field);
+      if (hasRepeatedFragmentSequence(item)) issues.push(field);
+      if (hasLeakedAnalysisText(item)) issues.push(field);
       return;
     }
     if (Array.isArray(item)) {

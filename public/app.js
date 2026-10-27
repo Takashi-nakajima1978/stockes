@@ -3513,7 +3513,7 @@ function earningsDebatePanelHtml(stock) {
     </div>
     <p class="earnings-note">${escapeHtml(review.vision?.note || "")} ${(review.limitations || []).map(escapeHtml).join(" ")}</p>
   ` : state.earningsReviewInvalidated?.[stock.symbol]
-    ? `<p class="earnings-note">以前の保存結果に不自然な語句の反復があったため、表示対象から除外しました。決算資料を再分析してください。</p>`
+    ? `<p class="earnings-note">以前の保存結果に異常な反復またはモデル内部メモの混入があったため、表示対象から除外しました。決算資料を再分析してください。</p>`
     : `<p>EDINETの前回期・今回期と、保存済みの決算説明資料を確認して多角分析します。</p>`;
   return `
     <section class="decision-card earnings-debate-card">
@@ -6264,7 +6264,14 @@ function renderEarningsBatchJob(job = {}, wasRunning = false) {
   const completedSymbolChanged = previousJob?.id === job.id
     && job.lastCompletedSymbol
     && job.lastCompletedSymbol !== previousJob.lastCompletedSymbol;
-  const errors = Array.isArray(job.errors) ? job.errors : [];
+  const errors = [...(Array.isArray(job.errors) ? job.errors : [])];
+  const knownErrorSymbols = new Set(errors.map((item) => item.symbol));
+  for (const symbol of Array.isArray(job.invalidSymbols) ? job.invalidSymbols : []) {
+    if (!knownErrorSymbols.has(symbol)) errors.push({
+      symbol,
+      message: "保存済み分析に異常な反復またはモデル内部メモの混入がありました。再分析してください。",
+    });
+  }
   for (const item of errors) {
     if (!/^\d{4}\.T$/.test(item.symbol || "")) continue;
     const message = String(item.message || "一括分析に失敗しました");
@@ -6301,7 +6308,6 @@ function renderEarningsBatchJob(job = {}, wasRunning = false) {
       : "";
   }
   if (els.earningsBatchErrors) {
-    const errors = Array.isArray(job.errors) ? job.errors : [];
     els.earningsBatchErrors.hidden = errors.length === 0;
     els.earningsBatchErrors.innerHTML = errors.length
       ? `<details><summary>失敗理由を確認（最新${errors.length}件）</summary><ul>${errors.map((item) => `<li><strong>${escapeHtml(item.symbol || "銘柄")}</strong>: ${escapeHtml(item.message || "分析に失敗しました")}</li>`).join("")}</ul></details>`
