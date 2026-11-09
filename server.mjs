@@ -121,6 +121,7 @@ const MAX_EARNINGS_PAGES_PER_DOCUMENT = 6;
 const MAX_EARNINGS_PRESENTATION_IMAGES = 4;
 const MAX_EARNINGS_REPORT_IMAGES = 2;
 const MAX_EARNINGS_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_EDINET_DISCOVERY_CANDIDATES = 100;
 let decisionCalibrationCache = null;
 let decisionCalibrationRefreshAt = 0;
 const NISA_GROWTH_ANNUAL_LIMIT_YEN = 2_400_000;
@@ -4468,11 +4469,19 @@ async function discoverStocks(options = {}, job = null) {
     }
     return scoredCandidate;
   });
-  const discoveryFinancials = await refreshDiscoveryFinancials(pricedCandidates, settings, financialCache, job);
+  const preliminaryFinancialCandidates = pricedCandidates
+    .filter((candidate) => !isUsDiscoveryCandidate(candidate) && candidate.nearBudget)
+    .sort((a, b) => (b.businessValueScore || b.score || 0) - (a.businessValueScore || a.score || 0)
+      || a.symbol.localeCompare(b.symbol))
+    .slice(0, MAX_EDINET_DISCOVERY_CANDIDATES);
+  const discoveryFinancials = await refreshDiscoveryFinancials(preliminaryFinancialCandidates, settings, financialCache, job);
   financialBySymbol = discoveryFinancials.bySymbol;
   const financialStats = {
+    edinetDiscoveryConfigured: Boolean(settings.edinetApiKey),
     edinetDiscoveryEnabled: discoveryFinancials.enabled,
     edinetDiscoveryChecked: discoveryFinancials.checked,
+    edinetDiscoveryVerified: pricedCandidates.filter((candidate) => !isUsDiscoveryCandidate(candidate)
+      && hasCandidateFinancialBasis({ financials: financialBySymbol.get(candidate.symbol) })).length,
     edinetDiscoveryWarnings: discoveryFinancials.warnings,
   };
   const candidateLearningReview = await candidateLearningReviewPromise;
@@ -4562,10 +4571,8 @@ async function discoverStocks(options = {}, job = null) {
     }
     return enhancedCandidate;
   });
-  const edinetRequiredForJp = Boolean(settings.edinetApiKey);
   const eligibleEnhanced = enhanced
     .filter(hasDiscoverySupport)
-    .filter((candidate) => isUsDiscoveryCandidate(candidate) || !edinetRequiredForJp || hasCandidateFinancialBasis(candidate))
     .filter((candidate) => candidate.evidenceQuality !== "悪材料あり");
   const supported = eligibleEnhanced.filter(isActionableDiscoveryCandidate);
   const viable = supported.filter((candidate) => candidate.businessValueScore >= 55);
@@ -4724,9 +4731,11 @@ function discoveryStageStats({
   )).length;
   const build = (target) => ({
     priceChecked: split(scored, target),
+    budgetQualified: split(prelimPool, target),
     buyArea: split(prelimPool, target),
     edinetChecked: target === "jp" ? Number(financialStats.edinetDiscoveryChecked || 0) : 0,
     searched: split(enhanced, target),
+    evidenceBacked: split(eligibleEnhanced, target),
     financialPass: split(eligibleEnhanced, target),
     actionable: split(supported, target),
     scorePass: split(viable, target),
@@ -5084,6 +5093,7 @@ async function refreshDiscoveryFinancials(candidates = [], settings = null, fina
   const bySymbol = new Map((previous.items || []).map((item) => [item.symbol, item]));
   const jpCandidates = uniqueBy(candidates
     .filter((candidate) => !isUsDiscoveryCandidate(candidate))
+    .filter((candidate) => candidate.nearBudget)
     .map(candidateToStock), (stock) => stock.symbol);
   if (!jpCandidates.length) {
     return { bySymbol, checked: 0, enabled: Boolean(settings?.edinetApiKey), warnings: [] };
@@ -5094,6 +5104,7 @@ async function refreshDiscoveryFinancials(candidates = [], settings = null, fina
   if (!shouldRefreshFinancialSnapshots({
     generatedAt: previous.generatedAt,
     items: previous.items || [],
+    symbols: jpCandidates.map((stock) => stock.symbol),
     currentVersion: EDINET_ANALYSIS_VERSION,
     reportSetVersion: EDINET_REPORT_SELECTION_VERSION,
   })) {
@@ -5143,7 +5154,15 @@ async function refreshDiscoveryFinancials(candidates = [], settings = null, fina
 function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null, fxContext = null) {
   if (!candidate || isUsDiscoveryCandidate(candidate)) return candidate;
   const snapshot = financials ? normalizeFinancialSnapshot(financials) : null;
-  if (!snapshot) return candidate;
+  const edinetVerified = snapshot?.edinet?.status === "verified";
+  const hasFinancialMetric = [snapshot?.netCash, snapshot?.operatingCashFlow, snapshot?.pbr, snapshot?.per, snapshot?.evEbitda]
+    .some(Number.isFinite);
+  const evidenceQuality = uniqueText([
+    ...String(candidate.evidenceQuality || "").split("・"),
+    edinetVerified ? "EDINET確認済み" : "EDINET未確認",
+    hasFinancialMetric ? "財務参考値あり" : "財務指標不足",
+  ]).join("・");
+  if (!snapshot) return { ...candidate, financialEvidenceStatus: "unavailable", evidenceQuality };
   const criteria = normalizeFinancialCriteria(snapshot.criteria || []);
   let scoreDelta = 0;
   let process = candidate.process;
@@ -5226,6 +5245,7 @@ function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null, fx
   return {
     ...candidate,
     financials: snapshot,
+    financialEvidenceStatus: edinetVerified ? "verified" : hasFinancialMetric ? "partial" : "unavailable",
     industryProfile,
     score,
     businessValueScore,
@@ -5233,9 +5253,7 @@ function applyDiscoveryFinancialAdjustment(candidate = {}, financials = null, fx
     process: finalized,
     buyPlan,
     sellPlan: candidateExitPlan(candidate.price || {}, buyPlan, { currency: candidate.currency || candidate.price?.currency || discoveryCurrency(candidate) }),
-    evidenceQuality: candidate.evidenceQuality && !candidate.evidenceQuality.includes("EDINET")
-      ? `${candidate.evidenceQuality}・EDINET財務`
-      : candidate.evidenceQuality || "EDINET財務",
+    evidenceQuality,
     reasons: uniqueText([...(candidate.reasons || []), ...reasons].filter(Boolean)).slice(0, 5),
     risks: uniqueText([...(candidate.risks || []), ...risks].filter(Boolean)).slice(0, 4),
   };
@@ -17022,7 +17040,9 @@ async function searchSourceSummary(searchCount, candidateLimit, budget = {}) {
     candidatePool: budget.candidatePool || candidateLimit,
     usedDiscoveryAi: Boolean(budget.usedDiscoveryAi),
     edinetDiscoveryEnabled: Boolean(budget.edinetDiscoveryEnabled),
+    edinetDiscoveryConfigured: Boolean(budget.edinetDiscoveryConfigured),
     edinetDiscoveryChecked: Number(budget.edinetDiscoveryChecked || 0),
+    edinetDiscoveryVerified: Number(budget.edinetDiscoveryVerified || 0),
     edinetDiscoveryWarnings: asStringArray(budget.edinetDiscoveryWarnings).slice(0, 5),
     fullScan: Boolean(budget.fullScan),
     searchPositionUsed: Boolean(budget.searchPositionUsed),

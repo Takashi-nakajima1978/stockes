@@ -7664,14 +7664,17 @@ function renderCandidateList() {
     const edinetWarningText = source.edinetDiscoveryWarnings?.length
       ? `注意: ${source.edinetDiscoveryWarnings.slice(0, 2).join(" / ")}。`
       : "";
-    const edinetText = source.edinetDiscoveryEnabled
-      ? `日本株${source.edinetDiscoveryChecked || 0}件をEDINET財務で確認してから選別しています。`
-      : `候補探しのEDINET財務選別は未実行です。${edinetWarningText}`;
+    const edinetVerifiedCount = Number(source.edinetDiscoveryVerified || 0);
+    const edinetText = !source.edinetDiscoveryConfigured
+      ? `EDINET APIキー未設定のため財務確認はありません。価格・検索根拠で候補を選別しています。${edinetWarningText}`
+      : source.edinetDiscoveryWarnings?.length || !source.edinetDiscoveryEnabled
+        ? `EDINET取得に問題がありました。確認済み財務は${edinetVerifiedCount}件です。未確認でも候補から除外せず、財務未確認として扱います。${edinetWarningText}`
+        : `EDINET確認済み財務は${edinetVerifiedCount}件、今回の更新対象は${source.edinetDiscoveryChecked || 0}件です。未確認銘柄も候補から除外せず、財務未確認として扱います。`;
     const jpStage = source.stageStats?.jp || null;
     const stageText = jpStage
       ? nisaMode
-        ? `日本株は価格確認${jpStage.priceChecked || 0}件、会社・財務確認${jpStage.financialPass || 0}件、NISA適性候補${jpStage.shown || 0}件です。`
-        : `日本株は価格確認${jpStage.priceChecked || 0}件、買い場条件${jpStage.buyArea || 0}件、EDINET後${jpStage.financialPass || 0}件、最終表示${jpStage.shown || 0}件です。`
+        ? `日本株は価格確認${jpStage.priceChecked || 0}件、検索根拠確認${jpStage.evidenceBacked ?? jpStage.financialPass ?? 0}件、NISA適性候補${jpStage.shown || 0}件です。`
+        : `日本株は価格確認${jpStage.priceChecked || 0}件、単元予算内${jpStage.budgetQualified ?? jpStage.buyArea ?? 0}件、検索根拠確認${jpStage.evidenceBacked ?? jpStage.financialPass ?? 0}件、最終表示${jpStage.shown || 0}件です。`
       : "";
     const seasonalText = source.incomeSeasonalityUsed
       ? `配当・株主優待の権利前需給も加味します。権利前だけ買い目安の許容幅を最大${source.seasonalBuyPremiumPct || 2}%まで広げます。`
@@ -8027,6 +8030,13 @@ function suggestionItem(item, index) {
   const disabled = exists || full ? "disabled" : "";
   const buttonText = exists ? "追加済み" : full ? "管理枠満了" : target === "us" ? "米国株に追加" : "日本株に追加";
   const marketLabel = target === "us" ? "米国株" : "日本株";
+  const financialEvidenceLabel = target === "jp"
+    ? item.financialEvidenceStatus === "verified"
+      ? "・EDINET確認済み"
+      : item.financialEvidenceStatus === "partial"
+        ? "・財務参考値あり／EDINET未確認"
+        : "・EDINET未確認"
+    : "";
   const businessOverview = item.businessOverview || item.aiReview?.businessOverview || "";
   const profileSources = (item.businessOverviewEvidence || []).filter((source) => source.url).slice(0, 2);
   const nisaFit = item.nisaFit;
@@ -8035,7 +8045,7 @@ function suggestionItem(item, index) {
       <div class="suggestion-head">
         <div>
           <strong>${index + 1}. ${escapeHtml(item.name)}</strong>
-          <span>${symbolLinkHtml(item.symbol, target)} / ${escapeHtml(marketLabel)} / ${escapeHtml(item.sector || "その他")} / ${escapeHtml(item.evidenceQuality || item.discoverySource || "価格中心")}</span>
+          <span>${symbolLinkHtml(item.symbol, target)} / ${escapeHtml(marketLabel)} / ${escapeHtml(item.sector || "その他")} / ${escapeHtml(item.evidenceQuality || item.discoverySource || "価格中心")}${escapeHtml(financialEvidenceLabel)}</span>
         </div>
         <div class="suggestion-actions">
           ${suggestionScoreHtml(item)}
