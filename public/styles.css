@@ -753,6 +753,26 @@ progress {
   font-variant-numeric: tabular-nums;
 }
 
+.profit-card-triple .profit-card-pair > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.profit-card-triple .profit-card-pair > div > small {
+  min-width: 0;
+  white-space: normal;
+  font-size: 10px;
+  line-height: 1.15;
+}
+
+.profit-card-triple .profit-card-pair > div > strong {
+  min-width: 0;
+  flex-shrink: 1;
+  font-size: clamp(12px, 0.95vw, 14px);
+}
+
 .account-cashflow-content {
   display: grid;
   gap: 12px;
