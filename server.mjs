@@ -12238,16 +12238,21 @@ function normalizeStock(stock) {
   const accountType = normalizeJpAccountType(stock.accountType || positions[0]?.accountType || defaultSettings.defaultJpAccountType);
   const purchaseDate = aggregate.purchaseDate || normalizeDate(stock.purchaseDate);
   const purchasePrice = aggregate.purchasePrice || nullablePositiveNumber(stock.purchasePrice);
-  const soldQuantity = aggregateSales(sales).quantity || 0;
-  const quantity = aggregate.quantity ? Math.max(0, aggregate.quantity - soldQuantity) || null : nullablePositiveNumber(stock.quantity);
-  const minimumHoldQuantity = resolveMinimumHoldQuantity(stock, quantity || aggregate.quantity);
+  const hasPositionLedger = positions.length > 0 || sales.length > 0;
+  const remainingQuantity = hasPositionLedger
+    ? positionLotState(positions, sales, 6).remainingQuantity
+    : nullablePositiveNumber(stock.quantity);
+  const quantity = remainingQuantity > 0 ? remainingQuantity : null;
+  const minimumHoldQuantity = resolveMinimumHoldQuantity(stock, quantity);
   const hasPosition = positions.length > 0 || sales.length > 0 || Boolean(purchaseDate || purchasePrice || quantity);
   return {
     symbol: normalizeSymbol(stock.symbol),
     name: String(stock.name || "").trim(),
     market: String(stock.market || "東証").trim(),
     sector: String(stockSector(stock)).trim(),
-    holding: typeof stock.holding === "boolean" ? stock.holding : hasPosition,
+    holding: hasPositionLedger
+      ? remainingQuantity > 0
+      : typeof stock.holding === "boolean" ? stock.holding : hasPosition,
     notes: String(stock.notes || "").trim(),
     purchaseDate,
     purchasePrice,
@@ -12267,14 +12272,19 @@ function normalizeUsStock(stock) {
   const aggregate = aggregatePositions(positions);
   const purchaseDate = aggregate.purchaseDate || normalizeDate(stock.purchaseDate);
   const purchasePrice = aggregate.purchasePrice || nullablePositiveNumber(stock.purchasePrice);
-  const soldQuantity = aggregateSales(sales).quantity || 0;
-  const quantity = aggregate.quantity ? Math.max(0, aggregate.quantity - soldQuantity) || null : nullablePositiveNumber(stock.quantity);
+  const hasPositionLedger = positions.length > 0 || sales.length > 0;
+  const remainingQuantity = hasPositionLedger
+    ? positionLotState(positions, sales, 8).remainingQuantity
+    : nullablePositiveNumber(stock.quantity);
+  const quantity = remainingQuantity > 0 ? remainingQuantity : null;
   const hasPosition = positions.length > 0 || sales.length > 0 || Boolean(purchaseDate || purchasePrice || quantity);
   return {
     symbol: normalizeUsSymbol(stock.symbol),
     name: String(stock.name || "").trim(),
     market: String(stock.market || "NYSE").trim().toUpperCase(),
-    holding: typeof stock.holding === "boolean" ? stock.holding : hasPosition,
+    holding: hasPositionLedger
+      ? remainingQuantity > 0
+      : typeof stock.holding === "boolean" ? stock.holding : hasPosition,
     notes: String(stock.notes || "").trim(),
     purchaseDate,
     purchasePrice,
