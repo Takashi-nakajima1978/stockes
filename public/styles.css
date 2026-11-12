@@ -833,6 +833,12 @@ progress {
   color: var(--danger);
 }
 
+.account-flow-auto-label {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .account-cashflow-table {
   min-width: 620px;
 }
