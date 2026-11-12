@@ -3661,13 +3661,22 @@ function nullableNumber(value) {
 }
 
 function hasOpenPosition(stock = {}, position = {}) {
+  const hasLedger = Boolean(
+    position.positions?.length
+    || position.lots?.length
+    || position.sales?.length,
+  );
+  if (hasLedger && Array.isArray(position.remainingLots)) {
+    return position.remainingLots.some((lot) => Number.isFinite(lot.quantity) && lot.quantity > 0);
+  }
   if (Number.isFinite(position.quantity) && position.quantity > 0) return true;
   if (
     Number.isFinite(position.grossQuantity)
     && position.grossQuantity > 0
     && Number.isFinite(position.soldQuantity)
   ) {
-    return position.grossQuantity > position.soldQuantity;
+    const precision = 10 ** (String(stock.symbol || "").toUpperCase().endsWith(".T") ? 6 : 8);
+    return Math.round((position.grossQuantity - position.soldQuantity) * precision) / precision > 0;
   }
   return Boolean(stock.holding);
 }
