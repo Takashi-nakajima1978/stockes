@@ -1888,6 +1888,13 @@ function annualDividendPerShare(price = {}) {
   return amount && amount > 0 ? amount : null;
 }
 
+function currentPriceDividendYieldPct(price = {}) {
+  const currentPrice = finiteOrNull(price?.current);
+  const dividendPerShare = annualDividendPerShare(price);
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0 || !Number.isFinite(dividendPerShare)) return null;
+  return (dividendPerShare / currentPrice) * 100;
+}
+
 function annualDividendText(position = {}, formatter = yen) {
   return Number.isFinite(position?.annualDividendEstimate) ? `${formatter(position.annualDividendEstimate)}/年` : "-";
 }
@@ -7358,6 +7365,7 @@ function positionEditor(stock, position, analysis) {
   const sales = metrics.sales?.length ? metrics.sales : saleLots(stock);
   const displaySales = sales.length ? sales : [{ sellDate: "", sellPrice: null, quantity: null }];
   const entry = effectiveEntryValue(stock, analysis?.price || {}, analysis?.entryValue);
+  const currentPriceDividendYield = currentPriceDividendYieldPct(analysis?.price || {});
   return `
     <form id="positionForm" class="position-form">
       <div class="position-form-title">
@@ -7416,6 +7424,7 @@ function positionEditor(stock, position, analysis) {
         <span><strong>残り元本</strong>${yen(metrics.invested)}</span>
         <span><strong>評価額</strong>${yen(metrics.marketValue)}</span>
         <span><strong>1株配当</strong>${dividendPerShareText(analysis?.price || {}, metrics, yen)}</span>
+        <span><strong>現在株価での配当利回り</strong>${Number.isFinite(currentPriceDividendYield) ? `${currentPriceDividendYield.toFixed(2)}%` : "-"}<small>表示中の1株配当 ÷ 現在株価</small></span>
         <span><strong>年間配当目安</strong>${yen(metrics.annualDividendEstimate)}</span>
         <span><strong>配当時期</strong>${escapeHtml(dividendTimingDetail(analysis?.price || {}, yen))}</span>
         <span><strong>残す株数</strong>${metrics.minimumHoldQuantity ? `${metrics.minimumHoldQuantity.toLocaleString("ja-JP")}株` : "-"}</span>
