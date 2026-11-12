@@ -42,6 +42,8 @@ const state = {
   stocks: [],
   stocksLoaded: false,
   stockLoadError: "",
+  jpAccountFlows: [],
+  jpAccountFlowsLoaded: false,
   analyses: {},
   earningsReviews: {},
   earningsReviewLoaded: new Set(),
@@ -163,6 +165,11 @@ const els = {
   jpMarketStatus: document.getElementById("jpMarketStatus"),
   usMarketStatus: document.getElementById("usMarketStatus"),
   stockForm: document.getElementById("stockForm"),
+  accountCashflowForm: document.getElementById("accountCashflowForm"),
+  accountCashflowTable: document.getElementById("accountCashflowTable"),
+  accountDepositsTotal: document.getElementById("accountDepositsTotal"),
+  accountWithdrawalsTotal: document.getElementById("accountWithdrawalsTotal"),
+  accountNetDepositsTotal: document.getElementById("accountNetDepositsTotal"),
   stockName: document.getElementById("stockName"),
   stockSymbol: document.getElementById("stockSymbol"),
   stockLookupStatus: document.getElementById("stockLookupStatus"),
@@ -241,7 +248,11 @@ const els = {
   usdJpyChange: document.getElementById("usdJpyChange"),
   eurJpyRate: document.getElementById("eurJpyRate"),
   eurJpyChange: document.getElementById("eurJpyChange"),
-  cryptoQuantity: document.getElementById("cryptoQuantity"),
+  cryptoCurrentValue: document.getElementById("cryptoCurrentValue"),
+  usdJpyHoldingValue: document.getElementById("usdJpyHoldingValue"),
+  usdJpyHoldingQuantity: document.getElementById("usdJpyHoldingQuantity"),
+  eurJpyHoldingValue: document.getElementById("eurJpyHoldingValue"),
+  eurJpyHoldingQuantity: document.getElementById("eurJpyHoldingQuantity"),
   cryptoPnlJpy: document.getElementById("cryptoPnlJpy"),
   cryptoPnlJpyPct: document.getElementById("cryptoPnlJpyPct"),
   cryptoDetail: document.getElementById("cryptoDetail"),
@@ -260,6 +271,7 @@ const els = {
   realizedPnlFiscalYearLabel: document.getElementById("realizedPnlFiscalYearLabel"),
   dividendReceivedTotal: document.getElementById("dividendReceivedTotal"),
   investedTotal: document.getElementById("investedTotal"),
+  netDepositsTotal: document.getElementById("netDepositsTotal"),
   marketTotal: document.getElementById("marketTotal"),
   dividendIncomeTotal: document.getElementById("dividendIncomeTotal"),
   profitableCount: document.getElementById("profitableCount"),
@@ -584,6 +596,17 @@ async function loadStocks(cachedPayload = null) {
   state.stockLoadError = "";
   if (!state.selected && state.stocks.length) state.selected = state.stocks[0].symbol;
   renderCurrentDataView();
+}
+
+async function loadJpAccountFlows() {
+  const payload = await request("/api/jp-account-flows");
+  state.jpAccountFlows = Array.isArray(payload.items) ? payload.items : [];
+  state.jpAccountFlowsLoaded = true;
+  if (els.accountCashflowForm && !els.accountCashflowForm.elements.date.value) {
+    els.accountCashflowForm.elements.date.value = localDateKey();
+  }
+  renderAccountCashflows();
+  renderProfitSummary();
 }
 
 async function loadUsStocks() {
@@ -1309,11 +1332,12 @@ function ensureViewData(view) {
   if (view === "analysis" || view === "stocks") {
     return ensureDataSection("jp", async () => {
       const stocksTask = request("/api/stocks").then(loadStocks);
+      const cashflowsTask = loadJpAccountFlows();
       const analysisTask = request("/api/analysis").then(async (payload) => {
         await stocksTask;
         await loadAnalysisCache(false, payload);
       });
-      await Promise.all([stocksTask, analysisTask, loadAnalysisJob()]);
+      await Promise.all([stocksTask, cashflowsTask, analysisTask, loadAnalysisJob()]);
     });
   }
   if (view === "us") {
@@ -2071,6 +2095,7 @@ function renderProfitSummary() {
   }
   if (els.dividendReceivedTotal) els.dividendReceivedTotal.textContent = yen(summary.dividendReceived);
   if (els.investedTotal) els.investedTotal.textContent = yen(summary.invested);
+  if (els.netDepositsTotal) els.netDepositsTotal.textContent = state.jpAccountFlowsLoaded ? yen(summary.netDeposits) : "-";
   if (els.marketTotal) els.marketTotal.textContent = yen(summary.marketValue);
   if (els.dividendIncomeTotal) els.dividendIncomeTotal.textContent = yen(summary.annualDividendEstimate);
   if (els.nisaRemainingTotal) els.nisaRemainingTotal.textContent = yen(summary.nisaRemaining);
@@ -2082,6 +2107,28 @@ function renderProfitSummary() {
   }
   if (els.profitableCount) els.profitableCount.textContent = String(summary.winCount);
   if (els.lossCount) els.lossCount.textContent = String(summary.lossCount);
+}
+
+function renderAccountCashflows() {
+  const items = state.jpAccountFlows;
+  const deposits = items.filter((item) => item.type === "deposit").reduce((sum, item) => sum + item.amount, 0);
+  const withdrawals = items.filter((item) => item.type === "withdrawal").reduce((sum, item) => sum + item.amount, 0);
+  const net = deposits - withdrawals;
+  if (els.accountDepositsTotal) els.accountDepositsTotal.textContent = yen(deposits);
+  if (els.accountWithdrawalsTotal) els.accountWithdrawalsTotal.textContent = yen(withdrawals);
+  if (els.accountNetDepositsTotal) els.accountNetDepositsTotal.textContent = yen(net);
+  if (els.accountCashflowTable) {
+    els.accountCashflowTable.innerHTML = items.length
+      ? items.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.date)}</td>
+          <td><span class="account-flow-type ${item.type}">${item.type === "deposit" ? "入金" : "出金"}</span></td>
+          <td>${yen(item.amount)}</td>
+          <td>${escapeHtml(item.memo || "-")}</td>
+          <td><button type="button" class="icon" data-delete-account-flow="${escapeAttr(item.id)}" aria-label="${item.type === "deposit" ? "入金" : "出金"}記録を削除">×</button></td>
+        </tr>`).join("")
+      : '<tr><td colspan="5" class="watchlist-empty">入出金の記録はありません。</td></tr>';
+  }
 }
 
 function renderUs() {
@@ -2598,13 +2645,34 @@ function renderCryptoSummary() {
   if (els.usdJpyChange) els.usdJpyChange.textContent = `1カ月 ${signedPct(analysis.usdJpy?.return1m)}`;
   if (els.eurJpyRate) els.eurJpyRate.textContent = fxRate(analysis.eurJpy?.current);
   if (els.eurJpyChange) els.eurJpyChange.textContent = `1カ月 ${signedPct(analysis.eurJpy?.return1m)}`;
-  if (els.cryptoQuantity) els.cryptoQuantity.textContent = btcAmount(position.quantity);
+  const currentBtcValueJpy = Number.isFinite(position.marketValueJpy)
+    ? position.marketValueJpy
+    : Number.isFinite(analysis.btcJpy?.current) && Number.isFinite(position.quantity)
+    ? analysis.btcJpy.current * position.quantity
+    : null;
+  if (els.cryptoCurrentValue) els.cryptoCurrentValue.textContent = yen(currentBtcValueJpy);
+  renderFxHoldingSummary("USD", analysis.usdJpy?.current, els.usdJpyHoldingValue, els.usdJpyHoldingQuantity);
+  renderFxHoldingSummary("EUR", analysis.eurJpy?.current, els.eurJpyHoldingValue, els.eurJpyHoldingQuantity);
   setMoneySummary(els.cryptoPnlJpy, position.pnlAmountJpy, "profit-big", yen);
   if (els.cryptoPnlJpyPct) {
     els.cryptoPnlJpyPct.innerHTML = Number.isFinite(position.pnlPctJpy)
       ? `${pct(position.pnlPctJpy)}${position.jpyEstimated ? " / 円換算概算" : ""}`
       : "購入・売却入力後に計算";
   }
+}
+
+function fxHoldingMetrics(currency) {
+  const fx = state.cryptoHolding?.fx || {};
+  const bought = (Array.isArray(fx.positions) ? fx.positions : []).filter((item) => item.currency === currency).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const sold = (Array.isArray(fx.sales) ? fx.sales : []).filter((item) => item.currency === currency).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  return Math.max(0, bought - sold);
+}
+
+function renderFxHoldingSummary(currency, rate, valueNode, quantityNode) {
+  const quantity = fxHoldingMetrics(currency);
+  const value = Number.isFinite(rate) && quantity > 0 ? quantity * rate : null;
+  if (valueNode) valueNode.textContent = Number.isFinite(value) ? yen(value) : "-";
+  if (quantityNode) quantityNode.textContent = `計算数量 ${quantity > 0 ? `${new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 2 }).format(quantity)} ${currency}` : "-"}`;
 }
 
 function renderCryptoTabs() {
@@ -2678,7 +2746,9 @@ function renderFxDetail() {
       ${fxPairHtml("USD/JPY", "米ドル", usdJpyPrice, usdTiming, "usd-jpy", "USD-JPY")}
       ${fxPairHtml("EUR/JPY", "ユーロ", eurJpyPrice, eurTiming, "eur-jpy", "EUR-JPY")}
     </section>
+    ${fxPositionEditor(state.cryptoHolding || { fx: { positions: [], sales: [] } })}
   `;
+  attachFxPositionForm();
   attachAssetDebateButtons(els.fxDetail);
   void loadAssetDebate("fx", "USD-JPY");
   void loadAssetDebate("fx", "EUR-JPY");
@@ -2710,6 +2780,121 @@ function fxPairHtml(pair, currencyName, price, timing, chartClass, symbol) {
       ${assetDebatePanelHtml("fx", symbol, pair, `${pair}の為替価格履歴・テクニカル指標・為替目安を使います。ニュースや金利見通しは含みません。`)}
     </section>
   `;
+}
+
+function fxPositionEditor(holding = {}) {
+  const fx = holding.fx || { positions: [], sales: [] };
+  const transactions = [
+    ...(Array.isArray(fx.positions) ? fx.positions.map((item, index) => ({ ...item, side: "buy", index })) : []),
+    ...(Array.isArray(fx.sales) ? fx.sales.map((item, index) => ({ ...item, side: "sell", index })) : []),
+  ].sort((a, b) => String(b.purchaseDate || b.sellDate || "").localeCompare(String(a.purchaseDate || a.sellDate || "")));
+  return `
+    <section class="fx-holdings-panel">
+      <div class="panel-title"><h3>外貨の保有・売買履歴</h3><span>数量は入力した円金額 ÷ 為替レートで自動計算</span></div>
+      <form id="fxPositionForm" class="fx-position-form">
+        <label><span>取引</span><select name="side"><option value="buy">外貨を買う</option><option value="sell">円に戻す</option></select></label>
+        <label><span>通貨</span><select name="currency"><option value="USD">米ドル</option><option value="EUR">ユーロ</option></select></label>
+        <label><span>日付</span><input name="date" type="date" value="${localDateKey()}" required></label>
+        <label><span>為替レート（円/通貨）</span><input name="rate" type="number" min="0.000001" step="0.000001" placeholder="例: 150.25" required></label>
+        <label><span id="fxAmountLabel">購入額（円）</span><input name="amountJpy" type="number" min="1" step="1" placeholder="例: 100000" required></label>
+        <div class="fx-quantity-preview"><strong>計算数量</strong><output id="fxComputedQuantity">-</output></div>
+        <button type="submit">取引を記録</button>
+      </form>
+      <div class="table-wrap">
+        <table class="account-cashflow-table fx-transaction-table">
+          <thead><tr><th>日付</th><th>取引</th><th>為替</th><th>円金額</th><th>自動計算数量</th><th></th></tr></thead>
+          <tbody>
+            ${transactions.length ? transactions.map((item) => `
+              <tr>
+                <td>${escapeHtml(item.purchaseDate || item.sellDate || "-")}</td>
+                <td>${item.currency === "USD" ? "米ドル" : "ユーロ"} ${item.side === "buy" ? "購入" : "円転"}</td>
+                <td>${fxRate(item.purchaseRate || item.sellRate)}</td>
+                <td>${yen(item.amountJpy)}</td>
+                <td>${new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 4 }).format(Number(item.quantity) || 0)} ${item.currency}</td>
+                <td><button type="button" class="icon" data-delete-fx="${item.side}:${item.index}" aria-label="為替取引を削除">×</button></td>
+              </tr>`).join("") : '<tr><td colspan="6" class="watchlist-empty">外貨取引の記録はありません。</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function attachFxPositionForm() {
+  const form = els.fxDetail?.querySelector("#fxPositionForm");
+  if (!form) return;
+  const updatePreview = () => {
+    const rate = Number(form.elements.rate.value);
+    const amount = Number(form.elements.amountJpy.value);
+    const quantity = rate > 0 && amount > 0 ? amount / rate : null;
+    const currency = form.elements.currency.value;
+    const output = form.querySelector("#fxComputedQuantity");
+    if (output) output.textContent = Number.isFinite(quantity) ? `${new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 4 }).format(quantity)} ${currency}` : "-";
+    const label = form.querySelector("#fxAmountLabel");
+    if (label) label.textContent = form.elements.side.value === "buy" ? "購入額（円）" : "円で受け取る金額";
+  };
+  form.addEventListener("input", updatePreview);
+  form.addEventListener("change", updatePreview);
+  updatePreview();
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const side = form.elements.side.value === "sell" ? "sell" : "buy";
+    const currency = form.elements.currency.value === "EUR" ? "EUR" : "USD";
+    const date = form.elements.date.value;
+    const rate = Number(form.elements.rate.value);
+    const amountJpy = Number(form.elements.amountJpy.value);
+    const quantity = rate > 0 && amountJpy > 0 ? amountJpy / rate : 0;
+    if (!date || !(rate > 0) || !(amountJpy > 0) || !(quantity > 0)) {
+      toast("日付、為替レート、円金額を確認してください。");
+      return;
+    }
+    const current = state.cryptoHolding || { holding: false, positions: [], sales: [], fx: { positions: [], sales: [] } };
+    const fx = {
+      positions: [...(current.fx?.positions || [])],
+      sales: [...(current.fx?.sales || [])],
+    };
+    if (side === "buy") fx.positions.push({ currency, purchaseDate: date, purchaseRate: rate, amountJpy, quantity });
+    else fx.sales.push({ currency, sellDate: date, sellRate: rate, amountJpy, quantity });
+    const submit = form.querySelector('button[type="submit"]');
+    if (submit) submit.disabled = true;
+    try {
+      const saved = await request("/api/crypto", {
+        method: "PATCH",
+        body: JSON.stringify({ holding: current.holding, positions: current.positions, sales: current.sales, fx }),
+      });
+      applyCryptoPayload(saved);
+      renderCryptoSummary();
+      renderFxDetail();
+      toast("外貨の取引を記録しました。");
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  });
+  els.fxDetail.querySelector(".fx-holdings-panel")?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-delete-fx]");
+    if (!button) return;
+    const [side, indexText] = button.dataset.deleteFx.split(":");
+    const index = Number(indexText);
+    const current = state.cryptoHolding || {};
+    const fx = { positions: [...(current.fx?.positions || [])], sales: [...(current.fx?.sales || [])] };
+    const target = side === "buy" ? fx.positions : fx.sales;
+    if (!Number.isInteger(index) || index < 0 || index >= target.length) return;
+    target.splice(index, 1);
+    try {
+      const saved = await request("/api/crypto", {
+        method: "PATCH",
+        body: JSON.stringify({ holding: current.holding, positions: current.positions, sales: current.sales, fx }),
+      });
+      applyCryptoPayload(saved);
+      renderCryptoSummary();
+      renderFxDetail();
+      toast("為替取引を削除しました。");
+    } catch (error) {
+      toast(error.message);
+    }
+  });
 }
 
 function cryptoTimingHtml(analysis) {
@@ -2801,9 +2986,10 @@ function fxTimingCard(title, plan = {}, kind = "buy", currencyName = "米ドル"
 
 function cryptoPositionEditor(holding, position = {}, analysis = null) {
   const lots = position.positions?.length ? position.positions : cryptoPositionLots(holding);
-  const displayLots = lots.length ? lots : [{ purchaseDate: "", purchasePriceUsd: null, purchasePriceJpy: null, quantity: null }];
+  const fxRate = Number(analysis?.usdJpy?.current) || 0;
+  const displayLots = lots.length ? lots : [{ purchaseDate: "", purchasePriceUsd: null, purchasePriceJpy: null, amountJpy: null, quantity: null }];
   const sales = position.sales?.length ? position.sales : cryptoSaleLots(holding);
-  const displaySales = sales.length ? sales : [{ sellDate: "", sellPriceUsd: null, sellPriceJpy: null, quantity: null }];
+  const displaySales = sales.length ? sales : [{ sellDate: "", sellPriceUsd: null, sellPriceJpy: null, amountJpy: null, quantity: null }];
   const estimateNote = position.jpyEstimated || position.usdEstimated
     ? `<p class="crypto-position-note">未入力の通貨は、直近のUSD/JPY ${fxRate(analysis?.usdJpy?.current)} で概算しています。</p>`
     : "";
@@ -2820,13 +3006,13 @@ function cryptoPositionEditor(holding, position = {}, analysis = null) {
         <div class="lot-section-title buy">購入明細</div>
         <div class="crypto-lot-head">
           <span>購入日</span>
-          <span>購入単価 USD</span>
-          <span>購入単価 JPY</span>
-          <span>数量 BTC</span>
+          <span>単価 JPY</span>
+          <span>投資額 JPY</span>
+          <span>数量 BTC（自動計算）</span>
           <span></span>
         </div>
         <div class="crypto-lot-list">
-          ${displayLots.map((lot) => cryptoLotRow(lot)).join("")}
+          ${displayLots.map((lot) => cryptoLotRow(lot, fxRate)).join("")}
         </div>
         <button type="button" class="secondary add-lot" data-add-crypto-lot>明細を追加</button>
       </div>
@@ -2834,25 +3020,23 @@ function cryptoPositionEditor(holding, position = {}, analysis = null) {
         <div class="lot-section-title">売却明細</div>
         <div class="crypto-lot-head">
           <span>売却日</span>
-          <span>売却単価 USD</span>
-          <span>売却単価 JPY</span>
-          <span>数量 BTC</span>
+          <span>単価 JPY</span>
+          <span>売却額 JPY</span>
+          <span>数量 BTC（自動計算）</span>
           <span></span>
         </div>
         <div class="crypto-sale-list">
-          ${displaySales.map((lot) => cryptoSaleRow(lot)).join("")}
+          ${displaySales.map((lot) => cryptoSaleRow(lot, fxRate)).join("")}
         </div>
         <button type="button" class="secondary add-lot" data-add-crypto-sale>売却明細を追加</button>
       </div>
       <div class="position-stats">
         <span><strong>平均取得 USD</strong>${usd(position.purchasePriceUsd)}</span>
         <span><strong>平均取得 JPY</strong>${yen(position.purchasePriceJpy)}</span>
-        <span><strong>残BTC</strong>${btcAmount(position.quantity)}</span>
-        <span><strong>売却済み</strong>${btcAmount(position.soldQuantity)}</span>
+        <span><strong>数量（自動計算）</strong>${btcAmount(position.quantity)}</span>
+        <span><strong>現在価値 JPY</strong>${yen(position.marketValueJpy)}</span>
         <span><strong>ドル損益</strong>${cryptoPnl(position.pnlAmountUsd, position.pnlPctUsd, usd)}</span>
         <span><strong>円損益</strong>${cryptoPnl(position.pnlAmountJpy, position.pnlPctJpy, yen)}</span>
-        <span><strong>評価額 USD</strong>${usd(position.marketValueUsd)}</span>
-        <span><strong>評価額 JPY</strong>${yen(position.marketValueJpy)}</span>
         <span><strong>確定 USD</strong>${usd(position.realizedPnlUsd)}</span>
         <span><strong>確定 JPY</strong>${yen(position.realizedPnlJpy)}</span>
       </div>
@@ -2862,7 +3046,10 @@ function cryptoPositionEditor(holding, position = {}, analysis = null) {
   `;
 }
 
-function cryptoLotRow(lot = {}) {
+function cryptoLotRow(lot = {}, fxRate = 0) {
+  const purchasePriceJpy = Number(lot.purchasePriceJpy) || (Number(lot.purchasePriceUsd) && fxRate ? Number(lot.purchasePriceUsd) * fxRate : 0);
+  const amountJpy = Number(lot.amountJpy) || (purchasePriceJpy && Number(lot.quantity) ? Math.round(purchasePriceJpy * Number(lot.quantity)) : 0);
+  const quantity = amountJpy && purchasePriceJpy ? amountJpy / purchasePriceJpy : Number(lot.quantity) || 0;
   return `
     <div class="crypto-lot-row">
       <label>
@@ -2870,23 +3057,26 @@ function cryptoLotRow(lot = {}) {
         <input name="purchaseDate" type="date" value="${escapeAttr(lot.purchaseDate || "")}">
       </label>
       <label>
-        <span>購入単価 USD</span>
-        <input name="purchasePriceUsd" type="number" min="0" step="0.01" value="${numberValue(lot.purchasePriceUsd)}">
+        <span>単価 JPY</span>
+        <input name="purchasePriceJpy" type="number" min="0" step="1" value="${purchasePriceJpy ? String(Number(purchasePriceJpy.toFixed(0))): ""}">
       </label>
       <label>
-        <span>購入単価 JPY</span>
-        <input name="purchasePriceJpy" type="number" min="0" step="1" value="${numberValue(lot.purchasePriceJpy)}">
+        <span>投資額 JPY</span>
+        <input name="amountJpy" type="number" min="0" step="1" value="${amountJpy ? String(Math.round(amountJpy)) : ""}">
       </label>
       <label>
-        <span>数量 BTC</span>
-        <input name="quantity" type="number" min="0" step="0.00000001" value="${numberValue(lot.quantity)}">
+        <span>数量 BTC（自動計算）</span>
+        <input name="quantity" type="number" min="0" step="0.00000001" value="${quantity ? quantity.toFixed(8) : ""}" readonly>
       </label>
       <button type="button" class="icon lot-remove" data-remove-crypto-lot aria-label="BTC購入明細を削除">×</button>
     </div>
   `;
 }
 
-function cryptoSaleRow(lot = {}) {
+function cryptoSaleRow(lot = {}, fxRate = 0) {
+  const sellPriceJpy = Number(lot.sellPriceJpy) || (Number(lot.sellPriceUsd) && fxRate ? Number(lot.sellPriceUsd) * fxRate : 0);
+  const amountJpy = Number(lot.amountJpy) || (sellPriceJpy && Number(lot.quantity) ? Math.round(sellPriceJpy * Number(lot.quantity)) : 0);
+  const quantity = amountJpy && sellPriceJpy ? amountJpy / sellPriceJpy : Number(lot.quantity) || 0;
   return `
     <div class="crypto-lot-row crypto-sale-row">
       <label>
@@ -2894,16 +3084,16 @@ function cryptoSaleRow(lot = {}) {
         <input name="sellDate" type="date" value="${escapeAttr(lot.sellDate || "")}">
       </label>
       <label>
-        <span>売却単価 USD</span>
-        <input name="sellPriceUsd" type="number" min="0" step="0.01" value="${numberValue(lot.sellPriceUsd)}">
+        <span>単価 JPY</span>
+        <input name="sellPriceJpy" type="number" min="0" step="1" value="${sellPriceJpy ? String(Number(sellPriceJpy.toFixed(0))) : ""}">
       </label>
       <label>
-        <span>売却単価 JPY</span>
-        <input name="sellPriceJpy" type="number" min="0" step="1" value="${numberValue(lot.sellPriceJpy)}">
+        <span>売却額 JPY</span>
+        <input name="amountJpy" type="number" min="0" step="1" value="${amountJpy ? String(Math.round(amountJpy)) : ""}">
       </label>
       <label>
-        <span>数量 BTC</span>
-        <input name="sellQuantity" type="number" min="0" step="0.00000001" value="${numberValue(lot.quantity)}">
+        <span>数量 BTC（自動計算）</span>
+        <input name="sellQuantity" type="number" min="0" step="0.00000001" value="${quantity ? quantity.toFixed(8) : ""}" readonly>
       </label>
       <button type="button" class="icon lot-remove" data-remove-crypto-sale aria-label="BTC売却明細を削除">×</button>
     </div>
@@ -2914,6 +3104,12 @@ function attachCryptoPositionForm() {
   const form = document.getElementById("cryptoPositionForm");
   if (!form) return;
   attachDetailFormEditGuard(form);
+  const recalculateRows = () => form.querySelectorAll(".crypto-lot-row").forEach((row) => updateCryptoLotQuantity(row, row.classList.contains("crypto-sale-row")));
+  form.addEventListener("input", (event) => {
+    if (event.target.matches('[name="purchasePriceJpy"], [name="sellPriceJpy"], [name="amountJpy"]')) {
+      updateCryptoLotQuantity(event.target.closest(".crypto-lot-row"), event.target.closest(".crypto-lot-row")?.classList.contains("crypto-sale-row"));
+    }
+  });
   form.querySelector("[data-add-crypto-lot]")?.addEventListener("click", () => {
     form.querySelector(".crypto-lot-list")?.insertAdjacentHTML("beforeend", cryptoLotRow());
   });
@@ -2923,13 +3119,14 @@ function attachCryptoPositionForm() {
   form.addEventListener("click", (event) => {
     const saleButton = event.target.closest("[data-remove-crypto-sale]");
     if (saleButton) {
-      clearOrRemoveCryptoRow(form, saleButton, ".crypto-sale-row", ["sellDate", "sellPriceUsd", "sellPriceJpy", "sellQuantity"]);
+      clearOrRemoveCryptoRow(form, saleButton, ".crypto-sale-row", ["sellDate", "sellPriceJpy", "amountJpy", "sellQuantity"]);
       return;
     }
     const lotButton = event.target.closest("[data-remove-crypto-lot]");
     if (!lotButton) return;
-    clearOrRemoveCryptoRow(form, lotButton, ".crypto-lot-list .crypto-lot-row", ["purchaseDate", "purchasePriceUsd", "purchasePriceJpy", "quantity"]);
+    clearOrRemoveCryptoRow(form, lotButton, ".crypto-lot-list .crypto-lot-row", ["purchaseDate", "purchasePriceJpy", "amountJpy", "quantity"]);
   });
+  recalculateRows();
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const submit = form.querySelector('button[type="submit"]');
@@ -2961,6 +3158,17 @@ function attachCryptoPositionForm() {
       }
     }
   });
+}
+
+function updateCryptoLotQuantity(row, isSale = false) {
+  if (!row) return;
+  const priceName = isSale ? "sellPriceJpy" : "purchasePriceJpy";
+  const quantityName = isSale ? "sellQuantity" : "quantity";
+  const jpyPrice = Number(row.querySelector(`[name="${priceName}"]`)?.value);
+  const amountJpy = Number(row.querySelector('[name="amountJpy"]')?.value);
+  const quantity = jpyPrice > 0 && amountJpy > 0 ? amountJpy / jpyPrice : null;
+  const input = row.querySelector(`[name="${quantityName}"]`);
+  if (input) input.value = Number.isFinite(quantity) ? quantity.toFixed(8) : "";
 }
 
 function clearOrRemoveCryptoRow(form, button, selector, fieldNames = []) {
@@ -3082,6 +3290,7 @@ function portfolioSummary() {
   });
   return {
     ...summary,
+    netDeposits: state.jpAccountFlows.reduce((total, item) => total + (item.type === "deposit" ? item.amount : -item.amount), 0),
     ...nisaAllowanceSummary(),
     fiscalYear: fiscalYear.year,
   };
@@ -8638,6 +8847,7 @@ function cryptoPositionLots(holding = {}) {
       purchaseDate: String(lot.purchaseDate || ""),
       purchasePriceUsd: finiteOrNull(lot.purchasePriceUsd),
       purchasePriceJpy: finiteOrNull(lot.purchasePriceJpy),
+      amountJpy: finiteOrNull(lot.amountJpy),
       quantity: finiteOrNull(lot.quantity),
     }))
     .filter((lot) => lot.quantity && (lot.purchasePriceUsd || lot.purchasePriceJpy))
@@ -8651,6 +8861,7 @@ function cryptoSaleLots(holding = {}) {
       sellDate: String(lot.sellDate || lot.saleDate || ""),
       sellPriceUsd: finiteOrNull(lot.sellPriceUsd || lot.salePriceUsd),
       sellPriceJpy: finiteOrNull(lot.sellPriceJpy || lot.salePriceJpy),
+      amountJpy: finiteOrNull(lot.amountJpy),
       quantity: finiteOrNull(lot.quantity),
     }))
     .filter((lot) => lot.quantity && (lot.sellPriceUsd || lot.sellPriceJpy))
@@ -9014,24 +9225,36 @@ function dateInputValue(value = "") {
 
 function readCryptoLotRows(form) {
   return [...form.querySelectorAll(".crypto-lot-list .crypto-lot-row")]
-    .map((row) => ({
-      purchaseDate: row.querySelector('[name="purchaseDate"]')?.value || "",
-      purchasePriceUsd: valueOrNull(row.querySelector('[name="purchasePriceUsd"]')?.value),
-      purchasePriceJpy: valueOrNull(row.querySelector('[name="purchasePriceJpy"]')?.value),
-      quantity: valueOrNull(row.querySelector('[name="quantity"]')?.value),
-    }))
+    .map((row) => {
+      const purchasePriceJpy = valueOrNull(row.querySelector('[name="purchasePriceJpy"]')?.value);
+      const amountJpy = valueOrNull(row.querySelector('[name="amountJpy"]')?.value);
+      const quantity = amountJpy && purchasePriceJpy ? amountJpy / purchasePriceJpy : null;
+      return {
+        purchaseDate: row.querySelector('[name="purchaseDate"]')?.value || "",
+        purchasePriceUsd: null,
+        purchasePriceJpy: valueOrNull(row.querySelector('[name="purchasePriceJpy"]')?.value),
+        amountJpy,
+        quantity,
+      };
+    })
     .filter((lot) => lot.quantity && (lot.purchasePriceUsd || lot.purchasePriceJpy))
     .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"));
 }
 
 function readCryptoSaleRows(form) {
   return [...form.querySelectorAll(".crypto-sale-row")]
-    .map((row) => ({
-      sellDate: row.querySelector('[name="sellDate"]')?.value || "",
-      sellPriceUsd: valueOrNull(row.querySelector('[name="sellPriceUsd"]')?.value),
-      sellPriceJpy: valueOrNull(row.querySelector('[name="sellPriceJpy"]')?.value),
-      quantity: valueOrNull(row.querySelector('[name="sellQuantity"]')?.value),
-    }))
+    .map((row) => {
+      const sellPriceJpy = valueOrNull(row.querySelector('[name="sellPriceJpy"]')?.value);
+      const amountJpy = valueOrNull(row.querySelector('[name="amountJpy"]')?.value);
+      const quantity = amountJpy && sellPriceJpy ? amountJpy / sellPriceJpy : null;
+      return {
+        sellDate: row.querySelector('[name="sellDate"]')?.value || "",
+        sellPriceUsd: null,
+        sellPriceJpy: valueOrNull(row.querySelector('[name="sellPriceJpy"]')?.value),
+        amountJpy,
+        quantity,
+      };
+    })
     .filter((lot) => lot.quantity && (lot.sellPriceUsd || lot.sellPriceJpy))
     .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99"));
 }
@@ -9156,6 +9379,49 @@ els.stockForm.addEventListener("submit", async (event) => {
     els.stockForm.reset();
     if (els.stockAccountType) els.stockAccountType.value = defaultJpAccountType();
     await loadStocks();
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+els.accountCashflowForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = els.accountCashflowForm;
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit) submit.disabled = true;
+  try {
+    const result = await request("/api/jp-account-flows", {
+      method: "POST",
+      body: JSON.stringify({
+        type: form.elements.type.value,
+        date: form.elements.date.value,
+        amount: Number(form.elements.amount.value),
+        memo: form.elements.memo.value.trim(),
+      }),
+    });
+    state.jpAccountFlows = result.items || [];
+    state.jpAccountFlowsLoaded = true;
+    form.reset();
+    form.elements.date.value = localDateKey();
+    renderAccountCashflows();
+    renderProfitSummary();
+    toast("証券口座の入出金を記録しました。");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+});
+
+els.accountCashflowTable?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-account-flow]");
+  if (!button) return;
+  try {
+    const result = await request(`/api/jp-account-flows/${encodeURIComponent(button.dataset.deleteAccountFlow)}`, { method: "DELETE" });
+    state.jpAccountFlows = result.items || [];
+    renderAccountCashflows();
+    renderProfitSummary();
+    toast("入出金記録を削除しました。");
   } catch (error) {
     toast(error.message);
   }

@@ -542,6 +542,53 @@ progress {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.fx-holdings-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.fx-position-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(120px, 0.8fr) minmax(150px, 1fr) minmax(180px, 1.2fr) minmax(160px, 1fr) minmax(140px, 0.9fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 0 16px;
+}
+
+.fx-quantity-preview {
+  display: grid;
+  gap: 6px;
+  min-height: 62px;
+  align-content: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8faf9;
+  padding: 8px 10px;
+}
+
+.fx-quantity-preview strong {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.fx-quantity-preview output {
+  font-size: 14px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.fx-transaction-table {
+  min-width: 680px;
+}
+
+.fx-holdings-panel > .table-wrap {
+  padding: 0 16px 16px;
+}
+
 .crypto-tabs {
   display: flex;
   gap: 8px;
@@ -704,6 +751,70 @@ progress {
   white-space: nowrap;
   font-size: 16px;
   font-variant-numeric: tabular-nums;
+}
+
+.account-cashflow-content {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.account-cashflow-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.account-cashflow-totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.account-cashflow-totals > span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8faf9;
+  padding: 10px 12px;
+}
+
+.account-cashflow-totals strong {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.account-cashflow-totals b {
+  font-variant-numeric: tabular-nums;
+}
+
+.account-cashflow-form {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(150px, 1fr) minmax(170px, 1fr) minmax(180px, 1.3fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.account-flow-type {
+  display: inline-block;
+  border-radius: 6px;
+  background: #e8f5ee;
+  color: var(--buy);
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.account-flow-type.withdrawal {
+  background: #fff0e8;
+  color: var(--danger);
+}
+
+.account-cashflow-table {
+  min-width: 620px;
 }
 
 .content-grid {
@@ -1927,7 +2038,7 @@ tr:hover .drag-handle,
 .crypto-lot-head,
 .crypto-lot-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(130px, 1fr) minmax(130px, 1fr) minmax(120px, 1fr) 36px;
+  grid-template-columns: minmax(120px, 1fr) minmax(140px, 1.1fr) minmax(140px, 1.1fr) minmax(150px, 1.2fr) 36px;
   gap: 8px;
   align-items: end;
 }
@@ -4125,6 +4236,14 @@ tr:hover .drag-handle,
   }
 
   .manage-grid .stock-form {
+    grid-template-columns: 1fr;
+  }
+
+  .account-cashflow-form {
+    grid-template-columns: 1fr;
+  }
+
+  .fx-position-form {
     grid-template-columns: 1fr;
   }
 

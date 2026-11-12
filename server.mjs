@@ -54,6 +54,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const WATCHLIST_PATH = path.join(__dirname, "data", "watchlist.json");
 const US_WATCHLIST_PATH = path.join(__dirname, "data", "us-watchlist.json");
 const CRYPTO_HOLDING_PATH = path.join(__dirname, "data", "crypto-holding.json");
+const JP_ACCOUNT_FLOWS_PATH = path.join(__dirname, "data", "jp-account-flows.json");
 const SAVINGS_PLANS_PATH = path.join(__dirname, "data", "savings-plans.json");
 const ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "analysis-cache.json");
 const US_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "us-analysis-cache.json");
@@ -862,7 +863,7 @@ const server = http.createServer(async (req, res) => {
           try { originHost = new URL(req.headers.origin).host; } catch {}
           if (originHost !== req.headers.host) return json(res, 403, { error: "アプリと同じアドレスから操作してください。" });
         }
-        const editsData = /^\/api\/(?:settings|stocks|us-stocks|crypto|savings-plans|excluded-candidates|backup\/(?:drive|nas)\/settings)(?:\/|$)/.test(url.pathname);
+        const editsData = /^\/api\/(?:settings|stocks|us-stocks|crypto|jp-account-flows|savings-plans|excluded-candidates|backup\/(?:drive|nas)\/settings)(?:\/|$)/.test(url.pathname);
         return await (editsData ? serializeDataEdit(() => handleApi(req, res, url)) : handleApi(req, res, url));
       } finally { activeApiRequests -= 1; }
     }
@@ -1027,6 +1028,38 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/stocks" && req.method === "GET") {
     return json(res, 200, { stocks: await readWatchlist() });
+  }
+
+  if (url.pathname === "/api/jp-account-flows" && req.method === "GET") {
+    return json(res, 200, { items: await readJpAccountFlows() });
+  }
+
+  if (url.pathname === "/api/jp-account-flows" && req.method === "POST") {
+    const body = await readJson(req);
+    const type = body.type === "withdrawal" ? "withdrawal" : body.type === "deposit" ? "deposit" : "";
+    const date = normalizeDate(body.date);
+    const amount = Number(body.amount);
+    if (!type) return json(res, 400, { error: "入金または出金を選択してください。" });
+    if (!date) return json(res, 400, { error: "日付を確認してください。" });
+    if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 1000000000000) return json(res, 400, { error: "金額は1円以上で入力してください。" });
+    const item = {
+      id: createJpAccountFlowId(),
+      type,
+      date,
+      amount,
+      memo: cleanText(body.memo || "").slice(0, 100),
+      createdAt: new Date().toISOString(),
+    };
+    const items = [item, ...(await readJpAccountFlows())].sort((a, b) => b.date.localeCompare(a.date));
+    await saveJpAccountFlows(items);
+    return json(res, 201, { items });
+  }
+
+  if (url.pathname.startsWith("/api/jp-account-flows/") && req.method === "DELETE") {
+    const id = decodeURIComponent(url.pathname.split("/").pop() || "");
+    const items = (await readJpAccountFlows()).filter((item) => item.id !== id);
+    await saveJpAccountFlows(items);
+    return json(res, 200, { items });
   }
 
   if (url.pathname === "/api/us-stocks" && req.method === "GET") {
@@ -1498,11 +1531,13 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/crypto" && req.method === "PATCH") {
     const body = await readJson(req);
+    const current = await readCryptoHolding();
     const holding = await saveCryptoHolding({
-      ...(await readCryptoHolding()),
+      ...current,
       holding: Boolean(body.holding),
       positions: body.positions,
       sales: body.sales,
+      fx: body.fx ?? current.fx,
     });
     return json(res, 200, { holding, analysis: await readCryptoAnalysisCache() });
   }
@@ -12320,6 +12355,11 @@ function normalizePriceReservation(value = {}) {
 function normalizeCryptoHolding(holding = {}) {
   const positions = normalizeCryptoPositions(holding);
   const sales = normalizeCryptoSales(holding);
+  const fxSource = holding.fx && typeof holding.fx === "object" ? holding.fx : {};
+  const fx = {
+    positions: normalizeFxPositions(fxSource.positions),
+    sales: normalizeFxSales(fxSource.sales),
+  };
   const hasPosition = positions.length > 0 || sales.length > 0;
   return {
     symbol: "BTC",
@@ -12328,7 +12368,32 @@ function normalizeCryptoHolding(holding = {}) {
     holding: typeof holding.holding === "boolean" ? holding.holding : hasPosition,
     positions,
     sales,
+    fx,
   };
+}
+
+function normalizeFxPositions(raw = []) {
+  return (Array.isArray(raw) ? raw : []).map((item) => {
+    const currency = item.currency === "EUR" ? "EUR" : item.currency === "USD" ? "USD" : "";
+    const purchaseDate = normalizeDate(item.purchaseDate);
+    const purchaseRate = nullablePositiveNumber(item.purchaseRate);
+    const amountJpy = nullablePositiveNumber(item.amountJpy) || (purchaseRate && nullablePositiveNumber(item.quantity) ? purchaseRate * Number(item.quantity) : null);
+    const quantity = purchaseRate && amountJpy ? amountJpy / purchaseRate : nullablePositiveNumber(item.quantity);
+    return { currency, purchaseDate, purchaseRate, amountJpy, quantity };
+  }).filter((item) => item.currency && item.purchaseRate && item.amountJpy && item.quantity)
+    .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99")).slice(0, 100);
+}
+
+function normalizeFxSales(raw = []) {
+  return (Array.isArray(raw) ? raw : []).map((item) => {
+    const currency = item.currency === "EUR" ? "EUR" : item.currency === "USD" ? "USD" : "";
+    const sellDate = normalizeDate(item.sellDate);
+    const sellRate = nullablePositiveNumber(item.sellRate);
+    const amountJpy = nullablePositiveNumber(item.amountJpy) || (sellRate && nullablePositiveNumber(item.quantity) ? sellRate * Number(item.quantity) : null);
+    const quantity = sellRate && amountJpy ? amountJpy / sellRate : nullablePositiveNumber(item.quantity);
+    return { currency, sellDate, sellRate, amountJpy, quantity };
+  }).filter((item) => item.currency && item.sellRate && item.amountJpy && item.quantity)
+    .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99")).slice(0, 100);
 }
 
 function resolveMinimumHoldQuantity(stock, quantity) {
@@ -17155,6 +17220,29 @@ async function readCryptoHolding() {
   }
 }
 
+async function readJpAccountFlows() {
+  try {
+    const items = await readDataJson(JP_ACCOUNT_FLOWS_PATH);
+    if (!Array.isArray(items)) throw new Error("入出金データの形式が正しくありません。");
+    return items.filter((item) => item && typeof item.id === "string" && ["deposit", "withdrawal"].includes(item.type)
+      && normalizeDate(item.date) && Number.isSafeInteger(item.amount) && item.amount > 0)
+      .map((item) => ({ id: item.id, type: item.type, date: normalizeDate(item.date), amount: item.amount, memo: cleanText(item.memo || "").slice(0, 100), createdAt: String(item.createdAt || "") }))
+      .sort((a, b) => b.date.localeCompare(a.date));
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw new Error(`証券口座の入出金データを読み込めません。元のデータを保全しています。${error.message}`);
+  }
+}
+
+async function saveJpAccountFlows(items) {
+  await mkdir(path.dirname(JP_ACCOUNT_FLOWS_PATH), { recursive: true });
+  await writeDataFile(JP_ACCOUNT_FLOWS_PATH, JSON.stringify(items, null, 2));
+}
+
+function createJpAccountFlowId() {
+  return `cashflow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
 async function saveCryptoHolding(holding) {
   const normalized = normalizeCryptoHolding(holding);
   await mkdir(path.dirname(CRYPTO_HOLDING_PATH), { recursive: true });
@@ -17958,12 +18046,21 @@ function normalizeSales(stock) {
 function normalizeCryptoPositions(holding = {}) {
   const raw = Array.isArray(holding.positions) ? holding.positions : [];
   return raw
-    .map((lot) => ({
-      purchaseDate: normalizeDate(lot.purchaseDate),
-      purchasePriceUsd: nullablePositiveNumber(lot.purchasePriceUsd ?? lot.purchasePrice),
-      purchasePriceJpy: nullablePositiveNumber(lot.purchasePriceJpy),
-      quantity: nullablePositiveNumber(lot.quantity),
-    }))
+    .map((lot) => {
+      const purchasePriceUsd = nullablePositiveNumber(lot.purchasePriceUsd ?? lot.purchasePrice);
+      const purchasePriceJpy = nullablePositiveNumber(lot.purchasePriceJpy);
+      const enteredQuantity = nullablePositiveNumber(lot.quantity);
+      const amountJpy = nullablePositiveNumber(lot.amountJpy)
+        || (purchasePriceJpy && enteredQuantity ? purchasePriceJpy * enteredQuantity : null);
+      const quantity = purchasePriceJpy && amountJpy ? amountJpy / purchasePriceJpy : enteredQuantity;
+      return {
+        purchaseDate: normalizeDate(lot.purchaseDate),
+        purchasePriceUsd,
+        purchasePriceJpy,
+        amountJpy,
+        quantity,
+      };
+    })
     .filter((lot) => lot.quantity && (lot.purchasePriceUsd || lot.purchasePriceJpy))
     .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"))
     .slice(0, 80);
@@ -17972,12 +18069,21 @@ function normalizeCryptoPositions(holding = {}) {
 function normalizeCryptoSales(holding = {}) {
   const raw = Array.isArray(holding.sales) ? holding.sales : [];
   return raw
-    .map((lot) => ({
-      sellDate: normalizeDate(lot.sellDate || lot.saleDate),
-      sellPriceUsd: nullablePositiveNumber(lot.sellPriceUsd ?? lot.sellPrice ?? lot.salePrice),
-      sellPriceJpy: nullablePositiveNumber(lot.sellPriceJpy),
-      quantity: nullablePositiveNumber(lot.quantity),
-    }))
+    .map((lot) => {
+      const sellPriceUsd = nullablePositiveNumber(lot.sellPriceUsd ?? lot.sellPrice ?? lot.salePrice);
+      const sellPriceJpy = nullablePositiveNumber(lot.sellPriceJpy);
+      const enteredQuantity = nullablePositiveNumber(lot.quantity);
+      const amountJpy = nullablePositiveNumber(lot.amountJpy)
+        || (sellPriceJpy && enteredQuantity ? sellPriceJpy * enteredQuantity : null);
+      const quantity = sellPriceJpy && amountJpy ? amountJpy / sellPriceJpy : enteredQuantity;
+      return {
+        sellDate: normalizeDate(lot.sellDate || lot.saleDate),
+        sellPriceUsd,
+        sellPriceJpy,
+        amountJpy,
+        quantity,
+      };
+    })
     .filter((lot) => lot.quantity && (lot.sellPriceUsd || lot.sellPriceJpy))
     .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99"))
     .slice(0, 80);
