@@ -17254,7 +17254,7 @@ async function readAutomaticJpAccountFlows(manualItems = []) {
 
   const generated = [];
   for (const plan of await readSavingsPlans()) {
-    if (plan.provider === "ideco" || plan.paymentMethod !== "credit" || !plan.schedule.length) continue;
+    if (plan.provider === "ideco" || !plan.schedule.length) continue;
     const firstMonth = plan.schedule[0].month;
     const [firstYear, firstMonthNumber] = firstMonth.split("-").map(Number);
     const firstMonthIndex = firstYear * 12 + firstMonthNumber - 1;
@@ -17269,7 +17269,7 @@ async function readAutomaticJpAccountFlows(manualItems = []) {
         type: "deposit",
         date,
         amount,
-        memo: `${plan.name || plan.symbol || "積立"}・カード積立（自動）`,
+        memo: `${plan.name || plan.symbol || "積立"}・${plan.paymentMethod === "credit" ? "カード積立" : "口座引落積立"}（自動）`,
         automatic: true,
       });
     }
