@@ -1067,12 +1067,13 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/crypto" && req.method === "GET") {
-    const [holding, analysis, cacheVersion] = await Promise.all([
+    const [holding, analysis, analysisVersion, holdingVersion] = await Promise.all([
       readCryptoHolding(),
       readCryptoAnalysisCache(),
       cacheFileVersion(CRYPTO_ANALYSIS_CACHE_PATH),
+      cacheFileVersion(CRYPTO_HOLDING_PATH),
     ]);
-    return json(res, 200, { holding, analysis, cacheVersion });
+    return json(res, 200, { holding, analysis, cacheVersion: `${analysisVersion}|${holdingVersion}` });
   }
 
   if (url.pathname === "/api/savings-plans" && req.method === "GET") {
@@ -17572,12 +17573,13 @@ async function cacheFileVersion(filePath) {
 }
 
 async function analysisCacheVersions() {
-  const [jp, us, crypto] = await Promise.all([
+  const [jp, us, cryptoAnalysis, cryptoHolding] = await Promise.all([
     cacheFileVersion(ANALYSIS_CACHE_PATH),
     cacheFileVersion(US_ANALYSIS_CACHE_PATH),
     cacheFileVersion(CRYPTO_ANALYSIS_CACHE_PATH),
+    cacheFileVersion(CRYPTO_HOLDING_PATH),
   ]);
-  return { jp, us, crypto };
+  return { jp, us, crypto: `${cryptoAnalysis}|${cryptoHolding}` };
 }
 
 function empty(res, statusCode) {

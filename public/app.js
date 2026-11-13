@@ -656,7 +656,11 @@ async function loadUsAnalysisCache(background = false) {
 
 async function loadCrypto(background = false) {
   const payload = await request("/api/crypto");
-  if (background && payload.cacheVersion && state.cacheVersions.crypto === payload.cacheVersion) return;
+  const hasCachedCryptoData = Array.isArray(state.cryptoAnalysis?.btcJpy?.series)
+    && state.cryptoAnalysis.btcJpy.series.length >= 2
+    && Array.isArray(state.cryptoHolding?.positions)
+    && Array.isArray(state.cryptoHolding?.sales);
+  if (background && payload.cacheVersion && state.cacheVersions.crypto === payload.cacheVersion && hasCachedCryptoData) return;
   if (payload.cacheVersion) state.cacheVersions.crypto = payload.cacheVersion;
   applyCryptoPayload(payload);
   if (state.view === "crypto" && (!background || (!isDetailFormEditing() && !document.activeElement?.closest("form")))) renderCrypto();
