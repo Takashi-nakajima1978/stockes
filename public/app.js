@@ -1398,7 +1398,10 @@ function ensureViewData(view) {
       renderPerformance();
     });
   }
-  if (view === "crypto") return ensureDataSection("crypto", () => loadCrypto());
+  if (view === "crypto") {
+    loadedDataSections.add("crypto");
+    return loadCrypto();
+  }
   if (view === "ideas") return ensureDataSection("ideas", () => loadDiscoveryCache());
   if (view === "savings") return loadedDataSections.has("savings") ? loadSavingsNisaContext(true) : ensureDataSection("savings", () => loadSavingsPlans());
   return Promise.resolve();
