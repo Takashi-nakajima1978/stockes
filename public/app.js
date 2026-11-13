@@ -2115,7 +2115,7 @@ function renderAccountCashflows() {
   const deposits = items.filter((item) => item.type === "deposit").reduce((sum, item) => sum + item.amount, 0);
   const contributions = items.filter((item) => item.type === "contribution").reduce((sum, item) => sum + item.amount, 0);
   const withdrawals = items.filter((item) => item.type === "withdrawal").reduce((sum, item) => sum + item.amount, 0);
-  const net = deposits + contributions - withdrawals;
+  const net = deposits - contributions - withdrawals;
   if (els.accountDepositsTotal) els.accountDepositsTotal.textContent = yen(deposits);
   if (els.accountContributionsTotal) els.accountContributionsTotal.textContent = yen(contributions);
   if (els.accountWithdrawalsTotal) els.accountWithdrawalsTotal.textContent = yen(withdrawals);
@@ -3293,7 +3293,7 @@ function portfolioSummary() {
   });
   return {
     ...summary,
-    netDeposits: state.jpAccountFlows.reduce((total, item) => total + (item.type === "withdrawal" ? -item.amount : item.amount), 0),
+    netDeposits: state.jpAccountFlows.reduce((total, item) => total + (item.type === "deposit" ? item.amount : -item.amount), 0),
     ...nisaAllowanceSummary(),
     fiscalYear: fiscalYear.year,
   };
