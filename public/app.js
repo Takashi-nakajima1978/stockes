@@ -43,7 +43,6 @@ const state = {
   stocksLoaded: false,
   stockLoadError: "",
   jpAccountFlows: [],
-  jpAccountAutoFlows: [],
   jpAccountFlowsLoaded: false,
   analyses: {},
   earningsReviews: {},
@@ -169,6 +168,7 @@ const els = {
   accountCashflowForm: document.getElementById("accountCashflowForm"),
   accountCashflowTable: document.getElementById("accountCashflowTable"),
   accountDepositsTotal: document.getElementById("accountDepositsTotal"),
+  accountContributionsTotal: document.getElementById("accountContributionsTotal"),
   accountWithdrawalsTotal: document.getElementById("accountWithdrawalsTotal"),
   accountNetDepositsTotal: document.getElementById("accountNetDepositsTotal"),
   stockName: document.getElementById("stockName"),
@@ -602,7 +602,6 @@ async function loadStocks(cachedPayload = null) {
 async function loadJpAccountFlows() {
   const payload = await request("/api/jp-account-flows");
   state.jpAccountFlows = Array.isArray(payload.items) ? payload.items : [];
-  state.jpAccountAutoFlows = Array.isArray(payload.autoItems) ? payload.autoItems : [];
   state.jpAccountFlowsLoaded = true;
   if (els.accountCashflowForm && !els.accountCashflowForm.elements.date.value) {
     els.accountCashflowForm.elements.date.value = localDateKey();
@@ -1258,7 +1257,6 @@ async function saveSavingsPlan(form) {
       } }),
     });
     state.savingsPlans = payload.plans || [];
-    await loadJpAccountFlows();
     renderSavings();
     toast("積立設定を保存しました。");
     const savedPlan = state.savingsPlans.find((item) => item.symbol === symbol);
@@ -2113,12 +2111,13 @@ function renderProfitSummary() {
 }
 
 function renderAccountCashflows() {
-  const items = [...state.jpAccountFlows, ...state.jpAccountAutoFlows]
-    .sort((a, b) => b.date.localeCompare(a.date) || String(a.id).localeCompare(String(b.id)));
+  const items = state.jpAccountFlows;
   const deposits = items.filter((item) => item.type === "deposit").reduce((sum, item) => sum + item.amount, 0);
+  const contributions = items.filter((item) => item.type === "contribution").reduce((sum, item) => sum + item.amount, 0);
   const withdrawals = items.filter((item) => item.type === "withdrawal").reduce((sum, item) => sum + item.amount, 0);
-  const net = deposits - withdrawals;
+  const net = deposits + contributions - withdrawals;
   if (els.accountDepositsTotal) els.accountDepositsTotal.textContent = yen(deposits);
+  if (els.accountContributionsTotal) els.accountContributionsTotal.textContent = yen(contributions);
   if (els.accountWithdrawalsTotal) els.accountWithdrawalsTotal.textContent = yen(withdrawals);
   if (els.accountNetDepositsTotal) els.accountNetDepositsTotal.textContent = yen(net);
   if (els.accountCashflowTable) {
@@ -2126,10 +2125,10 @@ function renderAccountCashflows() {
       ? items.map((item) => `
         <tr>
           <td>${escapeHtml(item.date)}</td>
-          <td><span class="account-flow-type ${item.type}">${item.automatic ? "自動入金" : item.type === "deposit" ? "入金" : "出金"}</span></td>
+          <td><span class="account-flow-type ${item.type}">${item.type === "deposit" ? "入金" : item.type === "withdrawal" ? "出金" : "積立"}</span></td>
           <td>${yen(item.amount)}</td>
           <td>${escapeHtml(item.memo || "-")}</td>
-          <td>${item.automatic ? '<span class="account-flow-auto-label">積立設定から反映</span>' : `<button type="button" class="icon" data-delete-account-flow="${escapeAttr(item.id)}" aria-label="${item.type === "deposit" ? "入金" : "出金"}記録を削除">×</button>`}</td>
+          <td><button type="button" class="icon" data-delete-account-flow="${escapeAttr(item.id)}" aria-label="${item.type === "deposit" ? "入金" : item.type === "withdrawal" ? "出金" : "積立"}記録を削除">×</button></td>
         </tr>`).join("")
       : '<tr><td colspan="5" class="watchlist-empty">入出金の記録はありません。</td></tr>';
   }
@@ -3294,7 +3293,7 @@ function portfolioSummary() {
   });
   return {
     ...summary,
-    netDeposits: [...state.jpAccountFlows, ...state.jpAccountAutoFlows].reduce((total, item) => total + (item.type === "deposit" ? item.amount : -item.amount), 0),
+    netDeposits: state.jpAccountFlows.reduce((total, item) => total + (item.type === "withdrawal" ? -item.amount : item.amount), 0),
     ...nisaAllowanceSummary(),
     fiscalYear: fiscalYear.year,
   };
@@ -9404,13 +9403,12 @@ els.accountCashflowForm?.addEventListener("submit", async (event) => {
       }),
     });
     state.jpAccountFlows = result.items || [];
-    state.jpAccountAutoFlows = result.autoItems || [];
     state.jpAccountFlowsLoaded = true;
     form.reset();
     form.elements.date.value = localDateKey();
     renderAccountCashflows();
     renderProfitSummary();
-    toast("証券口座の入出金を記録しました。");
+    toast("証券口座の記録を追加しました。");
   } catch (error) {
     toast(error.message);
   } finally {
@@ -9424,7 +9422,6 @@ els.accountCashflowTable?.addEventListener("click", async (event) => {
   try {
     const result = await request(`/api/jp-account-flows/${encodeURIComponent(button.dataset.deleteAccountFlow)}`, { method: "DELETE" });
     state.jpAccountFlows = result.items || [];
-    state.jpAccountAutoFlows = result.autoItems || [];
     renderAccountCashflows();
     renderProfitSummary();
     toast("入出金記録を削除しました。");
@@ -9613,7 +9610,6 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
       } }),
     });
     state.savingsPlans = payload.plans || [];
-    await loadJpAccountFlows();
     form.reset();
     form.elements.namedItem("startMonth").value = localMonthKey();
     form.elements.namedItem("currentValueDate").value = localDateKey();
@@ -9708,7 +9704,6 @@ els.savingsPlans?.addEventListener("click", async (event) => {
     try {
       const payload = await request(`/api/savings-plans/${encodeURIComponent(id)}`, { method: "DELETE" });
       state.savingsPlans = payload.plans || [];
-      await loadJpAccountFlows();
       savingsChartStates.delete(id);
       renderSavings();
       toast("積立商品を削除しました。");

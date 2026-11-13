@@ -108,7 +108,7 @@
             <div class="profit-card-pair">
               <div><small>評価額</small><strong id="marketTotal">-</strong></div>
               <div><small>取得原価</small><strong id="investedTotal">-</strong></div>
-              <div><small>投資額（純入金）</small><strong id="netDepositsTotal">-</strong></div>
+              <div><small>投資額（純入金＋積立）</small><strong id="netDepositsTotal">-</strong></div>
             </div>
           </article>
           <article class="profit-card">
@@ -387,21 +387,22 @@
         <section class="table-panel account-cashflow-panel">
           <div class="panel-title">
             <h3>証券口座の入出金</h3>
-            <span>株の取得原価と分けて、口座に入れた純額を記録</span>
+            <span>入金・積立・出金を分けて投資額を記録</span>
           </div>
           <div class="account-cashflow-content">
-            <p class="account-cashflow-note">投資額 = 入金合計 − 出金合計。株式の取得原価とは別に管理します。iDeCo以外の積立は、登録設定に基づいて毎月12日付で入金に自動計上します。</p>
+            <p class="account-cashflow-note">投資額 = 入金合計 ＋ 積立合計 − 出金合計。積立は自動反映せず、実施日にここから入力します。</p>
             <div class="account-cashflow-totals">
               <span><strong>入金合計</strong><b id="accountDepositsTotal">-</b></span>
+              <span><strong>積立合計</strong><b id="accountContributionsTotal">-</b></span>
               <span><strong>出金合計</strong><b id="accountWithdrawalsTotal">-</b></span>
-              <span><strong>投資額（純入金）</strong><b id="accountNetDepositsTotal">-</b></span>
+              <span><strong>投資額（入金＋積立−出金）</strong><b id="accountNetDepositsTotal">-</b></span>
             </div>
             <form id="accountCashflowForm" class="account-cashflow-form">
-              <label><span>区分</span><select name="type"><option value="deposit">入金</option><option value="withdrawal">出金</option></select></label>
+              <label><span>区分</span><select name="type"><option value="deposit">入金</option><option value="withdrawal">出金</option><option value="contribution">積立</option></select></label>
               <label><span>日付</span><input name="date" type="date" required></label>
               <label><span>金額（円）</span><input name="amount" type="number" min="1" step="1" placeholder="例: 100000" required></label>
-              <label><span>メモ（任意）</span><input name="memo" maxlength="100" placeholder="例: 給与から入金"></label>
-              <button type="submit">入出金を記録</button>
+              <label><span>メモ（任意）</span><input name="memo" maxlength="100" placeholder="例: クレカ積立"></label>
+              <button type="submit">記録を追加</button>
             </form>
             <div class="table-wrap">
               <table class="account-cashflow-table">

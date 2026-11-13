@@ -833,10 +833,9 @@ progress {
   color: var(--danger);
 }
 
-.account-flow-auto-label {
-  color: var(--muted);
-  font-size: 11px;
-  white-space: nowrap;
+.account-flow-type.contribution {
+  background: #edf1ff;
+  color: #3f5ea8;
 }
 
 .account-cashflow-table {

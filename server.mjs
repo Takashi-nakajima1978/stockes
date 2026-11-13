@@ -13,7 +13,7 @@ import { splitLearningHistory, returnEvidence, hasProfitableEvidence, afterCostR
 import { createDataStore, createSerialQueue } from "./data-store.mjs";
 import { createVersionedLoader, createCachedJsonSender, responseRepresentation } from "./response-cache.mjs";
 import { createBackupManager, MAX_BACKUP_BYTES } from "./backup.mjs";
-import { savingsAccountType, scheduledContribution, collectNisaStockPurchases } from "./public/savings-calculation.mjs";
+import { savingsAccountType, collectNisaStockPurchases } from "./public/savings-calculation.mjs";
 import { createForecastHistory, forecastPriceFromCache } from "./forecast-history.mjs";
 import { buildSavingsForecast, savingsForecastFromDate } from "./savings-forecast.mjs";
 import { EDINET_ANALYSIS_VERSION, parseEdinetXbrl, analyzeEdinetReports, edinetInsights, edinetScoreAdjustment } from "./edinet-financials.mjs";
@@ -55,7 +55,6 @@ const WATCHLIST_PATH = path.join(__dirname, "data", "watchlist.json");
 const US_WATCHLIST_PATH = path.join(__dirname, "data", "us-watchlist.json");
 const CRYPTO_HOLDING_PATH = path.join(__dirname, "data", "crypto-holding.json");
 const JP_ACCOUNT_FLOWS_PATH = path.join(__dirname, "data", "jp-account-flows.json");
-const JP_AUTO_ACCOUNT_FLOWS_PATH = path.join(__dirname, "data", "jp-auto-account-flows.json");
 const SAVINGS_PLANS_PATH = path.join(__dirname, "data", "savings-plans.json");
 const ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "analysis-cache.json");
 const US_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "us-analysis-cache.json");
@@ -1032,16 +1031,15 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/jp-account-flows" && req.method === "GET") {
-    const items = await readJpAccountFlows();
-    return json(res, 200, { items, autoItems: await readAutomaticJpAccountFlows(items) });
+    return json(res, 200, { items: await readJpAccountFlows() });
   }
 
   if (url.pathname === "/api/jp-account-flows" && req.method === "POST") {
     const body = await readJson(req);
-    const type = body.type === "withdrawal" ? "withdrawal" : body.type === "deposit" ? "deposit" : "";
+    const type = ["deposit", "withdrawal", "contribution"].includes(body.type) ? body.type : "";
     const date = normalizeDate(body.date);
     const amount = Number(body.amount);
-    if (!type) return json(res, 400, { error: "入金または出金を選択してください。" });
+    if (!type) return json(res, 400, { error: "入金、出金、積立のいずれかを選択してください。" });
     if (!date) return json(res, 400, { error: "日付を確認してください。" });
     if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 1000000000000) return json(res, 400, { error: "金額は1円以上で入力してください。" });
     const item = {
@@ -1054,14 +1052,14 @@ async function handleApi(req, res, url) {
     };
     const items = [item, ...(await readJpAccountFlows())].sort((a, b) => b.date.localeCompare(a.date));
     await saveJpAccountFlows(items);
-    return json(res, 201, { items, autoItems: await readAutomaticJpAccountFlows(items) });
+    return json(res, 201, { items });
   }
 
   if (url.pathname.startsWith("/api/jp-account-flows/") && req.method === "DELETE") {
     const id = decodeURIComponent(url.pathname.split("/").pop() || "");
     const items = (await readJpAccountFlows()).filter((item) => item.id !== id);
     await saveJpAccountFlows(items);
-    return json(res, 200, { items, autoItems: await readAutomaticJpAccountFlows(items) });
+    return json(res, 200, { items });
   }
 
   if (url.pathname === "/api/us-stocks" && req.method === "GET") {
@@ -17226,7 +17224,7 @@ async function readJpAccountFlows() {
   try {
     const items = await readDataJson(JP_ACCOUNT_FLOWS_PATH);
     if (!Array.isArray(items)) throw new Error("入出金データの形式が正しくありません。");
-    return items.filter((item) => item && typeof item.id === "string" && ["deposit", "withdrawal"].includes(item.type)
+    return items.filter((item) => item && typeof item.id === "string" && ["deposit", "withdrawal", "contribution"].includes(item.type)
       && normalizeDate(item.date) && Number.isSafeInteger(item.amount) && item.amount > 0)
       .map((item) => ({ id: item.id, type: item.type, date: normalizeDate(item.date), amount: item.amount, memo: cleanText(item.memo || "").slice(0, 100), createdAt: String(item.createdAt || "") }))
       .sort((a, b) => b.date.localeCompare(a.date));
@@ -17234,68 +17232,6 @@ async function readJpAccountFlows() {
     if (error.code === "ENOENT") return [];
     throw new Error(`証券口座の入出金データを読み込めません。元のデータを保全しています。${error.message}`);
   }
-}
-
-async function readAutomaticJpAccountFlows(manualItems = []) {
-  const today = jstDate();
-  const [year, month] = today.slice(0, 7).split("-").map(Number);
-  const lastMonthIndex = year * 12 + month - 1;
-
-  let savedItems = [];
-  try {
-    const saved = await readDataJson(JP_AUTO_ACCOUNT_FLOWS_PATH);
-    if (Array.isArray(saved)) savedItems = saved.filter((item) => item && typeof item.id === "string"
-      && item.type === "deposit" && normalizeDate(item.date) && Number.isSafeInteger(item.amount) && item.amount > 0)
-      .map((item) => ({ id: item.id, type: "deposit", date: normalizeDate(item.date), amount: item.amount,
-        memo: cleanText(item.memo || "").slice(0, 100), automatic: true }));
-  } catch (error) {
-    if (error.code !== "ENOENT") throw new Error(`カード積立の自動入金履歴を読み込めません。${error.message}`);
-  }
-
-  const generated = [];
-  for (const plan of await readSavingsPlans()) {
-    if (plan.provider === "ideco" || !plan.schedule.length) continue;
-    const firstMonth = plan.schedule[0].month;
-    const [firstYear, firstMonthNumber] = firstMonth.split("-").map(Number);
-    const firstMonthIndex = firstYear * 12 + firstMonthNumber - 1;
-    for (let index = firstMonthIndex; index <= lastMonthIndex; index += 1) {
-      const monthKey = `${String(Math.floor(index / 12)).padStart(4, "0")}-${String(index % 12 + 1).padStart(2, "0")}`;
-      const date = `${monthKey}-12`;
-      if (date > today) continue;
-      const amount = scheduledContribution(plan.schedule, monthKey, Boolean(plan.recurring));
-      if (!Number.isSafeInteger(amount) || amount <= 0) continue;
-      generated.push({
-        id: `auto-savings-${plan.id}-${monthKey}`,
-        type: "deposit",
-        date,
-        amount,
-        memo: `${plan.name || plan.symbol || "積立"}・${plan.paymentMethod === "credit" ? "カード積立" : "口座引落積立"}（自動）`,
-        automatic: true,
-      });
-    }
-  }
-  const itemsById = new Map(savedItems.map((item) => [item.id, item]));
-  for (const item of generated) if (!itemsById.has(item.id)) itemsById.set(item.id, item);
-  const allItems = [...itemsById.values()];
-  if (allItems.length !== savedItems.length) {
-    await mkdir(path.dirname(JP_AUTO_ACCOUNT_FLOWS_PATH), { recursive: true });
-    await writeDataFile(JP_AUTO_ACCOUNT_FLOWS_PATH, JSON.stringify(allItems, null, 2));
-  }
-
-  const duplicateCounts = new Map();
-  for (const item of manualItems) {
-    if (item.type !== "deposit") continue;
-    const key = `${item.date}|${item.amount}`;
-    duplicateCounts.set(key, (duplicateCounts.get(key) || 0) + 1);
-  }
-  const visibleItems = allItems.filter((item) => {
-    const key = `${item.date}|${item.amount}`;
-    const duplicates = duplicateCounts.get(key) || 0;
-    if (duplicates <= 0) return true;
-    duplicateCounts.set(key, duplicates - 1);
-    return false;
-  });
-  return visibleItems.sort((a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
 }
 
 async function saveJpAccountFlows(items) {
