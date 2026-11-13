@@ -3119,7 +3119,7 @@ function fxTimingCard(title, plan = {}, kind = "buy", currencyName = "米ドル"
 
 function cryptoPositionEditor(holding, position = {}, analysis = null) {
   const lots = position.positions?.length ? position.positions : cryptoPositionLots(holding);
-  const fxRate = Number(analysis?.usdJpy?.current) || 0;
+  const currentFxRate = Number(analysis?.usdJpy?.current) || 0;
   const displayLots = lots.length ? lots : [{ purchaseDate: "", purchasePriceUsd: null, purchasePriceJpy: null, amountJpy: null, quantity: null }];
   const sales = position.sales?.length ? position.sales : cryptoSaleLots(holding);
   const displaySales = sales.length ? sales : [{ sellDate: "", sellPriceUsd: null, sellPriceJpy: null, amountJpy: null, quantity: null }];
@@ -3145,7 +3145,7 @@ function cryptoPositionEditor(holding, position = {}, analysis = null) {
           <span></span>
         </div>
         <div class="crypto-lot-list">
-          ${displayLots.map((lot) => cryptoLotRow(lot, fxRate)).join("")}
+          ${displayLots.map((lot) => cryptoLotRow(lot, currentFxRate)).join("")}
         </div>
         <button type="button" class="secondary add-lot" data-add-crypto-lot>明細を追加</button>
       </div>
@@ -3159,7 +3159,7 @@ function cryptoPositionEditor(holding, position = {}, analysis = null) {
           <span></span>
         </div>
         <div class="crypto-sale-list">
-          ${displaySales.map((lot) => cryptoSaleRow(lot, fxRate)).join("")}
+          ${displaySales.map((lot) => cryptoSaleRow(lot, currentFxRate)).join("")}
         </div>
         <button type="button" class="secondary add-lot" data-add-crypto-sale>売却明細を追加</button>
       </div>
