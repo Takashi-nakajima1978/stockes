@@ -44,6 +44,10 @@ const state = {
   stockLoadError: "",
   jpAccountFlows: [],
   jpAccountFlowsLoaded: false,
+  usAccountFlows: [],
+  usAccountFlowsLoaded: false,
+  usdJpyReferenceRate: null,
+  usdJpyReferenceSeries: [],
   analyses: {},
   earningsReviews: {},
   earningsReviewLoaded: new Set(),
@@ -171,6 +175,15 @@ const els = {
   accountContributionsTotal: document.getElementById("accountContributionsTotal"),
   accountWithdrawalsTotal: document.getElementById("accountWithdrawalsTotal"),
   accountNetDepositsTotal: document.getElementById("accountNetDepositsTotal"),
+  usAccountCashflowForm: document.getElementById("usAccountCashflowForm"),
+  usAccountCashflowTable: document.getElementById("usAccountCashflowTable"),
+  usAccountDepositsTotal: document.getElementById("usAccountDepositsTotal"),
+  usAccountDepositsYen: document.getElementById("usAccountDepositsYen"),
+  usAccountWithdrawalsTotal: document.getElementById("usAccountWithdrawalsTotal"),
+  usAccountWithdrawalsYen: document.getElementById("usAccountWithdrawalsYen"),
+  usAccountNetDepositsTotal: document.getElementById("usAccountNetDepositsTotal"),
+  usAccountNetDepositsYen: document.getElementById("usAccountNetDepositsYen"),
+  usAccountFxPreview: document.getElementById("usAccountFxPreview"),
   stockName: document.getElementById("stockName"),
   stockSymbol: document.getElementById("stockSymbol"),
   stockLookupStatus: document.getElementById("stockLookupStatus"),
@@ -231,6 +244,8 @@ const els = {
   usDividendIncomeTotal: document.getElementById("usDividendIncomeTotal"),
   usDividendReceivedTotal: document.getElementById("usDividendReceivedTotal"),
   usInvestedTotal: document.getElementById("usInvestedTotal"),
+  usNetDepositsTotal: document.getElementById("usNetDepositsTotal"),
+  usNetDepositsYenSummary: document.getElementById("usNetDepositsYenSummary"),
   usMarketTotal: document.getElementById("usMarketTotal"),
   usWinCount: document.getElementById("usWinCount"),
   usLossCount: document.getElementById("usLossCount"),
@@ -608,6 +623,24 @@ async function loadJpAccountFlows() {
   }
   renderAccountCashflows();
   renderProfitSummary();
+}
+
+async function loadUsAccountFlows() {
+  const [payload, cryptoPayload] = await Promise.all([
+    request("/api/us-account-flows"),
+    request("/api/crypto").catch(() => null),
+  ]);
+  state.usAccountFlows = Array.isArray(payload.items) ? payload.items : [];
+  state.usAccountFlowsLoaded = true;
+  const fx = cryptoPayload?.analysis?.usdJpy || {};
+  state.usdJpyReferenceRate = Number.isFinite(Number(fx.current)) && Number(fx.current) > 0 ? Number(fx.current) : null;
+  state.usdJpyReferenceSeries = Array.isArray(fx.series) ? fx.series : [];
+  if (els.usAccountCashflowForm && !els.usAccountCashflowForm.elements.date.value) {
+    els.usAccountCashflowForm.elements.date.value = localDateKey();
+  }
+  renderUsAccountCashflows();
+  renderUsSummary();
+  renderUsAccountFxPreview();
 }
 
 async function loadUsStocks() {
@@ -1347,7 +1380,7 @@ function ensureViewData(view) {
   }
   if (view === "us") {
     return ensureDataSection("us", async () => {
-      await Promise.all([loadUsStocks(), loadUsAnalysisCache(), loadUsAnalysisJob()]);
+      await Promise.all([loadUsStocks(), loadUsAnalysisCache(), loadUsAnalysisJob(), loadUsAccountFlows()]);
     });
   }
   if (view === "performance") {
@@ -2138,8 +2171,84 @@ function renderAccountCashflows() {
   }
 }
 
+function usAccountFlowTotals() {
+  const deposits = state.usAccountFlows.filter((item) => item.type === "deposit");
+  const withdrawals = state.usAccountFlows.filter((item) => item.type === "withdrawal");
+  const sum = (items, key) => items.reduce((total, item) => total + (Number(item[key]) || 0), 0);
+  const sumConverted = (items) => items.every((item) => Number.isFinite(item.amountJpy))
+    ? sum(items, "amountJpy")
+    : null;
+  return {
+    depositsUsd: sum(deposits, "amountUsd"),
+    withdrawalsUsd: sum(withdrawals, "amountUsd"),
+    netUsd: sum(deposits, "amountUsd") - sum(withdrawals, "amountUsd"),
+    depositsJpy: sumConverted(deposits),
+    withdrawalsJpy: sumConverted(withdrawals),
+    netJpy: sumConverted(state.usAccountFlows) === null
+      ? null
+      : sum(deposits, "amountJpy") - sum(withdrawals, "amountJpy"),
+  };
+}
+
+function usdJpyReferenceForDate(date) {
+  const points = state.usdJpyReferenceSeries
+    .map((point) => ({ date: String(point.date || "").slice(0, 10), rate: Number(point.close) }))
+    .filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.date) && Number.isFinite(point.rate) && point.rate > 0);
+  if (date && points.length) {
+    const target = Date.parse(`${date}T00:00:00Z`);
+    const closest = points.reduce((best, point) => {
+      const distance = Math.abs(Date.parse(`${point.date}T00:00:00Z`) - target);
+      return !best || distance < best.distance ? { ...point, distance } : best;
+    }, null);
+    if (closest) return { rate: closest.rate, date: closest.date };
+  }
+  if (Number.isFinite(state.usdJpyReferenceRate) && state.usdJpyReferenceRate > 0) {
+    return { rate: state.usdJpyReferenceRate, date: points.at(-1)?.date || "" };
+  }
+  return null;
+}
+
+function renderUsAccountFxPreview() {
+  if (!els.usAccountFxPreview || !els.usAccountCashflowForm) return;
+  const date = els.usAccountCashflowForm.elements.date.value;
+  const amount = Number(els.usAccountCashflowForm.elements.amountUsd.value);
+  const reference = usdJpyReferenceForDate(date);
+  if (!reference) {
+    els.usAccountFxPreview.textContent = "為替データ未取得のため、円換算は記録できません。USDの入出金は記録できます。";
+    return;
+  }
+  const amountText = Number.isFinite(amount) && amount > 0 ? ` → 約${yen(Math.round(amount * reference.rate))}` : "";
+  const dateText = reference.date ? `（${reference.date}）` : "（直近値）";
+  els.usAccountFxPreview.textContent = `参考レート USD/JPY ${reference.rate.toFixed(3)}${dateText}${amountText}`;
+}
+
+function renderUsAccountCashflows() {
+  const totals = usAccountFlowTotals();
+  if (els.usAccountDepositsTotal) els.usAccountDepositsTotal.textContent = state.usAccountFlowsLoaded ? usd(totals.depositsUsd) : "-";
+  if (els.usAccountWithdrawalsTotal) els.usAccountWithdrawalsTotal.textContent = state.usAccountFlowsLoaded ? usd(totals.withdrawalsUsd) : "-";
+  if (els.usAccountNetDepositsTotal) els.usAccountNetDepositsTotal.textContent = state.usAccountFlowsLoaded ? usd(totals.netUsd) : "-";
+  if (els.usAccountDepositsYen) els.usAccountDepositsYen.textContent = `円換算 ${totals.depositsJpy === null ? "-" : `約${yen(totals.depositsJpy)}`}`;
+  if (els.usAccountWithdrawalsYen) els.usAccountWithdrawalsYen.textContent = `円換算 ${totals.withdrawalsJpy === null ? "-" : `約${yen(totals.withdrawalsJpy)}`}`;
+  if (els.usAccountNetDepositsYen) els.usAccountNetDepositsYen.textContent = `円換算 ${totals.netJpy === null ? "-" : `約${yen(totals.netJpy)}`}`;
+  if (els.usAccountCashflowTable) {
+    els.usAccountCashflowTable.innerHTML = state.usAccountFlows.length
+      ? state.usAccountFlows.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.date)}</td>
+          <td><span class="account-flow-type ${item.type}">${item.type === "deposit" ? "入金" : "出金"}</span></td>
+          <td>${usd(item.amountUsd)}</td>
+          <td>${Number.isFinite(item.amountJpy) ? `約${yen(item.amountJpy)}` : "-"}</td>
+          <td>${Number.isFinite(item.exchangeRate) ? `¥${item.exchangeRate.toFixed(3)}` : "-"}</td>
+          <td>${escapeHtml(item.memo || "-")}</td>
+          <td><button type="button" class="icon" data-delete-us-account-flow="${escapeAttr(item.id)}" aria-label="${item.type === "deposit" ? "入金" : "出金"}記録を削除">×</button></td>
+        </tr>`).join("")
+      : '<tr><td colspan="7" class="watchlist-empty">入出金の記録はありません。</td></tr>';
+  }
+}
+
 function renderUs() {
   renderUsSummary();
+  renderUsAccountCashflows();
   renderUsTable();
   renderUsDetail();
 }
@@ -2162,6 +2271,11 @@ function renderUsSummary() {
   if (els.usDividendReceivedTotal) els.usDividendReceivedTotal.textContent = usd(summary.dividendReceived);
   setMoneySummary(els.usInvestedTotal, summary.invested, "profit-big", usd);
   setMoneySummary(els.usMarketTotal, summary.marketValue, "profit-big", usd);
+  const cashflowTotals = usAccountFlowTotals();
+  setMoneySummary(els.usNetDepositsTotal, state.usAccountFlowsLoaded ? cashflowTotals.netUsd : null, "profit-big", usd);
+  if (els.usNetDepositsYenSummary) {
+    els.usNetDepositsYenSummary.textContent = `円換算 ${cashflowTotals.netJpy === null ? "-" : `約${yen(cashflowTotals.netJpy)}`}（参考値）`;
+  }
   if (els.usWinCount) els.usWinCount.textContent = String(summary.winCount || 0);
   if (els.usLossCount) els.usLossCount.textContent = String(summary.lossCount || 0);
 }
@@ -9429,6 +9543,54 @@ els.accountCashflowTable?.addEventListener("click", async (event) => {
     renderAccountCashflows();
     renderProfitSummary();
     toast("入出金記録を削除しました。");
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+els.usAccountCashflowForm?.addEventListener("input", renderUsAccountFxPreview);
+els.usAccountCashflowForm?.addEventListener("change", renderUsAccountFxPreview);
+els.usAccountCashflowForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = els.usAccountCashflowForm;
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit) submit.disabled = true;
+  try {
+    const reference = usdJpyReferenceForDate(form.elements.date.value);
+    const result = await request("/api/us-account-flows", {
+      method: "POST",
+      body: JSON.stringify({
+        type: form.elements.type.value,
+        date: form.elements.date.value,
+        amountUsd: Number(form.elements.amountUsd.value),
+        exchangeRate: reference?.rate ?? null,
+        memo: form.elements.memo.value.trim(),
+      }),
+    });
+    state.usAccountFlows = Array.isArray(result.items) ? result.items : [];
+    state.usAccountFlowsLoaded = true;
+    form.reset();
+    form.elements.date.value = localDateKey();
+    renderUsAccountCashflows();
+    renderUsSummary();
+    renderUsAccountFxPreview();
+    toast("米国証券口座の入出金を記録しました。");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+});
+
+els.usAccountCashflowTable?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-us-account-flow]");
+  if (!button) return;
+  try {
+    const result = await request(`/api/us-account-flows/${encodeURIComponent(button.dataset.deleteUsAccountFlow)}`, { method: "DELETE" });
+    state.usAccountFlows = Array.isArray(result.items) ? result.items : [];
+    renderUsAccountCashflows();
+    renderUsSummary();
+    toast("米国口座の入出金記録を削除しました。");
   } catch (error) {
     toast(error.message);
   }

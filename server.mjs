@@ -55,6 +55,7 @@ const WATCHLIST_PATH = path.join(__dirname, "data", "watchlist.json");
 const US_WATCHLIST_PATH = path.join(__dirname, "data", "us-watchlist.json");
 const CRYPTO_HOLDING_PATH = path.join(__dirname, "data", "crypto-holding.json");
 const JP_ACCOUNT_FLOWS_PATH = path.join(__dirname, "data", "jp-account-flows.json");
+const US_ACCOUNT_FLOWS_PATH = path.join(__dirname, "data", "us-account-flows.json");
 const SAVINGS_PLANS_PATH = path.join(__dirname, "data", "savings-plans.json");
 const ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "analysis-cache.json");
 const US_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "us-analysis-cache.json");
@@ -863,7 +864,7 @@ const server = http.createServer(async (req, res) => {
           try { originHost = new URL(req.headers.origin).host; } catch {}
           if (originHost !== req.headers.host) return json(res, 403, { error: "アプリと同じアドレスから操作してください。" });
         }
-        const editsData = /^\/api\/(?:settings|stocks|us-stocks|crypto|jp-account-flows|savings-plans|excluded-candidates|backup\/(?:drive|nas)\/settings)(?:\/|$)/.test(url.pathname);
+        const editsData = /^\/api\/(?:settings|stocks|us-stocks|crypto|jp-account-flows|us-account-flows|savings-plans|excluded-candidates|backup\/(?:drive|nas)\/settings)(?:\/|$)/.test(url.pathname);
         return await (editsData ? serializeDataEdit(() => handleApi(req, res, url)) : handleApi(req, res, url));
       } finally { activeApiRequests -= 1; }
     }
@@ -1059,6 +1060,42 @@ async function handleApi(req, res, url) {
     const id = decodeURIComponent(url.pathname.split("/").pop() || "");
     const items = (await readJpAccountFlows()).filter((item) => item.id !== id);
     await saveJpAccountFlows(items);
+    return json(res, 200, { items });
+  }
+
+  if (url.pathname === "/api/us-account-flows" && req.method === "GET") {
+    return json(res, 200, { items: await readUsAccountFlows() });
+  }
+
+  if (url.pathname === "/api/us-account-flows" && req.method === "POST") {
+    const body = await readJson(req);
+    const type = ["deposit", "withdrawal"].includes(body.type) ? body.type : "";
+    const date = normalizeDate(body.date);
+    const amountUsd = Math.round(Number(body.amountUsd) * 100) / 100;
+    const exchangeRate = nullablePositiveNumber(body.exchangeRate);
+    if (!type) return json(res, 400, { error: "入金または出金を選択してください。" });
+    if (!date) return json(res, 400, { error: "日付を確認してください。" });
+    if (!Number.isFinite(amountUsd) || amountUsd <= 0 || amountUsd > 1000000000000) return json(res, 400, { error: "金額は0.01 USD以上で入力してください。" });
+    if (exchangeRate !== null && exchangeRate > 10000) return json(res, 400, { error: "為替レートを確認してください。" });
+    const item = {
+      id: createUsAccountFlowId(),
+      type,
+      date,
+      amountUsd,
+      exchangeRate,
+      amountJpy: exchangeRate ? Math.round(amountUsd * exchangeRate) : null,
+      memo: cleanText(body.memo || "").slice(0, 100),
+      createdAt: new Date().toISOString(),
+    };
+    const items = [item, ...(await readUsAccountFlows())].sort((a, b) => b.date.localeCompare(a.date));
+    await saveUsAccountFlows(items);
+    return json(res, 201, { items });
+  }
+
+  if (url.pathname.startsWith("/api/us-account-flows/") && req.method === "DELETE") {
+    const id = decodeURIComponent(url.pathname.split("/").pop() || "");
+    const items = (await readUsAccountFlows()).filter((item) => item.id !== id);
+    await saveUsAccountFlows(items);
     return json(res, 200, { items });
   }
 
@@ -17238,6 +17275,44 @@ async function readJpAccountFlows() {
 async function saveJpAccountFlows(items) {
   await mkdir(path.dirname(JP_ACCOUNT_FLOWS_PATH), { recursive: true });
   await writeDataFile(JP_ACCOUNT_FLOWS_PATH, JSON.stringify(items, null, 2));
+}
+
+async function readUsAccountFlows() {
+  try {
+    const items = await readDataJson(US_ACCOUNT_FLOWS_PATH);
+    if (!Array.isArray(items)) throw new Error("入出金データの形式が正しくありません。");
+    return items.filter((item) => item && typeof item.id === "string" && ["deposit", "withdrawal"].includes(item.type)
+      && normalizeDate(item.date) && Number.isFinite(Number(item.amountUsd)) && Number(item.amountUsd) > 0)
+      .map((item) => {
+        const exchangeRate = nullablePositiveNumber(item.exchangeRate);
+        const amountJpy = Number.isSafeInteger(item.amountJpy) && item.amountJpy >= 0
+          ? item.amountJpy
+          : exchangeRate ? Math.round(Number(item.amountUsd) * exchangeRate) : null;
+        return {
+          id: item.id,
+          type: item.type,
+          date: normalizeDate(item.date),
+          amountUsd: Math.round(Number(item.amountUsd) * 100) / 100,
+          exchangeRate,
+          amountJpy,
+          memo: cleanText(item.memo || "").slice(0, 100),
+          createdAt: String(item.createdAt || ""),
+        };
+      })
+      .sort((a, b) => b.date.localeCompare(a.date));
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw new Error(`米国証券口座の入出金データを読み込めません。元のデータを保全しています。${error.message}`);
+  }
+}
+
+async function saveUsAccountFlows(items) {
+  await mkdir(path.dirname(US_ACCOUNT_FLOWS_PATH), { recursive: true });
+  await writeDataFile(US_ACCOUNT_FLOWS_PATH, JSON.stringify(items, null, 2));
+}
+
+function createUsAccountFlowId() {
+  return `us-cashflow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function createJpAccountFlowId() {

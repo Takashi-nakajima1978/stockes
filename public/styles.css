@@ -811,11 +811,34 @@ progress {
   font-variant-numeric: tabular-nums;
 }
 
+.us-account-cashflow-panel .account-cashflow-totals b {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+
+.us-account-cashflow-panel .account-cashflow-totals b small,
+#usNetDepositsYenSummary {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .account-cashflow-form {
   display: grid;
   grid-template-columns: minmax(110px, 0.7fr) minmax(150px, 1fr) minmax(170px, 1fr) minmax(180px, 1.3fr) auto;
   align-items: end;
   gap: 10px;
+}
+
+.us-account-fx-preview {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.us-account-cashflow-table {
+  min-width: 850px;
 }
 
 .account-flow-type {
