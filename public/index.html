@@ -412,6 +412,35 @@
             </div>
           </div>
         </section>
+
+        <section class="table-panel account-cashflow-panel us-account-cashflow-panel">
+          <div class="panel-title">
+            <h3>米国証券口座の入出金</h3>
+            <span>株式の取得原価とは分けて記録</span>
+          </div>
+          <div class="account-cashflow-content">
+            <p class="account-cashflow-note">口座投資額 = 入金合計 − 出金合計。円換算は記録日に近いUSD/JPYを使った参考値です。</p>
+            <div class="account-cashflow-totals">
+              <span><strong>入金合計</strong><b><span id="usAccountDepositsTotal">-</span><small id="usAccountDepositsYen">円換算 -</small></b></span>
+              <span><strong>出金合計</strong><b><span id="usAccountWithdrawalsTotal">-</span><small id="usAccountWithdrawalsYen">円換算 -</small></b></span>
+              <span><strong>口座投資額（純入金）</strong><b><span id="usAccountNetDepositsTotal">-</span><small id="usAccountNetDepositsYen">円換算 -</small></b></span>
+            </div>
+            <form id="usAccountCashflowForm" class="account-cashflow-form us-account-cashflow-form">
+              <label><span>区分</span><select name="type"><option value="deposit">入金</option><option value="withdrawal">出金</option></select></label>
+              <label><span>日付</span><input name="date" type="date" required></label>
+              <label><span>金額（USD）</span><input name="amountUsd" type="number" min="0.01" step="0.01" placeholder="例: 1000" required></label>
+              <label><span>メモ（任意）</span><input name="memo" maxlength="100" placeholder="例: 銀行から入金"></label>
+              <button type="submit">入出金を記録</button>
+              <p id="usAccountFxPreview" class="account-cashflow-note us-account-fx-preview" aria-live="polite">円換算レートを確認中…</p>
+            </form>
+            <div class="table-wrap">
+              <table class="account-cashflow-table us-account-cashflow-table">
+                <thead><tr><th>日付</th><th>区分</th><th>金額（USD）</th><th>参考円換算</th><th>為替レート</th><th>メモ</th><th></th></tr></thead>
+                <tbody id="usAccountCashflowTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
       </section>
 
       <section class="view-panel" data-view="us">
@@ -523,35 +552,6 @@
                   </tr>
                 </thead>
                 <tbody id="usStockTable"></tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <section class="table-panel account-cashflow-panel us-account-cashflow-panel">
-          <div class="panel-title">
-            <h3>米国証券口座の入出金</h3>
-            <span>株式の取得原価とは分けて記録</span>
-          </div>
-          <div class="account-cashflow-content">
-            <p class="account-cashflow-note">口座投資額 = 入金合計 − 出金合計。円換算は記録日に近いUSD/JPYを使った参考値です。</p>
-            <div class="account-cashflow-totals">
-              <span><strong>入金合計</strong><b><span id="usAccountDepositsTotal">-</span><small id="usAccountDepositsYen">円換算 -</small></b></span>
-              <span><strong>出金合計</strong><b><span id="usAccountWithdrawalsTotal">-</span><small id="usAccountWithdrawalsYen">円換算 -</small></b></span>
-              <span><strong>口座投資額（純入金）</strong><b><span id="usAccountNetDepositsTotal">-</span><small id="usAccountNetDepositsYen">円換算 -</small></b></span>
-            </div>
-            <form id="usAccountCashflowForm" class="account-cashflow-form us-account-cashflow-form">
-              <label><span>区分</span><select name="type"><option value="deposit">入金</option><option value="withdrawal">出金</option></select></label>
-              <label><span>日付</span><input name="date" type="date" required></label>
-              <label><span>金額（USD）</span><input name="amountUsd" type="number" min="0.01" step="0.01" placeholder="例: 1000" required></label>
-              <label><span>メモ（任意）</span><input name="memo" maxlength="100" placeholder="例: 銀行から入金"></label>
-              <button type="submit">入出金を記録</button>
-              <p id="usAccountFxPreview" class="account-cashflow-note us-account-fx-preview" aria-live="polite">円換算レートを確認中…</p>
-            </form>
-            <div class="table-wrap">
-              <table class="account-cashflow-table us-account-cashflow-table">
-                <thead><tr><th>日付</th><th>区分</th><th>金額（USD）</th><th>参考円換算</th><th>為替レート</th><th>メモ</th><th></th></tr></thead>
-                <tbody id="usAccountCashflowTable"></tbody>
               </table>
             </div>
           </div>

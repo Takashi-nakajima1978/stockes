@@ -1368,7 +1368,7 @@ function ensureDataSection(key, loader) {
 
 function ensureViewData(view) {
   if (view === "analysis" || view === "stocks") {
-    return ensureDataSection("jp", async () => {
+    const jpData = ensureDataSection("jp", async () => {
       const stocksTask = request("/api/stocks").then(loadStocks);
       const cashflowsTask = loadJpAccountFlows();
       const analysisTask = request("/api/analysis").then(async (payload) => {
@@ -1377,10 +1377,19 @@ function ensureViewData(view) {
       });
       await Promise.all([stocksTask, cashflowsTask, analysisTask, loadAnalysisJob()]);
     });
+    if (view === "stocks") {
+      return Promise.all([jpData, ensureDataSection("us-account-flows", loadUsAccountFlows)]);
+    }
+    return jpData;
   }
   if (view === "us") {
     return ensureDataSection("us", async () => {
-      await Promise.all([loadUsStocks(), loadUsAnalysisCache(), loadUsAnalysisJob(), loadUsAccountFlows()]);
+      await Promise.all([
+        loadUsStocks(),
+        loadUsAnalysisCache(),
+        loadUsAnalysisJob(),
+        ensureDataSection("us-account-flows", loadUsAccountFlows),
+      ]);
     });
   }
   if (view === "performance") {
