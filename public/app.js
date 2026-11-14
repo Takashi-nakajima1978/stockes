@@ -243,6 +243,8 @@ const els = {
   usRealizedPnlFiscalYearLabel: document.getElementById("usRealizedPnlFiscalYearLabel"),
   usDividendIncomeTotal: document.getElementById("usDividendIncomeTotal"),
   usDividendReceivedTotal: document.getElementById("usDividendReceivedTotal"),
+  usDividendReceivedFiscalYear: document.getElementById("usDividendReceivedFiscalYear"),
+  usDividendReceivedFiscalYearLabel: document.getElementById("usDividendReceivedFiscalYearLabel"),
   usInvestedTotal: document.getElementById("usInvestedTotal"),
   usNetDepositsTotal: document.getElementById("usNetDepositsTotal"),
   usNetDepositsYenSummary: document.getElementById("usNetDepositsYenSummary"),
@@ -286,6 +288,8 @@ const els = {
   realizedPnlFiscalYear: document.getElementById("realizedPnlFiscalYear"),
   realizedPnlFiscalYearLabel: document.getElementById("realizedPnlFiscalYearLabel"),
   dividendReceivedTotal: document.getElementById("dividendReceivedTotal"),
+  dividendReceivedFiscalYear: document.getElementById("dividendReceivedFiscalYear"),
+  dividendReceivedFiscalYearLabel: document.getElementById("dividendReceivedFiscalYearLabel"),
   investedTotal: document.getElementById("investedTotal"),
   netDepositsTotal: document.getElementById("netDepositsTotal"),
   marketTotal: document.getElementById("marketTotal"),
@@ -2144,6 +2148,8 @@ function renderProfitSummary() {
       : "購入日・株数・配当データが必要";
   }
   if (els.dividendReceivedTotal) els.dividendReceivedTotal.textContent = yen(summary.dividendReceived);
+  if (els.dividendReceivedFiscalYear) els.dividendReceivedFiscalYear.textContent = yen(summary.dividendReceivedFiscalYear);
+  if (els.dividendReceivedFiscalYearLabel) els.dividendReceivedFiscalYearLabel.textContent = `${summary.fiscalYear}年度`;
   if (els.investedTotal) els.investedTotal.textContent = yen(summary.invested);
   if (els.netDepositsTotal) els.netDepositsTotal.textContent = state.jpAccountFlowsLoaded ? yen(summary.netDeposits) : "-";
   if (els.marketTotal) els.marketTotal.textContent = yen(summary.marketValue);
@@ -2281,6 +2287,8 @@ function renderUsSummary() {
   if (els.usRealizedPnlFiscalYearLabel) els.usRealizedPnlFiscalYearLabel.textContent = `${summary.fiscalYear}年度`;
   if (els.usDividendIncomeTotal) els.usDividendIncomeTotal.textContent = usd(summary.annualDividendEstimate);
   if (els.usDividendReceivedTotal) els.usDividendReceivedTotal.textContent = usd(summary.dividendReceived);
+  if (els.usDividendReceivedFiscalYear) els.usDividendReceivedFiscalYear.textContent = usd(summary.dividendReceivedFiscalYear);
+  if (els.usDividendReceivedFiscalYearLabel) els.usDividendReceivedFiscalYearLabel.textContent = `${summary.fiscalYear}年度`;
   setMoneySummary(els.usInvestedTotal, summary.invested, "profit-big", usd);
   setMoneySummary(els.usMarketTotal, summary.marketValue, "profit-big", usd);
   const cashflowTotals = usAccountFlowTotals();
@@ -3389,6 +3397,10 @@ function portfolioSummary() {
     if (position.lots?.length && position.sales?.length) {
       summary.realizedPnlFiscalYear += realizedPnlForPeriod(position.lots, position.sales, fiscalYear.startDate, fiscalYear.endDate);
     }
+    summary.dividendReceivedFiscalYear += dividendsForPositionHistoryPeriod(
+      position.lots || [], position.sales || [], analysis?.price?.dividendEvents || [],
+      fiscalYear.startDate, fiscalYear.endDate, { symbol: stock.symbol, market: stock.market },
+    );
     summary.unrealizedPnlAmount += Number.isFinite(position.unrealizedPnlAmount) ? position.unrealizedPnlAmount : 0;
     summary.dividendReceived += Number.isFinite(position.dividendReceived) ? position.dividendReceived : 0;
     summary.annualDividendEstimate += Number.isFinite(position.annualDividendEstimate) ? position.annualDividendEstimate : 0;
@@ -3414,6 +3426,7 @@ function portfolioSummary() {
     unrealizedPnlAmount: 0,
     pnlPct: null,
     dividendReceived: 0,
+    dividendReceivedFiscalYear: 0,
     annualDividendEstimate: 0,
     totalReturnAmount: 0,
     totalReturnPct: null,
@@ -3556,6 +3569,10 @@ function usSummaryFromState() {
     if (position.lots?.length && position.sales?.length) {
       summary.realizedPnlFiscalYear += realizedPnlForPeriod(position.lots, position.sales, fiscalYear.startDate, fiscalYear.endDate);
     }
+    summary.dividendReceivedFiscalYear += dividendsForPositionHistoryPeriod(
+      position.lots || [], position.sales || [], analysis?.price?.dividendEvents || [],
+      fiscalYear.startDate, fiscalYear.endDate, { symbol: stock.symbol, market: stock.market },
+    );
     summary.unrealizedPnlAmount += Number.isFinite(position.unrealizedPnlAmount) ? position.unrealizedPnlAmount : 0;
     summary.dividendReceived += Number.isFinite(position.dividendReceived) ? position.dividendReceived : 0;
     summary.annualDividendEstimate += Number.isFinite(position.annualDividendEstimate) ? position.annualDividendEstimate : 0;
@@ -3581,6 +3598,7 @@ function usSummaryFromState() {
     unrealizedPnlAmount: 0,
     pnlPct: null,
     dividendReceived: 0,
+    dividendReceivedFiscalYear: 0,
     annualDividendEstimate: 0,
     totalReturnAmount: 0,
     totalReturnPct: null,
@@ -7093,10 +7111,16 @@ function positionLotState(positions = [], sales = [], fractionalDigits = 6) {
 }
 
 function dividendsForPositionHistory(lots, sales, dividendEvents = [], context = {}) {
+  return dividendsForPositionHistoryPeriod(lots, sales, dividendEvents, "", "", context);
+}
+
+function dividendsForPositionHistoryPeriod(lots, sales, dividendEvents = [], startDate = "", endDate = "", context = {}) {
   const market = dividendMarket(context);
   return dividendEvents.reduce((sum, event) => {
     const entitlement = dividendEntitlementEvent(event, market);
     if (!entitlement) return sum;
+    const periodDate = dividendDate(event.paymentDate || event.payDate || entitlement.basisDate);
+    if (!periodDate || (startDate && periodDate < startDate) || (endDate && periodDate >= endDate)) return sum;
     const cutoffTime = dividendDateTime(entitlement.cutoffDate);
     const amount = Number(entitlement.amount);
     if (!Number.isFinite(cutoffTime) || !Number.isFinite(amount)) return sum;
