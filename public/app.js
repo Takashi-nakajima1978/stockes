@@ -1805,8 +1805,8 @@ function renderTable() {
     els.stockTable.innerHTML = holdings.length
       ? holdings.map((stock) => stockRow(stock, true)).join("")
       : state.stocksLoaded
-        ? '<tr><td colspan="8" class="watchlist-empty">保有中の銘柄はありません。</td></tr>'
-        : emptyStockRow(8);
+        ? '<tr><td colspan="9" class="watchlist-empty">保有中の銘柄はありません。</td></tr>'
+        : emptyStockRow(9);
     attachTableEvents(els.stockTable);
   }
 
@@ -1822,8 +1822,8 @@ function renderTable() {
     els.unheldStockTable.innerHTML = unheldCandidates.length
       ? unheldCandidates.map((stock) => stockRow(stock, true)).join("")
       : state.stocksLoaded
-        ? '<tr><td colspan="8" class="watchlist-empty">未保有の銘柄はありません。</td></tr>'
-        : emptyStockRow(8);
+        ? '<tr><td colspan="9" class="watchlist-empty">未保有の銘柄はありません。</td></tr>'
+        : emptyStockRow(9);
     attachTableEvents(els.unheldStockTable);
   }
 
@@ -1837,7 +1837,7 @@ function renderTable() {
   if (els.manageStockTable) {
     els.manageStockTable.innerHTML = state.stocks.length
       ? state.stocks.map((stock) => stockRow(stock, false)).join("")
-      : emptyStockRow(10);
+      : emptyStockRow(11);
     attachTableEvents(els.manageStockTable);
   }
 }
@@ -1893,7 +1893,8 @@ function stockRow(stock, compact) {
         <td>${yen(analysis?.price?.current)}</td>
         <td>${averagePriceCell(position, yen)}</td>
         <td>${holdingQuantityCell(stock, position)}</td>
-        <td>${positionPnl(position, true)}</td>
+        <td>${positionPnl(position)}</td>
+        <td>${realizedPnlCell(position, yen)}</td>
         <td>${dividendCell(position, analysis?.price)}</td>
         <td><span class="badge ${actionClasses[action] || "watch"}">${actionLabels[action] || "要確認"}</span></td>
       </tr>
@@ -1907,6 +1908,7 @@ function stockRow(stock, compact) {
       <td>${yen(analysis?.price?.current)}</td>
       <td>${averagePriceCell(position, yen)}</td>
       <td>${positionPnl(position)}</td>
+      <td>${realizedPnlCell(position, yen)}</td>
       <td>${dividendCell(position, analysis?.price)}</td>
       <td>${pct(analysis?.price?.return1y)}</td>
       <td>${pct(analysis?.price?.return3y)}</td>
@@ -2510,7 +2512,7 @@ async function runPortfolioReflectionReview() {
 function renderUsTable() {
   if (!els.usStockTable) return;
   if (!state.usStocks.length) {
-    els.usStockTable.innerHTML = "<tr><td colspan=\"10\">米国株はまだありません。</td></tr>";
+    els.usStockTable.innerHTML = "<tr><td colspan=\"11\">米国株はまだありません。</td></tr>";
     return;
   }
   els.usStockTable.innerHTML = state.usStocks.map((stock) => {
@@ -2534,6 +2536,7 @@ function renderUsTable() {
         <td>${averagePriceCell(position, usd)}</td>
         <td>${usShareCount(position.quantity)}</td>
         <td>${positionPnlUsd(position)}</td>
+        <td>${realizedPnlCell(position, usd)}</td>
         <td>${dividendCell(position, analysis?.price, usd)}</td>
         <td>${multipleText(fundamentals.trailingPe)}</td>
         <td>${pct(fundamentals.revenueGrowthPct)}</td>
@@ -3645,6 +3648,13 @@ function positionPnlUsd(position = {}) {
     : pct(ratio);
   const sub = `${Number.isFinite(ratio) ? `<small>${signedPct(ratio)}</small>` : ""}${position.dividendReceived > 0 ? `<small>配当 ${usd(position.dividendReceived)}</small>` : ""}`;
   return `<span class="pnl-cell">${main}${sub}</span>`;
+}
+
+function realizedPnlCell(position = {}, formatter = yen) {
+  const amount = position.realizedPnlAmount;
+  if (!Number.isFinite(amount)) return "-";
+  const cls = amount >= 0 ? "metric-pos" : "metric-neg";
+  return `<span class="pnl-cell"><span class="pnl-main ${cls}">${formatter(amount)}</span></span>`;
 }
 
 function usStanceBadge(ai = null, stock = {}, position = {}) {
