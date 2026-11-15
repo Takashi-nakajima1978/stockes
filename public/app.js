@@ -160,6 +160,7 @@ let earningsBatchPolling = false;
 const els = {
   viewButtons: [...document.querySelectorAll("[data-view-target]")],
   viewPanels: [...document.querySelectorAll("[data-view]")],
+  targetPriceAlerts: document.getElementById("targetPriceAlerts"),
   ideaTabButtons: [...document.querySelectorAll("[data-idea-tab]")],
   ideaPanels: [...document.querySelectorAll("[data-idea-panel]")],
   settingsTabButtons: [...document.querySelectorAll("[data-settings-tab]")],
@@ -1840,6 +1841,7 @@ function renderTable() {
       : emptyStockRow(11);
     attachTableEvents(els.manageStockTable);
   }
+  renderTargetPriceAlerts();
 }
 
 function hasRecentHoldingHistory(stock, now = new Date()) {
@@ -1920,10 +1922,35 @@ function stockRow(stock, compact) {
 }
 
 function targetPriceReachedMarker(stock = {}, price = {}) {
+  if (!targetPriceReached(stock, price)) return "";
   const target = Number(stock.targetBuyPrice);
   const current = Number(price.current);
-  if (!(target > 0) || !(current > 0) || current > target) return "";
   return `<span class="target-price-marker" title="買いたい価格 ${yen(target)} に到達（現在値 ${yen(current)}）">目標到達</span>`;
+}
+
+function targetPriceReached(stock = {}, price = {}) {
+  const target = Number(stock.targetBuyPrice);
+  const current = Number(price.current);
+  return target > 0 && current > 0 && current <= target;
+}
+
+function renderTargetPriceAlerts() {
+  if (!els.targetPriceAlerts) return;
+  const reached = state.stocks.filter((stock) => targetPriceReached(stock, state.analyses[stock.symbol]?.price || {}));
+  els.targetPriceAlerts.hidden = reached.length === 0;
+  if (!reached.length) {
+    els.targetPriceAlerts.replaceChildren();
+    return;
+  }
+  els.targetPriceAlerts.innerHTML = `
+    <strong class="target-price-alert-label">目標到達 ${reached.length}銘柄</strong>
+    <div class="target-price-alert-list">
+      ${reached.map((stock) => {
+        const current = state.analyses[stock.symbol]?.price?.current;
+        return `<span class="target-price-alert-item"><b>${escapeHtml(stock.name)}</b><span>${yen(current)} / 目標 ${yen(stock.targetBuyPrice)}</span></span>`;
+      }).join("")}
+    </div>
+  `;
 }
 
 function sectorBadge(sector) {

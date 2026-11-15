@@ -306,6 +306,56 @@ progress {
   gap: 18px;
 }
 
+.analysis-heading {
+  min-width: 0;
+}
+
+.target-price-alerts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 9px;
+  color: #805700;
+  font-size: 12px;
+}
+
+.target-price-alerts[hidden] {
+  display: none;
+}
+
+.target-price-alert-label {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #fff1ce;
+  font-weight: 850;
+}
+
+.target-price-alert-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.target-price-alert-item {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px 7px;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid #ead9ad;
+  border-radius: 7px;
+  background: #fffaf0;
+  line-height: 1.35;
+}
+
+.target-price-alert-item span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .actions {
   gap: 10px;
 }
