@@ -1869,6 +1869,7 @@ function emptyStockRow(colspan) {
 function stockRow(stock, compact) {
   const analysis = state.analyses[stock.symbol];
   const position = positionMetrics(stock, analysis?.price);
+  const targetMarker = targetPriceReachedMarker(stock, analysis?.price || {});
   const action = analysis?.action || "WATCH";
   const confidence = Number.isFinite(analysis?.confidence) ? `${Math.round(analysis.confidence)}%` : "-";
   const selected = state.selected === stock.symbol ? "selected" : "";
@@ -1877,7 +1878,7 @@ function stockRow(stock, compact) {
       <div class="stock-name-row">
         <button type="button" class="drag-handle" draggable="true" data-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>
         <div class="stock-name">
-          <strong>${escapeHtml(stock.name)}</strong>
+          <strong>${escapeHtml(stock.name)}${targetMarker}</strong>
           <span>${symbolLinkHtml(stock.symbol, "jp")}${stock.holding ? " / 保有" : ""}</span>
         </div>
       </div>
@@ -1916,6 +1917,13 @@ function stockRow(stock, compact) {
       <td><button type="button" class="icon" data-remove="${stock.symbol}" aria-label="${stock.name}を削除">×</button></td>
     </tr>
   `;
+}
+
+function targetPriceReachedMarker(stock = {}, price = {}) {
+  const target = Number(stock.targetBuyPrice);
+  const current = Number(price.current);
+  if (!(target > 0) || !(current > 0) || current > target) return "";
+  return `<span class="target-price-marker" title="買いたい価格 ${yen(target)} に到達（現在値 ${yen(current)}）">目標到達</span>`;
 }
 
 function sectorBadge(sector) {
