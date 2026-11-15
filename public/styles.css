@@ -310,12 +310,19 @@ progress {
   min-width: 0;
 }
 
+.analysis-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
 .target-price-alerts {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 10px;
-  margin-top: 9px;
+  margin-top: 0;
   color: #805700;
   font-size: 12px;
 }
