@@ -107,6 +107,7 @@ const state = {
   jpUnheldExpanded: false,
   settingsTab: "search",
   running: false,
+  multiAngleAutoRunning: false,
   jpRefreshing: false,
   usRefreshing: false,
   cryptoRefreshing: false,
@@ -6707,9 +6708,7 @@ function renderEarningsBatchJob(job = {}, wasRunning = false) {
       ? "一括分析中..."
       : job.failed > 0 && job.finishedAt
         ? "失敗銘柄を再分析"
-        : savedResultCount > 0
-          ? "Watchlist全銘柄を再確認"
-          : "Watchlist全銘柄を初回分析";
+        : "日本株を今すぐ一括分析";
   }
   if (els.earningsBatchStatus) {
     if (job.running) {
@@ -6745,16 +6744,20 @@ function renderEarningsAutoStatus(automatic = {}) {
   if (!els.settingsEarningsAutoStatus) return;
   if (!automatic.enabled) {
     setStatus(els.settingsEarningsAutoStatus, false, "自動監視停止中");
-  } else if (automatic.configured === false) {
-    setStatus(els.settingsEarningsAutoStatus, false, "EDINET APIキー未設定");
   } else if (automatic.monitoring) {
     setStatus(els.settingsEarningsAutoStatus, true, `決算資料を確認中 · 待機 ${automatic.queued || 0}銘柄`);
   } else if (automatic.running) {
-    setStatus(els.settingsEarningsAutoStatus, true, `自動分析中 · 待機 ${automatic.queued || 0}銘柄`);
+    const progress = automatic.progress || {};
+    const count = progress.total ? ` ${progress.processed || 0}/${progress.total}` : "";
+    setStatus(els.settingsEarningsAutoStatus, true, `全市場の多角分析中${count}${progress.current ? ` · ${progress.current}` : ""}`);
   } else {
-    setStatus(els.settingsEarningsAutoStatus, true, `${automatic.cadence || "週1回"}で監視中 · 待機 ${automatic.queued || 0}銘柄`);
+    const failures = Number(automatic.lastFailureCount) || 0;
+    const cadence = automatic.cadence || "週1回";
+    const status = automatic.lastRunStatus ? `${automatic.lastRunStatus} · ${cadence}自動更新` : `${cadence}で全市場を自動分析`;
+    setStatus(els.settingsEarningsAutoStatus, failures === 0, failures ? `${status} · 要確認 ${failures}件` : status);
     const date = (value) => value ? new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value)) : "初回確認待ち";
-    els.settingsEarningsAutoStatus.title = `最終確認: ${date(automatic.lastCheckedAt)} / 次回確認: ${date(automatic.nextCheckAt)}`;
+    const jpNote = automatic.jpConfigured === false ? " / 日本株の決算分析にはEDINET APIキーが必要" : "";
+    els.settingsEarningsAutoStatus.title = `最終実行: ${date(automatic.lastCheckedAt)} / 次回実行: ${date(automatic.nextCheckAt)}${jpNote}`;
   }
 }
 
@@ -6763,7 +6766,8 @@ async function loadEarningsBatchStatus() {
     const payload = await request("/api/earnings-debate/batch");
     renderEarningsBatchJob(payload.job || {});
     renderEarningsAutoStatus(payload.automatic || {});
-    if (payload.job?.running) void pollEarningsBatchJob();
+    state.multiAngleAutoRunning = payload.automatic?.running === true;
+    if (payload.job?.running || state.multiAngleAutoRunning) void pollEarningsBatchJob();
   } catch (error) {
     if (els.settingsEarningsAutoStatus) setStatus(els.settingsEarningsAutoStatus, false, "状態を取得できません");
     if (els.earningsBatchStatus) els.earningsBatchStatus.textContent = error.message || "状態を取得できません";
@@ -6775,11 +6779,12 @@ async function pollEarningsBatchJob() {
   earningsBatchPolling = true;
   try {
     let wasRunning = true;
-    while (state.earningsBatchJob?.running) {
+    while (state.earningsBatchJob?.running || state.multiAngleAutoRunning) {
       await new Promise((resolve) => setTimeout(resolve, 1800));
       const payload = await request("/api/earnings-debate/batch");
       renderEarningsBatchJob(payload.job || {}, wasRunning);
       renderEarningsAutoStatus(payload.automatic || {});
+      state.multiAngleAutoRunning = payload.automatic?.running === true;
       wasRunning = payload.job?.running === true;
     }
   } catch (error) {

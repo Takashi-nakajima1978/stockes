@@ -18,7 +18,7 @@ import { createForecastHistory, forecastPriceFromCache } from "./forecast-histor
 import { buildSavingsForecast, savingsForecastFromDate } from "./savings-forecast.mjs";
 import { EDINET_ANALYSIS_VERSION, parseEdinetXbrl, analyzeEdinetReports, edinetInsights, edinetScoreAdjustment } from "./edinet-financials.mjs";
 import { createEdinetDirectory, selectEdinetDocuments } from "./edinet-documents.mjs";
-import { changedEdinetMaterialSymbols, EARNINGS_BEAR_SCHEMA, EARNINGS_BULL_SCHEMA, EARNINGS_JUDGE_SCHEMA, EARNINGS_REVIEW_SCHEMA, earningsDebateOutputIssues, earningsMaterialFingerprint, isEarningsAutoMonitorDue, isEarningsPresentationTitle, newEarningsPresentationSymbols, nextEarningsAutoMonitorAt, normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages, shouldRefreshFinancialSnapshots, staleEarningsAnalysisSymbols } from "./earnings-analysis.mjs";
+import { changedEdinetMaterialSymbols, EARNINGS_AUTO_MONITOR_INTERVAL_MS, EARNINGS_AUTO_MONITOR_RETRY_MS, EARNINGS_BEAR_SCHEMA, EARNINGS_BULL_SCHEMA, EARNINGS_JUDGE_SCHEMA, EARNINGS_REVIEW_SCHEMA, earningsDebateOutputIssues, earningsMaterialFingerprint, isEarningsAutoMonitorDue, isEarningsPresentationTitle, newEarningsPresentationSymbols, nextEarningsAutoMonitorAt, normalizeEarningsDebate, selectComparableEdinetReports, selectRelevantPdfPages, shouldRefreshFinancialSnapshots, staleEarningsAnalysisSymbols } from "./earnings-analysis.mjs";
 import { normalizeAssetDebate } from "./asset-debate.mjs";
 import { buildForecastReflection, buildPortfolioRiskAnalysis, buildValidatedConfidenceCalibration, normalizePortfolioDebate } from "./portfolio-insights.mjs";
 
@@ -67,6 +67,7 @@ const SHAREHOLDER_CACHE_PATH = path.join(__dirname, "data", "shareholder-cache.j
 const FINANCIAL_CACHE_PATH = path.join(__dirname, "data", "financial-cache.json");
 const EARNINGS_ANALYSIS_CACHE_PATH = path.join(__dirname, "data", "earnings-analysis-cache.json");
 const EARNINGS_AUTO_MONITOR_STATE_PATH = path.join(__dirname, "data", "earnings-auto-monitor-state.json");
+const MULTI_ANGLE_AUTO_STATE_PATH = path.join(__dirname, "data", "multi-angle-auto-state.json");
 const EARNINGS_BATCH_STATE_PATH = path.join(__dirname, "data", "earnings-batch-state.json");
 const PORTFOLIO_REVIEW_CACHE_PATH = path.join(__dirname, "data", "portfolio-review-cache.json");
 const ASSET_DEBATE_CACHE_PATH = path.join(__dirname, "data", "asset-debate-cache.json");
@@ -547,6 +548,8 @@ let earningsBatchJob = null;
 let earningsBatchJobLoadPromise = null;
 let earningsAutoDrainPromise = null;
 let earningsAutoMonitorRefreshing = false;
+let multiAngleAutoRunning = false;
+let multiAngleAutoProgress = { processed: 0, total: 0, current: "" };
 let earningsAnalysisQueue = Promise.resolve();
 const earningsAutoQueue = new Map();
 let usAnalysisJob = null;
@@ -1182,6 +1185,7 @@ async function handleApi(req, res, url) {
     await ensureEarningsBatchJobLoaded();
     const settings = await readSettings();
     const monitorState = await readEarningsAutoMonitorState();
+    const multiAngleState = await readMultiAngleAutoState();
     const analysisCache = await readEarningsAnalysisCache();
     return json(res, 200, {
       job: {
@@ -1194,12 +1198,16 @@ async function handleApi(req, res, url) {
       automatic: {
         enabled: settings.earningsAutoAnalysisEnabled,
         configured: Boolean(settings.edinetApiKey),
+        jpConfigured: Boolean(settings.edinetApiKey),
         queued: earningsAutoQueue.size,
-        running: Boolean(earningsAutoDrainPromise),
+        running: Boolean(earningsAutoDrainPromise) || multiAngleAutoRunning,
         monitoring: earningsAutoMonitorRefreshing,
         cadence: "週1回",
-        lastCheckedAt: monitorState.lastSuccessAt,
-        nextCheckAt: nextEarningsAutoMonitorAt(monitorState),
+        lastCheckedAt: multiAngleState.lastAttemptAt || monitorState.lastSuccessAt,
+        nextCheckAt: nextMultiAngleAutoAt(multiAngleState),
+        progress: { ...multiAngleAutoProgress },
+        lastRunStatus: multiAngleState.lastRunStatus || "",
+        lastFailureCount: multiAngleState.lastFailureCount || 0,
       },
     });
   }
@@ -4095,7 +4103,7 @@ function scheduleHourlyRefresh() {
     if (backupManager.restoring) return;
     void runPriceRefresh("research-scheduler", async () => {
       await runHourlyRefreshIfDue().catch((error) => console.error("分析自動更新:", error.message));
-      await runEarningsAutoMonitorIfDue();
+      void runAllMultiAngleAnalysesIfDue().catch((error) => console.error("週次多角分析:", error.message));
     }).catch((error) => console.error("分析自動更新:", error.message));
   };
   setTimeout(() => { priceTick(); researchTick(); }, 12000);
@@ -4167,10 +4175,7 @@ async function runEarningsAutoMonitorIfDue() {
   if (!settings.earningsAutoAnalysisEnabled || !settings.edinetApiKey || backupManager.restoring) return;
   if (earningsAutoMonitorRefreshing) return;
   const state = await readEarningsAutoMonitorState();
-  if (!isEarningsAutoMonitorDue(state)) {
-    void drainAutomaticEarningsDebates();
-    return;
-  }
+  if (!isEarningsAutoMonitorDue(state)) return;
 
   const attemptedAt = new Date().toISOString();
   await saveEarningsAutoMonitorState({ ...state, lastAttemptAt: attemptedAt });
@@ -4194,7 +4199,6 @@ async function runEarningsAutoMonitorIfDue() {
   }
   if (!failed) await saveEarningsAutoMonitorState({ ...state, lastAttemptAt: attemptedAt, lastSuccessAt: attemptedAt });
   await queueStaleEarningsDebates();
-  await drainAutomaticEarningsDebates();
 }
 
 async function readEarningsAutoMonitorState() {
@@ -4215,6 +4219,149 @@ async function saveEarningsAutoMonitorState(state) {
     lastAttemptAt: String(state.lastAttemptAt || ""),
     lastSuccessAt: String(state.lastSuccessAt || ""),
   }, null, 2));
+}
+
+async function readMultiAngleAutoState() {
+  try {
+    const state = await readDataJson(MULTI_ANGLE_AUTO_STATE_PATH);
+    return {
+      lastAttemptAt: String(state.lastAttemptAt || ""),
+      lastSuccessAt: String(state.lastSuccessAt || ""),
+      lastRunStatus: String(state.lastRunStatus || ""),
+      lastFailureCount: Math.max(0, Number(state.lastFailureCount) || 0),
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") return { lastAttemptAt: "", lastSuccessAt: "", lastRunStatus: "", lastFailureCount: 0 };
+    throw error;
+  }
+}
+
+async function saveMultiAngleAutoState(state) {
+  await writeDataFile(MULTI_ANGLE_AUTO_STATE_PATH, JSON.stringify({
+    lastAttemptAt: String(state.lastAttemptAt || ""),
+    lastSuccessAt: String(state.lastSuccessAt || ""),
+    lastRunStatus: String(state.lastRunStatus || ""),
+    lastFailureCount: Math.max(0, Number(state.lastFailureCount) || 0),
+  }, null, 2));
+}
+
+function nextMultiAngleAutoAt(state = {}) {
+  const attemptedAt = Date.parse(state.lastAttemptAt || "");
+  const succeededAt = Date.parse(state.lastSuccessAt || "");
+  if (Number.isFinite(attemptedAt) && (!Number.isFinite(succeededAt) || attemptedAt > succeededAt)) {
+    return new Date(attemptedAt + EARNINGS_AUTO_MONITOR_RETRY_MS).toISOString();
+  }
+  return Number.isFinite(succeededAt)
+    ? new Date(succeededAt + EARNINGS_AUTO_MONITOR_INTERVAL_MS).toISOString()
+    : "";
+}
+
+function isMultiAngleAutoDue(state = {}, now = Date.now()) {
+  const nextAt = nextMultiAngleAutoAt(state);
+  return !nextAt || Date.parse(nextAt) <= now;
+}
+
+function multiAngleResultIsStale(result, now = Date.now()) {
+  const generatedAt = Date.parse(result?.generatedAt || "");
+  return !Number.isFinite(generatedAt) || now - generatedAt >= EARNINGS_AUTO_MONITOR_INTERVAL_MS;
+}
+
+async function runAllMultiAngleAnalysesIfDue() {
+  const settings = await readSettings();
+  if (!settings.earningsAutoAnalysisEnabled || backupManager.restoring || multiAngleAutoRunning) return;
+  const previous = await readMultiAngleAutoState();
+  if (!isMultiAngleAutoDue(previous)) return;
+
+  multiAngleAutoRunning = true;
+  const attemptedAt = new Date().toISOString();
+  let succeededAt = previous.lastSuccessAt;
+  let failureCount = 0;
+  let deferredCount = 0;
+  await saveMultiAngleAutoState({ ...previous, lastAttemptAt: attemptedAt, lastRunStatus: "処理中" });
+  multiAngleAutoProgress = { processed: 0, total: 0, current: "決算資料を確認中" };
+  try {
+    await runEarningsAutoMonitorIfDue();
+    await queueStaleEarningsDebates();
+    const assetTargets = await staleAssetDebateTasks();
+    const assetTasks = assetTargets.tasks;
+    deferredCount = assetTargets.deferred;
+    const jpPending = earningsAutoQueue.size;
+    multiAngleAutoProgress = { processed: 0, total: jpPending + assetTasks.length + deferredCount, current: jpPending ? "日本株の決算資料" : "" };
+
+    if (jpPending || assetTasks.length) await getLmStudioModel();
+    if (jpPending) {
+      await drainAutomaticEarningsDebates();
+      multiAngleAutoProgress.processed = Math.max(0, jpPending - earningsAutoQueue.size);
+      if (earningsAutoQueue.size) failureCount += earningsAutoQueue.size;
+    }
+
+    for (const [index, task] of assetTasks.entries()) {
+      multiAngleAutoProgress.current = `${task.name}（${task.symbol}）`;
+      try {
+        await runAssetDebateTask(`${task.market}:${task.symbol}`, () => generateAssetDebate(task.market, task.symbol));
+      } catch (error) {
+        failureCount += 1;
+        console.error(`週次多角分析 ${task.market}:${task.symbol}:`, error.message);
+      }
+      multiAngleAutoProgress.processed = jpPending - earningsAutoQueue.size + index + 1;
+    }
+    multiAngleAutoProgress.processed = multiAngleAutoProgress.total;
+
+    if (!failureCount && !deferredCount) succeededAt = new Date().toISOString();
+    const status = failureCount || deferredCount
+      ? `完了（失敗 ${failureCount}件・データ待ち ${deferredCount}件）`
+      : "完了";
+    await saveMultiAngleAutoState({
+      lastAttemptAt: attemptedAt,
+      lastSuccessAt: succeededAt,
+      lastRunStatus: status,
+      lastFailureCount: failureCount + deferredCount,
+    });
+  } catch (error) {
+    failureCount += 1;
+    console.error("週次多角分析:", error.message);
+    await saveMultiAngleAutoState({
+      lastAttemptAt: attemptedAt,
+      lastSuccessAt: succeededAt,
+      lastRunStatus: `失敗: ${String(error.message || "処理に失敗しました").slice(0, 160)}`,
+      lastFailureCount: failureCount + deferredCount,
+    });
+  } finally {
+    multiAngleAutoRunning = false;
+    multiAngleAutoProgress = { ...multiAngleAutoProgress, current: "" };
+  }
+}
+
+async function staleAssetDebateTasks(now = Date.now()) {
+  const [cache, usStocks, usAnalysis, crypto] = await Promise.all([
+    readAssetDebateCache(), readUsWatchlist(), readUsAnalysisCache(), readCryptoAnalysisCache(),
+  ]);
+  const saved = new Map(cache.items.map((item) => [`${item.market}:${item.symbol}`, item]));
+  const tasks = [];
+  let deferred = 0;
+  const usAnalyses = new Map(usAnalysis.analyses.map((item) => [item.symbol, item]));
+  for (const stock of usStocks) {
+    const analysis = usAnalyses.get(stock.symbol);
+    if (!multiAngleResultIsStale(saved.get(`us:${stock.symbol}`), now)) continue;
+    if (!(Number(analysis?.price?.current) > 0)) {
+      deferred += 1;
+      continue;
+    }
+    tasks.push({ market: "us", symbol: stock.symbol, name: stock.name || stock.symbol });
+  }
+  if (multiAngleResultIsStale(saved.get("crypto:BTC-JPY"), now)) {
+    if (Number(crypto.btcJpy?.current) > 0) tasks.push({ market: "crypto", symbol: "BTC-JPY", name: "Bitcoin" });
+    else deferred += 1;
+  }
+  for (const [symbol, name, price] of [
+    ["USD-JPY", "米ドル/円", crypto.usdJpy],
+    ["EUR-JPY", "ユーロ/円", crypto.eurJpy],
+  ]) {
+    if (!multiAngleResultIsStale(saved.get(`fx:${symbol}`), now)) continue;
+    if (Number(price?.current) > 0) tasks.push({ market: "fx", symbol, name });
+    else deferred += 1;
+  }
+  return { tasks, deferred };
 }
 
 function isMarketOpen(market, value = new Date()) {
@@ -15479,12 +15626,14 @@ async function queueStaleEarningsDebates() {
   const [watchlist, financialCache, disclosureCache, analysisCache] = await Promise.all([
     readWatchlist(), readFinancialCache(), readDisclosureCache(), readEarningsAnalysisCache(),
   ]);
-  const stocks = new Map(watchlist.map((stock) => [stock.symbol, stock]));
+  const savedBySymbol = new Map(analysisCache.items.map((review) => [review.symbol, review]));
   const financials = new Map((financialCache.items || []).map((item) => [item.symbol, item]));
   const sourcesBySymbol = {};
-  for (const review of analysisCache.items || []) {
-    if (!/^\d{4}\.T$/.test(review.symbol) || !stocks.has(review.symbol)) continue;
-    const comparison = selectComparableEdinetReports(financials.get(review.symbol)?.edinetReports || []);
+  const weeklyDueSymbols = [];
+  const now = Date.now();
+  for (const stock of watchlist) {
+    if (!/^\d{4}\.T$/.test(stock.symbol)) continue;
+    const comparison = selectComparableEdinetReports(financials.get(stock.symbol)?.edinetReports || []);
     const descriptor = (document) => document ? {
       title: document.docDescription || "",
       periodEnd: document.periodEnd || "",
@@ -15492,15 +15641,19 @@ async function queueStaleEarningsDebates() {
       submittedAt: document.submitDateTime || "",
       url: edinetDocumentUrl(document.docID),
     } : null;
-    const presentation = latestEarningsPresentation(stocks.get(review.symbol), disclosureCache);
-    sourcesBySymbol[review.symbol] = {
+    const presentation = latestEarningsPresentation(stock, disclosureCache);
+    const sources = {
       current: descriptor(comparison.current?.document),
       previous: descriptor(comparison.previous?.document),
       presentation: presentation ? { id: presentation.id, date: presentation.date, title: presentation.title, url: presentation.url } : null,
     };
+    if (!sources.current) continue;
+    sourcesBySymbol[stock.symbol] = sources;
+    if (multiAngleResultIsStale(savedBySymbol.get(stock.symbol), now)) weeklyDueSymbols.push(stock.symbol);
   }
   const updatedSymbols = staleEarningsAnalysisSymbols(analysisCache.items, sourcesBySymbol);
-  if (updatedSymbols.length) queueAutomaticEarningsDebates(updatedSymbols, "保存済み分析との差分");
+  const dueSymbols = [...new Set([...updatedSymbols, ...weeklyDueSymbols])];
+  if (dueSymbols.length) queueAutomaticEarningsDebates(dueSymbols, "週次更新または資料差分");
 }
 
 function latestEarningsPresentation(stock, disclosureCache = {}) {
