@@ -425,6 +425,19 @@ function yen(value) {
   return yenFormats[value >= 1000 ? 0 : 1].format(value);
 }
 
+function marketUpdateTimestamp(value, market) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "日時不明";
+  const format = (timeZone) => new Intl.DateTimeFormat("ja-JP", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    ...(timeZone ? { timeZone } : {}),
+  }).format(date);
+  const timeZone = market === "us" ? "America/New_York" : "Asia/Tokyo";
+  const zoneLabel = market === "us" ? "ニューヨーク時間" : "日本時間";
+  return `PC現地 ${format()} / ${zoneLabel} ${format(timeZone)}`;
+}
+
 function usd(value) {
   if (!Number.isFinite(value)) return "-";
   return dollarFormats[Math.abs(value) >= 1000 ? 0 : 1].format(value);
@@ -666,7 +679,7 @@ async function loadAnalysisCache(background = false, cachedPayload = null) {
     .map((item) => [item.symbol, item]));
   state.sectorEvidence = payload.sectorEvidence || [];
   if (payload.generatedAt) {
-    els.lastRun.textContent = `保存済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
+    els.lastRun.textContent = `保存済み ${marketUpdateTimestamp(payload.generatedAt, "jp")}`;
     els.researchProgress.textContent = payload.fastRefresh
       ? "保存済み 価格更新"
       : payload.usedLmStudio ? "保存済み LM Studio分析" : "保存済みルール分析";
@@ -1420,8 +1433,8 @@ function applyUsAnalysisPayload(payload = {}) {
   if (payload.summary) state.usSummary = payload.summary;
   if (payload.generatedAt && els.usLastRun) {
     els.usLastRun.textContent = payload.fastRefresh
-      ? `保存済み 価格更新 ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`
-      : `保存済み ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
+      ? `保存済み 価格更新 ${marketUpdateTimestamp(payload.generatedAt, "us")}`
+      : `保存済み ${marketUpdateTimestamp(payload.generatedAt, "us")}`;
   }
 }
 
@@ -6238,7 +6251,7 @@ async function analyzeUs(options = {}) {
       });
       applyUsAnalysisPayload(quickPayload);
       if (els.usLastRun) {
-        els.usLastRun.textContent = `価格更新済み。AI分析中 ${new Date(quickPayload.generatedAt).toLocaleString("ja-JP")}`;
+        els.usLastRun.textContent = `価格更新済み。AI分析中 ${marketUpdateTimestamp(quickPayload.generatedAt, "us")}`;
       }
       priceUpdated = true;
       state.usRefreshing = false;
@@ -6260,8 +6273,8 @@ async function analyzeUs(options = {}) {
     applyUsAnalysisPayload(result);
     if (els.usLastRun) {
       els.usLastRun.textContent = result.usedLmStudio
-        ? `更新済み AI ${new Date(result.generatedAt).toLocaleString("ja-JP")}`
-        : `更新済み ${new Date(result.generatedAt).toLocaleString("ja-JP")}`;
+        ? `更新済み AI ${marketUpdateTimestamp(result.generatedAt, "us")}`
+        : `更新済み ${marketUpdateTimestamp(result.generatedAt, "us")}`;
     }
     if (result.warnings?.length) toast(result.warnings.join(" / "));
     renderUs();
@@ -6305,7 +6318,7 @@ async function refreshUsPricesOnly(options = {}) {
       return Number.isFinite(quoteAt) && quoteAt >= fetchedAt;
     }).length;
     if (els.usLastRun) {
-      els.usLastRun.textContent = `価格更新 ${refreshed}/${analyses.length}銘柄 ${new Date(payload.generatedAt).toLocaleString("ja-JP")}`;
+      els.usLastRun.textContent = `価格更新 ${refreshed}/${analyses.length}銘柄 ${marketUpdateTimestamp(payload.generatedAt, "us")}`;
     }
     if (payload.warnings?.length) toast(payload.warnings.join(" / "));
     renderUs();
@@ -6386,7 +6399,10 @@ function applyAnalysisPayload(payload, notifyWarnings = true) {
     state.analyses = Object.fromEntries(payload.analyses.map((item) => [item.symbol, item]));
   }
   if (Array.isArray(payload.sectorEvidence)) state.sectorEvidence = payload.sectorEvidence;
-  if (payload.generatedAt) els.lastRun.textContent = new Date(payload.generatedAt).toLocaleString("ja-JP");
+  if (payload.generatedAt) {
+    const label = payload.fastRefresh ? "価格更新" : "更新";
+    els.lastRun.textContent = `${label} ${marketUpdateTimestamp(payload.generatedAt, "jp")}`;
+  }
   els.researchProgress.textContent = payload.fastRefresh
     ? "価格更新済み"
     : payload.usedLmStudio ? "更新済み LM Studio分析" : "更新済み ルール分析";

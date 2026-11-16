@@ -949,6 +949,13 @@ progress {
   font-weight: 700;
 }
 
+.panel-title span#lastRun,
+.panel-title span#usLastRun {
+  max-width: 70%;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
 .mini-actions {
   display: flex;
   align-items: center;
