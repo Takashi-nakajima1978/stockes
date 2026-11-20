@@ -60,7 +60,18 @@ node server.mjs
 docker compose up --build
 ```
 
-Dockerホスト上のLM Studioへつなぐため、composeでは `http://host.docker.internal:1234/v1` を使います。起動後、Dockerには `local-stock-signal` が表示されます。
+Dockerホスト上のLM Studioへつなぐため、composeでは `http://host.docker.internal:1234/v1` を使います。保存先は `STOCK_SIGNAL_DATA_DIR`、ホスト側のポートは `STOCK_SIGNAL_HOST_PORT` で変更できます。
+
+### 別運用を2つ同時に起動
+
+運用ごとに異なる保存フォルダーとポートを指定し、Composeのプロジェクト名も分けて起動します。同じ保存フォルダーを2つのアプリで共有しないでください。保存フォルダーには、その運用のバックアップを先に復元してください。
+
+```bash
+STOCK_SIGNAL_HOST_PORT=5173 STOCK_SIGNAL_DATA_DIR=/srv/stock-signal/operation-a docker compose -p stock-signal-a up -d --build
+STOCK_SIGNAL_HOST_PORT=5174 STOCK_SIGNAL_DATA_DIR=/srv/stock-signal/operation-b docker compose -p stock-signal-b up -d --build
+```
+
+1つ目は `http://ホスト名:5173`、2つ目は `http://ホスト名:5174` で開きます。各保存フォルダーに、それぞれ別のバックアップを復元してから利用してください。
 
 ## 株価予測の信頼度
 
