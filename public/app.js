@@ -1894,7 +1894,7 @@ function stockRow(stock, compact) {
       <div class="stock-name-row">
         <button type="button" class="drag-handle" draggable="true" data-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>
         <div class="stock-name">
-          <strong>${escapeHtml(stock.name)}${targetMarker}</strong>
+          <strong>${escapeHtml(stock.name)}${targetMarker}${maCrossSlopeMarker(analysis?.price)}</strong>
           <span>${symbolLinkHtml(stock.symbol, "jp")}${stock.holding ? " / 保有" : ""}</span>
         </div>
       </div>
@@ -1946,6 +1946,17 @@ function targetPriceReached(stock = {}, price = {}) {
   const target = Number(stock.targetBuyPrice);
   const current = Number(price.current);
   return target > 0 && current > 0 && current <= target;
+}
+
+function maCrossSlopeMarker(price = {}) {
+  const signal = price.maCrossSignal;
+  if (!["golden_cross", "near_golden_cross", "bullish_alignment"].includes(signal?.key) || !Number.isFinite(signal?.slopePct)) return "";
+  const slope = signal.slopePct;
+  const direction = slope > 0.01 ? "up" : slope < -0.01 ? "down" : "flat";
+  const arrow = direction === "up" ? "↗" : direction === "down" ? "↘" : "→";
+  const amount = (slope > 0 ? "+" : "") + slope.toFixed(2) + "pt/5日";
+  const title = signal.label + "。短期線と長期線の相対乖離が直近5営業日で" + amount + "変化";
+  return '<small class="ma-cross-slope ' + direction + '" title="' + escapeAttr(title) + '">GC傾き' + arrow + ' ' + amount + "</small>";
 }
 
 function renderTargetPriceAlerts() {
@@ -2577,7 +2588,7 @@ function renderUsTable() {
           <div class="stock-name-row">
             <button type="button" class="drag-handle" draggable="true" data-us-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>
             <span class="stock-name">
-              <strong>${escapeHtml(stock.name)}</strong>
+              <strong>${escapeHtml(stock.name)}${maCrossSlopeMarker(analysis?.price)}</strong>
               <span>${symbolLinkHtml(stock.symbol, "us")} / ${escapeHtml(stock.market || "NYSE")}${openHolding ? " / 保有" : ""}</span>
             </span>
           </div>

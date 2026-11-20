@@ -117,7 +117,7 @@ const US_QUICK_PRICE_HISTORY_TIMEOUT_MS = 10000;
 const US_NEWS_MAX_AGE_DAYS = 45;
 const US_EVIDENCE_TRANSLATION_TIMEOUT_MS = 180000;
 const US_HOLDING_REVIEW_TIMEOUT_MS = 180000;
-const US_HOLDING_REVIEW_CHUNK_SIZE = 2;
+const US_HOLDING_REVIEW_CHUNK_SIZE = 1;
 const LM_STUDIO_STATUS_CACHE_MS = 5 * 60 * 1000;
 const EDINET_API_BASE = "https://api.edinet-fsa.go.jp/api/v2";
 const EDINET_REPORT_SELECTION_VERSION = 2;
@@ -3045,6 +3045,28 @@ function escapeRegExp(value = "") {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function usHoldingPriceFacts(price = {}) {
+  const keys = [
+    "priceDate", "current", "return1m", "return3m", "return1y", "return3y", "high52", "low52",
+    "maxDrawdown3y", "trendPrice3y", "distanceFromTrend3y", "buyLine1y", "distanceFromBuyLine1y",
+    "buyTiming1y", "dividendPerShareAnnual", "dividendYield", "dividendYieldTtm", "dividendChangePct",
+    "histVol20", "rsi14", "technicalEntry", "regime",
+  ];
+  return Object.fromEntries(keys
+    .filter((key) => price[key] !== undefined && price[key] !== null && price[key] !== "")
+    .map((key) => [key, price[key]]));
+}
+
+function usHoldingFundamentalFacts(fundamentals = {}) {
+  const keys = [
+    "periodEnd", "marketCap", "trailingPe", "forwardPe", "trailingEps", "revenueGrowthPct",
+    "operatingMarginPct", "profitMarginPct", "currentRatio", "debtToEquityPct", "sector", "nextEarningsDate",
+  ];
+  return Object.fromEntries(keys
+    .filter((key) => fundamentals[key] !== undefined && fundamentals[key] !== null && fundamentals[key] !== "")
+    .map((key) => [key, fundamentals[key]]));
+}
+
 async function aiUsHoldingReviews(rows = []) {
   const model = await getLmStudioModel();
   const reviews = [];
@@ -3061,9 +3083,11 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     name: row.name,
     market: row.market,
     holding: row.holding,
-    notes: row.notes,
-    price: row.price,
-    fundamentals: row.fundamentals,
+    notes: cleanText(row.notes || "").slice(0, 240),
+    // compactUsPrice intentionally keeps full history for charts. Never send that
+    // series (or the unbounded dividend event list) as part of an AI prompt.
+    price: usHoldingPriceFacts(row.price),
+    fundamentals: usHoldingFundamentalFacts(row.fundamentals),
     position: {
       purchasePrice: row.position.purchasePrice,
       quantity: row.position.quantity,
@@ -3083,16 +3107,11 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
       totalReturnPct: row.position.totalReturnPct,
       holdingDays: row.position.holdingDays,
     },
-    evidence: selectEvidenceForAi(row.evidence, row, 8).map((item) => ({
-      title: cleanText(item.title || "").slice(0, 140),
+    evidence: selectEvidenceForAi(row.evidence, row, 2).map((item) => ({
+      title: cleanText(item.title || "").slice(0, 80),
       source: item.source,
-      url: item.url,
-      kind: item.kind,
-      topic: item.topic || "",
-      evidenceClass: item.evidenceClass || "",
       publishedDate: item.publishedDate || "",
-      snippet: cleanText(item.articleText || item.summaryJa || item.originalSnippet || item.snippet || "").slice(0, 900),
-      contentStatus: item.contentStatus || "snippet_only",
+      snippet: cleanText(item.summaryJa || item.originalSnippet || item.snippet || item.articleText || "").slice(0, 180),
     })),
   }));
   const prompt = [
@@ -3104,27 +3123,26 @@ async function aiUsHoldingReviewChunk(model, rows = []) {
     "Separate position facts: remaining shares, sold shares, realized P/L, unrealized P/L, received dividends, estimated annual dividend, and total return including dividends.",
     "Also include marketViewJa (one or two short Japanese sentences), marketImpact (positive|negative|mixed|neutral|unknown), and marketConfidence (0-100). Explain how dated evidence affects the current stance; if verified recent evidence is missing, say so and use neutral or unknown.",
     "The JSON review objects must include those three market fields even though the example schema below is abbreviated.",
-    "Use only dated evidence published within 45 days for a current market view. Separate company announcements and reputable reporting (facts), analyst ratings/targets (opinions), and Yahoo Finance/message-board or social posts (unverified investor opinions). Do not treat comments as facts or let anonymous sentiment alone change stance. Weigh corroboration and source disagreement; explicitly say when recent evidence is missing. contentStatus=snippet_only means only a search excerpt was available, so lower confidence and do not infer article details; article_excerpt is only the first 1,800 extracted characters, not necessarily the whole page.",
-    "Check PER, EPS, revenue growth, margin, ROE, debt level, next earnings timing, news evidence, 3-year price history, purchase price, and trailing-stop context.",
+    "Use recent evidence within 45 days for the current market view. Distinguish verified company/reputable news from analyst opinions and anonymous investor comments; never treat comments as facts. Lower confidence when only a search excerpt is present and state when recent evidence is missing.",
+    "Check valuation, growth, margins, debt, earnings timing, the supplied 3-year price metrics, purchase price, and trailing-stop context.",
     "Do not promise profit. Separate reasons to continue holding from risks or missing data. If financial data is missing, say that as a risk.",
     "Return strict JSON only in this schema: {\"reviews\":[{\"symbol\":\"ACN\",\"stance\":\"HOLD\",\"confidence\":60,\"summaryJa\":\"...\",\"good\":[\"...\"],\"risks\":[\"...\"],\"evidenceJa\":[{\"titleJa\":\"...\",\"source\":\"...\",\"summary\":\"...\"}],\"changeLevel\":\"normal\",\"growthExit\":{\"level\":\"normal|watch|exit_alert\",\"reason\":\"...\",\"signals\":[\"...\"],\"evidence\":[{\"title\":\"...\",\"source\":\"...\",\"url\":\"...\",\"publishedDate\":\"YYYY-MM-DD\",\"summary\":\"...\"}]},\"sellForecast\":{\"horizon\":\"1-3か月|3-6か月|決算後|未定\",\"targetPrice\":123.45,\"reviewPrice\":111.11,\"timing\":\"...\",\"reason\":\"...\",\"confidence\":60,\"catalysts\":[\"...\"]}}]}.",
     "stance must be one of HOLD, REVIEW, EXIT_WATCH, DATA_NEEDED. changeLevel must be one of normal, watch, important.",
-    "For long-term compounders such as NVIDIA, a 20-30% drawdown alone is not an exit signal. Set growthExit.level to exit_alert only when the original thesis is impaired: clear revenue-growth slowdown, guidance below consensus, structural weakness in demand/gross margin/orders, dividend cut, downward revision, or similar evidence.",
+    "A 20-30% drawdown alone is not an exit signal. Use growthExit.exit_alert only for recent evidence of thesis damage such as slowing growth, weak guidance/demand/margins, dividend cuts, or downward revisions.",
     `Only use growthExit.exit_alert when there is supporting evidence with publishedDate within the last ${FUNDAMENTAL_EXIT_MAX_AGE_DAYS} days. Do not use undated, old, or historical articles as sell-alert evidence.`,
-    "summaryJa must be within 90 Japanese characters. good and risks are up to 3 items each. evidenceJa.summary is within 80 Japanese characters. growthExit.evidence should include up to 3 source items actually used as evidence.",
-    "Only provide sellForecast for holdings with remaining shares. Estimate a review horizon, profit-taking candidate price, review price, timing, and reason from news, earnings, 3-year price history, purchase price, and trailing stops. If evidence is weak, use targetPrice:null and horizon:未定.",
+    "Keep summaryJa within 90 Japanese characters; good and risks up to 3 short items; evidence summaries within 80 characters. Only estimate sellForecast for remaining shares; when evidence is weak use targetPrice:null and horizon:未定.",
     "",
     JSON.stringify({ asOfDate: new Date().toISOString().slice(0, 10), stocks: items }),
   ].join("\n");
   const content = await callLmStudioResponses(model, prompt, {
     instructions: lmJsonInstructions("All narrative fields such as summaryJa, good, risks, evidenceJa.summary, timing, reason, and catalysts must be natural Japanese."),
-    maxOutputTokens: 3500,
+    maxOutputTokens: 1000,
     timeoutMs: US_HOLDING_REVIEW_TIMEOUT_MS,
   }).catch(async (error) => {
     if (shouldFallbackToLmStudioChat(error)) {
       return callLmStudioChat(model, prompt, {
         system: lmJsonInstructions("All narrative fields such as summaryJa, good, risks, evidenceJa.summary, timing, reason, and catalysts must be natural Japanese."),
-        maxTokens: 3500,
+        maxTokens: 1000,
         timeoutMs: US_HOLDING_REVIEW_TIMEOUT_MS,
       });
     }
@@ -9232,23 +9250,31 @@ function technicalIndicators(series = [], buyTiming = {}) {
   const previousSma5 = clean.length >= 6 ? average(closes.slice(-6, -1)) : null;
   const sma25 = average(closes.slice(-25));
   const previousSma25 = clean.length >= 26 ? average(closes.slice(-26, -1)) : null;
+  const sma25FiveDaysAgo = clean.length >= 30 ? average(closes.slice(-30, -5)) : null;
   const sma50 = average(closes.slice(-50));
   const previousSma50 = clean.length >= 51 ? average(closes.slice(-51, -1)) : null;
+  const sma50FiveDaysAgo = clean.length >= 55 ? average(closes.slice(-55, -5)) : null;
   const sma75 = average(closes.slice(-75));
   const previousSma75 = clean.length >= 76 ? average(closes.slice(-76, -1)) : null;
+  const sma75FiveDaysAgo = clean.length >= 80 ? average(closes.slice(-80, -5)) : null;
   const sma200 = average(closes.slice(-200));
   const previousSma200 = clean.length >= 201 ? average(closes.slice(-201, -1)) : null;
+  const sma200FiveDaysAgo = clean.length >= 205 ? average(closes.slice(-205, -5)) : null;
   const previousClose = nullablePositiveNumber(previous.close);
   const sma5CrossUp = Boolean(previousClose && previousSma5 && sma5 && previousClose <= previousSma5 && current > sma5);
   const maCrossSignal = movingAverageCrossSignal({
     sma25,
     previousSma25,
+    sma25FiveDaysAgo,
     sma50,
     previousSma50,
+    sma50FiveDaysAgo,
     sma75,
     previousSma75,
+    sma75FiveDaysAgo,
     sma200,
     previousSma200,
+    sma200FiveDaysAgo,
   });
   const goldenCross = maCrossSignal?.key === "golden_cross";
   const deadCross = maCrossSignal?.key === "dead_cross";
@@ -9338,8 +9364,8 @@ function technicalIndicators(series = [], buyTiming = {}) {
 
 function movingAverageCrossSignal(values = {}) {
   const candidates = [
-    maCrossPair("25日/75日", values.sma25, values.sma75, values.previousSma25, values.previousSma75),
-    maCrossPair("50日/200日", values.sma50, values.sma200, values.previousSma50, values.previousSma200),
+    maCrossPair("25日/75日", values.sma25, values.sma75, values.previousSma25, values.previousSma75, values.sma25FiveDaysAgo, values.sma75FiveDaysAgo),
+    maCrossPair("50日/200日", values.sma50, values.sma200, values.previousSma50, values.previousSma200, values.sma50FiveDaysAgo, values.sma200FiveDaysAgo),
   ].filter(Boolean);
   const golden = candidates.find((item) => item.key === "golden_cross");
   if (golden) return golden;
@@ -9348,16 +9374,20 @@ function movingAverageCrossSignal(values = {}) {
   return candidates.sort((a, b) => Math.abs(b.score) - Math.abs(a.score))[0] || null;
 }
 
-function maCrossPair(label, shortNow, longNow, shortPrev, longPrev) {
+function maCrossPair(label, shortNow, longNow, shortPrev, longPrev, shortFiveDaysAgo, longFiveDaysAgo) {
   if (![shortNow, longNow, shortPrev, longPrev].every(Number.isFinite) || longNow <= 0 || longPrev <= 0) return null;
   const spread = ((shortNow - longNow) / longNow) * 100;
   const previousSpread = ((shortPrev - longPrev) / longPrev) * 100;
+  const slopePct = Number.isFinite(shortFiveDaysAgo) && Number.isFinite(longFiveDaysAgo) && longFiveDaysAgo > 0
+    ? spread - (((shortFiveDaysAgo - longFiveDaysAgo) / longFiveDaysAgo) * 100)
+    : null;
   if (previousSpread <= 0 && spread > 0) {
     return {
       key: "golden_cross",
       label: `${label} ゴールデンクロス`,
       score: 14,
       spreadPct: spread,
+      slopePct,
       summary: `${label}で短期線が長期線を上抜け。下落後の反転初動として見ます。`,
     };
   }
@@ -9367,6 +9397,7 @@ function maCrossPair(label, shortNow, longNow, shortPrev, longPrev) {
       label: `${label} デッドクロス`,
       score: -16,
       spreadPct: spread,
+      slopePct,
       summary: `${label}で短期線が長期線を下抜け。買い急ぎを避けます。`,
     };
   }
@@ -9376,6 +9407,7 @@ function maCrossPair(label, shortNow, longNow, shortPrev, longPrev) {
       label: `${label} 上向き初動`,
       score: 6,
       spreadPct: spread,
+      slopePct,
       summary: `${label}は短期線が長期線を少し上回る状態です。上昇初動の確認材料にします。`,
     };
   }
@@ -9385,6 +9417,7 @@ function maCrossPair(label, shortNow, longNow, shortPrev, longPrev) {
       label: `${label} 上向き`,
       score: 3,
       spreadPct: spread,
+      slopePct,
       summary: `${label}は短期線が長期線を上回っています。上昇トレンドの継続材料です。`,
     };
   }
@@ -9394,6 +9427,7 @@ function maCrossPair(label, shortNow, longNow, shortPrev, longPrev) {
       label: `${label} 反転待ち`,
       score: -4,
       spreadPct: spread,
+      slopePct,
       summary: `${label}は短期線が長期線をまだ下回っています。ゴールデンクロスを待ちます。`,
     };
   }
@@ -9402,6 +9436,7 @@ function maCrossPair(label, shortNow, longNow, shortPrev, longPrev) {
     label: `${label} 下向き`,
     score: -9,
     spreadPct: spread,
+    slopePct,
     summary: `${label}は短期線が長期線を大きく下回っています。需給はまだ弱めです。`,
   };
 }
