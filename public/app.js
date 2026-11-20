@@ -1950,13 +1950,13 @@ function targetPriceReached(stock = {}, price = {}) {
 
 function maCrossSlopeMarker(price = {}) {
   const signal = price.maCrossSignal;
-  if (!["golden_cross", "near_golden_cross", "bullish_alignment"].includes(signal?.key) || !Number.isFinite(signal?.slopePct)) return "";
+  if (!signal?.key || !Number.isFinite(signal.slopePct)) return "";
   const slope = signal.slopePct;
   const direction = slope > 0.01 ? "up" : slope < -0.01 ? "down" : "flat";
   const arrow = direction === "up" ? "↗" : direction === "down" ? "↘" : "→";
   const amount = (slope > 0 ? "+" : "") + slope.toFixed(2) + "pt/5日";
   const title = signal.label + "。短期線と長期線の相対乖離が直近5営業日で" + amount + "変化";
-  return '<small class="ma-cross-slope ' + direction + '" title="' + escapeAttr(title) + '">GC傾き' + arrow + ' ' + amount + "</small>";
+  return '<small class="ma-cross-slope ' + direction + '" title="' + escapeAttr(title) + '">MA傾き' + arrow + ' ' + amount + "</small>";
 }
 
 function renderTargetPriceAlerts() {
