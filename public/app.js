@@ -2187,7 +2187,7 @@ function renderProfitSummary() {
   if (els.profitPct) {
     els.profitPct.innerHTML = Number.isFinite(summary.pnlPct)
       ? `${pct(summary.pnlPct)} / ${summary.count}銘柄`
-      : "購入情報と分析が必要";
+      : summary.hasUnknownCostBasis ? "購入単価不明の銘柄あり" : "購入情報と分析が必要";
   }
   setMoneySummary(els.totalReturnAmount, summary.totalReturnAmount, "profit-big");
   if (els.realizedPnlTotal) setMoneySummary(els.realizedPnlTotal, summary.realizedPnlAmount, "profit-big");
@@ -2196,7 +2196,7 @@ function renderProfitSummary() {
   if (els.totalReturnPct) {
     els.totalReturnPct.innerHTML = Number.isFinite(summary.totalReturnPct)
       ? `${pct(summary.totalReturnPct)} / 配当込み`
-      : "購入日・株数・配当データが必要";
+      : summary.hasUnknownCostBasis ? "購入単価不明の銘柄あり" : "購入日・株数・配当データが必要";
   }
   if (els.dividendReceivedTotal) els.dividendReceivedTotal.textContent = yen(summary.dividendReceived);
   if (els.dividendReceivedFiscalYear) els.dividendReceivedFiscalYear.textContent = yen(summary.dividendReceivedFiscalYear);
@@ -2210,7 +2210,8 @@ function renderProfitSummary() {
     const restoringText = summary.nisaRestoringNextYear > 0
       ? `・来年復活 ${yen(summary.nisaRestoringNextYear)}`
       : "";
-    els.nisaAllowanceUsage.textContent = `${summary.nisaYear}年 ${yen(summary.nisaUsed)} / ${yen(summary.nisaLimit)}・生涯 ${yen(summary.nisaLifetimeUsed)} / ${yen(summary.nisaLifetimeLimit)}${restoringText}`;
+    const missingCostText = summary.nisaUnknownCostCount ? `・購入単価不明 ${summary.nisaUnknownCostCount}明細を除く` : "";
+    els.nisaAllowanceUsage.textContent = `${summary.nisaYear}年 ${yen(summary.nisaUsed)} / ${yen(summary.nisaLimit)}・生涯 ${yen(summary.nisaLifetimeUsed)} / ${yen(summary.nisaLifetimeLimit)}${restoringText}${missingCostText}`;
   }
   if (els.profitableCount) els.profitableCount.textContent = String(summary.winCount);
   if (els.lossCount) els.lossCount.textContent = String(summary.lossCount);
@@ -2331,7 +2332,7 @@ function renderUsSummary() {
   if (els.usProfitPct) {
     els.usProfitPct.innerHTML = Number.isFinite(totalPct)
       ? `<span class="${totalPct >= 0 ? "metric-pos" : "metric-neg"}">${signedPct(totalPct)}</span> / 配当込み`
-      : "更新待ち";
+      : summary.hasUnknownCostBasis ? "購入単価不明の銘柄あり" : "更新待ち";
   }
   if (els.usRealizedPnlTotal) setMoneySummary(els.usRealizedPnlTotal, summary.realizedPnlAmount, "profit-big", usd);
   if (els.usRealizedPnlFiscalYear) setMoneySummary(els.usRealizedPnlFiscalYear, summary.realizedPnlFiscalYear, "profit-big", usd);
@@ -3433,7 +3434,8 @@ function portfolioSummary() {
     const position = positionMetrics(stock, analysis?.price);
     const hasPositionResult = Number.isFinite(position.grossInvested)
       || Number.isFinite(position.invested)
-      || Number.isFinite(position.pnlAmount);
+      || Number.isFinite(position.pnlAmount)
+      || Number.isFinite(position.marketValue);
     const hasRecordedSales = Number.isFinite(position.soldQuantity) && position.soldQuantity > 0;
     const hasTrackedOpenPosition = stock.holding && Number.isFinite(position.quantity) && position.quantity > 0;
     if ((!hasTrackedOpenPosition && !hasRecordedSales) || !hasPositionResult) return summary;
@@ -3446,8 +3448,13 @@ function portfolioSummary() {
     summary.marketValue += Number.isFinite(position.marketValue) ? position.marketValue : 0;
     summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
     summary.realizedPnlAmount += Number.isFinite(position.realizedPnlAmount) ? position.realizedPnlAmount : 0;
+    if (position.lots?.some((lot) => !Number.isFinite(lot.purchasePrice))) summary.hasUnknownCostBasis = true;
+    if (position.soldQuantity > 0 && !Number.isFinite(position.realizedPnlAmount)) summary.hasUnknownRealizedCost = true;
     if (position.lots?.length && position.sales?.length) {
-      summary.realizedPnlFiscalYear += realizedPnlForPeriod(position.lots, position.sales, fiscalYear.startDate, fiscalYear.endDate);
+      const realizedFiscalYear = realizedPnlForPeriod(position.lots, position.sales, fiscalYear.startDate, fiscalYear.endDate);
+      summary.realizedPnlFiscalYear = Number.isFinite(realizedFiscalYear) && Number.isFinite(summary.realizedPnlFiscalYear)
+        ? summary.realizedPnlFiscalYear + realizedFiscalYear
+        : null;
     }
     summary.dividendReceivedFiscalYear += dividendsForPositionHistoryPeriod(
       position.lots || [], position.sales || [], analysis?.price?.dividendEvents || [],
@@ -3485,7 +3492,18 @@ function portfolioSummary() {
     count: 0,
     winCount: 0,
     lossCount: 0,
+    hasUnknownCostBasis: false,
+    hasUnknownRealizedCost: false,
   });
+  if (summary.hasUnknownCostBasis) {
+    summary.invested = null;
+    summary.grossInvested = null;
+    summary.pnlAmount = null;
+    summary.pnlPct = null;
+    summary.totalReturnAmount = null;
+    summary.totalReturnPct = null;
+  }
+  if (summary.hasUnknownRealizedCost) summary.realizedPnlAmount = null;
   return {
     ...summary,
     netDeposits: state.jpAccountFlows.reduce((total, item) => total + (item.type === "deposit" ? item.amount : -item.amount), 0),
@@ -3504,6 +3522,7 @@ function realizedPnlForPeriod(positions = [], sales = [], startDate = "", endDat
   const remainingLots = positions.map((lot) => ({ ...lot }));
   let periodCost = 0;
   let periodProceeds = 0;
+  let hasUnknownCost = false;
   for (const sale of sales) {
     let saleLeft = Number(sale.quantity) || 0;
     const inPeriod = Boolean(sale.sellDate && sale.sellDate >= startDate && sale.sellDate < endDate);
@@ -3515,12 +3534,16 @@ function realizedPnlForPeriod(positions = [], sales = [], startDate = "", endDat
       lot.quantity = Math.max(0, Number(lot.quantity) - take);
       saleLeft -= take;
       if (inPeriod) {
-        periodCost += take * Number(lot.purchasePrice || 0);
+        if (Number.isFinite(Number(lot.purchasePrice)) && Number(lot.purchasePrice) > 0) {
+          periodCost += take * Number(lot.purchasePrice);
+        } else {
+          hasUnknownCost = true;
+        }
         periodProceeds += take * Number(sale.sellPrice || 0);
       }
     }
   }
-  return periodProceeds - periodCost;
+  return hasUnknownCost ? null : periodProceeds - periodCost;
 }
 
 function nisaAllowanceSummary(year = new Date().getFullYear()) {
@@ -3532,11 +3555,16 @@ function nisaAllowanceSummary(year = new Date().getFullYear()) {
   let lifetimeBookValue = 0;
   let restoredBookValue = 0;
   let restoringNextYear = 0;
+  let unknownCostCount = 0;
   state.stocks.forEach((stock) => {
     const lots = positionLots(stock);
     const sales = saleLots(stock);
     lots.forEach((lot) => {
       if (normalizeAccountType(lot.accountType) !== "nisa") return;
+      if (!lot.purchasePrice) {
+        unknownCostCount += 1;
+        return;
+      }
       const bookValue = lot.purchasePrice * lot.quantity;
       lifetimeBookValue += bookValue;
       const purchaseYear = Number(String(lot.purchaseDate || "").slice(0, 4));
@@ -3563,6 +3591,7 @@ function nisaAllowanceSummary(year = new Date().getFullYear()) {
     nisaLifetimeRemaining: lifetimeRemaining,
     nisaRestoringNextYear: restoringNextYear,
     nisaRemaining: Math.min(yearRemaining, lifetimeRemaining),
+    nisaUnknownCostCount: unknownCostCount,
   };
 }
 
@@ -3600,12 +3629,13 @@ function normalizedNisaAnnualLimitYen(value) {
 
 function usSummaryFromState() {
   const fiscalYear = currentFiscalYearRange();
-  return state.usStocks.reduce((summary, stock) => {
+  const summary = state.usStocks.reduce((summary, stock) => {
     const analysis = state.usAnalyses[stock.symbol];
     const position = positionMetrics(stock, analysis?.price);
     const hasPositionResult = Number.isFinite(position.grossInvested)
       || Number.isFinite(position.invested)
-      || Number.isFinite(position.pnlAmount);
+      || Number.isFinite(position.pnlAmount)
+      || Number.isFinite(position.marketValue);
     const hasRecordedSales = Number.isFinite(position.soldQuantity) && position.soldQuantity > 0;
     const hasTrackedOpenPosition = stock.holding && Number.isFinite(position.quantity) && position.quantity > 0;
     if ((!hasTrackedOpenPosition && !hasRecordedSales) || !hasPositionResult) return summary;
@@ -3618,8 +3648,13 @@ function usSummaryFromState() {
     summary.marketValue += Number.isFinite(position.marketValue) ? position.marketValue : 0;
     summary.pnlAmount += Number.isFinite(position.pnlAmount) ? position.pnlAmount : 0;
     summary.realizedPnlAmount += Number.isFinite(position.realizedPnlAmount) ? position.realizedPnlAmount : 0;
+    if (position.lots?.some((lot) => !Number.isFinite(lot.purchasePrice))) summary.hasUnknownCostBasis = true;
+    if (position.soldQuantity > 0 && !Number.isFinite(position.realizedPnlAmount)) summary.hasUnknownRealizedCost = true;
     if (position.lots?.length && position.sales?.length) {
-      summary.realizedPnlFiscalYear += realizedPnlForPeriod(position.lots, position.sales, fiscalYear.startDate, fiscalYear.endDate);
+      const realizedFiscalYear = realizedPnlForPeriod(position.lots, position.sales, fiscalYear.startDate, fiscalYear.endDate);
+      summary.realizedPnlFiscalYear = Number.isFinite(realizedFiscalYear) && Number.isFinite(summary.realizedPnlFiscalYear)
+        ? summary.realizedPnlFiscalYear + realizedFiscalYear
+        : null;
     }
     summary.dividendReceivedFiscalYear += dividendsForPositionHistoryPeriod(
       position.lots || [], position.sales || [], analysis?.price?.dividendEvents || [],
@@ -3656,8 +3691,20 @@ function usSummaryFromState() {
     totalReturnPct: null,
     winCount: 0,
     lossCount: 0,
+    hasUnknownCostBasis: false,
+    hasUnknownRealizedCost: false,
     fiscalYear: fiscalYear.year,
   });
+  if (summary.hasUnknownCostBasis) {
+    summary.invested = null;
+    summary.grossInvested = null;
+    summary.pnlAmount = null;
+    summary.pnlPct = null;
+    summary.totalReturnAmount = null;
+    summary.totalReturnPct = null;
+  }
+  if (summary.hasUnknownRealizedCost) summary.realizedPnlAmount = null;
+  return summary;
 }
 
 function hasOpenPosition(stock = {}, position = {}) {
@@ -3738,6 +3785,7 @@ function usPositionEditor(stock, position, price = {}) {
       </div>
       <div class="position-lots" aria-label="米国株購入明細">
         <div class="lot-section-title buy">購入明細</div>
+        <p class="input-note">購入単価が不明でも、購入日と株数だけで保存できます。取得原価・損益は単価が分かるまで未計算になります。</p>
         <div class="lot-head">
           <span>購入日</span>
           <span>購入単価 USD</span>
@@ -7066,26 +7114,30 @@ function positionMetrics(stock, price = {}) {
   const sales = saleLots(stock);
   const lotState = positionLotState(lots, sales, quantityPrecisionForStock(stock));
   const grossQuantity = lots.reduce((sum, lot) => sum + lot.quantity, 0);
-  const grossInvested = lots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
+  const grossInvested = lots.length && lots.every((lot) => lot.purchasePrice)
+    ? lots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0)
+    : null;
   const soldQuantity = lotState.soldQuantity;
   const remainingQuantity = lotState.remainingQuantity;
   const remainingInvested = remainingQuantity > 0 ? lotState.remainingInvested : null;
-  const purchasePrice = remainingQuantity && remainingInvested
+  const purchasePrice = remainingQuantity && Number.isFinite(remainingInvested)
     ? remainingInvested / remainingQuantity
-    : grossQuantity > 0 ? grossInvested / grossQuantity : null;
+    : grossQuantity > 0 && Number.isFinite(grossInvested) ? grossInvested / grossQuantity : null;
   const realizedProceeds = lotState.realizedProceeds || null;
-  const realizedCost = lotState.realizedCost || 0;
+  const realizedCost = lotState.realizedCost;
   const averageSellPrice = soldQuantity > 0 ? lotState.realizedProceeds / soldQuantity : null;
-  const realizedPnlAmount = Number.isFinite(realizedProceeds) && realizedProceeds
+  const realizedPnlAmount = Number.isFinite(realizedProceeds) && realizedProceeds && Number.isFinite(realizedCost)
     ? realizedProceeds - realizedCost
-    : soldQuantity && purchasePrice ? -realizedCost : null;
+    : soldQuantity && Number.isFinite(realizedCost) ? -realizedCost : null;
   const current = finiteOrNull(price?.current);
   const firstPurchaseDate = lotState.remainingLots[0]?.purchaseDate || lots[0]?.purchaseDate || "";
   const holdingDays = firstPurchaseDate ? daysSince(firstPurchaseDate) : null;
   const unrealizedPnlAmount = purchasePrice && current && remainingQuantity ? (current - purchasePrice) * remainingQuantity : null;
   const unrealizedPnlPct = purchasePrice && current && remainingQuantity ? ((current - purchasePrice) / purchasePrice) * 100 : null;
   const pnlParts = [realizedPnlAmount, unrealizedPnlAmount].filter(Number.isFinite);
-  const pnlAmount = pnlParts.length ? pnlParts.reduce((sum, value) => sum + value, 0) : null;
+  const pnlComplete = (!soldQuantity || Number.isFinite(realizedPnlAmount))
+    && (!remainingQuantity || Number.isFinite(unrealizedPnlAmount));
+  const pnlAmount = pnlComplete && pnlParts.length ? pnlParts.reduce((sum, value) => sum + value, 0) : null;
   const pnlPct = grossInvested && Number.isFinite(pnlAmount) ? (pnlAmount / grossInvested) * 100 : null;
   const marketValue = current && remainingQuantity ? current * remainingQuantity : null;
   const dividendReceived = dividendsForPositionHistory(lots, sales, price?.dividendEvents || [], {
@@ -7139,6 +7191,7 @@ function positionLotState(positions = [], sales = [], fractionalDigits = 6) {
   const remainingLots = positions.map((lot) => ({ ...lot }));
   let soldQuantity = 0;
   let realizedCost = 0;
+  let hasUnknownRealizedCost = false;
   let realizedProceeds = 0;
   let unmatchedSaleQuantity = 0;
 
@@ -7152,7 +7205,8 @@ function positionLotState(positions = [], sales = [], fractionalDigits = 6) {
       lot.quantity = Math.max(0, lot.quantity - take);
       soldQuantity += take;
       saleLeft -= take;
-      realizedCost += take * lot.purchasePrice;
+      if (lot.purchasePrice) realizedCost += take * lot.purchasePrice;
+      else hasUnknownRealizedCost = true;
       realizedProceeds += take * sale.sellPrice;
     }
     unmatchedSaleQuantity += saleLeft;
@@ -7164,13 +7218,15 @@ function positionLotState(positions = [], sales = [], fractionalDigits = 6) {
     .map((lot) => ({ ...lot, quantity: roundQuantity(lot.quantity) }))
     .filter((lot) => lot.quantity > 0);
   const remainingQuantity = openLots.reduce((sum, lot) => sum + lot.quantity, 0);
-  const remainingInvested = openLots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
+  const remainingInvested = openLots.length && openLots.every((lot) => lot.purchasePrice)
+    ? openLots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0)
+    : null;
   return {
     remainingLots: openLots,
     soldQuantity: roundQuantity(soldQuantity),
     remainingQuantity: roundQuantity(remainingQuantity),
     remainingInvested,
-    realizedCost,
+    realizedCost: hasUnknownRealizedCost ? null : realizedCost,
     realizedProceeds,
     unmatchedSaleQuantity: roundQuantity(unmatchedSaleQuantity),
   };
@@ -7818,6 +7874,7 @@ function positionEditor(stock, position, analysis) {
       </div>
       <div class="position-lots" aria-label="購入明細">
         <div class="lot-section-title buy">購入明細</div>
+        <p class="input-note">購入単価が不明でも、購入日と株数だけで保存できます。取得原価・損益は単価が分かるまで未計算になります。</p>
         <div class="lot-head has-account">
           <span>購入日</span>
           <span>口座</span>
@@ -9047,7 +9104,7 @@ function positionLots(stock) {
       quantity: finiteOrNull(lot.quantity),
       accountType: normalizeAccountType(lot.accountType || stock.accountType || defaultJpAccountType()),
     }))
-    .filter((lot) => lot.purchasePrice && lot.quantity)
+    .filter((lot) => lot.quantity)
     .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"));
 }
 
@@ -9189,7 +9246,7 @@ function readLotRows(form) {
         ...(accountType ? { accountType: normalizeAccountType(accountType) } : {}),
       };
     })
-    .filter((lot) => lot.purchasePrice && lot.quantity)
+    .filter((lot) => lot.quantity)
     .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"));
 }
 
@@ -9703,7 +9760,7 @@ function readNewStockLot() {
   const purchasePrice = valueOrNull(els.stockPurchasePrice.value);
   const quantity = valueOrNull(els.stockQuantity.value);
   const accountType = normalizeAccountType(els.stockAccountType?.value || defaultJpAccountType());
-  return purchasePrice && quantity ? [{ purchaseDate, purchasePrice, quantity, accountType }] : [];
+  return quantity ? [{ purchaseDate, purchasePrice, quantity, accountType }] : [];
 }
 
 els.usStockForm?.addEventListener("submit", async (event) => {
@@ -9736,7 +9793,7 @@ function readNewUsStockLot() {
   const purchaseDate = els.usStockPurchaseDate.value;
   const purchasePrice = valueOrNull(els.usStockPurchasePrice.value);
   const quantity = valueOrNull(els.usStockQuantity.value);
-  return purchasePrice && quantity ? [{ purchaseDate, purchasePrice, quantity }] : [];
+  return quantity ? [{ purchaseDate, purchasePrice, quantity }] : [];
 }
 
 els.settingsForm.addEventListener("input", (event) => {

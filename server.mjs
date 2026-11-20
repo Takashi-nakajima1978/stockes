@@ -12475,7 +12475,7 @@ function normalizeStock(stock) {
   const aggregate = aggregatePositions(positions);
   const accountType = normalizeJpAccountType(stock.accountType || positions[0]?.accountType || defaultSettings.defaultJpAccountType);
   const purchaseDate = aggregate.purchaseDate || normalizeDate(stock.purchaseDate);
-  const purchasePrice = aggregate.purchasePrice || nullablePositiveNumber(stock.purchasePrice);
+  const purchasePrice = aggregate.purchasePrice ?? (positions.length ? null : nullablePositiveNumber(stock.purchasePrice));
   const hasPositionLedger = positions.length > 0 || sales.length > 0;
   const remainingQuantity = hasPositionLedger
     ? positionLotState(positions, sales, 6).remainingQuantity
@@ -12509,7 +12509,7 @@ function normalizeUsStock(stock) {
   const sales = normalizeSales(stock);
   const aggregate = aggregatePositions(positions);
   const purchaseDate = aggregate.purchaseDate || normalizeDate(stock.purchaseDate);
-  const purchasePrice = aggregate.purchasePrice || nullablePositiveNumber(stock.purchasePrice);
+  const purchasePrice = aggregate.purchasePrice ?? (positions.length ? null : nullablePositiveNumber(stock.purchasePrice));
   const hasPositionLedger = positions.length > 0 || sales.length > 0;
   const remainingQuantity = hasPositionLedger
     ? positionLotState(positions, sales, 8).remainingQuantity
@@ -12606,26 +12606,28 @@ function positionMetrics(stock, price = {}) {
   const fractionalDigits = String(stock.symbol || "").toUpperCase().endsWith(".T") ? 6 : 8;
   const lotState = positionLotState(positions, sales, fractionalDigits);
   const grossQuantity = aggregate.quantity || 0;
-  const grossInvested = aggregate.invested || 0;
+  const grossInvested = aggregate.invested;
   const soldQuantity = lotState.soldQuantity || 0;
   const remainingQuantity = lotState.remainingQuantity;
   const remainingInvested = remainingQuantity > 0 ? lotState.remainingInvested : null;
-  const purchasePrice = remainingQuantity && remainingInvested
+  const purchasePrice = remainingQuantity && Number.isFinite(remainingInvested)
     ? remainingInvested / remainingQuantity
     : aggregate.purchasePrice;
   const realizedProceeds = lotState.realizedProceeds || null;
-  const realizedCost = lotState.realizedCost || 0;
+  const realizedCost = lotState.realizedCost;
   const averageSellPrice = soldQuantity > 0 ? lotState.realizedProceeds / soldQuantity : null;
   const realizedPnlAmount = Number.isFinite(realizedProceeds) && Number.isFinite(realizedCost) && soldQuantity
     ? realizedProceeds - realizedCost
-    : soldQuantity && realizedCost ? -realizedCost : null;
+    : soldQuantity && Number.isFinite(realizedCost) ? -realizedCost : null;
   const current = nullablePositiveNumber(price.current);
   const firstPurchaseDate = lotState.remainingLots[0]?.purchaseDate || aggregate.purchaseDate;
   const holdingDays = firstPurchaseDate ? daysSince(firstPurchaseDate) : null;
   const unrealizedPnlAmount = purchasePrice && current && remainingQuantity ? (current - purchasePrice) * remainingQuantity : null;
   const unrealizedPnlPct = purchasePrice && current && remainingQuantity ? ((current - purchasePrice) / purchasePrice) * 100 : null;
   const pnlParts = [realizedPnlAmount, unrealizedPnlAmount].filter(Number.isFinite);
-  const pnlAmount = pnlParts.length ? pnlParts.reduce((sum, value) => sum + value, 0) : null;
+  const pnlComplete = (!soldQuantity || Number.isFinite(realizedPnlAmount))
+    && (!remainingQuantity || Number.isFinite(unrealizedPnlAmount));
+  const pnlAmount = pnlComplete && pnlParts.length ? pnlParts.reduce((sum, value) => sum + value, 0) : null;
   const pnlPct = grossInvested && Number.isFinite(pnlAmount) ? (pnlAmount / grossInvested) * 100 : null;
   const marketValue = current && remainingQuantity ? current * remainingQuantity : null;
   const dividendReceived = dividendsForPositionHistory(positions, sales, price.dividendEvents || [], {
@@ -13064,10 +13066,12 @@ function evaluateEntryPrice(targetBuyPrice, price = {}) {
 
 function aggregatePositions(positions) {
   const quantity = positions.reduce((sum, lot) => sum + lot.quantity, 0);
-  const invested = positions.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
+  const invested = positions.length && positions.every((lot) => lot.purchasePrice)
+    ? positions.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0)
+    : null;
   return {
     purchaseDate: positions.map((lot) => lot.purchaseDate).filter(Boolean).sort()[0] || "",
-    purchasePrice: quantity > 0 ? invested / quantity : null,
+    purchasePrice: quantity > 0 && Number.isFinite(invested) ? invested / quantity : null,
     quantity: quantity || null,
     invested: invested || null,
   };
@@ -13090,6 +13094,7 @@ function positionLotState(positions = [], sales = [], fractionalDigits = 6) {
   const remainingLots = positions.map((lot) => ({ ...lot }));
   let soldQuantity = 0;
   let realizedCost = 0;
+  let hasUnknownRealizedCost = false;
   let realizedProceeds = 0;
   let unmatchedSaleQuantity = 0;
 
@@ -13103,7 +13108,8 @@ function positionLotState(positions = [], sales = [], fractionalDigits = 6) {
       lot.quantity = Math.max(0, lot.quantity - take);
       soldQuantity += take;
       saleLeft -= take;
-      realizedCost += take * lot.purchasePrice;
+      if (lot.purchasePrice) realizedCost += take * lot.purchasePrice;
+      else hasUnknownRealizedCost = true;
       realizedProceeds += take * sale.sellPrice;
     }
     unmatchedSaleQuantity += saleLeft;
@@ -13120,14 +13126,16 @@ function positionLotState(positions = [], sales = [], fractionalDigits = 6) {
     }))
     .filter((lot) => lot.quantity > 0);
   const remainingQuantity = openLots.reduce((sum, lot) => sum + lot.quantity, 0);
-  const remainingInvested = openLots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0);
+  const remainingInvested = openLots.length && openLots.every((lot) => lot.purchasePrice)
+    ? openLots.reduce((sum, lot) => sum + (lot.purchasePrice * lot.quantity), 0)
+    : null;
 
   return {
     remainingLots: openLots,
     soldQuantity: roundQuantity(soldQuantity),
     remainingQuantity: roundQuantity(remainingQuantity),
     remainingInvested,
-    realizedCost,
+    realizedCost: hasUnknownRealizedCost ? null : realizedCost,
     realizedProceeds,
     unmatchedSaleQuantity: roundQuantity(unmatchedSaleQuantity),
   };
@@ -18287,7 +18295,7 @@ function normalizePositions(stock) {
       quantity: nullablePositiveNumber(lot.quantity),
       accountType: normalizePositionAccountType(lot.accountType, stock),
     }))
-    .filter((lot) => lot.purchasePrice && lot.quantity)
+    .filter((lot) => lot.quantity)
     .sort((a, b) => (a.purchaseDate || "9999-99-99").localeCompare(b.purchaseDate || "9999-99-99"))
     .slice(0, 50);
 }
