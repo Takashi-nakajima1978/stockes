@@ -11,6 +11,7 @@ import { createSingleFlight, dividendEventSeasonality, isBuyReversalPending, pre
 import { buildThreeMonthSurgeForecast, SURGE_FORECAST_HORIZON_WEEKS, SURGE_FORECAST_VERSION } from "./surge-forecast.mjs";
 import { splitLearningHistory, returnEvidence, hasProfitableEvidence, afterCostReturn } from "./investment-evidence.mjs";
 import { createDataStore, createSerialQueue } from "./data-store.mjs";
+import { createDividendHistory } from "./dividend-history.mjs";
 import { createVersionedLoader, createCachedJsonSender, responseRepresentation } from "./response-cache.mjs";
 import { createBackupManager, MAX_BACKUP_BYTES } from "./backup.mjs";
 import { savingsAccountType, collectNisaStockPurchases } from "./public/savings-calculation.mjs";
@@ -41,6 +42,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataStore = createDataStore(path.join(__dirname, "data"));
 const loadEdinetDirectory = createEdinetDirectory({ store: dataStore, fetchDay: async (date) => fetchEdinetDocumentsByDate(date, (await readSettings()).edinetApiKey) });
 const forecastHistory = createForecastHistory(dataStore);
+const dividendHistory = createDividendHistory(dataStore);
 const readDataJson = (file) => dataStore.readJson(file);
 const writeDataFile = (file, contents) => dataStore.write(file, contents);
 const cachedResponses = createVersionedLoader();
@@ -1879,7 +1881,8 @@ async function performWatchlistPriceRefresh(options = {}) {
       priceError = error.message || "価格を取得できませんでした";
       return emptyPrice();
     });
-    const price = usablePrice(fetchedPrice) ? fetchedPrice : previousAnalysis?.price || fetchedPrice;
+    const price = await dividendHistory.merge("jp", stock.symbol,
+      usablePrice(fetchedPrice) ? fetchedPrice : previousAnalysis?.price || fetchedPrice);
     if (!usablePrice(fetchedPrice)) {
       warnings.push(`${stock.name}: ${priceError || "最新価格を取得できなかったため保存済み価格を使いました"}`);
     }
@@ -1955,14 +1958,15 @@ async function analyzeWatchlist(options = {}, onProgress = null) {
       cachedPrice ? Promise.resolve(cachedPrice) : fetchPriceHistory(stock.symbol, { includeDividendForecast: true }),
       researchStock(stock, { websiteLimit, depthLimit, pagesPerSite }),
     ]);
+    const accumulatedPrice = await dividendHistory.merge("jp", stock.symbol, price);
 
     if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
     const financials = financialBySymbol.get(stock.symbol) || null;
     const industryProfile = buildIndustryProfile(stock, research, financials, fxContext);
-    const fallback = ruleBasedDecision(stock, price, research, { financials, industryProfile, fxContext });
+    const fallback = ruleBasedDecision(stock, accumulatedPrice, research, { financials, industryProfile, fxContext });
     checked += 1;
     onProgress?.({ phase: "価格・配当・検索を確認中", checked, total: stocks.length });
-    return { stock, price, research, fallback, financials, industryProfile, fxContext };
+    return { stock, price: accumulatedPrice, research, fallback, financials, industryProfile, fxContext };
   });
   await translateResearchEvidenceRows(rows).catch(() => {});
 
@@ -2016,6 +2020,7 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
     fetchPriceHistory(stock.symbol, { includeDividendForecast: true }),
     researchStock(stock, { websiteLimit, depthLimit, pagesPerSite }),
   ]);
+  const accumulatedPrice = await dividendHistory.merge("jp", stock.symbol, price);
   if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
   const financialCache = await readFinancialCache().catch(() => ({ items: [] }));
   const financials = (financialCache.items || []).find((item) => item.symbol === stock.symbol) || null;
@@ -2023,9 +2028,9 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
   const industryProfile = buildIndustryProfile(stock, research, financials, fxContext);
   const row = {
     stock,
-    price,
+    price: accumulatedPrice,
     research,
-    fallback: ruleBasedDecision(stock, price, research, { financials, industryProfile, fxContext }),
+    fallback: ruleBasedDecision(stock, accumulatedPrice, research, { financials, industryProfile, fxContext }),
     financials,
     industryProfile,
     fxContext,
@@ -2043,7 +2048,7 @@ async function analyzeSingleWatchStock(stock, options = {}, { notify = false } =
   }
 
   const withFinancials = await attachFinancialsToAnalyses([
-    normalizeDecision(stock, price, research, aiDecision || row.fallback, { financials, industryProfile, fxContext }),
+    normalizeDecision(stock, accumulatedPrice, research, aiDecision || row.fallback, { financials, industryProfile, fxContext }),
   ]);
   const analysis = (await attachShareholderInfoToAnalyses(await attachExitPlansToAnalyses(withFinancials, settings)))[0];
   const previous = await readAnalysisCache();
@@ -2081,7 +2086,8 @@ async function performUsPriceRefresh(options = {}) {
       priceError = error.message || "価格を取得できませんでした";
       return emptyPrice();
     });
-    const price = usablePrice(fetchedPrice) ? fetchedPrice : previousAnalysis?.price || fetchedPrice;
+    const price = await dividendHistory.merge("us", stock.symbol,
+      usablePrice(fetchedPrice) ? fetchedPrice : previousAnalysis?.price || fetchedPrice);
     if (!usablePrice(fetchedPrice)) {
       warnings.push(`${stock.name}: ${priceError || "最新価格を取得できなかったため保存済み価格を使いました"}`);
     }
@@ -2148,9 +2154,10 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}, onProgre
       }),
       researchUsStock(stock, { websiteLimit }),
     ]);
+    const accumulatedPrice = await dividendHistory.merge("us", stock.symbol, price);
     if (research.warning) warnings.push(`${stock.name}: ${research.warning}`);
-    const position = positionMetrics(stock, price);
-    const fundamentals = enrichUsFundamentals(rawFundamentals, price);
+    const position = positionMetrics(stock, accumulatedPrice);
+    const fundamentals = enrichUsFundamentals(rawFundamentals, accumulatedPrice);
     checked += 1;
     onProgress?.({ phase: "米国株の価格・ニュースを確認中", checked, total: stocks.length });
     return {
@@ -2159,7 +2166,7 @@ async function analyzeUsHoldings(options = {}, { notify = false } = {}, onProgre
       market: stock.market || "NYSE",
       holding: Boolean(stock.holding),
       notes: stock.notes || "",
-      price: compactUsPrice(price),
+      price: compactUsPrice(accumulatedPrice),
       fundamentals,
       position,
       researchStats: {
@@ -2300,16 +2307,17 @@ async function analyzeSingleUsStock(stock, options = {}, { notify = false } = {}
     }),
     researchUsStock(stock, { websiteLimit }),
   ]);
-  const fundamentals = enrichUsFundamentals(rawFundamentals, price);
+  const accumulatedPrice = await dividendHistory.merge("us", stock.symbol, price);
+  const fundamentals = enrichUsFundamentals(rawFundamentals, accumulatedPrice);
   const row = {
     symbol: stock.symbol,
     name: stock.name,
     market: stock.market || "NYSE",
     holding: Boolean(stock.holding),
     notes: stock.notes || "",
-    price: compactUsPrice(price),
+    price: compactUsPrice(accumulatedPrice),
     fundamentals,
-    position: positionMetrics(stock, price),
+    position: positionMetrics(stock, accumulatedPrice),
     researchStats: {
       searched: research.searched,
       marketPerspectives: research.marketPerspectiveCount || 0,
@@ -9713,7 +9721,7 @@ function dividendMetrics(dividends = [], current = null) {
     dividendNextDate: "",
     dividendPaymentDate: "",
     dividendAnnualSource: ttm ? "直近12か月実績" : "",
-    dividendEvents: sorted.slice(-24),
+    dividendEvents: sorted,
   };
 }
 
@@ -13384,6 +13392,29 @@ function savePriceCache(file, result, payload) {
   const write = previousWrite.catch(() => {}).then(async () => {
     const saved = await readDataJson(file).catch(() => ({}));
     result.analyses = preserveNewerPrices(result.analyses || [], saved.analyses || []);
+    const market = file === ANALYSIS_CACHE_PATH ? "jp" : file === US_ANALYSIS_CACHE_PATH ? "us" : "";
+    if (market) {
+      result.analyses = await Promise.all(result.analyses.map(async (analysis) => {
+        const price = await dividendHistory.merge(market, analysis.symbol, analysis.price || {});
+        const previousPosition = analysis.position || {};
+        const stock = {
+          symbol: analysis.symbol,
+          market: analysis.market,
+          holding: analysis.holding,
+          accountType: previousPosition.accountType,
+          minimumHoldQuantity: previousPosition.minimumHoldQuantity,
+          purchaseDate: previousPosition.purchaseDate,
+          purchasePrice: previousPosition.purchasePrice,
+          quantity: previousPosition.quantity,
+          positions: previousPosition.positions || [],
+          sales: previousPosition.sales || [],
+        };
+        return { ...analysis, price, position: positionMetrics(stock, price) };
+      }));
+      if (result.analysis?.symbol) {
+        result.analysis = result.analyses.find((analysis) => analysis.symbol === result.analysis.symbol) || result.analysis;
+      }
+    }
     result.generatedAt = new Date().toISOString();
     if (result.currency === "USD") result.summary = usPortfolioSummary(result.analyses);
     await mkdir(path.dirname(file), { recursive: true });
