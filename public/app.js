@@ -1820,8 +1820,8 @@ function renderTable() {
     els.stockTable.innerHTML = holdings.length
       ? holdings.map((stock) => stockRow(stock, true)).join("")
       : state.stocksLoaded
-        ? '<tr><td colspan="9" class="watchlist-empty">保有中の銘柄はありません。</td></tr>'
-        : emptyStockRow(9);
+        ? '<tr><td colspan="11" class="watchlist-empty">保有中の銘柄はありません。</td></tr>'
+        : emptyStockRow(11);
     attachTableEvents(els.stockTable);
   }
 
@@ -1837,8 +1837,8 @@ function renderTable() {
     els.unheldStockTable.innerHTML = unheldCandidates.length
       ? unheldCandidates.map((stock) => stockRow(stock, true)).join("")
       : state.stocksLoaded
-        ? '<tr><td colspan="9" class="watchlist-empty">未保有の銘柄はありません。</td></tr>'
-        : emptyStockRow(9);
+        ? '<tr><td colspan="11" class="watchlist-empty">未保有の銘柄はありません。</td></tr>'
+        : emptyStockRow(11);
     attachTableEvents(els.unheldStockTable);
   }
 
@@ -1884,6 +1884,8 @@ function emptyStockRow(colspan) {
 
 function stockRow(stock, compact) {
   const analysis = state.analyses[stock.symbol];
+  const financials = analysis?.financials || {};
+  const revenueGrowthPct = financials.edinet?.analysis?.revenueGrowthPct;
   const position = positionMetrics(stock, analysis?.price);
   const targetMarker = targetPriceReachedMarker(stock, analysis?.price || {});
   const action = analysis?.action || "WATCH";
@@ -1913,6 +1915,8 @@ function stockRow(stock, compact) {
         <td>${positionPnl(position)}</td>
         <td>${realizedPnlCell(position, yen)}</td>
         <td>${dividendCell(position, analysis?.price)}</td>
+        <td>${multipleText(financials.per)}</td>
+        <td>${pct(revenueGrowthPct)}</td>
         <td><span class="badge ${actionClasses[action] || "watch"}">${actionLabels[action] || "要確認"}</span></td>
       </tr>
     `;
