@@ -24,7 +24,11 @@ if ! grep -qF "$NAS_SHARE $MOUNT_POINT cifs" /etc/fstab; then
   printf '%s\\n' "$ENTRY" | sudo tee -a /etc/fstab >/dev/null
 fi
 sudo systemctl daemon-reload
-sudo mount "$MOUNT_POINT"`,
+if mountpoint -q "$MOUNT_POINT"; then
+  findmnt -M "$MOUNT_POINT" -o TARGET,SOURCE,FSTYPE
+else
+  sudo mount "$MOUNT_POINT"
+fi`,
     compose: `NAS_BACKUP_HOST_PATH=${mountPath} docker compose -f docker-compose.yml -f docker-compose.nas.yml up -d --build`,
   };
 }

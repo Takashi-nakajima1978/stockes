@@ -7,6 +7,7 @@ export function initializeBackupSettings({ request, toast }) {
   const nasSetupPanel = node("nasUbuntuSetup");
   const nasSetupShow = node("nasSetupShow");
   const nasSetupHide = node("nasSetupHide");
+  const healthAlert = node("backupHealthAlert");
   const field = (name) => root.querySelector(`[data-drive-field="${name}"]`);
   const nasField = (name) => root.querySelector(`[data-nas-field="${name}"]`);
   const nasSetupField = (name) => root.querySelector(`[data-nas-setup="${name}"]`);
@@ -17,6 +18,7 @@ export function initializeBackupSettings({ request, toast }) {
   const callbackPath = "/api/backup/drive/callback";
   const date = (value) => value ? new Date(value).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" }) : "まだありません";
   const size = (bytes) => `${(Number(bytes || 0) / 1024 / 1024).toFixed(1)} MB`;
+  const backupIsStale = (value) => !value || !Number.isFinite(Date.parse(value)) || Date.now() - Date.parse(value) > 48 * 60 * 60 * 1000;
   const isLoopback = (hostname) => ["localhost", "127.0.0.1", "[::1]", "::1"].includes(hostname);
   const isPrivateIpv4 = (hostname) => {
     const parts = hostname.split(".").map(Number);
@@ -107,6 +109,23 @@ export function initializeBackupSettings({ request, toast }) {
     }
   }
 
+  function renderHealth(payload) {
+    const { config = {}, state = {}, nas = {} } = payload;
+    const warnings = [];
+    if (config.nasEnabled && !nas.running && (!nas.available || nas.error || backupIsStale(nas.lastSuccess))) {
+      const reason = nas.error || nas.connectionError || (nas.lastSuccess ? `最終成功 ${date(nas.lastSuccess)}` : "まだ成功記録がありません");
+      warnings.push(`nasneへの日次バックアップに問題があります（${reason}）。設定 > バックアップで接続状態を確認してください。`);
+    }
+    if (config.enabled && !state.running && (!config.connected || state.error || backupIsStale(state.lastSuccess))) {
+      const reason = state.error || (config.connected ? (state.lastSuccess ? `最終成功 ${date(state.lastSuccess)}` : "まだ成功記録がありません") : "Google Drive未接続");
+      warnings.push(`Google Driveへの日次バックアップに問題があります（${reason}）。設定 > バックアップで接続状態を確認してください。`);
+    }
+    if (healthAlert) {
+      healthAlert.textContent = warnings.join(" ");
+      healthAlert.hidden = warnings.length === 0;
+    }
+  }
+
   function configuredCallback(value) {
     const current = new URL(location.origin);
     const fallback = `${location.origin}${callbackPath}`;
@@ -121,6 +140,7 @@ export function initializeBackupSettings({ request, toast }) {
 
   function render(payload, applyConfig = false) {
     const { config = {}, state = {}, nas = {}, inventory = {} } = payload;
+    renderHealth(payload);
     if (!loaded || applyConfig) {
       field("enabled").checked = config.enabled === true;
       field("time").value = `${String(config.hour ?? 4).padStart(2, "0")}:${String(config.minute ?? 0).padStart(2, "0")}`;
@@ -157,6 +177,11 @@ export function initializeBackupSettings({ request, toast }) {
 
   async function load(applyConfig = false) {
     render(await request("/api/backup/status"), applyConfig);
+  }
+
+  async function refreshHealth() {
+    const payload = await request("/api/backup/status");
+    renderHealth(payload);
   }
 
   async function poll() {
@@ -279,6 +304,8 @@ export function initializeBackupSettings({ request, toast }) {
     }
   } catch {}
   updateNasSetupCommands();
+  void refreshHealth().catch(() => {});
+  window.setInterval(() => { void refreshHealth().catch(() => {}); }, 15 * 60 * 1000);
 
   node("backupFile").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];

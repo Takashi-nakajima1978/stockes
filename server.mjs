@@ -500,6 +500,9 @@ const defaultSettings = {
   jpCapitalGainTaxPct: 20.315,
   usTradeFeeUsd: 0,
   usCapitalGainTaxPct: 0,
+  cashBalanceAsOfDate: "",
+  jpCashBalance: null,
+  usCashBalanceUsd: null,
   teamsWebhookUrl: process.env.TEAMS_WEBHOOK_URL || "",
   graphAccessToken: process.env.GRAPH_ACCESS_TOKEN || "",
   graphTenantId: process.env.GRAPH_TENANT_ID || "",
@@ -17209,6 +17212,11 @@ function normalizeSettings(settings = {}) {
   const provider = String(settings.searchProvider || "searxng").toLowerCase() === "google" ? "google" : "searxng";
   const unitBudgetUnlimited = settings.unitBudgetUnlimited === true;
   const nisaAnnualLimitYen = clamp(Number(settings.nisaAnnualLimitYen ?? defaultSettings.nisaAnnualLimitYen), 0, NISA_GROWTH_ANNUAL_LIMIT_YEN);
+  const normalizeOptionalBalance = (value, maximum) => {
+    if (value === null || value === undefined || value === "") return null;
+    const amount = Number(value);
+    return Number.isFinite(amount) ? clamp(amount, 0, maximum) : null;
+  };
   return {
     searchProvider: provider,
     searxngUrl: normalizeUrl(settings.searxngUrl) || defaultSettings.searxngUrl,
@@ -17252,6 +17260,9 @@ function normalizeSettings(settings = {}) {
     jpCapitalGainTaxPct: clamp(Number(settings.jpCapitalGainTaxPct ?? defaultSettings.jpCapitalGainTaxPct), 0, 60),
     usTradeFeeUsd: clamp(Number(settings.usTradeFeeUsd ?? defaultSettings.usTradeFeeUsd), 0, 1000),
     usCapitalGainTaxPct: clamp(Number(settings.usCapitalGainTaxPct ?? defaultSettings.usCapitalGainTaxPct), 0, 60),
+    cashBalanceAsOfDate: /^\d{4}-\d{2}-\d{2}$/.test(String(settings.cashBalanceAsOfDate || "")) ? String(settings.cashBalanceAsOfDate) : "",
+    jpCashBalance: normalizeOptionalBalance(settings.jpCashBalance, 1_000_000_000_000),
+    usCashBalanceUsd: normalizeOptionalBalance(settings.usCashBalanceUsd, 1_000_000_000),
     teamsWebhookUrl: normalizeUrl(settings.teamsWebhookUrl) || "",
     graphAccessToken: String(settings.graphAccessToken || "").trim(),
     graphTenantId: String(settings.graphTenantId || "").trim(),
@@ -17307,6 +17318,9 @@ function applySettingsPatch(current, body = {}) {
   if (body.jpCapitalGainTaxPct !== undefined) next.jpCapitalGainTaxPct = body.jpCapitalGainTaxPct;
   if (body.usTradeFeeUsd !== undefined) next.usTradeFeeUsd = body.usTradeFeeUsd;
   if (body.usCapitalGainTaxPct !== undefined) next.usCapitalGainTaxPct = body.usCapitalGainTaxPct;
+  if (typeof body.cashBalanceAsOfDate === "string") next.cashBalanceAsOfDate = body.cashBalanceAsOfDate;
+  if (body.jpCashBalance !== undefined) next.jpCashBalance = body.jpCashBalance;
+  if (body.usCashBalanceUsd !== undefined) next.usCashBalanceUsd = body.usCashBalanceUsd;
   if (typeof body.teamsWebhookUrl === "string" && body.teamsWebhookUrl.trim()) next.teamsWebhookUrl = body.teamsWebhookUrl;
   if (typeof body.graphAccessToken === "string" && body.graphAccessToken.trim()) next.graphAccessToken = body.graphAccessToken;
   if (typeof body.graphTenantId === "string" && body.graphTenantId.trim()) next.graphTenantId = body.graphTenantId;
@@ -17360,6 +17374,9 @@ function publicSettings(settings) {
     jpCapitalGainTaxPct: settings.jpCapitalGainTaxPct,
     usTradeFeeUsd: settings.usTradeFeeUsd,
     usCapitalGainTaxPct: settings.usCapitalGainTaxPct,
+    cashBalanceAsOfDate: settings.cashBalanceAsOfDate,
+    jpCashBalance: settings.jpCashBalance,
+    usCashBalanceUsd: settings.usCashBalanceUsd,
     hasTeamsWebhookUrl: Boolean(settings.teamsWebhookUrl),
     graphChatId: settings.graphChatId,
     graphTenantId: settings.graphTenantId,
@@ -17612,6 +17629,14 @@ function normalizeSavingsPlan(plan = {}) {
       return items;
     }, [])
     .sort((a, b) => a.month.localeCompare(b.month));
+  const oneTimePurchases = (Array.isArray(plan.oneTimePurchases) ? plan.oneTimePurchases : [])
+    .slice(0, 1000)
+    .map((purchase) => ({
+      date: normalizeDate(purchase?.date),
+      amount: nullableNonNegativeNumber(purchase?.amount),
+    }))
+    .filter((purchase) => purchase.date && purchase.amount !== null && purchase.amount > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
   const openingValue = nullableNonNegativeNumber(plan.openingValue);
   const openingPrincipal = nullableNonNegativeNumber(plan.openingPrincipal);
   const currentPrincipal = nullableNonNegativeNumber(plan.currentPrincipal);
@@ -17631,6 +17656,7 @@ function normalizeSavingsPlan(plan = {}) {
     openingPrincipal: openingPrincipal === null ? null : Math.min(1000000000, openingPrincipal),
     recurring: Boolean(plan.recurring),
     schedule,
+    oneTimePurchases,
     updatedAt: plan.updatedAt || new Date().toISOString(),
   };
 }

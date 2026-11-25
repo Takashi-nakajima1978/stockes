@@ -251,6 +251,9 @@ const els = {
   usNetDepositsTotal: document.getElementById("usNetDepositsTotal"),
   usNetDepositsYenSummary: document.getElementById("usNetDepositsYenSummary"),
   usMarketTotal: document.getElementById("usMarketTotal"),
+  usCashBalanceTotal: document.getElementById("usCashBalanceTotal"),
+  usAccountAssetTotal: document.getElementById("usAccountAssetTotal"),
+  usAccountAssetYen: document.getElementById("usAccountAssetYen"),
   usWinCount: document.getElementById("usWinCount"),
   usLossCount: document.getElementById("usLossCount"),
   usLastRun: document.getElementById("usLastRun"),
@@ -294,6 +297,8 @@ const els = {
   dividendReceivedFiscalYearLabel: document.getElementById("dividendReceivedFiscalYearLabel"),
   investedTotal: document.getElementById("investedTotal"),
   netDepositsTotal: document.getElementById("netDepositsTotal"),
+  jpCashBalanceTotal: document.getElementById("jpCashBalanceTotal"),
+  jpAccountAssetTotal: document.getElementById("jpAccountAssetTotal"),
   marketTotal: document.getElementById("marketTotal"),
   dividendIncomeTotal: document.getElementById("dividendIncomeTotal"),
   profitableCount: document.getElementById("profitableCount"),
@@ -369,6 +374,9 @@ const els = {
   settingsJpCapitalGainTaxPct: document.getElementById("settingsJpCapitalGainTaxPct"),
   settingsUsTradeFeeUsd: document.getElementById("settingsUsTradeFeeUsd"),
   settingsUsCapitalGainTaxPct: document.getElementById("settingsUsCapitalGainTaxPct"),
+  settingsCashBalanceAsOfDate: document.getElementById("settingsCashBalanceAsOfDate"),
+  settingsJpCashBalance: document.getElementById("settingsJpCashBalance"),
+  settingsUsCashBalanceUsd: document.getElementById("settingsUsCashBalanceUsd"),
   settingsNotificationMinNetEdgeYen: document.getElementById("settingsNotificationMinNetEdgeYen"),
   settingsNotificationMinConfidence: document.getElementById("settingsNotificationMinConfidence"),
   settingsTeamsWebhookUrl: document.getElementById("settingsTeamsWebhookUrl"),
@@ -613,6 +621,12 @@ function applySettings(settings = {}) {
   if (els.settingsJpCapitalGainTaxPct) els.settingsJpCapitalGainTaxPct.value = Number.isFinite(settings.jpCapitalGainTaxPct) ? settings.jpCapitalGainTaxPct : 20.315;
   if (els.settingsUsTradeFeeUsd) els.settingsUsTradeFeeUsd.value = Number.isFinite(settings.usTradeFeeUsd) ? settings.usTradeFeeUsd : 0;
   if (els.settingsUsCapitalGainTaxPct) els.settingsUsCapitalGainTaxPct.value = Number.isFinite(settings.usCapitalGainTaxPct) ? settings.usCapitalGainTaxPct : 0;
+  if (els.settingsCashBalanceAsOfDate) {
+    els.settingsCashBalanceAsOfDate.value = settings.cashBalanceAsOfDate || localDateKey();
+    els.settingsCashBalanceAsOfDate.max = localDateKey();
+  }
+  if (els.settingsJpCashBalance) els.settingsJpCashBalance.value = Number.isFinite(settings.jpCashBalance) ? settings.jpCashBalance : "";
+  if (els.settingsUsCashBalanceUsd) els.settingsUsCashBalanceUsd.value = Number.isFinite(settings.usCashBalanceUsd) ? settings.usCashBalanceUsd : "";
   if (els.settingsNotificationMinNetEdgeYen) els.settingsNotificationMinNetEdgeYen.value = Number.isFinite(settings.notificationMinNetEdgeYen) ? settings.notificationMinNetEdgeYen : 5000;
   if (els.settingsNotificationMinConfidence) els.settingsNotificationMinConfidence.value = settings.notificationMinConfidence || 78;
   if (els.settingsTeamsWebhookUrl) els.settingsTeamsWebhookUrl.placeholder = settings.hasTeamsWebhookUrl ? "保存済み。変更時だけ入力" : "Workflowsで作ったWebhook URL";
@@ -622,6 +636,8 @@ function applySettings(settings = {}) {
   if (els.settingsGraphClientSecret) els.settingsGraphClientSecret.placeholder = settings.hasGraphClientSecret ? "保存済み。変更時だけ入力" : "必要な場合だけ";
   if (els.settingsGraphAccessToken) els.settingsGraphAccessToken.placeholder = settings.hasGraphAccessToken ? "保存済み。変更時だけ入力" : "Graph APIを使う場合だけ";
   if (els.settingsGoogleApiKey) els.settingsGoogleApiKey.placeholder = settings.hasGoogleApiKey ? "保存済み。変更時だけ入力" : "Googleを使う場合に入力";
+  renderProfitSummary();
+  renderUsSummary();
 }
 
 async function loadStocks(cachedPayload = null) {
@@ -727,6 +743,8 @@ async function loadSavingsPlans() {
   if (monthField && !monthField.value) monthField.value = localMonthKey();
   const dateField = els.savingsCreateForm?.elements.namedItem("currentValueDate");
   if (dateField && !dateField.value) dateField.value = localDateKey();
+  const purchaseDateField = els.savingsCreateForm?.elements.namedItem("initialPurchaseDate");
+  if (purchaseDateField) purchaseDateField.max = localDateKey();
   updateSavingsBalanceInputs(els.savingsCreateForm);
   if (dateField) dateField.max = localDateKey();
   renderSavings();
@@ -800,7 +818,8 @@ function updateSavingsNisaPreview(form) {
   const plan = {
     ...original, id: original?.id || "savings-draft", provider: data.get("provider"), paymentMethod: data.get("paymentMethod"), accountType: data.get("accountType"),
     recurring: data.has("recurring"), currentMonthIncluded: data.has("currentMonthIncluded"), currentValueDate: String(data.get("currentValueDate") || ""),
-    schedule: original ? [...form.querySelectorAll(".savings-schedule-row")].map((row) => ({ month: row.querySelector('[name="scheduleMonth"]')?.value, amount: Number(row.querySelector('[name="scheduleAmount"]')?.value) })) : [{ month: data.get("startMonth"), amount: Number(data.get("amount")) }],
+    schedule: original ? [...form.querySelectorAll(".savings-schedule-row")].map((row) => ({ month: row.querySelector('[name="scheduleMonth"]')?.value, amount: Number(row.querySelector('[name="scheduleAmount"]')?.value) })) : Number(data.get("amount")) > 0 ? [{ month: data.get("startMonth"), amount: Number(data.get("amount")) }] : [],
+    oneTimePurchases: original ? savingsPurchaseRowsFromForm(form) : data.get("initialPurchaseDate") && Number(data.get("initialPurchaseAmount")) > 0 ? [{ date: data.get("initialPurchaseDate"), amount: Number(data.get("initialPurchaseAmount")) }] : [],
   };
   preview.hidden = !savingsAccountType(plan).startsWith("nisa-");
   preview.innerHTML = preview.hidden ? "" : savingsNisaPlanHtml(plan, savingsNisaAllowance([...state.savingsPlans.filter((item) => item.id !== plan.id), plan], state.savingsNisaContext), true);
@@ -881,13 +900,13 @@ function renderSavings() {
       endDate,
       currency: "JPY",
       compactCurrency: false,
-      actualLabel: view.valuation.status === "contributions" ? "登録積立分の参考評価額" : "基準価額換算の参考評価額（全保有）",
+      actualLabel: view.valuation.status === "contributions" || view.valuation.status === "purchases" ? "登録買付分の参考評価額" : "基準価額換算の参考評価額（全保有）",
       emptyLabel: seriesState?.loading
         ? "基準価額を取得しています"
         : seriesState?.error
           ? "基準価額を取得できません。再取得してください"
-          : savingsValuationError(view.valuation.status) || "積立月に一致する基準価額がありません",
-      principalLabel: view.valuation.comparisonLabel || "累計積立元本",
+          : savingsValuationError(view.valuation.status) || "登録した買付に対応する基準価額がありません",
+      principalLabel: view.valuation.comparisonLabel || "累計買付元本",
       principalSeries: view.valuation.principalSeries,
       principalStepped: true,
       hideTodayMarker: true,
@@ -962,28 +981,31 @@ async function renderSavingsForecast(node, plan) {
 function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAmount: 0 }, valuation: { rows: [], unpricedMonths: [] } }) {
   const { history, valuation } = view;
   const series = state.savingsSeries[plan.symbol];
+  const oneTimePurchases = Array.isArray(plan.oneTimePurchases) ? plan.oneTimePurchases : [];
+  const oneTimeTotal = oneTimePurchases.reduce((sum, purchase) => sum + (Number(purchase.amount) || 0), 0);
   const firstMonth = history.rows[0]?.month || "";
   const latestMonth = history.rows.at(-1)?.month || "";
+  const hasSchedule = Array.isArray(plan.schedule) && plan.schedule.length > 0;
   const historySummary = history.rows.length
     ? `積立 ${firstMonth}〜${latestMonth}・${history.rows.length}か月 / ${latestMonth === localMonthKey() ? "当月まで" : "前月まで"} ${yen(history.total)}`
-    : "前月までの積立履歴はありません";
+    : oneTimePurchases.length ? `積立設定なし / 通常購入 ${oneTimePurchases.length}件・${yen(oneTimeTotal)}` : "積立履歴・通常購入履歴はありません";
   const principalKnown = Number.isFinite(valuation.openingPrincipal);
   const comparison = buildSavingsTaxComparison(valuation, plan);
   const nisaAllowance = view.nisaAllowance || savingsNisaAllowance(state.savingsPlans, state.savingsNisaContext);
-  const valueLabel = valuation.status === "contributions" ? "登録積立分の参考評価額" : "全保有の参考評価額";
+  const valueLabel = ["contributions", "purchases"].includes(valuation.status) ? "登録買付分の参考評価額" : "全保有の参考評価額";
   const valuationDifference = comparison.available ? comparison.grossGain : null;
   const gainLabel = comparison.basis === "total" ? "総損益（税引前）" : "期間の運用増減";
-  const gainRateLabel = comparison.basis === "total" ? "元本比" : "開始残高＋積立比";
+  const gainRateLabel = comparison.basis === "total" ? "元本比" : "開始残高＋買付比";
   const valuationSummary = !Number.isFinite(valuationDifference) ? "" : `
     <p class="savings-value-difference">
-      ${valueLabel} ${yen(valuation.latestValue)} <span>／ ${escapeHtml(valuation.comparisonLabel || "累計積立元本")} ${yen(valuation.comparisonValue)}</span>
+      ${valueLabel} ${yen(valuation.latestValue)} <span>／ ${escapeHtml(valuation.comparisonLabel || "累計買付元本")} ${yen(valuation.comparisonValue)}</span>
       <span>／ ${gainLabel} <strong class="${valuationDifference >= 0 ? "gain" : "loss"}">${valuationDifference > 0 ? "+" : ""}${yen(valuationDifference)}</strong>（${signedPct(comparison.gainPct)}）</span>
       ${valuation.unpricedMonths?.length ? "<small>取得できた月分のみ</small>" : ""}
     </p>`;
   const historyNote = series?.error
     ? `基準価額を取得できません: ${series.error}`
     : series?.series?.length
-      ? `日次の公表基準価額 ${formatDate(valuation.rows[0]?.date || series.series[0].date)}〜${formatDate(valuation.rows.at(-1)?.date || series.series.at(-1).date)}を使用。各月12日に最も近い観測値で口数換算した参考評価額です。実際の約定日・価格とは異なる場合があります。`
+      ? `日次の公表基準価額 ${formatDate(valuation.rows[0]?.date || series.series[0].date)}〜${formatDate(valuation.rows.at(-1)?.date || series.series.at(-1).date)}を使用。積立は各月12日に最も近い観測値、通常購入は購入日以前で最も近い観測値で口数換算した参考評価額です。実際の約定日・価格とは異なる場合があります。`
       : series?.loading
         ? "基準価額を取得しています。"
         : "ファンドコードから基準価額の履歴を取得します。";
@@ -995,7 +1017,8 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
   const monthlyRows = history.rows.map((row) => `
     <tr><th scope="row">${escapeHtml(row.month)}</th><td>${row.amount ? yen(row.amount) : "-"}</td><td>${yen(row.total)}</td></tr>
   `).join("");
-  const currentMonthRow = plan.paymentMethod === "credit" || latestMonth === localMonthKey() ? "" : `
+  const oneTimeRows = oneTimePurchases.map((purchase) => `<tr><th scope="row">${escapeHtml(purchase.date)}</th><td>${yen(purchase.amount)}</td></tr>`).join("");
+  const currentMonthRow = !hasSchedule || plan.paymentMethod === "credit" || latestMonth === localMonthKey() ? "" : `
     <tr class="savings-current-month"><th scope="row">${escapeHtml(localMonthKey())} 設定</th><td>${history.monthlyAmount ? yen(history.monthlyAmount) : "-"}</td><td>${yen(history.total)}<small>12日ごろの買付前のため未計上</small></td></tr>
   `;
   const currentMonth = localMonthKey();
@@ -1021,28 +1044,33 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
         <div><span>${gainLabel}</span><strong class="${valuationDifference >= 0 ? "gain" : "loss"}">${Number.isFinite(valuationDifference) ? `${valuationDifference > 0 ? "+" : ""}${yen(valuationDifference)}` : "未算出"}</strong><small>${gainRateLabel} ${signedPct(comparison.gainPct)}${comparison.available && !comparison.complete ? "・取得月分のみ" : ""}</small></div>
         <div><span>今月の買付額</span><strong>${history.monthlyAmount ? yen(history.monthlyAmount) : "なし"}</strong></div>
         <div><span>${latestMonth === localMonthKey() ? "当月分を含む累計積立" : "前月までの累計積立"}</span><strong>${yen(history.total)}</strong></div>
+        <div><span>通常購入の累計</span><strong>${yen(oneTimeTotal)}</strong><small>${oneTimePurchases.length}件</small></div>
       </div>
-      ${Number.isFinite(valuation.totalPnl) ? `<p class="savings-value-difference">総損益の内訳：${yen(valuation.latestValue)} − 元本 ${yen(valuation.totalPrincipal)} ＝ <strong class="${valuation.totalPnl >= 0 ? "gain" : "loss"}">${valuation.totalPnl > 0 ? "+" : ""}${yen(valuation.totalPnl)}</strong><span>${valuation.principalAnchor ? `元本は${escapeHtml(valuation.principalAnchor.date)}の証券会社表示 ${yen(valuation.principalAnchor.amount)}を優先` : `開始前 ${yen(valuation.openingPrincipal)} ＋ 登録積立 ${yen(valuation.contributionPrincipal)}`}</span></p>` : ""}
+      ${Number.isFinite(valuation.totalPnl) ? `<p class="savings-value-difference">総損益の内訳：${yen(valuation.latestValue)} − 元本 ${yen(valuation.totalPrincipal)} ＝ <strong class="${valuation.totalPnl >= 0 ? "gain" : "loss"}">${valuation.totalPnl > 0 ? "+" : ""}${yen(valuation.totalPnl)}</strong><span>${valuation.principalAnchor ? `元本は${escapeHtml(valuation.principalAnchor.date)}の証券会社表示 ${yen(valuation.principalAnchor.amount)}を優先` : `開始前 ${yen(valuation.openingPrincipal)} ＋ 登録積立 ${yen(valuation.contributionPrincipal)} ＋ 通常購入 ${yen(valuation.oneTimePrincipal)}`}</span></p>` : ""}
       ${Number.isFinite(valuation.principalDifference) && Math.abs(valuation.principalDifference) >= 1 ? `<p class="savings-balance-error" role="status">元本の照合差 ${valuation.principalDifference > 0 ? "+" : ""}${yen(valuation.principalDifference)}。基準日の元本と「開始前の入力元本＋積立」が一致しません。開始月・月別金額・開始前元本の基準日をご確認ください。月別記録は変更していません。</p>` : ""}
       <div data-savings-nisa="${escapeAttr(plan.id)}" ${comparison.accountType.startsWith("nisa-") ? "" : "hidden"}>${savingsNisaPlanHtml(plan, nisaAllowance)}</div>
       ${nisaAllowance.years.get(nisaAllowance.year).buckets.get(comparison.accountType)?.excess > 0 ? '<p class="savings-balance-error" data-savings-nisa-warning>年間設定が枠を超えるため、以下のNISA比較は全額非課税を仮定した参考値です。超過分に非課税が適用されるものではありません。</p>' : ""}
       ${savingsTaxComparisonHtml(comparison)}
       <section class="savings-chart-section">
-        <div class="savings-chart-heading"><h4>積立記録グラフ</h4><span>${escapeHtml(historySummary)}</span></div>
-        <p class="savings-history-note">${plan.paymentMethod === "credit" ? "カード引落月の翌月12日ごろを買付月として履歴・予測に反映します。" : plan.recurring ? latestMonth === localMonthKey() ? "継続中・毎月12日ごろの買付分を当月累計に反映しています。" : "継続中・毎月12日ごろの買付前は当月分を未計上にし、買付後に追加します。" : "継続停止中・登録した月の積立額だけを計上します。"} 基準価額は表示中に自動更新します。</p>
+        <div class="savings-chart-heading"><h4>買付履歴グラフ</h4><span>${escapeHtml(historySummary)}</span></div>
+        <p class="savings-history-note">${!hasSchedule ? "積立設定はありません。登録済みの通常購入を評価額に反映します。" : plan.paymentMethod === "credit" ? "カード引落月の翌月12日ごろを積立買付月として履歴・予測に反映します。" : plan.recurring ? latestMonth === localMonthKey() ? "継続中・毎月12日ごろの積立買付を当月累計に反映しています。" : "継続中・毎月12日ごろの買付前は当月分を未計上にし、買付後に追加します。" : "継続停止中・登録した月の積立額だけを計上します。"} 基準価額は表示中に自動更新します。</p>
         <div class="savings-chart-legend" aria-label="グラフの凡例">
           <span><i class="savings-legend-value"></i>${valueLabel}</span>
-          <span><i class="savings-legend-principal"></i>${escapeHtml(valuation.comparisonLabel || "累計積立元本")}</span>
+          <span><i class="savings-legend-principal"></i>${escapeHtml(valuation.comparisonLabel || "累計買付元本")}</span>
         </div>
-        ${Number.isFinite(valuation.openingValue) ? `<p class="savings-balance-note">開始前の評価額 ${yen(valuation.openingValue)}${valuation.status === "reconstructed" ? `（${escapeHtml(valuation.anchor.date)}の入力評価額から逆算・基準価額 ${escapeHtml(valuation.anchor.navDate)}）` : ""}。${principalKnown ? `計算に使用した開始前元本 ${yen(valuation.openingPrincipal)}${valuation.principalAnchor ? "（基準日の元本から登録積立を控除）" : ""}。元本は投入額、評価額は値動きを含む金額で、同じとは限りません。` : valuation.openingValue > 0 ? "開始前の投資元本は未入力のため、過去からの総損益は未算出です。" : "開始前の保有分なし。"} グラフの最初の点は初回月の積立後です。</p>` : ""}
+        ${Number.isFinite(valuation.openingValue) ? `<p class="savings-balance-note">開始前の評価額 ${yen(valuation.openingValue)}${valuation.status === "reconstructed" ? `（${escapeHtml(valuation.anchor.date)}の入力評価額から逆算・基準価額 ${escapeHtml(valuation.anchor.navDate)}）` : ""}。${principalKnown ? `計算に使用した開始前元本 ${yen(valuation.openingPrincipal)}${valuation.principalAnchor ? "（基準日の元本から登録買付を控除）" : ""}。元本は投入額、評価額は値動きを含む金額で、同じとは限りません。` : valuation.openingValue > 0 ? "開始前の投資元本は未入力のため、過去からの総損益は未算出です。" : "開始前の保有分なし。"} グラフ開始時点は初回買付後です。</p>` : ""}
         ${savingsValuationError(valuation.status) ? `<p class="savings-balance-error" role="status">${escapeHtml(savingsValuationError(valuation.status))}</p>` : ""}
         ${valuationSummary}
-        <div class="performance-chart-wrap savings-chart-wrap"><canvas data-savings-chart="${escapeAttr(plan.id)}" aria-label="基準価額換算の参考評価額と累計積立元本の比較"></canvas><div class="chart-tooltip" data-savings-tooltip hidden></div></div>
-        <p class="savings-history-note">${escapeHtml(historyNote)} ${valuation.unpricedMonths?.length ? `基準価額が見つからない月: ${escapeHtml(valuation.unpricedMonths.join("、"))}。` : ""} ${latestMonth === localMonthKey() ? "当月分を含めています。" : "当月分は未計上です。"} 実際の買付日・約定データには接続しておらず、分配金・手数料も含みません。</p>
+        <div class="performance-chart-wrap savings-chart-wrap"><canvas data-savings-chart="${escapeAttr(plan.id)}" aria-label="基準価額換算の参考評価額と累計買付元本の比較"></canvas><div class="chart-tooltip" data-savings-tooltip hidden></div></div>
+        <p class="savings-history-note">${escapeHtml(historyNote)} ${valuation.unpricedMonths?.length ? `基準価額が見つからない月: ${escapeHtml(valuation.unpricedMonths.join("、"))}。` : ""} ${history.rows.length ? latestMonth === localMonthKey() ? "当月の積立分を含めています。" : "当月の積立分は未計上です。" : ""} 実際の買付日・約定データには接続しておらず、分配金・手数料も含みません。</p>
         ${series?.error || !series?.loaded ? `<button type="button" class="secondary savings-retry" data-savings-refresh="${escapeAttr(plan.id)}" ${series?.loading ? "disabled" : ""}>基準価額を再取得</button>` : ""}
         <details class="savings-month-history" open>
           <summary>月別の積立額と累計</summary>
-          <div class="savings-month-table-wrap"><table><thead><tr><th>対象月</th><th>積立額</th><th>累計</th></tr></thead><tbody>${monthlyRows || '<tr><td colspan="3">積立設定を追加してください。</td></tr>'}${currentMonthRow}${cardPurchaseRow}</tbody></table></div>
+          <div class="savings-month-table-wrap"><table><thead><tr><th>対象月</th><th>積立額</th><th>累計</th></tr></thead><tbody>${monthlyRows || '<tr><td colspan="3">積立設定はありません。</td></tr>'}${currentMonthRow}${cardPurchaseRow}</tbody></table></div>
+        </details>
+        <details class="savings-month-history">
+          <summary>通常購入履歴（${oneTimePurchases.length}件・${yen(oneTimeTotal)}）</summary>
+          <div class="savings-month-table-wrap"><table><thead><tr><th>購入日</th><th>購入額</th></tr></thead><tbody>${oneTimeRows || '<tr><td colspan="2">通常購入はありません。</td></tr>'}</tbody></table></div>
         </details>
       </section>
       <section class="savings-chart-section" data-savings-forecast="${escapeAttr(plan.id)}">
@@ -1069,14 +1097,17 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
           <label><span>評価額の起点</span><select name="balanceBasis"><option value="current" ${plan.balanceBasis !== "opening" ? "selected" : ""}>現在額から</option><option value="opening" ${plan.balanceBasis === "opening" ? "selected" : ""}>開始前残高</option></select></label>
           <label><span>開始前の評価額</span><input name="openingValue" type="number" min="0" step="1" inputmode="numeric" value="${Number.isFinite(plan.openingValue) ? plan.openingValue : ""}" ${plan.balanceBasis === "opening" ? "required" : "disabled"}></label>
           <label><span>開始前の投資元本（任意）</span><input name="openingPrincipal" type="number" min="0" step="1" inputmode="numeric" placeholder="不明なら空欄" value="${Number.isFinite(plan.openingPrincipal) ? plan.openingPrincipal : ""}"></label>
-          <label><span data-savings-start-month-label>${plan.paymentMethod === "credit" ? "初回カード引落月" : "初回買付月"}</span><input name="startMonth" type="month" required value="${escapeAttr(plan.schedule?.[0]?.month || localMonthKey())}"></label>
+          <label><span data-savings-start-month-label>${plan.paymentMethod === "credit" ? "初回カード引落月" : "初回買付月"}</span><input name="startMonth" type="month" value="${escapeAttr(plan.schedule?.[0]?.month || "")}"></label>
         </div>
         <p class="savings-history-note">基準日の元本を入力した場合、総損益ではこちらを優先します。評価額と元本は同じ基準日の金額です。</p>
         <label class="checkbox-line"><input name="currentMonthIncluded" type="checkbox" ${plan.currentMonthIncluded ? "checked" : ""}><span>評価額に基準月の積立を含む</span></label>
         <div class="savings-schedule-head"><h4>月ごとの積立設定</h4><label class="checkbox-line"><input name="recurring" type="checkbox" ${plan.recurring ? "checked" : ""}><span>継続</span></label></div>
         <p>継続中は直近の設定額を翌月以降に反映します。特定月の設定があれば、その月から金額が切り替わります。</p>
         <div class="savings-schedule-list">${(plan.schedule || []).map((item) => savingsScheduleRow(item, plan.paymentMethod)).join("")}</div>
-        <div class="savings-plan-actions"><button type="button" class="secondary" data-savings-add-month>月を追加</button><button type="submit">積立設定を保存</button><span data-savings-status role="status"></span></div>
+        <div class="savings-plan-actions"><button type="button" class="secondary" data-savings-add-month>積立月を追加</button></div>
+        <div class="savings-purchase-head"><h4>通常購入</h4><p>積立とは別に購入した日と金額を登録できます。</p></div>
+        <div class="savings-purchase-list">${oneTimePurchases.map((purchase) => savingsPurchaseRow(purchase)).join("")}</div>
+        <div class="savings-plan-actions"><button type="button" class="secondary" data-savings-add-purchase>通常購入を追加</button><button type="submit">商品情報を保存</button><span data-savings-status role="status"></span></div>
       </form>
     </article>
   `;
@@ -1084,13 +1115,13 @@ function savingsPlanHtml(plan, view = { history: { rows: [], total: 0, monthlyAm
 
 function savingsValuationError(status = "") {
   return ({
-    inconsistent_balance: "入力評価額が登録積立分の換算額を下回ります。評価基準日・当月分・積立額・売却や引出しの有無を確認してください。",
+    inconsistent_balance: "入力評価額が登録買付分の換算額を下回ります。評価基準日・当月分・買付額・売却や引出しの有無を確認してください。",
     missing_anchor_nav: "評価基準日以前の基準価額がありません。基準日か開始月を確認してください。",
-    missing_contribution_nav: "逆算に必要な積立月の基準価額が不足しています。価格履歴を再取得してください。",
+    missing_contribution_nav: "逆算に必要な買付時期の基準価額が不足しています。価格履歴を再取得してください。",
     missing_opening_value: "開始前の評価額を入力してください。",
     future_anchor_date: "評価基準日は今日以前の日付を指定してください。",
-    inconsistent_principal: "基準日の取得元本が登録積立の合計を下回ります。元本・基準日・開始月・積立額を確認してください。",
-    missing_balance: "既存保有の元本があるため、現在の評価額か開始前の評価額も入力してください。積立分だけでは全保有の損益を計算できません。",
+    inconsistent_principal: "基準日の取得元本が登録買付の合計を下回ります。元本・基準日・積立設定・通常購入履歴を確認してください。",
+    missing_balance: "既存保有の元本があるため、現在の評価額か開始前の評価額も入力してください。登録した買付分だけでは全保有の損益を計算できません。",
   })[status] || "";
 }
 
@@ -1112,8 +1143,8 @@ function updateSavingsBalanceInputs(form) {
     const isCredit = paymentMethod.value === "credit";
     const note = form.querySelector("[data-savings-payment-note]");
     if (note) note.textContent = isCredit
-      ? "設定月のカード引落から翌月12日ごろの買付として計上します。"
-      : "口座引落の場合、設定月の12日ごろを買付月として記録します。";
+      ? "設定月のカード引落から翌月12日ごろの積立買付として計上します。通常購入は購入日・金額を別に登録できます。"
+      : "口座引落の場合、設定月の12日ごろを積立買付月として記録します。通常購入は購入日・金額を別に登録できます。";
     const startLabel = form.querySelector("[data-savings-start-month-label]");
     if (startLabel) startLabel.textContent = isCredit ? "初回カード引落月" : "初回買付月";
     form.querySelectorAll(".savings-schedule-row [data-savings-schedule-month-label]").forEach((label) => {
@@ -1148,10 +1179,30 @@ function savingsScheduleRow(item = {}, paymentMethod = "account") {
   return `<div class="savings-schedule-row"><label><span data-savings-schedule-month-label>${monthLabel}</span><input name="scheduleMonth" type="month" value="${escapeAttr(item.month || localMonthKey())}" required></label><label><span>積立額</span><input name="scheduleAmount" type="number" min="1" step="1" inputmode="numeric" value="${Number(item.amount) || ""}" required></label><button type="button" class="icon savings-remove-month" data-savings-remove-month aria-label="この月を削除">×</button></div>`;
 }
 
+function savingsPurchaseRow(purchase = {}) {
+  return `<div class="savings-purchase-row"><label><span>通常購入日</span><input name="purchaseDate" type="date" max="${escapeAttr(localDateKey())}" value="${escapeAttr(purchase.date || "")}" required></label><label><span>購入額（円）</span><input name="purchaseAmount" type="number" min="1" step="1" inputmode="numeric" value="${Number(purchase.amount) || ""}" required></label><button type="button" class="icon" data-savings-remove-purchase aria-label="通常購入を削除">×</button></div>`;
+}
+
+function savingsPurchaseRowsFromForm(form) {
+  return [...(form?.querySelectorAll(".savings-purchase-row") || [])].map((row) => ({
+    date: row.querySelector('[name="purchaseDate"]')?.value || "",
+    amount: Number(row.querySelector('[name="purchaseAmount"]')?.value),
+  }));
+}
+
 function savingsPlanStartDate(plan) {
-  const firstMonth = savingsPurchaseSchedule(plan).map((item) => item.month).filter(Boolean).sort()[0];
+  const purchaseNavStarts = (Array.isArray(plan.oneTimePurchases) ? plan.oneTimePurchases : []).map((purchase) => {
+    const date = new Date(`${purchase.date}T00:00:00Z`);
+    if (!Number.isFinite(date.getTime())) return "";
+    date.setUTCDate(date.getUTCDate() - 14);
+    return date.toISOString().slice(0, 10);
+  });
+  const firstMonth = [
+    ...savingsPurchaseSchedule(plan).map((item) => `${item.month}-01`),
+    ...purchaseNavStarts,
+  ].filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)).sort()[0];
   const threeYearsAgo = calendarMonthOffset(localDateKey(), -36);
-  return firstMonth && `${firstMonth}-01` < threeYearsAgo ? `${firstMonth}-01` : threeYearsAgo;
+  return firstMonth && firstMonth < threeYearsAgo ? firstMonth : threeYearsAgo;
 }
 
 function savingsSeriesPlans(plans = []) {
@@ -1270,13 +1321,21 @@ async function saveSavingsPlan(form) {
   const id = form.dataset.savingsForm || "";
   const original = state.savingsPlans.find((plan) => plan.id === id);
   const formData = new FormData(form);
-  const schedule = [...form.querySelectorAll(".savings-schedule-row")].map((row) => ({
+  const rawSchedule = [...form.querySelectorAll(".savings-schedule-row")].map((row) => ({
     month: row.querySelector('[name="scheduleMonth"]')?.value || "",
+    amountText: row.querySelector('[name="scheduleAmount"]')?.value || "",
     amount: Number(row.querySelector('[name="scheduleAmount"]')?.value),
-  })).filter((item) => item.month && Number.isFinite(item.amount) && item.amount > 0);
+  }));
+  const schedule = rawSchedule.filter((item) => item.month && Number.isFinite(item.amount) && item.amount > 0)
+    .map(({ month, amount }) => ({ month, amount }));
+  const purchases = savingsPurchaseRowsFromForm(form);
   const status = form.querySelector("[data-savings-status]");
-  if (!schedule.length) {
-    if (status) status.textContent = "月と金額を1件以上入力してください。";
+  if (rawSchedule.some((item) => !item.month || !item.amountText || !Number.isFinite(item.amount) || item.amount <= 0)) {
+    if (status) status.textContent = "積立設定の月と金額を入力するか、その行を削除してください。";
+    return;
+  }
+  if (purchases.some((item) => !item.date || item.date > localDateKey() || !Number.isFinite(item.amount) || item.amount <= 0)) {
+    if (status) status.textContent = "通常購入は今日までの日付と、0円より大きい購入額を入力するか、その行を削除してください。";
     return;
   }
   if (schedule.slice(1).some((item) => item.month <= schedule[0].month)) {
@@ -1310,11 +1369,12 @@ async function saveSavingsPlan(form) {
         openingPrincipal: formData.get("openingPrincipal") === "" ? null : Number(formData.get("openingPrincipal")),
         recurring: formData.has("recurring"),
         schedule,
+        oneTimePurchases: purchases,
       } }),
     });
     state.savingsPlans = payload.plans || [];
     renderSavings();
-    toast("積立設定を保存しました。");
+    toast("商品情報を保存しました。");
     const savedPlan = state.savingsPlans.find((item) => item.symbol === symbol);
     if (!state.savingsSeries[symbol]?.series?.length || state.savingsSeries[symbol]?.fromDate > savingsPlanStartDate(savedPlan)) {
       void fetchSavingsSeries(symbol, savingsPlanStartDate(savedPlan)).then(() => {
@@ -2218,6 +2278,8 @@ function renderProfitSummary() {
   if (els.dividendReceivedFiscalYearLabel) els.dividendReceivedFiscalYearLabel.textContent = `${summary.fiscalYear}年度`;
   if (els.investedTotal) els.investedTotal.textContent = yen(summary.invested);
   if (els.netDepositsTotal) els.netDepositsTotal.textContent = state.jpAccountFlowsLoaded ? yen(summary.netDeposits) : "-";
+  if (els.jpCashBalanceTotal) els.jpCashBalanceTotal.textContent = cashBalanceText("jp", summary.cashBalance, yen);
+  if (els.jpAccountAssetTotal) els.jpAccountAssetTotal.textContent = Number.isFinite(summary.accountAssetTotal) ? yen(summary.accountAssetTotal) : "未算出";
   if (els.marketTotal) els.marketTotal.textContent = yen(summary.marketValue);
   if (els.dividendIncomeTotal) els.dividendIncomeTotal.textContent = yen(summary.annualDividendEstimate);
   if (els.nisaRemainingTotal) els.nisaRemainingTotal.textContent = yen(summary.nisaRemaining);
@@ -2360,6 +2422,14 @@ function renderUsSummary() {
   setMoneySummary(els.usMarketTotal, summary.marketValue, "profit-big", usd);
   const cashflowTotals = usAccountFlowTotals();
   setMoneySummary(els.usNetDepositsTotal, state.usAccountFlowsLoaded ? cashflowTotals.netUsd : null, "profit-big", usd);
+  if (els.usCashBalanceTotal) els.usCashBalanceTotal.textContent = cashBalanceText("us", summary.cashBalance, usd);
+  if (els.usAccountAssetTotal) els.usAccountAssetTotal.textContent = Number.isFinite(summary.accountAssetTotal) ? usd(summary.accountAssetTotal) : "未算出";
+  if (els.usAccountAssetYen) {
+    const rate = Number(state.usdJpyReferenceRate);
+    els.usAccountAssetYen.textContent = Number.isFinite(summary.accountAssetTotal) && Number.isFinite(rate) && rate > 0
+      ? `円換算 約${yen(Math.round(summary.accountAssetTotal * rate))}（参考値）`
+      : "円換算は参考値";
+  }
   if (els.usNetDepositsYenSummary) {
     els.usNetDepositsYenSummary.textContent = `円換算 ${cashflowTotals.netJpy === null ? "-" : `約${yen(cashflowTotals.netJpy)}`}（参考値）`;
   }
@@ -3453,6 +3523,7 @@ function portfolioSummary() {
       || Number.isFinite(position.marketValue);
     const hasRecordedSales = Number.isFinite(position.soldQuantity) && position.soldQuantity > 0;
     const hasTrackedOpenPosition = stock.holding && Number.isFinite(position.quantity) && position.quantity > 0;
+    if (hasTrackedOpenPosition && !Number.isFinite(position.marketValue)) summary.marketValueComplete = false;
     if ((!hasTrackedOpenPosition && !hasRecordedSales) || !hasPositionResult) return summary;
     summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
     summary.grossInvested += Number.isFinite(position.grossInvested)
@@ -3509,6 +3580,7 @@ function portfolioSummary() {
     lossCount: 0,
     hasUnknownCostBasis: false,
     hasUnknownRealizedCost: false,
+    marketValueComplete: true,
   });
   if (summary.hasUnknownCostBasis) {
     summary.invested = null;
@@ -3519,8 +3591,11 @@ function portfolioSummary() {
     summary.totalReturnPct = null;
   }
   if (summary.hasUnknownRealizedCost) summary.realizedPnlAmount = null;
+  const cashBalance = calculatedAccountCash("jp");
   return {
     ...summary,
+    cashBalance,
+    accountAssetTotal: cashBalance !== null && summary.marketValueComplete ? summary.marketValue + cashBalance : null,
     netDeposits: state.jpAccountFlows.reduce((total, item) => total + (item.type === "deposit" ? item.amount : -item.amount), 0),
     ...nisaAllowanceSummary(),
     fiscalYear: fiscalYear.year,
@@ -3653,6 +3728,7 @@ function usSummaryFromState() {
       || Number.isFinite(position.marketValue);
     const hasRecordedSales = Number.isFinite(position.soldQuantity) && position.soldQuantity > 0;
     const hasTrackedOpenPosition = stock.holding && Number.isFinite(position.quantity) && position.quantity > 0;
+    if (hasTrackedOpenPosition && !Number.isFinite(position.marketValue)) summary.marketValueComplete = false;
     if ((!hasTrackedOpenPosition && !hasRecordedSales) || !hasPositionResult) return summary;
     summary.invested += Number.isFinite(position.invested) ? position.invested : 0;
     summary.grossInvested += Number.isFinite(position.grossInvested)
@@ -3708,6 +3784,7 @@ function usSummaryFromState() {
     lossCount: 0,
     hasUnknownCostBasis: false,
     hasUnknownRealizedCost: false,
+    marketValueComplete: true,
     fiscalYear: fiscalYear.year,
   });
   if (summary.hasUnknownCostBasis) {
@@ -3719,7 +3796,12 @@ function usSummaryFromState() {
     summary.totalReturnPct = null;
   }
   if (summary.hasUnknownRealizedCost) summary.realizedPnlAmount = null;
-  return summary;
+  const cashBalance = calculatedAccountCash("us");
+  return {
+    ...summary,
+    cashBalance,
+    accountAssetTotal: cashBalance !== null && summary.marketValueComplete ? summary.marketValue + cashBalance : null,
+  };
 }
 
 function hasOpenPosition(stock = {}, position = {}) {
@@ -5414,7 +5496,7 @@ function chartPointTooltipHtml(point, formatter) {
     ? `<small>積立元本 ${escapeHtml(formatter(point.principal))}</small>`
     : "";
   const comparison = Number.isFinite(point.comparisonValue)
-    ? `<small>${escapeHtml(point.comparisonLabel || "累計積立元本")} ${escapeHtml(formatter(point.comparisonValue))}</small>`
+    ? `<small>${escapeHtml(point.comparisonLabel || "累計買付元本")} ${escapeHtml(formatter(point.comparisonValue))}</small>`
     : "";
   return `
     <strong>${escapeHtml(formatDate(point.date))}</strong>
@@ -9135,6 +9217,61 @@ function saleLots(stock) {
     .sort((a, b) => (a.sellDate || "9999-99-99").localeCompare(b.sellDate || "9999-99-99"));
 }
 
+function calculatedAccountCash(market) {
+  const settings = state.settings || {};
+  const baseline = market === "jp" ? settings.jpCashBalance : settings.usCashBalanceUsd;
+  const baselineDate = String(settings.cashBalanceAsOfDate || "");
+  if (baseline === null || baseline === undefined || baseline === "" || !Number.isFinite(Number(baseline))
+    || !/^\d{4}-\d{2}-\d{2}$/.test(baselineDate)) return null;
+
+  const today = localDateKey();
+  const afterBaseline = (date) => /^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))
+    && date > baselineDate && date <= today;
+  let cash = Number(baseline);
+  let complete = true;
+  for (const item of market === "jp" ? state.jpAccountFlows : state.usAccountFlows) {
+    if (!afterBaseline(item.date)) continue;
+    const amount = Number(market === "jp" ? item.amount : item.amountUsd);
+    if (!Number.isFinite(amount)) {
+      complete = false;
+      continue;
+    }
+    if (item.type === "deposit") cash += amount;
+    else cash -= amount;
+  }
+
+  const stocks = market === "jp" ? state.stocks : state.usStocks;
+  for (const stock of stocks) {
+    for (const lot of positionLots(stock)) {
+      if (!afterBaseline(lot.purchaseDate)) continue;
+      if (!Number.isFinite(lot.purchasePrice) || lot.purchasePrice <= 0) {
+        complete = false;
+        continue;
+      }
+      cash -= lot.purchasePrice * (Number(lot.quantity) || 0);
+    }
+    for (const sale of Array.isArray(stock.sales) ? stock.sales : []) {
+      const date = String(sale.sellDate || sale.saleDate || "");
+      if (!afterBaseline(date)) continue;
+      const price = Number(sale.sellPrice ?? sale.salePrice);
+      const quantity = Number(sale.quantity);
+      if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity <= 0) {
+        complete = false;
+        continue;
+      }
+      cash += price * quantity;
+    }
+  }
+  return complete ? cash : null;
+}
+
+function cashBalanceText(market, amount, formatter) {
+  if (Number.isFinite(amount)) return formatter(amount);
+  const settings = state.settings || {};
+  const baseline = market === "jp" ? settings.jpCashBalance : settings.usCashBalanceUsd;
+  return baseline === null || baseline === undefined || baseline === "" ? "未設定" : "明細不足";
+}
+
 function cryptoPositionLots(holding = {}) {
   const source = Array.isArray(holding.positions) ? holding.positions : [];
   return source
@@ -9577,6 +9714,13 @@ function valueOrNull(value) {
   return Number.isFinite(number) && number > 0 ? number : null;
 }
 
+function nonNegativeOrNull(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return null;
+  const number = Number(trimmed);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
 function valueOrZero(value) {
   const trimmed = String(value ?? "").trim();
   if (!trimmed) return 0;
@@ -9860,6 +10004,9 @@ els.settingsForm.addEventListener("submit", async (event) => {
         jpCapitalGainTaxPct: valueOrZero(els.settingsJpCapitalGainTaxPct?.value),
         usTradeFeeUsd: valueOrZero(els.settingsUsTradeFeeUsd?.value),
         usCapitalGainTaxPct: valueOrZero(els.settingsUsCapitalGainTaxPct?.value),
+        cashBalanceAsOfDate: els.settingsCashBalanceAsOfDate?.value || localDateKey(),
+        jpCashBalance: nonNegativeOrNull(els.settingsJpCashBalance?.value),
+        usCashBalanceUsd: nonNegativeOrNull(els.settingsUsCashBalanceUsd?.value),
         notificationMinNetEdgeYen: valueOrZero(els.settingsNotificationMinNetEdgeYen?.value),
         notificationMinConfidence: valueOrNull(els.settingsNotificationMinConfidence?.value),
         teamsWebhookUrl: els.settingsTeamsWebhookUrl?.value || "",
@@ -9920,11 +10067,23 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
   const form = els.savingsCreateForm;
   const formData = new FormData(form);
   const amount = Number(formData.get("amount"));
+  const startMonth = String(formData.get("startMonth") || "");
+  const purchaseDate = String(formData.get("initialPurchaseDate") || "");
+  const purchaseAmountText = String(formData.get("initialPurchaseAmount") || "");
+  const purchaseAmount = Number(purchaseAmountText);
   const symbol = String(formData.get("symbol") || "").trim().toUpperCase();
   const status = els.savingsFormStatus;
   const button = form.querySelector('[type="submit"]');
   if (!/^[A-Z0-9]{4,14}$/.test(symbol)) {
     if (status) status.textContent = "ファンドコードを確認してください。";
+    return;
+  }
+  if (amount > 0 && !/^\d{4}-(0[1-9]|1[0-2])$/.test(startMonth)) {
+    if (status) status.textContent = "積立を設定する場合は初回買付月を入力してください。";
+    return;
+  }
+  if (Boolean(purchaseDate) !== Boolean(purchaseAmountText) || (purchaseAmountText && (!Number.isFinite(purchaseAmount) || purchaseAmount <= 0)) || (purchaseDate && purchaseDate > localDateKey())) {
+    if (status) status.textContent = "通常購入は今日までの日付と、0円より大きい購入額を両方入力してください。";
     return;
   }
   if (status) status.textContent = "保存中";
@@ -9946,7 +10105,8 @@ els.savingsCreateForm?.addEventListener("submit", async (event) => {
         openingValue: form.elements.namedItem("openingValue")?.value === "" ? null : Number(form.elements.namedItem("openingValue")?.value),
         openingPrincipal: formData.get("openingPrincipal") === "" ? null : Number(formData.get("openingPrincipal")),
         recurring: formData.has("recurring"),
-        schedule: [{ month: formData.get("startMonth"), amount }],
+        schedule: amount > 0 ? [{ month: startMonth, amount }] : [],
+        oneTimePurchases: purchaseDate ? [{ date: purchaseDate, amount: purchaseAmount }] : [],
       } }),
     });
     state.savingsPlans = payload.plans || [];
@@ -9978,7 +10138,7 @@ els.savingsCreateForm?.addEventListener("change", () => updateSavingsBalanceInpu
 
 for (const eventName of ["input", "change"]) {
   els.savingsCreateForm?.addEventListener(eventName, (event) => {
-    if (/^(?:accountType|provider|paymentMethod|startMonth|amount|recurring|currentMonthIncluded|currentValueDate)$/.test(event.target.name)) updateSavingsNisaPreview(els.savingsCreateForm);
+    if (/^(?:accountType|provider|paymentMethod|startMonth|amount|initialPurchaseDate|initialPurchaseAmount|recurring|currentMonthIncluded|currentValueDate)$/.test(event.target.name)) updateSavingsNisaPreview(els.savingsCreateForm);
   });
 }
 
@@ -9995,7 +10155,7 @@ for (const eventName of ["input", "change"]) {
       form.dataset.dirty = "true";
       updateSavingsBalanceInputs(form);
       syncSavingsStartMonth(form, event.target);
-      if (/^(?:accountType|provider|paymentMethod|startMonth|recurring|currentMonthIncluded|currentValueDate|scheduleMonth|scheduleAmount)$/.test(event.target.name)) {
+      if (/^(?:accountType|provider|paymentMethod|startMonth|recurring|currentMonthIncluded|currentValueDate|scheduleMonth|scheduleAmount|purchaseDate|purchaseAmount)$/.test(event.target.name)) {
         form.dataset.nisaPreview = "true";
         updateSavingsNisaPreview(form);
       }
@@ -10030,6 +10190,22 @@ els.savingsPlans?.addEventListener("click", async (event) => {
     removeButton.closest(".savings-schedule-row")?.remove();
     const first = form?.querySelector('.savings-schedule-row [name="scheduleMonth"]');
     if (first) syncSavingsStartMonth(form, first);
+    if (form) { form.dataset.nisaPreview = "true"; updateSavingsNisaPreview(form); }
+    return;
+  }
+  const addPurchaseButton = event.target.closest("[data-savings-add-purchase]");
+  if (addPurchaseButton) {
+    const form = addPurchaseButton.closest(".savings-plan-form");
+    if (form) form.dataset.dirty = "true";
+    form?.querySelector(".savings-purchase-list")?.insertAdjacentHTML("beforeend", savingsPurchaseRow({ date: localDateKey() }));
+    if (form) { form.dataset.nisaPreview = "true"; updateSavingsNisaPreview(form); }
+    return;
+  }
+  const removePurchaseButton = event.target.closest("[data-savings-remove-purchase]");
+  if (removePurchaseButton) {
+    const form = removePurchaseButton.closest(".savings-plan-form");
+    if (form) form.dataset.dirty = "true";
+    removePurchaseButton.closest(".savings-purchase-row")?.remove();
     if (form) { form.dataset.nisaPreview = "true"; updateSavingsNisaPreview(form); }
     return;
   }

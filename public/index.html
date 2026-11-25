@@ -63,6 +63,7 @@
     </aside>
 
     <main class="workspace">
+      <div id="backupHealthAlert" class="backup-health-alert" role="status" aria-live="polite" hidden></div>
       <section class="view-panel active" data-view="analysis">
         <section class="command-band">
           <div class="analysis-heading">
@@ -116,6 +117,14 @@
               <div><small>取得原価</small><strong id="investedTotal">-</strong></div>
               <div><small>投資額（入金−積立−出金）</small><strong id="netDepositsTotal">-</strong></div>
             </div>
+          </article>
+          <article class="profit-card paired-metrics">
+            <span>投資余力・口座資産</span>
+            <div class="profit-card-pair">
+              <div><small>現金残高</small><strong id="jpCashBalanceTotal">未設定</strong></div>
+              <div><small>株式＋現金</small><strong id="jpAccountAssetTotal">未設定</strong></div>
+            </div>
+            <small>記録済みの動きから計算した概算</small>
           </article>
           <article class="profit-card">
             <span>NISA成長枠</span>
@@ -507,6 +516,14 @@
             </div>
             <small id="usNetDepositsYenSummary">円換算 -（参考値）</small>
           </article>
+          <article class="profit-card paired-metrics">
+            <span>投資余力・口座資産</span>
+            <div class="profit-card-pair">
+              <div><small>現金残高</small><strong id="usCashBalanceTotal">未設定</strong></div>
+              <div><small>株式＋現金</small><strong id="usAccountAssetTotal">未設定</strong></div>
+            </div>
+            <small id="usAccountAssetYen">円換算は参考値</small>
+          </article>
           <article class="profit-card">
             <span>勝ち / 負け</span>
             <strong><span id="usWinCount">0</span> / <span id="usLossCount">0</span></strong>
@@ -770,10 +787,10 @@
         <section class="command-band">
           <div>
             <p class="eyebrow">Savings Plan</p>
-            <h2>積立管理</h2>
+            <h2>運用商品</h2>
           </div>
         </section>
-        <p class="savings-note">既存の保有分を含む参考評価額と月別の積立記録。開始前の元本が分かる場合は総損益も計算します。証券会社への注文は行いません。</p>
+        <p class="savings-note">積立と通常購入を別々に記録し、両方を含む参考評価額と損益を表示します。開始前の元本が分かる場合は総損益も計算します。証券会社への注文は行いません。</p>
         <details id="savingsOrder" class="savings-order" hidden>
           <summary>並び替え</summary>
           <ol id="savingsOrderList" class="savings-order-list" aria-label="積立商品の表示順"></ol>
@@ -794,10 +811,12 @@
             <label><span>評価額の起点</span><select name="balanceBasis"><option value="current">現在額から</option><option value="opening">開始前残高</option></select></label>
             <label><span>開始前の評価額</span><input name="openingValue" type="number" min="0" step="1" inputmode="numeric" disabled></label>
             <label><span>開始前の投資元本（任意）</span><input name="openingPrincipal" type="number" min="0" step="1" inputmode="numeric" placeholder="不明なら空欄"></label>
-            <label><span data-savings-start-month-label>開始月</span><input name="startMonth" type="month" required></label>
-            <label><span>月の積立額</span><input name="amount" type="number" min="1" step="1" inputmode="numeric" required placeholder="例：30000"></label>
+            <label><span data-savings-start-month-label>開始月</span><input name="startMonth" type="month"></label>
+            <label><span>月の積立額（積立する場合）</span><input name="amount" type="number" min="0" step="1" inputmode="numeric" placeholder="例：30000"></label>
+            <label><span>通常購入日（任意）</span><input name="initialPurchaseDate" type="date"></label>
+            <label><span>通常購入額（円・任意）</span><input name="initialPurchaseAmount" type="number" min="0" step="1" inputmode="numeric" placeholder="積立とは別に買った金額"></label>
           </div>
-          <p class="savings-history-note" data-savings-payment-note>口座引落の場合、設定月の12日ごろを買付月として記録します。</p>
+          <p class="savings-history-note" data-savings-payment-note>月の積立と通常購入は同じ商品に両方登録できます。通常購入は購入日・金額を入力します。</p>
           <div data-savings-nisa-preview hidden></div>
           <div class="savings-create-actions">
             <label class="checkbox-line"><input name="currentMonthIncluded" type="checkbox"><span>評価額に基準月の積立を含む</span></label>
@@ -929,6 +948,28 @@
           </div>
 
           <div class="settings-tab-panel" data-settings-panel="trading" hidden>
+            <div class="settings-card">
+              <div class="panel-title compact-title">
+                <h3>現在の口座現金</h3>
+                <span>入力日以降の投資余力を計算</span>
+              </div>
+              <section class="control-strip" aria-label="現在の口座現金">
+                <label>
+                  <span>残高の基準日</span>
+                  <input id="settingsCashBalanceAsOfDate" type="date" max="">
+                </label>
+                <label>
+                  <span>日本株口座の現金（円）</span>
+                  <input id="settingsJpCashBalance" type="number" min="0" step="1" inputmode="numeric" placeholder="証券口座の現金残高">
+                </label>
+                <label>
+                  <span>米国株口座の現金（USD）</span>
+                  <input id="settingsUsCashBalanceUsd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="証券口座の現金残高">
+                </label>
+              </section>
+              <small class="settings-help">基準日時点の口座現金を入力してください。基準日より後の日付で記録した入金・積立・出金・株の購入/売却を反映し、株式評価額と合わせて口座資産を表示します。配当、税、手数料など個別に記録されない動きは含まれない概算です。</small>
+            </div>
+
             <div class="settings-card">
               <div class="panel-title compact-title">
                 <h3>手数料・税金</h3>

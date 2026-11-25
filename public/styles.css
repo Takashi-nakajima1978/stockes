@@ -72,6 +72,22 @@ button:disabled {
   grid-template-columns: 270px minmax(0, 1fr);
 }
 
+.backup-health-alert {
+  margin: 14px 18px 0;
+  padding: 12px 16px;
+  border: 1px solid #e5b7b7;
+  border-radius: 9px;
+  background: #fff1f0;
+  color: #8f2f32;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.backup-health-alert[hidden] {
+  display: none;
+}
+
 .rail {
   min-height: 100vh;
   padding: 22px;
@@ -4642,6 +4658,7 @@ tr:hover .drag-handle,
 
 .savings-create-fields label,
 .savings-schedule-row label,
+.savings-purchase-row label,
 .savings-account-field label,
 .savings-balance-fields label,
 .savings-product-fields label {
@@ -4737,6 +4754,7 @@ tr:hover .drag-handle,
 .savings-create-fields select,
 .savings-account-field select,
 .savings-schedule-row input,
+.savings-purchase-row input,
 .savings-balance-fields input,
 .savings-balance-fields select,
 .savings-product-fields input,
@@ -4897,7 +4915,7 @@ button.savings-order-button:disabled {
 
 .savings-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
@@ -5243,6 +5261,39 @@ button.savings-order-button:disabled {
   border-bottom: 1px solid var(--line);
 }
 
+.savings-purchase-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.savings-purchase-head h4,
+.savings-purchase-head p {
+  margin: 0;
+}
+
+.savings-purchase-head p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.savings-purchase-list {
+  display: grid;
+}
+
+.savings-purchase-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(140px, 1fr) 38px;
+  align-items: end;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
 .savings-remove-month {
   width: 36px;
   height: 36px;
@@ -5318,7 +5369,7 @@ button.savings-order-button:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .savings-metrics > div:nth-child(2) {
+  .savings-metrics > div:nth-child(even) {
     border-right: 0;
   }
 
@@ -5327,6 +5378,11 @@ button.savings-order-button:disabled {
   }
 
   .savings-schedule-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 36px;
+    gap: 7px;
+  }
+
+  .savings-purchase-row {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 36px;
     gap: 7px;
   }
