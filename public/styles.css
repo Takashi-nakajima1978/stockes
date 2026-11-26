@@ -397,6 +397,10 @@ progress {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.manage-grid-single .stock-form {
+  grid-column: 1 / -1;
+}
+
 .compact-title {
   margin: -14px -14px 2px;
   box-shadow: none;
@@ -4918,6 +4922,21 @@ button.savings-order-button:disabled {
   grid-template-columns: repeat(5, minmax(0, 1fr));
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
+}
+
+.savings-metrics-units {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.savings-legacy-balance {
+  grid-column: 1 / -1;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.savings-legacy-balance-fields {
+  margin-top: 10px;
 }
 
 .savings-metrics > div {

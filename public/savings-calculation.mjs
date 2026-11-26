@@ -127,9 +127,10 @@ export function buildSavingsTaxComparison(valuation = {}, plan = {}) {
   const accountType = savingsAccountType(plan);
   const complete = !(valuation.unpricedMonths?.length);
   const purchasePrincipal = valuation.purchasePrincipal ?? valuation.contributionPrincipal;
+  const unitAnchored = valuation.status === "unit-anchor";
   const contributionOnly = valuation.openingValue === 0 && Number.isFinite(purchasePrincipal);
-  const totalKnown = complete && (Number.isFinite(valuation.totalPnl) || contributionOnly);
-  const grossGain = totalKnown
+  const totalKnown = !unitAnchored && complete && (Number.isFinite(valuation.totalPnl) || contributionOnly);
+  const grossGain = unitAnchored ? valuation.periodChange : totalKnown
     ? Number.isFinite(valuation.totalPnl) ? valuation.totalPnl : valuation.latestValue - purchasePrincipal
     : valuation.periodChange;
   const baseAmount = totalKnown ? valuation.totalPrincipal : valuation.openingValue + (Number.isFinite(purchasePrincipal) ? purchasePrincipal : 0);
@@ -201,6 +202,11 @@ export function buildSavingsContributionHistory(
 }
 
 export function buildSavingsValuationHistory(contributionHistory = {}, navSeries = [], plan = {}) {
+  const currentUnits = plan.currentUnits !== null && plan.currentUnits !== undefined && plan.currentUnits !== "" && Number.isFinite(Number(plan.currentUnits)) && Number(plan.currentUnits) >= 0
+    ? Number(plan.currentUnits)
+    : null;
+  const unitAnchored = currentUnits !== null;
+  const anchorDate = unitAnchored ? plan.currentUnitsDate || plan.currentValueDate || "" : plan.currentValueDate || "";
   const firstMonth = contributionHistory.rows?.[0]?.month;
   const oneTimePurchases = (Array.isArray(plan.oneTimePurchases) ? plan.oneTimePurchases : [])
     .map((purchase) => ({ date: String(purchase?.date || ""), amount: Number(purchase?.amount) }))
@@ -210,7 +216,10 @@ export function buildSavingsValuationHistory(contributionHistory = {}, navSeries
     start.setUTCDate(start.getUTCDate() - 14);
     return start.toISOString().slice(0, 10);
   });
-  const historyStart = [firstMonth ? `${firstMonth}-01` : "", ...purchaseNavStarts]
+  const unitAnchorNavStart = unitAnchored && /^\d{4}-\d{2}-\d{2}$/.test(anchorDate)
+    ? (() => { const date = new Date(`${anchorDate}T00:00:00Z`); date.setUTCDate(date.getUTCDate() - 14); return date.toISOString().slice(0, 10); })()
+    : "";
+  const historyStart = (unitAnchored ? [unitAnchorNavStart] : [firstMonth ? `${firstMonth}-01` : "", ...purchaseNavStarts])
     .filter(Boolean).sort()[0] || "";
   const quotes = [...new Map((Array.isArray(navSeries) ? navSeries : [])
     .map((point) => ({ date: String(point?.date || ""), close: Number(point?.close) }))
@@ -227,60 +236,74 @@ export function buildSavingsValuationHistory(contributionHistory = {}, navSeries
       quoteByMonth.set(month, quote);
     }
   }
-  const anchorDate = plan.currentValueDate || quotes.at(-1)?.date || "";
+  const effectiveAnchorDate = anchorDate || quotes.at(-1)?.date || "";
   const anchored = plan.balanceBasis !== "opening" && Number(plan.currentValue) > 0;
   const snapshotPrincipalKnown = plan.currentPrincipal !== null && plan.currentPrincipal !== undefined && plan.currentPrincipal !== "" && Number.isFinite(Number(plan.currentPrincipal)) && Number(plan.currentPrincipal) >= 0;
-  const anchorQuote = anchored || snapshotPrincipalKnown ? quotes.filter((quote) => quote.date <= anchorDate).at(-1) : null;
-  const contributions = (Array.isArray(contributionHistory.rows) ? contributionHistory.rows : [])
+  const anchorQuote = unitAnchored || anchored || snapshotPrincipalKnown ? quotes.filter((quote) => quote.date <= effectiveAnchorDate).at(-1) : null;
+  const activeContributionRows = (Array.isArray(contributionHistory.rows) ? contributionHistory.rows : [])
     .filter((row) => Number(row.amount) > 0)
+    .filter((row) => {
+      if (!unitAnchored) return true;
+      if (row.month > effectiveAnchorDate.slice(0, 7)) return true;
+      if (row.month < effectiveAnchorDate.slice(0, 7)) return false;
+      const monthQuote = quoteByMonth.get(row.month);
+      return monthQuote?.date > effectiveAnchorDate;
+    });
+  const contributions = (Array.isArray(contributionHistory.rows) ? contributionHistory.rows : [])
+    .filter((row) => activeContributionRows.includes(row))
     .map((row) => {
       let quote = quoteByMonth.get(row.month);
       // A snapshot excluding its own month's purchase must precede that contribution.
-      if ((anchored || snapshotPrincipalKnown) && !plan.currentMonthIncluded && row.month === anchorDate.slice(0, 7) && quote?.date <= anchorDate) {
-        quote = quotes.find((point) => point.date > anchorDate && point.date.startsWith(`${row.month}-`));
+      if (unitAnchored && row.month === effectiveAnchorDate.slice(0, 7) && quote?.date <= effectiveAnchorDate) {
+        quote = quotes.find((point) => point.date > effectiveAnchorDate && point.date.startsWith(`${row.month}-`));
+      } else if ((anchored || snapshotPrincipalKnown) && !plan.currentMonthIncluded && row.month === effectiveAnchorDate.slice(0, 7) && quote?.date <= effectiveAnchorDate) {
+        quote = quotes.find((point) => point.date > effectiveAnchorDate && point.date.startsWith(`${row.month}-`));
       }
       return quote ? { date: quote.date, amount: Number(row.amount), units: Number(row.amount) / quote.close, month: row.month } : null;
     })
     .filter(Boolean)
     .sort((a, b) => a.date.localeCompare(b.date));
-  const unpricedMonths = (Array.isArray(contributionHistory.rows) ? contributionHistory.rows : [])
-    .filter((row) => Number(row.amount) > 0 && !contributions.some((point) => point.month === row.month))
+  const unpricedMonths = activeContributionRows
+    .filter((row) => !contributions.some((point) => point.month === row.month))
     .map((row) => row.month);
   const regularPurchases = oneTimePurchases.map((purchase, index) => {
+    if (unitAnchored && purchase.date <= effectiveAnchorDate) return null;
     const quote = quotes.filter((point) => point.date <= purchase.date).at(-1);
     return quote ? { ...purchase, date: purchase.date, navDate: quote.date, units: purchase.amount / quote.close, month: purchase.date.slice(0, 7), kind: "one-time", purchaseIndex: index } : null;
   }).filter(Boolean);
   const unpricedOneTimeMonths = oneTimePurchases
-    .filter((purchase, index) => !regularPurchases.some((item) => item.purchaseIndex === index))
+    .filter((purchase, index) => (!unitAnchored || purchase.date > effectiveAnchorDate) && !regularPurchases.some((item) => item.purchaseIndex === index))
     .map((purchase) => purchase.date.slice(0, 7));
   const allPurchases = [...contributions.map((item) => ({ ...item, kind: "scheduled" })), ...regularPurchases]
     .sort((a, b) => a.date.localeCompare(b.date));
   const missingMonths = [...new Set([...unpricedMonths, ...unpricedOneTimeMonths])].sort();
   const empty = (status) => ({ rows: [], principalSeries: [], unpricedMonths: missingMonths, totalPrincipal: 0, latestValue: null, status });
   if (!quotes.length) return empty("missing_nav");
-  if ((anchored || snapshotPrincipalKnown) && plan.today && anchorDate > plan.today) return empty("future_anchor_date");
-  if ((anchored || snapshotPrincipalKnown) && !anchorQuote) return empty("missing_anchor_nav");
-  if ((anchored || snapshotPrincipalKnown) && missingMonths.some((month) => month <= anchorDate.slice(0, 7))) return empty("missing_contribution_nav");
+  if ((unitAnchored || anchored || snapshotPrincipalKnown) && plan.today && effectiveAnchorDate > plan.today) return empty("future_anchor_date");
+  if ((unitAnchored || anchored || snapshotPrincipalKnown) && !anchorQuote) return empty("missing_anchor_nav");
+  if (!unitAnchored && (anchored || snapshotPrincipalKnown) && missingMonths.some((month) => month <= effectiveAnchorDate.slice(0, 7))) return empty("missing_contribution_nav");
 
   const openingSpecified = plan.openingValue !== null && plan.openingValue !== "" && Number.isFinite(Number(plan.openingValue)) && Number(plan.openingValue) >= 0;
   let openingUnits = plan.balanceBasis === "opening" && openingSpecified ? Number(plan.openingValue) / quotes[0].close : 0;
-  if (plan.balanceBasis === "opening" && !openingSpecified) return empty("missing_opening_value");
-  if (anchored) {
-    const purchasedUnits = allPurchases.filter((item) => item.date <= anchorDate && (item.navDate || item.date) <= anchorQuote.date).reduce((sum, item) => sum + item.units, 0);
+  if (!unitAnchored && plan.balanceBasis === "opening" && !openingSpecified) return empty("missing_opening_value");
+  if (unitAnchored) {
+    openingUnits = currentUnits;
+  } else if (anchored) {
+    const purchasedUnits = allPurchases.filter((item) => item.date <= effectiveAnchorDate && (item.navDate || item.date) <= anchorQuote.date).reduce((sum, item) => sum + item.units, 0);
     openingUnits = Number(plan.currentValue) / anchorQuote.close - purchasedUnits;
     if (openingUnits * anchorQuote.close < -1) return empty("inconsistent_balance");
     openingUnits = Math.max(0, openingUnits);
   }
   if (!allPurchases.length && !(openingUnits > 0)) return empty("no_holdings");
-  const openingValue = openingUnits * quotes[0].close;
+  const openingValue = openingUnits * (unitAnchored ? anchorQuote.close : quotes[0].close);
   const enteredOpeningPrincipalKnown = plan.openingPrincipal !== null && plan.openingPrincipal !== undefined && plan.openingPrincipal !== "" && Number.isFinite(Number(plan.openingPrincipal)) && Number(plan.openingPrincipal) >= 0;
-  const principalKnown = snapshotPrincipalKnown || enteredOpeningPrincipalKnown;
-  const snapshotContributions = snapshotPrincipalKnown ? allPurchases.filter((item) => item.date <= anchorDate && (item.navDate || item.date) <= anchorQuote.date).reduce((sum, item) => sum + item.amount, 0) : 0;
-  const openingPrincipal = snapshotPrincipalKnown ? Number(plan.currentPrincipal) - snapshotContributions : enteredOpeningPrincipalKnown ? Number(plan.openingPrincipal) : 0;
+  const principalKnown = unitAnchored || snapshotPrincipalKnown || enteredOpeningPrincipalKnown;
+  const snapshotContributions = snapshotPrincipalKnown ? allPurchases.filter((item) => item.date <= effectiveAnchorDate && (item.navDate || item.date) <= anchorQuote.date).reduce((sum, item) => sum + item.amount, 0) : 0;
+  const openingPrincipal = unitAnchored ? openingValue : snapshotPrincipalKnown ? Number(plan.currentPrincipal) - snapshotContributions : enteredOpeningPrincipalKnown ? Number(plan.openingPrincipal) : 0;
   if (openingPrincipal < 0) return empty("inconsistent_principal");
-  if (openingPrincipal > 0 && !anchored && plan.balanceBasis !== "opening") return empty("missing_balance");
+  if (!unitAnchored && openingPrincipal > 0 && !anchored && plan.balanceBasis !== "opening") return empty("missing_balance");
   const comparisonBase = principalKnown ? openingPrincipal : openingValue;
-  const comparisonLabel = principalKnown ? "投資元本（開始前を含む）" : openingValue > 0 ? "開始時評価額＋買付" : "累計買付元本";
+  const comparisonLabel = unitAnchored ? "基準日の評価額＋以後の買付" : principalKnown ? "投資元本（開始前を含む）" : openingValue > 0 ? "開始時評価額＋買付" : "累計買付元本";
 
   const rows = [];
   const principalSeries = [];
@@ -289,7 +312,9 @@ export function buildSavingsValuationHistory(contributionHistory = {}, navSeries
   let purchaseIndex = 0;
   let contributionPrincipal = 0;
   let oneTimePrincipal = 0;
+  const unitsByMonth = {};
   for (const quote of quotes) {
+    if (unitAnchored && quote.date < anchorQuote.date) continue;
     while (purchaseIndex < allPurchases.length && allPurchases[purchaseIndex].date <= quote.date) {
       const purchase = allPurchases[purchaseIndex];
       units += purchase.units;
@@ -299,13 +324,18 @@ export function buildSavingsValuationHistory(contributionHistory = {}, navSeries
       purchaseIndex += 1;
     }
     if (principal > 0 || openingUnits > 0) {
-      rows.push({ date: quote.date, value: units * quote.close, nav: quote.close, principal: comparisonBase + principal });
+      rows.push({ date: quote.date, value: units * quote.close, nav: quote.close, units, principal: comparisonBase + principal });
       principalSeries.push({ date: quote.date, value: comparisonBase + principal });
+      unitsByMonth[quote.date.slice(0, 7)] = units;
     }
   }
   const latest = rows.at(-1);
   return {
     rows,
+    unitsByMonth,
+    contributionMonths: [...new Set(contributions.map((item) => item.month))],
+    latestUnits: latest?.units ?? (unitAnchored ? currentUnits : null),
+    startingUnits: unitAnchored ? currentUnits : null,
     principalSeries,
     unpricedMonths: missingMonths,
     totalPrincipal: openingPrincipal + principal,
@@ -319,9 +349,9 @@ export function buildSavingsValuationHistory(contributionHistory = {}, navSeries
     principalAnchor: snapshotPrincipalKnown ? { date: anchorDate, amount: Number(plan.currentPrincipal), contributions: snapshotContributions } : null,
     principalDifference: snapshotPrincipalKnown && enteredOpeningPrincipalKnown ? openingPrincipal - Number(plan.openingPrincipal) : null,
     periodChange: latest ? latest.value - openingValue - principal : null,
-    totalPnl: principalKnown && latest && !missingMonths.length ? latest.value - openingPrincipal - principal : null,
-    status: anchored ? "reconstructed" : plan.balanceBasis === "opening" ? "opening" : regularPurchases.length && !contributions.length ? "purchases" : "contributions",
-    anchor: anchored ? { date: anchorDate, navDate: anchorQuote.date, value: Number(plan.currentValue) } : null,
+    totalPnl: (unitAnchored || principalKnown) && latest && !missingMonths.length ? latest.value - openingPrincipal - principal : null,
+    status: unitAnchored ? "unit-anchor" : anchored ? "reconstructed" : plan.balanceBasis === "opening" ? "opening" : regularPurchases.length && !contributions.length ? "purchases" : "contributions",
+    anchor: unitAnchored ? { date: effectiveAnchorDate, navDate: anchorQuote.date, nav: anchorQuote.close, units: currentUnits, value: openingValue } : anchored ? { date: effectiveAnchorDate, navDate: anchorQuote.date, value: Number(plan.currentValue) } : null,
     latestValue: latest?.value ?? null,
   };
 }

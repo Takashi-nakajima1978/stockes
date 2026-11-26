@@ -333,7 +333,7 @@
           </div>
         </section>
 
-        <section class="content-grid manage-grid">
+        <section class="content-grid manage-grid manage-grid-single">
           <form id="stockForm" class="stock-form">
             <div class="panel-title compact-title">
               <h3>新規追加</h3>
@@ -382,32 +382,6 @@
             <button type="submit">管理銘柄に追加</button>
           </form>
 
-          <div class="table-panel">
-            <div class="panel-title">
-              <h3>入力済みの銘柄</h3>
-              <span>クリックすると損益画面へ</span>
-            </div>
-            <div class="table-wrap">
-              <table class="manage-table">
-                <thead>
-                  <tr>
-                    <th>銘柄</th>
-                    <th>業種</th>
-                    <th>価格</th>
-                    <th>取得/売却</th>
-                    <th>配当込み損益</th>
-                    <th>確定損益</th>
-                    <th>配当</th>
-                    <th>1年</th>
-                    <th>3年</th>
-                    <th>判断</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody id="manageStockTable"></tbody>
-              </table>
-            </div>
-          </div>
         </section>
 
         <section class="table-panel account-cashflow-panel">
@@ -805,21 +779,16 @@
             <label><span>口座区分</span><select name="accountType"><option value="unspecified">未設定</option><option value="nisa-tsumitate">NISA・つみたて</option><option value="nisa-growth">NISA・成長</option><option value="taxable">課税口座</option><option value="ideco" disabled>iDeCo</option></select></label>
             <label><span>商品名</span><input name="name" maxlength="100" required placeholder="例：全世界株式インデックス"></label>
             <label><span>商品コード（Yahoo!ファイナンス）</span><input name="symbol" maxlength="14" required placeholder="例：0331418A" autocapitalize="characters"></label>
-            <label><span>現在の評価額（任意）</span><input name="currentValue" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
-            <label><span>基準日の取得元本・拠出金（任意）</span><input name="currentPrincipal" type="number" min="0" step="1" inputmode="numeric" placeholder="証券会社の元本表示"></label>
-            <label><span>評価額の基準日</span><input name="currentValueDate" type="date"></label>
-            <label><span>評価額の起点</span><select name="balanceBasis"><option value="current">現在額から</option><option value="opening">開始前残高</option></select></label>
-            <label><span>開始前の評価額</span><input name="openingValue" type="number" min="0" step="1" inputmode="numeric" disabled></label>
-            <label><span>開始前の投資元本（任意）</span><input name="openingPrincipal" type="number" min="0" step="1" inputmode="numeric" placeholder="不明なら空欄"></label>
             <label><span data-savings-start-month-label>開始月</span><input name="startMonth" type="month"></label>
             <label><span>月の積立額（積立する場合）</span><input name="amount" type="number" min="0" step="1" inputmode="numeric" placeholder="例：30000"></label>
+            <label><span>現在の口数（ここから計算）</span><input name="currentUnits" type="number" min="0" step="0.00000001" inputmode="decimal" placeholder="証券会社の現在口数" required></label>
+            <label><span>口数の基準日</span><input name="currentUnitsDate" type="date"></label>
             <label><span>通常購入日（任意）</span><input name="initialPurchaseDate" type="date"></label>
             <label><span>通常購入額（円・任意）</span><input name="initialPurchaseAmount" type="number" min="0" step="1" inputmode="numeric" placeholder="積立とは別に買った金額"></label>
           </div>
-          <p class="savings-history-note" data-savings-payment-note>月の積立と通常購入は同じ商品に両方登録できます。通常購入は購入日・金額を入力します。</p>
+          <p class="savings-history-note" data-savings-payment-note>入力した現在口数を起点にします。基準日より前の積立・購入額は損益計算に含めません。以後の口数は基準価額を使って計算します。</p>
           <div data-savings-nisa-preview hidden></div>
           <div class="savings-create-actions">
-            <label class="checkbox-line"><input name="currentMonthIncluded" type="checkbox"><span>評価額に基準月の積立を含む</span></label>
             <label class="checkbox-line"><input name="recurring" type="checkbox"><span>この金額で毎月継続</span></label>
             <button type="submit">商品を登録</button>
           </div>

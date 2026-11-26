@@ -1,6 +1,6 @@
 import { buildSavingsContributionHistory, buildSavingsValuationHistory, scheduledContribution, savingsCurrentMonthBooked, savingsPurchaseSchedule } from "./public/savings-calculation.mjs";
 
-export const SAVINGS_FORECAST_VERSION = "savings-12th-purchase-window-v4";
+export const SAVINGS_FORECAST_VERSION = "savings-12th-purchase-window-v5";
 const DAY = 86400000;
 const time = (date) => Date.parse(`${date}T00:00:00Z`);
 const dateKey = (value) => new Date(value).toISOString().slice(0, 10);
@@ -14,7 +14,7 @@ export function savingsForecastFromDate(plan, today) {
   const date = new Date(time(today));
   const year = date.getUTCFullYear() - 3;
   const month = date.getUTCMonth();
-  const first = [
+  const first = plan.currentUnits !== null && plan.currentUnits !== undefined && plan.currentUnits !== "" && Number.isFinite(Number(plan.currentUnits)) ? "" : [
     ...savingsPurchaseSchedule(plan).map((row) => `${row.month}-01`),
     ...(Array.isArray(plan.oneTimePurchases) ? plan.oneTimePurchases.map((purchase) => String(purchase.date || "")) : []),
   ].filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)).sort()[0];

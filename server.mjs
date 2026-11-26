@@ -17640,6 +17640,8 @@ function normalizeSavingsPlan(plan = {}) {
   const openingValue = nullableNonNegativeNumber(plan.openingValue);
   const openingPrincipal = nullableNonNegativeNumber(plan.openingPrincipal);
   const currentPrincipal = nullableNonNegativeNumber(plan.currentPrincipal);
+  const currentUnits = nullableNonNegativeNumber(plan.currentUnits);
+  const currentValueDate = normalizeDate(plan.currentValueDate) || jstDate(plan.updatedAt);
   return {
     id: /^[a-zA-Z0-9_-]{1,64}$/.test(String(plan.id || "")) ? String(plan.id) : "",
     provider,
@@ -17647,8 +17649,10 @@ function normalizeSavingsPlan(plan = {}) {
     name: cleanText(plan.name || "").slice(0, 100),
     symbol: normalizeFundCode(plan.symbol || ""),
     currentValue: Math.max(0, Math.min(1000000000, Number(plan.currentValue) || 0)),
+    currentUnits: currentUnits === null ? null : Math.min(1000000000000, currentUnits),
+    currentUnitsDate: normalizeDate(plan.currentUnitsDate) || jstDate(new Date()) || currentValueDate,
     currentPrincipal: currentPrincipal === null ? null : Math.min(1000000000, currentPrincipal),
-    currentValueDate: normalizeDate(plan.currentValueDate) || jstDate(plan.updatedAt),
+    currentValueDate,
     currentMonthIncluded: Boolean(plan.currentMonthIncluded),
     paymentMethod: provider !== "ideco" && plan.paymentMethod === "credit" ? "credit" : "account",
     balanceBasis: plan.balanceBasis === "opening" ? "opening" : "current",
