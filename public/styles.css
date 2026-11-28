@@ -2306,7 +2306,16 @@ tr:hover .drag-handle,
   display: grid;
   grid-template-columns: repeat(2, minmax(150px, 1fr));
   gap: 10px;
-  align-items: stretch;
+  align-items: start;
+}
+
+.entry-value > label {
+  align-content: start;
+}
+
+.entry-value > label > input {
+  height: 38px;
+  min-height: 38px;
 }
 
 .price-reservation {
