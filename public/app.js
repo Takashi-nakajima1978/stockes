@@ -196,6 +196,7 @@ const els = {
   stockAccountType: document.getElementById("stockAccountType"),
   stockMinimumHoldQuantity: document.getElementById("stockMinimumHoldQuantity"),
   stockTargetBuyPrice: document.getElementById("stockTargetBuyPrice"),
+  stockTargetSellPrice: document.getElementById("stockTargetSellPrice"),
   stockCount: document.getElementById("stockCount"),
   stockProgress: document.getElementById("stockProgress"),
   analyzeButton: document.getElementById("analyzeButton"),
@@ -1971,7 +1972,7 @@ function stockRow(stock, compact) {
   const financials = analysis?.financials || {};
   const revenueGrowthPct = financials.edinet?.analysis?.revenueGrowthPct;
   const position = positionMetrics(stock, analysis?.price);
-  const targetMarker = targetPriceReachedMarker(stock, analysis?.price || {});
+  const targetMarker = targetPriceReachedMarker(stock, analysis?.price || {}, position);
   const action = analysis?.action || "WATCH";
   const confidence = Number.isFinite(analysis?.confidence) ? `${Math.round(analysis.confidence)}%` : "-";
   const selected = state.selected === stock.symbol ? "selected" : "";
@@ -2023,17 +2024,36 @@ function stockRow(stock, compact) {
   `;
 }
 
-function targetPriceReachedMarker(stock = {}, price = {}) {
-  if (!targetPriceReached(stock, price)) return "";
-  const target = Number(stock.targetBuyPrice);
+function targetPriceReachedMarker(stock = {}, price = {}, position = null) {
   const current = Number(price.current);
-  return `<span class="target-price-marker" title="買いたい価格 ${yen(target)} に到達（現在値 ${yen(current)}）">目標到達</span>`;
+  const buyTarget = Number(stock.targetBuyPrice);
+  const sellTarget = effectiveSellTarget(stock, price, position);
+  const markers = [];
+  if (buyTarget > 0 && current > 0 && current <= buyTarget) {
+    markers.push(`<span class="target-price-marker" title="買いたい価格 ${yen(buyTarget)} に到達（現在値 ${yen(current)}）">買い目標到達</span>`);
+  }
+  if (sellTarget && current > 0 && current >= sellTarget.price) {
+    const source = sellTarget.automatic ? "自動10年参考値" : "設定価格";
+    markers.push(`<span class="target-price-marker sell" title="売りたい価格 ${yen(sellTarget.price)} に到達（${source}・現在値 ${yen(current)}）">売り目標到達</span>`);
+  }
+  return markers.join("");
 }
 
-function targetPriceReached(stock = {}, price = {}) {
-  const target = Number(stock.targetBuyPrice);
+function effectiveSellTarget(stock = {}, price = {}, position = null) {
+  const manualTarget = Number(stock.targetSellPrice);
+  if (Number.isFinite(manualTarget) && manualTarget > 0) return { price: manualTarget, automatic: false };
+  const metrics = position || positionMetrics(stock, price);
   const current = Number(price.current);
-  return target > 0 && current > 0 && current <= target;
+  const cost = Number(metrics.purchasePrice);
+  if (price.annualizedReturn3y === null || price.annualizedReturn3y === undefined
+    || price.return3y === null || price.return3y === undefined) return null;
+  const annualizedReturn = Number(price.annualizedReturn3y);
+  if (!stock.holding || !(metrics.quantity > 0) || !(current > 0) || !(cost > current)
+    || !Number.isFinite(annualizedReturn) || !Number.isFinite(Number(price.return3y))) return null;
+  const annualGrowth = 1 + annualizedReturn / 100;
+  const projected10y = annualGrowth > 0 ? current * (annualGrowth ** 10) : 0;
+  if (!Number.isFinite(projected10y) || projected10y >= cost) return null;
+  return { price: Math.max(0.1, Math.round(projected10y * 10) / 10), automatic: true };
 }
 
 function maCrossSlopeMarker(price = {}) {
@@ -2049,19 +2069,28 @@ function maCrossSlopeMarker(price = {}) {
 
 function renderTargetPriceAlerts() {
   if (!els.targetPriceAlerts) return;
-  const reached = state.stocks.filter((stock) => targetPriceReached(stock, state.analyses[stock.symbol]?.price || {}));
+  const reached = state.stocks.flatMap((stock) => {
+    const price = state.analyses[stock.symbol]?.price || {};
+    const current = Number(price.current);
+    const position = positionMetrics(stock, price);
+    const hits = [];
+    const buyTarget = Number(stock.targetBuyPrice);
+    if (buyTarget > 0 && current > 0 && current <= buyTarget) hits.push({ stock, current, target: buyTarget, type: "買い目標" });
+    const sellTarget = effectiveSellTarget(stock, price, position);
+    if (sellTarget && current > 0 && current >= sellTarget.price) {
+      hits.push({ stock, current, target: sellTarget.price, type: sellTarget.automatic ? "自動売却目安" : "売り目標" });
+    }
+    return hits;
+  });
   els.targetPriceAlerts.hidden = reached.length === 0;
   if (!reached.length) {
     els.targetPriceAlerts.replaceChildren();
     return;
   }
   els.targetPriceAlerts.innerHTML = `
-    <strong class="target-price-alert-label">目標到達 ${reached.length}銘柄</strong>
+    <strong class="target-price-alert-label">目標到達 ${reached.length}件</strong>
     <div class="target-price-alert-list">
-      ${reached.map((stock) => {
-        const current = state.analyses[stock.symbol]?.price?.current;
-        return `<span class="target-price-alert-item"><b>${escapeHtml(stock.name)}</b><span>${yen(current)} / 目標 ${yen(stock.targetBuyPrice)}</span></span>`;
-      }).join("")}
+      ${reached.map(({ stock, current, target, type }) => `<span class="target-price-alert-item"><b>${escapeHtml(stock.name)}</b><span>${type} ${yen(target)} / 現在 ${yen(current)}</span></span>`).join("")}
     </div>
   `;
 }
@@ -7983,6 +8012,7 @@ function positionEditor(stock, position, analysis) {
   const sales = metrics.sales?.length ? metrics.sales : saleLots(stock);
   const displaySales = sales.length ? sales : [{ sellDate: "", sellPrice: null, quantity: null }];
   const entry = effectiveEntryValue(stock, analysis?.price || {}, analysis?.entryValue);
+  const sellTarget = effectiveSellTarget(stock, analysis?.price || {}, metrics);
   const currentPriceDividendYield = currentPriceDividendYieldPct(analysis?.price || {});
   return `
     <form id="positionForm" class="position-form">
@@ -8025,6 +8055,11 @@ function positionEditor(stock, position, analysis) {
         <label>
           <span>買いたい価格</span>
           <input name="targetBuyPrice" type="number" min="0" step="0.1" value="${numberValue(stock.targetBuyPrice)}" placeholder="例: 2500">
+        </label>
+        <label>
+          <span>売りたい価格（任意）</span>
+          <input name="targetSellPrice" type="number" min="0" step="0.1" value="${numberValue(stock.targetSellPrice)}" placeholder="空欄なら自動計算">
+          <small class="input-note">${sellTarget?.automatic ? `自動目安 ${yen(sellTarget.price)}（直近年率を10年延長した参考値）` : "取得価格に届かない10年参考値がある保有株は、空欄時に自動目安を表示します。"}</small>
         </label>
         <label>
           <span>必ず残す株数</span>
@@ -8099,6 +8134,7 @@ function attachPositionForm(symbol) {
         positions: readLotRows(form),
         sales: readSaleRows(form),
         targetBuyPrice: valueOrNull(form.elements.targetBuyPrice.value),
+        targetSellPrice: valueOrNull(form.elements.targetSellPrice.value),
         minimumHoldQuantity: valueOrZero(form.elements.minimumHoldQuantity.value),
         priceReservation: readPriceReservation(form),
       };
@@ -9837,6 +9873,7 @@ els.stockForm.addEventListener("submit", async (event) => {
         minimumHoldQuantity: valueOrZero(els.stockMinimumHoldQuantity.value),
         positions: readNewStockLot(),
         targetBuyPrice: valueOrNull(els.stockTargetBuyPrice.value),
+        targetSellPrice: valueOrNull(els.stockTargetSellPrice.value),
       }),
     });
     els.stockForm.reset();

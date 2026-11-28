@@ -1271,6 +1271,12 @@ tr:hover .drag-handle,
   vertical-align: middle;
 }
 
+.stock-name .target-price-marker.sell {
+  border-color: #e4b7b7;
+  background: #fff0f0;
+  color: #a73535;
+}
+
 .stock-name .ma-cross-slope {
   display: inline-flex;
   align-items: center;

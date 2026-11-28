@@ -379,6 +379,11 @@
               <span>買いたい価格</span>
               <input id="stockTargetBuyPrice" name="targetBuyPrice" type="number" min="0" step="0.1" placeholder="例: 2500">
             </label>
+            <label>
+              <span>売りたい価格（任意）</span>
+              <input id="stockTargetSellPrice" name="targetSellPrice" type="number" min="0" step="0.1" placeholder="空欄なら条件により自動計算">
+              <small class="input-note">直近の年率を10年延長した参考価格が取得価格に届かない保有株には、自動売却目安を表示します。</small>
+            </label>
             <button type="submit">管理銘柄に追加</button>
           </form>
 

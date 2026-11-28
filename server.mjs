@@ -1450,6 +1450,7 @@ async function handleApi(req, res, url) {
       sales: body.sales,
       minimumHoldQuantity: body.minimumHoldQuantity,
       targetBuyPrice: body.targetBuyPrice,
+      targetSellPrice: body.targetSellPrice,
       priceReservation: body.priceReservation,
     });
     stocks.push(stock);
@@ -1558,6 +1559,7 @@ async function handleApi(req, res, url) {
       sales: body.sales,
       minimumHoldQuantity: body.minimumHoldQuantity,
       targetBuyPrice: body.targetBuyPrice,
+      targetSellPrice: body.targetSellPrice,
       priceReservation: body.priceReservation,
     });
     await saveWatchlist(stocks);
@@ -12538,6 +12540,7 @@ function normalizeStock(stock) {
     sales,
     minimumHoldQuantity,
     targetBuyPrice: nullablePositiveNumber(stock.targetBuyPrice),
+    targetSellPrice: nullablePositiveNumber(stock.targetSellPrice),
     priceReservation: normalizePriceReservation(stock.priceReservation),
   };
 }
