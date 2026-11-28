@@ -1975,7 +1975,7 @@ function stockRow(stock, compact) {
   const targetMarker = targetPriceReachedMarker(stock, analysis?.price || {}, position);
   const action = analysis?.action || "WATCH";
   const confidence = Number.isFinite(analysis?.confidence) ? `${Math.round(analysis.confidence)}%` : "-";
-  const selected = state.selected === stock.symbol ? "selected" : "";
+  const rowClasses = [state.selected === stock.symbol ? "selected" : "", profitOver35Class(position)].filter(Boolean).join(" ");
   const nameCell = `
     <td>
       <div class="stock-name-row">
@@ -1991,7 +1991,7 @@ function stockRow(stock, compact) {
 
   if (compact) {
     return `
-      <tr data-symbol="${stock.symbol}" class="${selected}">
+      <tr data-symbol="${stock.symbol}" class="${rowClasses}">
         ${nameCell}
         ${sectorCell}
         <td>${yen(analysis?.price?.current)}</td>
@@ -2008,7 +2008,7 @@ function stockRow(stock, compact) {
   }
 
   return `
-    <tr data-symbol="${stock.symbol}" class="${selected}">
+    <tr data-symbol="${stock.symbol}" class="${rowClasses}">
       ${nameCell}
       ${sectorCell}
       <td>${yen(analysis?.price?.current)}</td>
@@ -2022,6 +2022,11 @@ function stockRow(stock, compact) {
       <td><button type="button" class="icon" data-remove="${stock.symbol}" aria-label="${stock.name}を削除">×</button></td>
     </tr>
   `;
+}
+
+function profitOver35Class(position = {}) {
+  const ratio = Number.isFinite(position.totalReturnPct) ? position.totalReturnPct : position.pnlPct;
+  return Number.isFinite(ratio) && ratio >= 35 ? "profit-over-35" : "";
 }
 
 function targetPriceReachedMarker(stock = {}, price = {}, position = null) {
@@ -2708,9 +2713,10 @@ function renderUsTable() {
     const position = positionMetrics(stock, analysis?.price);
     const fundamentals = analysis?.fundamentals || {};
     const selected = state.usSelected === stock.symbol ? "selected" : "";
+    const rowClasses = [selected, profitOver35Class(position)].filter(Boolean).join(" ");
     const openHolding = hasOpenPosition(stock, position);
     return `
-      <tr class="${selected}" data-us-symbol="${escapeAttr(stock.symbol)}">
+      <tr class="${rowClasses}" data-us-symbol="${escapeAttr(stock.symbol)}">
         <td>
           <div class="stock-name-row">
             <button type="button" class="drag-handle" draggable="true" data-us-drag-handle aria-label="${escapeAttr(stock.name)}の順番を移動" title="ドラッグで順番を変更">≡</button>

@@ -1208,6 +1208,10 @@ tr.selected {
   background: #eef8f4;
 }
 
+tr.profit-over-35 {
+  background: #f7faf8;
+}
+
 .dragging {
   opacity: 0.45;
 }
